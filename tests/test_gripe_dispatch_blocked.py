@@ -23,6 +23,7 @@ from tests.workers.test_gripe_dispatch import (
     _light,
     _one_lane,
     _park,
+    _queue_build,
     _roots_for,
     _todo_chain_for,
     _todo_source,
@@ -182,17 +183,55 @@ def test_source_todo_holds_leave_gripe_chains_alone(store: Store) -> None:
     assert _holds(store, build) is None
 
 
-def test_withdrawn_tag_does_not_shield_stall(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+def test_stale_source_todo_meta_holds_no_build(store: Store) -> None:
+    """``source_todo_holds`` validates the plan root and its related-to
+    edge, like the chain inventory: a mismatched or misplaced
+    ``source_todo`` meta holds no build."""
+    source = _todo_source(store)
+    other = _todo_source(store, "another todo")
+    root, build = _todo_chain_for(store, source)
+    # the key names another todo than the one the root is related to
+    store.stamp_ref_meta(root, {"source_todo": other})
+    store.remove_tag(other, Tag.open("factory:build"))
+    assert root not in {c.root_id for c in gd.chains(store)}
+    assert _holds(store, build) is None
+    # the related-to edge is gone but the meta remains
+    store.stamp_ref_meta(root, {"source_todo": source})
+    store.remove_link(src_ref_id=root, dst_ref_id=source, relation="related-to")
+    assert _holds(store, build) is None
+    # the key sits on the build node, which is no plan root
+    held_source = _todo_source(store, "a held todo")
+    store.remove_tag(held_source, Tag.open("factory:build"))
+    store.stamp_ref_meta(build, {"source_todo": held_source})
+    assert _holds(store, build) is None
+
+
+def _apply_hold_reason(store: Store, source: int, reason: str) -> None:
+    if reason == "withdrawn":
+        store.remove_tag(source, Tag.open("factory:build"))
+    elif reason == "needs-spec":
+        store.add_tag(source, Tag.open("needs-spec"), set_by="agent")
+    elif reason == "hold-tag":
+        store.add_tag(source, Tag.open(sorted(gd.HOLD_TAGS)[0]), set_by="agent")
+    else:
+        _close(store, source, "done")
+
+
+@pytest.mark.parametrize("state", ["open", "queued"])
+@pytest.mark.parametrize("reason", ["withdrawn", "needs-spec", "hold-tag", "closed"])
+def test_source_hold_does_not_shield_stall(
+    store: Store, monkeypatch: pytest.MonkeyPatch, state: str, reason: str
 ) -> None:
     """Only an open blocker reads a held todo chain as moving: with the
-    tag withdrawn the chain still reaches the stalled sweep."""
+    source held for anything else, an open jobless or queued build is not
+    moving either — the chain still reaches the stalled sweep."""
     _one_lane(monkeypatch, cap=2)
     _light(store)
     source = _todo_source(store)
     root, build = _todo_chain_for(store, source)
-    _park(store, build, "paused")
-    store.remove_tag(source, Tag.open("factory:build"))
+    if state == "queued":
+        _queue_build(store, build)
+    _apply_hold_reason(store, source, reason)
     assert _holds(store, build) is not None
     assert _holds(store, build, blockers_only=True) is None
     _age_node(store, build, 8)
@@ -200,6 +239,27 @@ def test_withdrawn_tag_does_not_shield_stall(
     assert not chain.live and not chain.plan_live
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert [z["root"] for z in res.extra["stalled"]] == [root]
+
+
+@pytest.mark.parametrize("state", ["open", "queued"])
+def test_blocker_shields_moving_todo_build_from_stall(
+    store: Store, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """An open blocker also shields an open jobless or queued todo build:
+    the chain reads moving until the blocker closes."""
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    source = _todo_source(store)
+    root, build = _todo_chain_for(store, source)
+    if state == "queued":
+        _queue_build(store, build)
+    blocker = store.insert_ref(kind="todo", slug=None, title="The blocker")
+    store.add_tag(blocker.id, Tag.closed("STATUS", "open"), set_by="agent")
+    store.add_link(src_ref_id=source, dst_ref_id=blocker.id, relation="blocked-by")
+    _age_node(store, build, 8)
+    [chain] = [c for c in gd.chains(store) if c.root_id == root]
+    assert not chain.live and chain.plan_live
+    assert gd.run_gripe_dispatch_pass(store, host="h1").extra["stalled"] == []
 
 
 def test_blocker_shields_todo_chain_from_stall(

@@ -361,7 +361,9 @@ class Chain:
     plan_ids: tuple[int, ...] = ()
     #: Some node anywhere in the plan is live or waiting in the
     #: file-overlap hold (:func:`plan_dispatch.live_and_held_nodes`): the
-    #: chain is moving, whatever its build is doing.
+    #: chain is moving, whatever its build is doing. A build whose source
+    #: todo holds it for anything but an open blocker is not waiting: no
+    #: dispatch or claim can pick it up, so it neither lives nor holds.
     plan_live: bool = True
     #: Source todos (:data:`~precis.plans.todo_chain.SOURCE_TODO_KEY`);
     #: empty for a gripe chain.
@@ -488,10 +490,12 @@ def chains(store: Store) -> list[Chain]:
             all_builds = [b for _, _, _, builds in rows for b in builds]
             # Only an open blocker reads a todo chain as moving: a
             # withdrawn tag, hold tag or terminal source is a stall.
+            blocker_holds = source_todo_holds(conn, all_builds, blockers_only=True)
             sequencing = {
-                **source_todo_holds(conn, all_builds, blockers_only=True),
+                **blocker_holds,
                 **source_gripe_holds(conn, all_builds),
             }
+            todo_holds = source_todo_holds(conn, all_builds)
     except Exception:
         log.warning(
             "gripe_dispatch: build liveness read failed; counting every chain live",
@@ -499,8 +503,14 @@ def chains(store: Store) -> list[Chain]:
         )
         live = {b for r in rows for b in r[3]}
         held = set()
+        blocker_holds = {}
+        todo_holds = {}
         sequencing = {}
         plans = {}
+    # An open jobless or queued build whose source todo holds it for
+    # anything but an open blocker cannot be dispatched or claimed, so it
+    # is not moving: the chain parks and reaches the stalled sweep.
+    held -= set(todo_holds) - set(blocker_holds)
     return [
         Chain(
             root,
@@ -1001,9 +1011,10 @@ def build_queue_supply(
 ) -> tuple[int, int]:
     """Free host executor slots and queued builds; lane caps are not capacity.
 
-    ``exclude_todo_chains`` leaves out queued builds whose plan root
-    carries ``meta.source_todo``: the gripe pass must not lose slots to
-    todo-sourced builds.
+    ``exclude_todo_chains`` leaves out queued builds whose plan root is a
+    live todo ``related-to`` the todo its ``meta.source_todo`` names —
+    the chain inventory's validation, not metadata alone: the gripe pass
+    must not lose slots to todo-sourced builds.
 
     Use the claimer's live host advertisements, executor cap and reserved
     bands. An unavailable host contributes nothing, and a queued or held
@@ -1059,18 +1070,35 @@ def build_queue_supply(
             "AND s.value = ANY(%s))) "
             "AND t.namespace = 'STATUS' AND t.value = 'queued'"
             + (
+                # The inventory's validation, not metadata alone: the
+                # meta-carrying ancestor must be a live plan root with a
+                # related-to edge to the todo its source_todo names.
                 " AND NOT EXISTS (WITH RECURSIVE up(ref_id, parent_id) AS ("
                 "SELECT ref_id, parent_id FROM refs WHERE ref_id = r.parent_id "
                 "UNION SELECT x.ref_id, x.parent_id FROM refs x "
                 "JOIN up ON x.ref_id = up.parent_id) "
-                "SELECT 1 FROM refs a JOIN up ON a.ref_id = up.ref_id "
-                "WHERE a.meta->>%s IS NOT NULL)"
+                "SELECT 1 FROM up JOIN refs a ON a.ref_id = up.ref_id "
+                "AND a.kind = 'todo' AND a.retired_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM ref_tags pt JOIN tags p "
+                "ON p.tag_id = pt.tag_id WHERE pt.ref_id = a.ref_id "
+                "AND p.namespace = 'OPEN' AND p.value = 'plan:' || a.ref_id) "
+                "AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags s "
+                "ON s.tag_id = st.tag_id WHERE st.ref_id = a.ref_id "
+                "AND s.namespace = 'STATUS' AND s.value = ANY(%s)) "
+                "AND EXISTS (SELECT 1 FROM links l JOIN refs g "
+                "ON g.ref_id = l.dst_ref_id "
+                "WHERE l.src_ref_id = a.ref_id AND l.relation = 'related-to' "
+                "AND g.kind = 'todo' AND a.meta->>%s = g.ref_id::text))"
                 if exclude_todo_chains
                 else ""
             ),
             (
                 sorted(TERMINAL_TODO_STATUSES),
-                *([SOURCE_TODO_KEY] if exclude_todo_chains else []),
+                *(
+                    [list(_TERMINAL_STATUSES), SOURCE_TODO_KEY]
+                    if exclude_todo_chains
+                    else []
+                ),
             ),
         ).fetchone()
     return free, int(row[0]) if row else 0

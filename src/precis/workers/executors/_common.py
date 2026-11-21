@@ -1594,12 +1594,16 @@ def source_todo_holds(
     """Name one reason per build parent whose chain's source todo holds it.
 
     The source of a todo chain is the todo named by ``meta.source_todo``
-    on the plan root (the parent or an ancestor), read here after mint:
-    it holds the build while it carries an open ``blocked-by``, one of the
-    dispatcher's hold tags, ``needs-spec`` or ``factory:skip``, no longer
-    carries ``factory:build``, or is terminal or retired. ``blockers_only`` keeps
-    the open-blocker reason alone: the stalled-chain census shields a
-    chain only for a blocker — a withdrawn tag is a stall to ask about."""
+    on the plan root (the parent or an ancestor), read here after mint —
+    the chain inventory's validation, not metadata alone: the meta-carrying
+    node must be a live plan root with a ``related-to`` edge to the todo
+    its key names. The source holds the build while it carries an open
+    ``blocked-by``, one of the dispatcher's hold tags, ``needs-spec`` or
+    ``factory:skip``, no longer carries ``factory:build``, or is terminal
+    or retired.
+    ``blockers_only`` keeps the open-blocker reason alone: the
+    stalled-chain census shields a chain only for a blocker — a withdrawn
+    tag is a stall to ask about."""
     if not parent_ids:
         return {}
     from precis.plans.todo_chain import (
@@ -1608,7 +1612,7 @@ def source_todo_holds(
         SKIP_TAG,
         SOURCE_TODO_KEY,
     )
-    from precis.workers.gripe_dispatch import HOLD_TAGS
+    from precis.workers.gripe_dispatch import _TERMINAL_STATUSES, HOLD_TAGS
 
     rows = conn.execute(
         f"""
@@ -1634,10 +1638,25 @@ def source_todo_holds(
                bl.ref_id, bl.kind, bl.status
           FROM up
           JOIN refs u ON u.ref_id = up.ref_id
+                     AND u.kind = 'todo' AND u.retired_at IS NULL
+                     AND EXISTS (SELECT 1 FROM ref_tags put JOIN tags pn
+                                           ON pn.tag_id = put.tag_id
+                                  WHERE put.ref_id = u.ref_id
+                                    AND pn.namespace = 'OPEN'
+                                    AND pn.value = 'plan:' || u.ref_id)
+                     AND NOT EXISTS (SELECT 1 FROM ref_tags ust JOIN tags usn
+                                             ON usn.tag_id = ust.tag_id
+                                      WHERE ust.ref_id = u.ref_id
+                                        AND usn.namespace = 'STATUS'
+                                        AND usn.value = ANY(%s))
           JOIN refs g ON g.kind = 'todo'
                      AND g.ref_id = CASE
                          WHEN u.meta->>%s ~ '^[0-9]{{1,15}}$'
                          THEN (u.meta->>%s)::bigint END
+                     AND EXISTS (SELECT 1 FROM links sl
+                                  WHERE sl.src_ref_id = u.ref_id
+                                    AND sl.relation = 'related-to'
+                                    AND sl.dst_ref_id = g.ref_id)
           LEFT JOIN LATERAL (
               SELECT b.ref_id, b.kind, bs.status
                 FROM links l
@@ -1659,6 +1678,7 @@ def source_todo_holds(
             parent_ids,
             FACTORY_BUILD_TAG,
             [*HOLD_TAGS, NEEDS_SPEC_TAG, SKIP_TAG],
+            list(_TERMINAL_STATUSES),
             SOURCE_TODO_KEY,
             SOURCE_TODO_KEY,
         ),

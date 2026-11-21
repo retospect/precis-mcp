@@ -1893,6 +1893,33 @@ def test_queued_todo_builds_do_not_reduce_gripe_slots(
     assert gd.build_queue_supply(store) == (free, 2)
 
 
+def test_queue_supply_exclusion_validates_the_chain(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``exclude_todo_chains`` queue count validates the plan root and
+    its related-to edge, like the inventory: a mismatched ``source_todo``
+    meta — or the key on a non-root node — excludes nothing."""
+    _one_lane(monkeypatch)
+    _light(store)
+    source = _todo_source(store)
+    other = _todo_source(store, "another todo")
+    root, build = _todo_chain_for(store, source)
+    _queue_build(store, build)
+    free, queued = gd.build_queue_supply(store)
+    assert queued == 1
+    # the valid shape excludes the queued todo build
+    assert gd.build_queue_supply(store, exclude_todo_chains=True) == (free, 0)
+    # the key names another todo than the root is related to: still counted
+    store.stamp_ref_meta(root, {"source_todo": other})
+    assert gd.build_queue_supply(store, exclude_todo_chains=True) == (free, 1)
+    # the related-to edge is gone but the meta remains: still counted
+    store.remove_link(src_ref_id=root, dst_ref_id=source, relation="related-to")
+    assert gd.build_queue_supply(store, exclude_todo_chains=True) == (free, 1)
+    # the key sits on the build node, which is no plan root: still counted
+    store.stamp_ref_meta(build, {"source_todo": source})
+    assert gd.build_queue_supply(store, exclude_todo_chains=True) == (free, 1)
+
+
 def test_parked_todo_chains_do_not_trip_gripe_backstop(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
