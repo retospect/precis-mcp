@@ -13,6 +13,7 @@ and the lazy fragment's ``LIMIT page+1``/``OFFSET`` paging under tied
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from precis.store import Tag
@@ -38,7 +39,10 @@ def test_web_progress(store: Any, client: Any, monkeypatch: Any) -> None:
     assert "Progress · rolling UTC windows" in page.text
     assert "Closed as dup" in page.text
     for hours in (1, 6, 12, 24):
-        assert f"{hours}h</th><td>0</td><td>0</td><td>0</td>" in page.text
+        row = re.search(rf"<th [^>]*>{hours}h</th>(.*?)</tr>", page.text, re.S)
+        assert row is not None
+        cells = re.findall(r"<td [^>]*text-right[^>]*>0</td>", row.group(1))
+        assert len(cells) == 3
 
 
 def _seed_cohort(store: Any, status: str, n: int, prefix: str) -> list[int]:

@@ -11,11 +11,11 @@
 </div>
 
 <div class="mb-4 text-sm text-fg-secondary">
-  <table class="w-full">
+  <table class="w-full border-collapse border border-line">
     <caption class="text-left font-medium">Progress · rolling UTC windows</caption>
-    <thead><tr><th scope="col">Last</th><th scope="col">Fixed</th><th scope="col">Verified</th><th scope="col">Closed as dup</th></tr></thead>
+    <thead class="bg-surface-subtle"><tr><th scope="col" class="border border-line px-3 py-1.5 text-left font-medium">Last</th><th scope="col" class="border border-line px-3 py-1.5 text-right font-medium">Fixed</th><th scope="col" class="border border-line px-3 py-1.5 text-right font-medium">Verified</th><th scope="col" class="border border-line px-3 py-1.5 text-right font-medium">Closed as dup</th></tr></thead>
     <tbody>{% for row in progress %}
-      <tr><th scope="row">{{ row.hours }}h</th><td>{{ row.fixed }}</td><td>{{ row.verified }}</td><td>{{ row.duplicates }}</td></tr>
+      <tr><th scope="row" class="border border-line px-3 py-1.5 text-left font-medium">{{ row.hours }}h</th><td class="border border-line px-3 py-1.5 text-right tabular-nums">{{ row.fixed }}</td><td class="border border-line px-3 py-1.5 text-right tabular-nums">{{ row.verified }}</td><td class="border border-line px-3 py-1.5 text-right tabular-nums">{{ row.duplicates }}</td></tr>
     {% endfor %}</tbody>
   </table>
   <p class="text-xs text-fg-faint">Fixed: done or awaiting verification, timed by current status. Verified: success recorded with that closure. Reopened gripes excluded. Duplicates: closed as wontfix or retired, with a gripe successor.</p>
