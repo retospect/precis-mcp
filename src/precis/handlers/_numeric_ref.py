@@ -116,7 +116,11 @@ from precis.utils.link_tag_ops import (
     validate_link_mode,
     validate_relation,
 )
-from precis.utils.link_target import mint_lazy_link_target, parse_link_target
+from precis.utils.link_target import (
+    check_python_alias,
+    mint_lazy_link_target,
+    parse_link_target,
+)
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.ref_hybrid import fused_ref_hits
@@ -4539,6 +4543,8 @@ class NumericRefHandler(Handler):
             # Mint a lazy part ref only for an add that will go ahead.
             if mode == "add" and rel_err is None:
                 mint_lazy_link_target(target, store=self.store, hub=self.hub)
+            elif mode == "remove":
+                check_python_alias(target, hub=self.hub)
             link_target = parse_link_target(
                 target, store=self.store, include_retired=mode == "remove"
             )

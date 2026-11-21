@@ -70,7 +70,11 @@ from precis.utils.link_tag_ops import (
     validate_link_mode,
     validate_relation,
 )
-from precis.utils.link_target import mint_lazy_link_target, parse_link_target
+from precis.utils.link_target import (
+    check_python_alias,
+    mint_lazy_link_target,
+    parse_link_target,
+)
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.slug_ref import resolve_live_slug_ref
 
@@ -240,6 +244,7 @@ class RxnHandler(Handler):
         if hub.store is None:
             raise InitError("rxn: store required")
         self.store = hub.store
+        self.hub = hub
 
     # ── put ──────────────────────────────────────────────────────────
 
@@ -1139,9 +1144,9 @@ class RxnHandler(Handler):
             rel_err = exc
         try:
             if mode == "add" and rel_err is None:
-                mint_lazy_link_target(
-                    target, store=self.store, hub=getattr(self, "hub", None)
-                )
+                mint_lazy_link_target(target, store=self.store, hub=self.hub)
+            elif mode == "remove":
+                check_python_alias(target, hub=self.hub)
             link_target = parse_link_target(
                 target, store=self.store, include_retired=mode == "remove"
             )

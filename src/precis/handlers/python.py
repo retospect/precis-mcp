@@ -2536,23 +2536,29 @@ class PythonHandler(Handler):
             getattr(self, "hub", None), "store", None
         )
 
-    def symbol_anchor(self, qualname: str) -> tuple[str, str] | None:
+    def symbol_anchor(
+        self, qualname: str, *, alias: str | None = None
+    ) -> tuple[str, str] | None:
         """``(alias, rel_file)`` when a registered root's index resolves
-        ``qualname``, else ``None``.
+        ``qualname``, else ``None``. ``alias=`` restricts the probe to that
+        root (the handle a search row printed names its root); without it
+        the first root alphabetically that has the symbol wins.
 
         The mint/validate predicate behind ``python:<qualname>`` mentions
         and link targets: an unknown qualname never mints an anchor.
         Static roots only — worktree corpora are session-scoped and must
         not mint persistent anchors.
         """
-        for alias in sorted(self.roots):
+        for name in [alias] if alias is not None else sorted(self.roots):
+            if name not in self.roots:
+                continue
             try:
-                idx = self._index(alias, self.roots[alias])
+                idx = self._index(name, self.roots[name])
             except NotFound:
                 continue
             sym = idx.symbol(qualname)
             if sym is not None:
-                return alias, sym.file
+                return name, sym.file
         return None
 
     #: Inbound-notes section cap (rows) before the visible overflow line.

@@ -330,7 +330,14 @@ in a note or draft body to cite a symbol (a dotted qualname — a bare
 `python:word` stays prose). The qualname is validated
 against the live index and an anchor ref is minted on first mention;
 `link(kind='python', id='<qualname>', target=…)` adds or removes an edge
-by hand. Citing notes show as a `notes citing this symbol` section at
+by hand. As an explicit `target=` (e.g.
+`link(kind='memory', id='me1', target='python:main::precis.reading.asked.f',
+rel='derived-from')`) the `python:<alias>::<qualname>` handle a search row
+prints requires a registered static root. Add checks the symbol in that
+root. Unlink checks the alias and can remove an edge after the symbol
+leaves the index. Roots with the same qualname share one stored anchor.
+Body mentions take the bare `python:<qualname>` form.
+Citing notes show as a `notes citing this symbol` section at
 `extent='fisheye+1hop'` and on a plain symbol get (capped at 8 rows;
 the rest are counted, not listed).
 

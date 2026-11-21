@@ -39,6 +39,8 @@ from precis.utils import handle_registry
 from precis.utils.relations import _VALID_RELATIONS
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from precis.store import Store
 
 
@@ -235,6 +237,12 @@ def _parse_link_target(
             identifier = slug_for(normalize_orcid_id(identifier))
         except BadInput:
             pass
+
+    if kind == "python":
+        # Search rows print symbol handles as '<alias>::<qualname>'
+        # (gr743222); the anchor ref's slug is the bare qualname, so an
+        # alias-prefixed target resolves by the qualname alone.
+        _, identifier = _split_python_identifier(identifier)
 
     # Resolve the ref. Numeric kinds take int(refs.id); slug kinds
     # take refs.slug. ``store.get_ref`` returns None on miss; we
@@ -486,7 +494,9 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
     path-form target then resolves on first link, no get first
     (gr516697). A ``python:<qualname>`` target likewise mints its lazy
     anchor ref when the live python index resolves the qualname
-    (gr702978). The DB-free index kinds carry no refs rows at all; an
+    (gr702978); the explicit ``python:<alias>::<qualname>`` form a search
+    row prints validates against that named root only. The DB-free index
+    kinds carry no refs rows at all; an
     ``md:`` target can never resolve, so the door refuses early with the
     linkable sibling named — otherwise :func:`parse_link_target` reports
     a misleading "no live md ref".
@@ -510,8 +520,12 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
     if kind == "python":
         # Python symbols are file-backed; the anchor row is minted on
         # first link, validated against the live code index — an unknown
-        # qualname mints nothing and refuses (gr702978).
-        identifier = rest.partition("~")[0].strip()
+        # qualname mints nothing and refuses (gr702978). Search rows
+        # print handles as '<alias>::<qualname>' (gr743222), so an
+        # alias-prefixed target mints by its bare qualname — the anchor
+        # slug carries no alias — and a wrong alias refuses rather than
+        # silently anchoring the symbol under another root.
+        alias, identifier = _split_python_identifier(rest.partition("~")[0])
         if not identifier:
             return
         handler = hub.handler_for(kind) if hub is not None else None
@@ -521,11 +535,13 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
                 "this hub, so the symbol cannot be validated",
                 next="check PRECIS_PYTHON_ROOTS, or link a store-backed kind",
             )
-        anchor = handler.symbol_anchor(identifier)
+        if alias is not None:
+            _require_python_root(target, alias, handler.roots)
+        anchor = handler.symbol_anchor(identifier, alias=alias)
         if anchor is None:
+            where = f"root {alias!r}" if alias else "any registered python root"
             raise NotFound(
-                f"link target {target!r}: no symbol {identifier!r} in any "
-                "registered python root",
+                f"link target {target!r}: no symbol {identifier!r} in {where}",
                 next=(
                     "check the qualname: get(kind='python', id='<alias>', "
                     "view='toc'), or search(kind='python', q='<name>')"
@@ -600,6 +616,50 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
         store.ensure_part_ref(key)
 
 
+def _split_python_identifier(identifier: str) -> tuple[str | None, str]:
+    alias, delimiter, qualname = identifier.partition("::")
+    if not delimiter:
+        return None, identifier.strip()
+    alias = alias.strip()
+    qualname = qualname.strip()
+    if not alias or not qualname:
+        raise BadInput(
+            "an explicit python target requires a root alias and a qualname",
+            next="use 'python:<alias>::<qualname>' or 'python:<qualname>'",
+        )
+    return alias, qualname
+
+
+def _require_python_root(target: str, alias: str, roots: Collection[str]) -> None:
+    if alias not in roots:
+        raise NotFound(
+            f"link target {target!r}: no python root {alias!r}",
+            next=f"registered roots: {', '.join(sorted(roots)) or '(none)'}",
+        )
+
+
+def check_python_alias(target: str, *, hub: Any = None) -> None:
+    """Refuse ``python:<alias>::<qualname>`` naming an unregistered root.
+
+    The remove-mode twin of the alias check in :func:`mint_lazy_link_target`:
+    ``parse_link_target`` drops the alias (the anchor slug is the bare
+    qualname), so without this a typo'd alias could delete an edge the same
+    target is refused for on add. A symbol that left the index is still
+    removable — only the root name is checked. Bare qualnames can remove
+    stored edges even when the python kind is unavailable.
+    """
+    if not isinstance(target, str):
+        return
+    kind, sep, rest = target.strip().partition(":")
+    if not sep or kind.strip() != "python":
+        return
+    alias, _ = _split_python_identifier(rest.partition("~")[0])
+    if alias is None:
+        return
+    handler = hub.handler_for("python") if hub is not None else None
+    _require_python_root(target, alias, handler.roots if handler is not None else ())
+
+
 def _kind_is_numeric(kind: str, *, store: Store) -> bool:
     """Look up `kinds.is_numeric` for the given kind slug.
 
@@ -647,4 +707,9 @@ def _kind_is_numeric(kind: str, *, store: Store) -> bool:
     )
 
 
-__all__ = ["LinkTarget", "mint_lazy_link_target", "parse_link_target"]
+__all__ = [
+    "LinkTarget",
+    "check_python_alias",
+    "mint_lazy_link_target",
+    "parse_link_target",
+]

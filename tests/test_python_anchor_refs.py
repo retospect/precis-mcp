@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.handlers.python import PythonHandler
 from precis.utils import mentions
 
@@ -399,3 +399,123 @@ class TestLinkVerb:
         assert store.python_symbol_ref_id("pkg.runner.target") is not None
         with pytest.raises(NotFound):
             mint_lazy_link_target("python:pkg.runner.ghost", store=store, hub=hub)
+
+    def test_python_target_alias_prefix_mints_bare_qualname(
+        self, store: Any, py_kind: None, repo: Path
+    ) -> None:
+        # gr743222: search rows print '<alias>::<qualname>' handles, so a
+        # link target carrying that prefix must mint and resolve the same
+        # bare-qualname anchor the plain target does.
+        from precis.utils.link_target import mint_lazy_link_target, parse_link_target
+
+        hub = Hub(store=store)
+        py = PythonHandler(hub=hub, roots={"r": repo})
+        hub.register_handler("python", py)
+        mint_lazy_link_target("python:r::pkg.runner.target", store=store, hub=hub)
+        rid = store.python_symbol_ref_id("pkg.runner.target")
+        assert rid is not None
+        assert (
+            parse_link_target("python:r::pkg.runner.target", store=store).ref_id == rid
+        )
+
+    def test_python_target_wrong_alias_refuses(
+        self, store: Any, py_kind: None, repo: Path
+    ) -> None:
+        from precis.utils.link_target import mint_lazy_link_target
+
+        hub = Hub(store=store)
+        py = PythonHandler(hub=hub, roots={"r": repo})
+        hub.register_handler("python", py)
+        with pytest.raises(NotFound, match="no python root"):
+            mint_lazy_link_target(
+                "python:other::pkg.runner.target", store=store, hub=hub
+            )
+        assert store.python_symbol_ref_id("pkg.runner.target") is None
+
+    def test_memory_link_to_search_printed_python_handle(
+        self, store: Any, py_kind: None, repo: Path
+    ) -> None:
+        # The gr743222 call shape — link(kind='memory', id=<note>, target=
+        # 'python:<alias>::<qualname>') — through apply_link_ops, the door
+        # every non-python link verb delegates to.
+        from precis.utils.link_tag_ops import apply_link_ops
+
+        hub = Hub(store=store)
+        py = PythonHandler(hub=hub, roots={"r": repo})
+        hub.register_handler("python", py)
+        note = store.insert_ref(kind="memory", slug=None, title="the note")
+        n_added, n_removed = apply_link_ops(
+            store,
+            note.id,
+            link="python:r::pkg.runner.target",
+            unlink=None,
+            rel="derived-from",
+            hub=hub,
+        )
+        assert (n_added, n_removed) == (1, 0)
+        rid = store.python_symbol_ref_id("pkg.runner.target")
+        assert rid is not None
+        outbound = store.links_for(note.id, direction="out")
+        assert any(l.dst_ref_id == rid for l in outbound)
+
+    def test_memory_link_two_roots_same_qualname(
+        self, store: Any, py_kind: None, repo: Path, tmp_path_factory: Any
+    ) -> None:
+        # Two roots hold the same qualname: a handle printed for the later
+        # root ('z') must validate against z, not the alphabetical first.
+        # Goes through MemoryHandler.link (NumericRefHandler._link), the
+        # single-memory door. A typo'd alias refuses on unlink as on add.
+        from precis.handlers.memory import MemoryHandler
+
+        other = tmp_path_factory.mktemp("other")
+        _write(other, "pkg/__init__.py", '"""pkg."""\n')
+        _write(other, "pkg/runner.py", "def target(x: int) -> int:\n    return x\n")
+        hub = Hub(store=store)
+        hub.register_handler(
+            "python", PythonHandler(hub=hub, roots={"a": repo, "z": other})
+        )
+        mem = MemoryHandler(hub=hub)
+        note = store.insert_ref(kind="memory", slug=None, title="the note")
+        h = note.id
+        mem.link(id=h, target="python:z::pkg.runner.target", rel="derived-from")
+        rid = store.python_symbol_ref_id("pkg.runner.target")
+        assert rid is not None
+        assert store.get_ref(kind="python", id="pkg.runner.target").meta["alias"] == "z"
+        assert any(
+            l.dst_ref_id == rid for l in store.links_for(note.id, direction="out")
+        )
+        with pytest.raises(NotFound, match="no python root"):
+            mem.link(id=h, target="python:typo::pkg.runner.target", mode="remove")
+        assert any(
+            l.dst_ref_id == rid for l in store.links_for(note.id, direction="out")
+        )
+        mem.link(id=h, target="python:z::pkg.runner.target", mode="remove")
+        assert not store.links_for(note.id, direction="out")
+
+    @pytest.mark.parametrize("kind", ["memory", "rxn"])
+    def test_link_rejects_invalid_python_aliases(
+        self, store: Any, py_kind: None, repo: Path, kind: str
+    ) -> None:
+        from precis.handlers.memory import MemoryHandler
+        from precis.handlers.rxn import RxnHandler
+
+        hub = Hub(store=store)
+        hub.register_handler("python", PythonHandler(hub=hub, roots={"r": repo}))
+        if kind == "rxn":
+            store.upsert_kinds([RxnHandler.spec])
+        handler = RxnHandler(hub=hub) if kind == "rxn" else MemoryHandler(hub=hub)
+        slug = "reaction" if kind == "rxn" else None
+        ref = store.insert_ref(kind=kind, slug=slug, title="source")
+        source = slug if slug is not None else ref.id
+        target = "python:r::pkg.runner.target"
+        handler.link(id=source, target=target)
+        for mode in ("add", "remove"):
+            with pytest.raises(BadInput, match="requires a root alias"):
+                handler.link(id=source, target="python:::pkg.runner.target", mode=mode)
+            with pytest.raises(NotFound, match="no python root"):
+                handler.link(
+                    id=source, target="python:typo::pkg.runner.target", mode=mode
+                )
+        assert len(store.links_for(ref.id, direction="out")) == 1
+        handler.link(id=source, target=target, mode="remove")
+        assert not store.links_for(ref.id, direction="out")

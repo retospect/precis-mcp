@@ -32,6 +32,7 @@ from precis.store import Store, Tag
 from precis.store.types import Relation
 from precis.utils.link_target import (
     LinkTarget,
+    check_python_alias,
     mint_lazy_link_target,
     parse_link_target,
 )
@@ -618,6 +619,7 @@ def apply_link_ops(
             )
 
     if unlink is not None:
+        check_python_alias(unlink, hub=hub)
         target = parse_link_target(unlink, store=store, include_retired=True)
         # ``rel=`` on unlink is per-relation; absence means "any
         # link to this target at this position". Mirrors
