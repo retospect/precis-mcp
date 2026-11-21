@@ -714,6 +714,30 @@ def test_approx_spacing_expression_lhs_keeps_spaces() -> None:
     assert any("approx-spacing" in w for w in bad)
 
 
+def test_approx_spacing_wrapped_expression_lhs_keeps_spaces() -> None:
+    # Grouping parens, an assignment, and an inner space must not hide the
+    # computed left operand (canon: 'exp(8.12) ≈ 3400×' in every wrapping).
+    for sentence in [
+        "(exp(8.12) ≈ 3400×)",
+        "ΔE=exp(8.12) ≈ 3400× holds.",
+        "The ratio exp(a + b) ≈ 3400× holds.",
+        "The ratio exp( 8.12) ≈ 3400× holds.",
+        "The ratio (exp(8.12)) ≈ 3400× holds.",
+    ]:
+        assert not any("approx-spacing" in w for w in lint_notation(sentence)), sentence
+
+
+def test_approx_spacing_wrapped_expression_lhs_missing_space_fires() -> None:
+    for sentence in ["(exp(8.12)≈3400×)", "ΔE=exp(8.12)≈3400× holds."]:
+        assert any("approx-spacing" in w for w in lint_notation(sentence)), sentence
+
+
+def test_approx_spacing_citation_bracket_quantity_does_not_fire() -> None:
+    # '[12]≈1 Å' -- a citation is not a computed expression; no space is right.
+    warnings = lint_notation("The gap was reported [12]≈1 Å at the interface.")
+    assert not any("approx-spacing" in w for w in warnings)
+
+
 def test_approx_spacing_relation_missing_space_fires() -> None:
     warnings = lint_notation("Carrier density n≈10²² cm⁻³ is reported.")
     assert any("approx-spacing" in w for w in warnings)

@@ -544,6 +544,36 @@ def _is_approx_lhs(token: str) -> bool:
     return bool(_APPROX_SYMBOL_RE.match(token) or _APPROX_EXPR_RE.match(token))
 
 
+def _approx_operand(text: str) -> str:
+    """The operand ending at ``text``'s last non-space character.
+
+    A closed bracket group takes the call name before it, so ``exp(a + b)``
+    and ``ΔE=exp( 8.12)`` each yield the whole call; grouping parens with no
+    name, as in ``(exp(8.12))``, are judged by their inside. Anything else
+    falls back to the last whitespace-delimited token.
+    """
+    s = text.rstrip()
+    if not s or s[-1] not in ")]":
+        tm = _APPROX_TOKEN_RE.search(s)
+        return tm.group(0) if tm else ""
+    depth = 0
+    for j in range(len(s) - 1, -1, -1):
+        if s[j] in ")]":
+            depth += 1
+        elif s[j] in "([":
+            depth -= 1
+            if depth == 0:
+                break
+    else:
+        return ""
+    k = j
+    while k > 0 and (s[k - 1].isalnum() or s[k - 1] == "_"):
+        k -= 1
+    if k == j:
+        return _approx_operand(s[j + 1 : -1])
+    return s[k:]
+
+
 # ── canon v3: numeric-range dash, ASCII multiplier, formula subscript ───
 
 #: `hyphen-numeric-range`: two bare numbers joined by an ASCII hyphen,
@@ -704,8 +734,7 @@ def _check_approx_spacing(sentence: str) -> str | None:
         left_attached = bool(before) and not before[-1].isspace()
 
         if left_attached:
-            tm = _APPROX_TOKEN_RE.search(before)
-            token = tm.group(0) if tm else ""
+            token = _approx_operand(before)
             if _is_approx_lhs(token):
                 return (
                     f"approx-spacing: {token}≈… found -- a binary relation "
@@ -714,11 +743,7 @@ def _check_approx_spacing(sentence: str) -> str | None:
                 )
             continue
 
-        stripped_before = before.rstrip()
-        prev_token = ""
-        if stripped_before:
-            tm = _APPROX_TOKEN_RE.search(stripped_before)
-            prev_token = tm.group(0) if tm else ""
+        prev_token = _approx_operand(before)
         if prev_token and _is_approx_lhs(prev_token):
             continue  # 'n ≈ 10²²' -- correct relation form
 
