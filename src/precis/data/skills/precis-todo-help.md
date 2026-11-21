@@ -235,6 +235,9 @@ build. The blocked todo shows on the work board row as
 the blocker. The same holds in reverse: a gripe a todo is blocked on
 holds the todo, and a gripe blocked by anything stays out of the
 factory intake until its blocker closes (see [[precis-gripe-help]]).
+A `factory-build` todo that carries a hold tag (`needs-spec`, `skip`, a
+gripe hold) or an open blocker is refused at mint, not only skipped by the
+survey, so clear the hold or resolve the blocker before re-offering it.
 
 `waiting-for:reto` marks a question for Reto. Once he has ruled and the
 todo carries the answer, remove the tag right after that write
