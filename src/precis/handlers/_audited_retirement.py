@@ -2,6 +2,11 @@
 
 Keep mention guards, successor validation and link migration in one transaction
 so a finding tombstone has the same repair contract as a memory tombstone.
+
+A successor that already has a live ``part-of`` parent keeps it: the retired
+record's own outbound ``part-of`` is dropped, not migrated, because a node has
+one parent (gr695729). A successor with no parent inherits it, so the children
+that move onto it stay attached to the tree.
 """
 
 from __future__ import annotations
@@ -257,7 +262,20 @@ class AuditedRetirementHandler(NumericRefHandler):
                 if counts
                 else (0, 0, 0)
             )
+            kept_parent = 0
             if successor is not None:
+                kept_parent = int(
+                    conn.execute(
+                        "DELETE FROM links WHERE src_ref_id = %(old)s"
+                        " AND relation = 'part-of' AND EXISTS ("
+                        "SELECT 1 FROM links p JOIN refs r"
+                        " ON r.ref_id = p.dst_ref_id"
+                        " WHERE p.src_ref_id = %(new)s AND p.relation = 'part-of'"
+                        " AND p.dst_ref_id <> %(old)s AND r.retired_at IS NULL)",
+                        {"old": ref_id, "new": successor},
+                    ).rowcount
+                    or 0
+                )
                 moved = self.store.migrate_links(
                     ref_id, successor, conn=conn, preserve_supersedes=True
                 )
@@ -278,6 +296,11 @@ class AuditedRetirementHandler(NumericRefHandler):
                 f"{moved} link(s) migrated to {successor_kind} id={successor} "
                 f"(meta.superseded_by)"
             )
+            if kept_parent:
+                detail += (
+                    f"; {kept_parent} part-of edge(s) not moved: "
+                    f"{successor_handle} keeps its own parent"
+                )
         else:
             kept = f"; {n_sup} supersedes edge(s) kept" if n_sup else ""
             detail = (

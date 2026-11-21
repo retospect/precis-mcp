@@ -124,6 +124,81 @@ def test_delete_refuses_merge_committed_after_preflight(
     assert _snapshot(store, [survivor]) == before
 
 
+def _memory_node(store: Store, title: str) -> int:
+    return store.insert_ref(kind="memory", slug=None, title=title).id
+
+
+def _edges(store: Store, ref_id: int) -> tuple[set[Any], set[Any]]:
+    outbound = {
+        (link.relation, link.dst_ref_id)
+        for link in store.links_for(ref_id, direction="out")
+    }
+    inbound = {
+        (link.relation, link.src_ref_id)
+        for link in store.links_for(ref_id, direction="in")
+    }
+    return outbound, inbound
+
+
+def test_superseded_by_delete_keeps_the_successors_one_parent(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr695729: the retired node's parent must not become a second parent."""
+    store = runtime_with_store.live_store
+    old_parent = _memory_node(store, "Parent of the retired node")
+    own_parent = _memory_node(store, "Parent of the successor")
+    old = _memory_node(store, "Retired node")
+    successor = _memory_node(store, "Successor")
+    child = _memory_node(store, "Child of the retired node")
+    citer = _memory_node(store, "Gotcha scoped to the retired node")
+    neighbour = _memory_node(store, "Neighbour of the retired node")
+    store.add_link(src_ref_id=old, dst_ref_id=old_parent, relation="part-of")
+    store.add_link(src_ref_id=successor, dst_ref_id=own_parent, relation="part-of")
+    store.add_link(src_ref_id=child, dst_ref_id=old, relation="part-of")
+    store.add_link(src_ref_id=citer, dst_ref_id=old, relation="qualifies")
+    store.add_link(src_ref_id=old, dst_ref_id=neighbour, relation="related-to")
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "delete",
+        {"kind": "memory", "id": f"me{old}", "superseded_by": f"me{successor}"},
+    )
+
+    assert not is_error, body
+    outbound, inbound = _edges(store, successor)
+    assert {dst for rel, dst in outbound if rel == "part-of"} == {own_parent}
+    assert outbound == {("part-of", own_parent), ("related-to", neighbour)}
+    assert inbound == {("part-of", child), ("qualifies", citer)}
+    assert f"3 link(s) migrated to memory id={successor}" in body
+    assert f"1 part-of edge(s) not moved: me{successor} keeps its own parent" in body
+    assert _edges(store, old_parent) == (set(), set())
+
+
+def test_superseded_by_delete_gives_a_parentless_successor_the_parent(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The successor takes the retired node's place when it has no parent."""
+    store = runtime_with_store.live_store
+    old_parent = _memory_node(store, "Parent of the retired node")
+    old = _memory_node(store, "Retired node")
+    successor = _memory_node(store, "Successor without a parent")
+    child = _memory_node(store, "Child of the retired node")
+    store.add_link(src_ref_id=old, dst_ref_id=old_parent, relation="part-of")
+    store.add_link(src_ref_id=child, dst_ref_id=old, relation="part-of")
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "delete",
+        {"kind": "memory", "id": f"me{old}", "superseded_by": f"me{successor}"},
+    )
+
+    assert not is_error, body
+    assert _edges(store, successor) == (
+        {("part-of", old_parent)},
+        {("part-of", child)},
+    )
+    assert f"2 link(s) migrated to memory id={successor}" in body
+    assert "not moved" not in body
+
+
 def test_same_row_kind_conversion_is_not_a_superseded_delete(
     runtime_with_store: PrecisRuntime,
 ) -> None:

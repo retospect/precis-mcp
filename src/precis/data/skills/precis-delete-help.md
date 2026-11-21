@@ -105,6 +105,10 @@ such as `python:<alias>::<qualname>` / `python:<alias>/<path>.py`.
 Chunk handles are refused; use their containing record or an `md:` section.
 Multiple live inbound successors require an explicit `superseded_by=` choice.
 Retirement preserves `supersedes` edges on the tombstone.
+The other links move to the successor, with one exception: a successor
+that already has a `part-of` parent keeps it, and the receipt reports the
+retired node's own `part-of` edge as not moved. A successor with no parent
+inherits that edge.
 The retired handle redirects there on `get`;
 `view='retired'` still reads the tombstone.
 
