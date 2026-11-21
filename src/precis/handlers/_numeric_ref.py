@@ -126,6 +126,7 @@ from precis.utils.search_merge import (
     ref_hits_to_search_hits,
     scores_are_distances,
 )
+from precis.utils.time_span import SPAN_FORMS, span_ago
 
 log = logging.getLogger(__name__)
 
@@ -294,22 +295,28 @@ def _parse_window_bound(value: Any, field: str) -> datetime | None:
 
     Same contract as the source-search primitive's parser
     (:meth:`precis.runtime.search.SearchMixin._parse_search_date`): an ISO
-    date or full ISO timestamp; a naive value is assumed UTC; an
-    offset-aware value is *normalized* to UTC so a ``Z``-labelled echo
-    downstream can't print the offset hour as UTC; ``until`` is
-    exclusive. Raises :class:`BadInput` on an unparseable string.
+    date or full ISO timestamp, or a relative span (``30m`` / ``2h`` /
+    ``3d`` / ``1w`` — "now minus that long", gr735598 — the spelling the
+    job handler already took via its own pre-parser, now shared by every
+    count view, closed window and ingest bound that reads a raw string
+    here); a naive value is assumed UTC; an offset-aware value is
+    *normalized* to UTC so a ``Z``-labelled echo downstream can't print
+    the offset hour as UTC; ``until`` is exclusive. Raises
+    :class:`BadInput` on an unparseable string.
     """
     if value is None:
         return None
     if isinstance(value, datetime):
         dt = value
+    elif (ago := span_ago(str(value))) is not None:
+        dt = ago
     else:
         try:
             dt = datetime.fromisoformat(str(value).strip())
         except ValueError as exc:
             raise BadInput(
-                f"{field}= must be an ISO date/timestamp, got {value!r}",
-                next=f"{field}='2026-10-01' or '2026-10-01T00:00:00Z'",
+                f"{field}= must be {SPAN_FORMS}, got {value!r}",
+                next=f"{field}='30m' or '2026-10-01' or '2026-10-01T00:00:00Z'",
             ) from exc
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
@@ -1518,9 +1525,10 @@ class NumericRefHandler(Handler):
         view: str | None = None,
         group_by: str | list[str] | None = None,
         agg: str | None = None,
-        # ``str`` parses via ``_parse_window_bound`` (ISO); kinds that
-        # resolve their own bound spellings (job's hours/days age,
-        # gr536316) pass the already-parsed datetime through.
+        # ``str`` parses via ``_parse_window_bound`` (ISO or a span like
+        # ``30m``); kinds that resolve their own bound spellings (job's
+        # hours/days age, gr536316) pass the already-parsed datetime
+        # through.
         since: str | datetime | None = None,
         until: str | datetime | None = None,
         # ``args={'closed_since'/'closed_until': ISO}`` — bound the

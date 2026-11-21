@@ -918,7 +918,7 @@ _LOGBOOK_PAGE = 50
 
 #: Compact relative ``since=``/``until=`` — ``30m``/``12h``/``7d``/``2w`` —
 #: read as "<n> <unit> ago" off now (gr537834); anything else defers to
-#: :func:`_parse_window_bound` (ISO).
+#: :func:`_parse_window_bound` (ISO or span).
 _LOGBOOK_REL_RE = re.compile(r"^(\d+)([smhdw])$", re.IGNORECASE)
 _LOGBOOK_REL_UNITS = {
     "s": "seconds",

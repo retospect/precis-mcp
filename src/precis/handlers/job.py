@@ -7687,8 +7687,8 @@ def _job_window_bound(value: Any, field: str) -> datetime | None:
     bare ``'24'`` means 24 hours, the same shorthand ``/logs`` and
     ``/delta`` already take (gr536316: the diagnosis windows agents
     actually write; gr735229: minutes and weeks). Anything else defers to
-    :func:`_parse_window_bound`'s ISO contract; a value matching neither
-    gets a rejection naming both.
+    :func:`_parse_window_bound`, which now shares the span contract; a
+    value matching neither gets a rejection naming both.
 
     A *bare* number is refused when it's year-shaped
     (:data:`_JOB_YEAR_LIKE`) or past

@@ -268,6 +268,33 @@ class TestCountTimeWindow:
         with pytest.raises(BadInput, match="ISO date"):
             jobs.search(view="count", since="yesterday-ish")
 
+    def test_span_since_bounds_the_count(self, jobs: JobHandler, store: Store) -> None:
+        """The count view reads the raw since= string through the shared
+        window parser — a relative span must bind the same window it
+        would on the job listing (gr735598)."""
+        old = _job(store, job_type="sweep", status="succeeded")
+        new = _job(store, job_type="sweep", status="succeeded")
+        now = datetime.now(UTC)
+        _backdate(store, old, now - timedelta(days=10))
+        _backdate(store, new, now - timedelta(minutes=10))
+
+        resp = jobs.search(view="count", status="*", since="30m")
+        assert resp.body.startswith("# 1 job entry"), resp.body
+
+    def test_span_since_bounds_a_generic_kind_count(
+        self, gripes: GripeHandler, store: Store
+    ) -> None:
+        """A non-job numeric kind's count view takes the same span — the
+        shared parser is the one surface, not the job pre-parser."""
+        old = _gripe(store, "old gripe")
+        new = _gripe(store, "new gripe")
+        now = datetime.now(UTC)
+        _backdate(store, old, now - timedelta(days=10))
+        _backdate(store, new, now - timedelta(minutes=10))
+
+        resp = gripes.search(view="count", since="30m")
+        assert resp.body.startswith("# 1 gripe entr"), resp.body
+
     def test_since_off_count_view_applies_on_the_listing(
         self, jobs: JobHandler, store: Store
     ) -> None:
