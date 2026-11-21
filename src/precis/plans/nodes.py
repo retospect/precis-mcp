@@ -10,7 +10,7 @@ A plan is a todo subtree; what a node *is* lives in five optional meta keys
                 ``tests-green {range}``, ``answer``, ``not-before {ts}``,
                 ``drc-clean {board}``
 ``loop``        ``{max, until: <gate spec>, body: <template name>}``
-``generate``    ``{role: slicer|spec-writer|triage|reviewer|analyst,
+``generate``    ``{role: slicer|spec-writer|triage|reviewer|analyst|brief,
                 from: <str>}``
 ==============  ==========================================================
 
@@ -20,7 +20,10 @@ A node carries at most one of ``gate`` / ``loop`` / ``generate``. A
 ``td<id>`` of the node whose land it reviews). An ``analyst`` generator
 also mints nothing: its session posts one ``analysis:`` comment (a
 read-only look at an inbound pull request, ``from`` is ``pr:<n>``) and
-the tick closes it once that comment is there.
+the tick closes it once that comment is there. A ``brief`` generator
+mints nothing and commits nothing either: its session ends with one
+final message (a brief, or a refusal) that the tick reads; a clean exit
+alone never closes it (``from`` is the source ``td<id>``).
 
 This module only judges shape: :func:`validate_plan_meta` returns
 human-readable problems (empty list = fine) and :func:`node_kind` names the
@@ -58,6 +61,7 @@ GENERATE_ROLES: tuple[str, ...] = (
     "triage",
     "reviewer",
     "analyst",
+    "brief",
 )
 
 #: job_type names that are accepted for ``op`` before they reach the
@@ -96,7 +100,7 @@ PLAN_SHAPES: dict[str, str] = {
     ),
     "loop": ("{'max': <int > 0>, 'until': <gate spec>, 'body': '<template name>'}"),
     "generate": (
-        "{'role': 'slicer'|'spec-writer'|'triage'|'reviewer'|'analyst', "
+        "{'role': 'slicer'|'spec-writer'|'triage'|'reviewer'|'analyst'|'brief', "
         "'from': '<md section | gripe | board | td<id> reviewed>'}"
     ),
 }
@@ -122,7 +126,9 @@ class LoopSpec(TypedDict):
 GenerateSpec = TypedDict(
     "GenerateSpec",
     {
-        "role": Literal["slicer", "spec-writer", "triage", "reviewer", "analyst"],
+        "role": Literal[
+            "slicer", "spec-writer", "triage", "reviewer", "analyst", "brief"
+        ],
         "from": str,
     },
 )

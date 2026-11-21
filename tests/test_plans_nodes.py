@@ -55,6 +55,10 @@ GENERATE = {"role": "slicer", "from": "docs/backlog/x.md#Section"}
             {"generate": {"role": "reviewer", "from": "td12"}, "task_class": "review"},
             "generator",
         ),
+        (
+            {"generate": {"role": "brief", "from": "td12"}, "task_class": "brief"},
+            "generator",
+        ),
         ({"auto_close": True, "generate": GENERATE}, "generator"),
         ({"auto_close": False}, None),
         ({"llm_tier": "opus", "prio": 3}, None),
