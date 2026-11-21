@@ -587,6 +587,30 @@ class TestRelativeWindowAndRecentSort:
         )
         assert "[error" not in body, body
 
+    def test_count_view_takes_span_bound(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """gr735599: the reported call — q= + view='count' + group_by +
+        ``since='30m'`` — routes to the job handler's count path, whose
+        pre-span bound parser took only ``[hd]`` ages and refused '30m'
+        with "an age in hours/days"."""
+        _titled(store, "release_cut run new", "release_cut", "succeeded")
+        old = _titled(store, "release_cut run old", "release_cut", "failed")
+        _backdate(store, old, datetime.now(UTC) - timedelta(hours=2))
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "job",
+                "q": "release_cut",
+                "since": "30m",
+                "view": "count",
+                "page": 1,
+                "__extras__": {"group_by": "state"},
+            },
+        )
+        assert "[error" not in body, body
+        assert "# 1 job entr" in body, body
+
     @pytest.mark.parametrize(
         "call",
         [

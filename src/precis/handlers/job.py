@@ -6155,10 +6155,9 @@ class JobHandler(NumericRefHandler):
                     group_by=group_by or "state",
                 ),
             )
-        # ``since=``/``until=`` take the /logs spellings — an ISO
-        # timestamp or an age in hours/days (``'24'``, ``'6h'``,
-        # ``'7d'``; gr536316) — resolved once here so every path below
-        # (under, job_type, windowed listing, count) sees datetimes.
+        # Resolve ``since=``/``until=`` once for all search paths below.
+        # Bounds accept ISO dates/timestamps, spans in minutes, hours, days
+        # or weeks (``'30m'``, ``'6h'``, ``'7d'``, ``'1w'``), or bare hours (``'24'``).
         since_dt = _job_window_bound(since, "since")
         until_dt = _job_window_bound(until, "until")
         group_by = _job_group_by(group_by)
