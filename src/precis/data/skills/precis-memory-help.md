@@ -409,7 +409,10 @@ tag slice. A memory's title and `meta.hook` are searchable too:
 `scope='title'` matches only those, `scope='body'` only the body prose,
 omitted matches both (`search(kind="memory", q="quokka", scope="title")`).
 To search a memory subtree, use `under='me<id>'`; `scope='me<id>'`
-is accepted as an alias for `under=`. Pass the subtree once.
+is accepted as an alias for `under=`. Pass the subtree once. This
+is `kind='memory'` only: `search(kind='gripe', scope='gr…')` is refused
+(`scope=` is not on gripe); search gripes with `q=`/`tags=`, or
+`get(kind='gripe', id='gr<id>')` to read one.
 
 ## Recall what I already know before starting a task
 ## Match a memory hit to the topic file I may have loaded
