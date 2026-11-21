@@ -180,6 +180,21 @@ def test_search_scope_refusal_names_accepting_kinds(
     assert "args={'chunk_scope'" not in out
 
 
+def test_link_note_refusal_names_takers_without_invalid_workaround(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr676754: unsupported note= names takers without a second bad call."""
+    out = runtime_with_store.dispatch(
+        "link",
+        {"kind": "cad", "id": "example", "target": "fi1", "note": "reviewed"},
+    )
+    assert "does not accept ['note']" in out
+    assert "kinds accepting note=:" in out
+    assert "finding" in out
+    assert "folder" not in out.split("kinds accepting note=:")[1].split("\n")[0]
+    assert "meta={'note':" not in out
+
+
 def test_tolerant_handler_ignores_unrecognized_extras(
     runtime_with_store: PrecisRuntime,
 ) -> None:

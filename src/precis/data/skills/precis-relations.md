@@ -31,6 +31,7 @@ For link mechanics and target grammar, see `precis-link-help`.
 | `rel=` | Inverse | Use for |
 |---|---|---|
 | `related-to` (default) | self | Symmetric "see also"; no stronger claim fits. |
+| `kept-distinct` | self | Reviewed as possible duplicates, kept separate on purpose (findings too); why in `reason=`. |
 | `cites` | `cited-by` | A references B (paper → paper, memory → paper, etc.). |
 | `supports` | `supported-by` | A provides evidence for B. |
 | `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |

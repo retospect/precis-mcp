@@ -4890,6 +4890,17 @@ class DispatchMixin(RuntimeShape):
                     )
                     if scope_takers:
                         hint = " — kinds accepting scope=: " + ", ".join(scope_takers)
+                if not hint and verb == "link" and "note" in unknown_top:
+                    # gr676754: the schema advertises note= on every kind;
+                    # name the ones whose link really takes it.
+                    note_takers = sorted(
+                        k
+                        for k, h in self.hub.handlers.items()
+                        if "note"
+                        in _handler_accepted_kwargs(cast(type[Handler], type(h)), verb)
+                    )
+                    if note_takers:
+                        hint = " — kinds accepting note=: " + ", ".join(note_takers)
                 if not hint and verb == "search":
                     # gr568808: a verb-level search knob on a kind that
                     # can't apply it refuses "not on <kind> yet" —
