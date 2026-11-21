@@ -211,6 +211,12 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # ``args={'review_id': N, 'reason': …}`` (precis-gardener-help); one
         # operator door, not worth schema weight in every tools/list.
         ("job", "put", "review_id"),
+        # id='/settings' (gr635487): confirmation and revert fields ride
+        # args= by design, as documented in precis-job-observe-help.
+        ("job", "put", "motivating_ref"),
+        ("job", "put", "confirmed_by_user"),
+        ("job", "put", "user_said"),
+        ("job", "put", "revert"),
         # -- put: llm catalog mint (the whole variant-precise surface) ---
         ("llm", "put", "capability"),
         ("llm", "put", "model_id"),
