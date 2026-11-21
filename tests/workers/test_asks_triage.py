@@ -640,3 +640,32 @@ def test_prompt_carries_neighbour_second_hop(store: Store) -> None:
     assert f"slice linked: me{mem}" in prompt
     assert "slice memory" in prompt
     assert "slice-hop note: the ruling was yes" in prompt
+
+
+def test_refusal_ask_is_never_taken_by_the_model_pass(store: Store) -> None:
+    """The brief step's refusal ask goes to the owner: it is born stamped
+    ``kept``, so the pass claims nothing, never calls the model, and the
+    row stays a decision on the owner's list."""
+    from precis.plans.templates import mint_todo_build
+    from precis.plans.todo_chain import refuse_source
+
+    source = _todo(store, "Make the widget stop leaking.")
+    store.add_tag(source, Tag.closed("STATUS", "open"), set_by="agent")
+    store.add_tag(source, Tag.open("factory:build"), set_by="agent")
+    mint = mint_todo_build(store, None, todo_id=source)
+    ask = refuse_source(store, mint.root_id, source, "rewrite", "no Where line")
+    _light(store)
+
+    def never(prompt: str) -> LlmResult:
+        raise AssertionError(f"the model pass took the refusal ask:\n{prompt}")
+
+    result = asks_triage.run_asks_triage_pass(store, llm=never)
+    assert (result.claimed, result.ok, result.failed) == (0, 0, 0)
+    assert "ask-user" in _tags(store, ask)
+    assert "asks-triage:kept" in _tags(store, ask)
+    assert _status(store, ask) == "open"
+    stamp = _meta(store, ask)["asks_triage"]
+    assert stamp["outcome"] == "kept" and "model" not in stamp
+    assert stamp["at"] and "owner rules" in stamp["reason"]
+    row = next(r for r in asks_view.asks_model(store).rows if r.ref_id == ask)
+    assert row.klass == asks_view.DECISION and row.triage == "kept"

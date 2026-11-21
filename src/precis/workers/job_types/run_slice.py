@@ -397,6 +397,7 @@ from precis.plans import lanes as _lanes
 from precis.plans import outcome as _outcome
 from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
+from precis.plans.todo_chain import CLIP_MARKER
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.container_limits import mem_limit_preexec
@@ -10829,7 +10830,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         if len(handoff) > _HANDOFF_CAP:
             handoff = (
                 handoff[:_HANDOFF_HEAD].rstrip()
-                + " …(clipped)… "
+                + f" {CLIP_MARKER} "
                 + handoff[-(_HANDOFF_CAP - _HANDOFF_HEAD) :].lstrip()
             )
         try:

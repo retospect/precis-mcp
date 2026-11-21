@@ -151,7 +151,19 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    td604695). An unverified or hand-posted moot has
    no sha for a ``resolved:`` — the plan's gripe gets
    ``<verdict> — plan dropped`` instead, so the record of why the plan
-   went away survives.
+   went away survives. A ``brief`` generator is exempt from all of it.
+2b. **todo briefs** (:func:`_step_todo_briefs`) — a ``brief`` generator
+   under a root carrying ``meta.source_todo`` whose newest job succeeded:
+   its newest ``handoff:`` comment since that job is parsed by
+   :func:`precis.plans.todo_chain.parse_brief` (first line only). A
+   ``brief: td<build>`` naming the chain's build node is posted on it
+   as a ``brief:`` comment and the brief node closes done, in one
+   transaction; a ``refuse: <reason> — <why>`` files the one ask on the
+   source todo, tags it ``needs-spec`` and closes the chain won't-do with
+   no build; anything else reopens the node as a failed attempt (the
+   succeeded job counts in :func:`_attempts`, so the retry cap, rescue
+   and ask are the ordinary ones). A build under such a root with no
+   ``brief:`` comment never dispatches, whatever its blockers say.
 3. **phases** — first reopens a generator that is ``STATUS:done`` while a
    child is still open (a generator's session mints children, it does not
    close the node; counted as ``reopened``). Then closes every node whose work
@@ -562,6 +574,16 @@ from precis.plans.nodes import (
     finish_mint,
     generator_verdict,
     node_kind,
+)
+from precis.plans.todo_chain import (
+    BRIEF_GRAMMAR,
+    CLIP_MARKER,
+    SOURCE_TODO_KEY,
+    Brief,
+    Refusal,
+    parse_brief,
+    post_brief,
+    refuse_source,
 )
 from precis.principal import worker_comment_meta
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS, SERVES_PARENT_WAIT_KEY
@@ -4026,6 +4048,256 @@ def _step_reviews(
         res.reviews += 1
 
 
+# ── (2b) todo briefs ───────────────────────────────────────────────
+
+#: ``meta`` key recording the brief job the tick last read, ``{job, at,
+#: outcome}``: a pass never reads one job twice (``meta.review``'s rule).
+_BRIEF_READ_KEY = "brief_read"
+
+
+def _is_brief_node(n: _Node) -> bool:
+    """A ``brief`` generator: one session whose final message is a builder
+    brief or a refusal (:func:`_step_todo_briefs`)."""
+    gen = n.meta.get("generate")
+    return (
+        node_kind(n.meta) == "generator"
+        and isinstance(gen, dict)
+        and gen.get("role") == "brief"
+    )
+
+
+def _source_todo_of(plan: _Plan, n: _Node) -> int | None:
+    """The source todo id ``n``'s plan root carries in ``meta.source_todo``,
+    ``None`` for any chain not minted from a todo (a gripe chain)."""
+    root = plan.nodes.get(n.root)
+    raw = root.meta.get(SOURCE_TODO_KEY) if root is not None else None
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
+def _brief_builds(plan: _Plan, n: _Node) -> list[_Node]:
+    """The build node(s) of the chain brief node ``n`` heads: the task nodes
+    under its root that are ``blocked-by`` it."""
+    return [
+        m
+        for m in plan.todos()
+        if m.root == n.root
+        and node_kind(m.meta) == "task"
+        and any(b.id == n.id for b in plan.blockers.get(m.id, []))
+    ]
+
+
+def _brief_handoff(store: Any, n: _Node, since: datetime) -> str | None:
+    """The newest ``handoff:`` comment on ``n`` posted at or after ``since``
+    (the newest brief job's mint): the session's final message, posted by
+    ``run_slice`` whichever lane ran. The job record keeps only a clipped
+    tail, so the comment is the one place the message lives."""
+    for c in _comments(store, n.id):
+        created = getattr(c, "created_at", None)
+        if not isinstance(created, datetime) or created < since:
+            continue
+        if str(c.text).lstrip().lower().startswith("handoff:"):
+            return str(c.text)
+    return None
+
+
+def _awaits_brief(plan: _Plan, n: _Node, store: Any) -> bool:
+    """A build node of a source-todo chain that no ``brief:`` comment
+    reaches: whatever its blockers say (a human or another step may have
+    closed the brief node), it never dispatches without one. Only the node
+    ``blocked-by`` a brief node counts — a fix or revert task the chain
+    mints later builds from its own brief."""
+    if node_kind(n.meta) != "task" or _source_todo_of(plan, n) is None:
+        return False
+    if not any(
+        (m := plan.nodes.get(b.id)) is not None and _is_brief_node(m)
+        for b in plan.blockers.get(n.id, [])
+    ):
+        return False
+    from precis.workers.job_types import run_slice as _rs
+
+    return not any(
+        c.chunk_kind == _COMMENT_KIND
+        and str(c.text or "").lstrip().lower().startswith("brief:")
+        for c in _rs._todo_chunks(store, n.id)
+    )
+
+
+def _step_todo_briefs(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    now: datetime,
+    lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Read a brief session's final message (the newest ``handoff:`` comment
+    since its job was minted) for every ``brief`` generator of a source-todo
+    chain whose newest job succeeded; :func:`precis.plans.todo_chain.parse_brief`
+    decides the outcome from its first line. A brief naming this chain's build
+    node is copied onto it (``post_brief``) and the brief node closes done, in
+    one transaction. A refusal files the one ask on the source, tags it and
+    closes the chain with no build (``refuse_source``; the rest of the chain
+    closes here, in the same pass, so nothing dispatches behind it). Any other
+    ending — no message, a clipped one, neither first line, a brief naming
+    another node — is a failed attempt: the node reopens for a retry, and the
+    succeeded job itself is the attempt :func:`_attempts` counts, so the cap,
+    rescue and ask are the ordinary ones. The node never closes done without a
+    brief posted, and the build never unblocks. A gripe chain carries no
+    ``meta.source_todo`` and is never touched."""
+    for n in plan.todos():
+        if not _is_brief_node(n):
+            continue
+        try:
+            _todo_brief_node(store, plan, w, res, now, lane_table, rules, n)
+        except Exception:
+            log.warning("plan_dispatch: brief td%s outcome failed", n.id, exc_info=True)
+            res.notes.append(
+                f"td{n.id}: brief outcome failed — left unread; the next pass retries"
+            )
+
+
+def _todo_brief_node(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    now: datetime,
+    lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None,
+    n: _Node,
+) -> None:
+    """Handle one brief node (:func:`_step_todo_briefs`)."""
+    if not _is_brief_node(n) or plan.paused(n) or _closed(n):
+        return
+    source = _source_todo_of(plan, n)
+    if source is None or plan.child_todos(n) or plan.live_job(n):
+        return
+    jobs = plan.jobs(n)
+    if not jobs or jobs[-1].status != "succeeded":
+        return
+    newest = jobs[-1]
+    if _voided(newest):
+        # The seat voided the run by hand (gr568824): it counts for
+        # nothing — drop its dead claim and reopen so the node
+        # re-dispatches, and never read its comments as an outcome.
+        w.remove_tags(n, _claims(n))
+        if n.status != "open":
+            w.set_status(n, "open")
+        res.notes.append(f"td{n.id}: brief job:{newest.id} voided")
+        return
+    seen = n.meta.get(_BRIEF_READ_KEY)
+    if isinstance(seen, dict) and seen.get("job") == newest.id:
+        return
+    raw = _brief_handoff(store, n, newest.created_at)
+    outcome = parse_brief(raw) if raw is not None else None
+    builds = _brief_builds(plan, n)
+    build = builds[0] if len(builds) == 1 else None
+    record: dict[str, Any] = {"job": newest.id, "at": _iso(now)}
+    if isinstance(outcome, Brief) and (build is None or outcome.build_id != build.id):
+        what = f"`brief: td{outcome.build_id}`, but " + (
+            f"this chain's build node is td{build.id}"
+            if build is not None
+            else "no single build node waits on this brief"
+        )
+    elif outcome is None:
+        what = (
+            "no `handoff:` comment"
+            if raw is None
+            else "a clipped message (the brief outgrew the handoff cap)"
+            if CLIP_MARKER in raw
+            else f"neither a brief nor a refusal ({_first_line(raw)!r})"
+        )
+    else:
+        what = ""
+    if what:
+        job_type_, params_ = _resolve_op(n)
+        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type_, params_, rules))
+        w.remove_tags(n, _claims(n))
+        w.stamp_meta(n, {_BRIEF_READ_KEY: {**record, "outcome": None}})
+        w.comment(
+            n,
+            f"plan_dispatch: job:{newest.id} succeeded with {what}; want "
+            f"{BRIEF_GRAMMAR}. Retrying (retry cap {cap}), then rescue.",
+        )
+        if n.status != "open":
+            w.set_status(n, "open")
+        res.notes.append(f"td{n.id}: brief job:{newest.id} left {what}")
+        return
+    claims = _claims(n)
+    if isinstance(outcome, Brief):
+        assert build is not None  # ``what`` is set otherwise
+        record["outcome"] = "brief"
+        _close_brief_node(store, w, n, record, claims, post=(build, source, outcome))
+        res.notes.append(f"td{n.id}: brief posted on td{build.id}; closed")
+        return
+    assert isinstance(outcome, Refusal)  # ``what`` is set otherwise
+    record["outcome"] = f"refuse:{outcome.reason}"
+    ask_id: int | None = None
+    if not w.dry_run:
+        ask_id = refuse_source(store, n.root, source, outcome.reason, outcome.why)
+    root = plan.nodes[n.root]
+    root.status = "won't-do"
+    closed = 0
+    for m in plan.todos():
+        if m.root != n.root or m.id in (n.id, n.root) or _closed(m):
+            continue
+        if plan.live_job(m) or _is_ask_node(m):
+            continue
+        w.comment(
+            m,
+            f"plan_dispatch: plan closed — the brief for td{source} was "
+            f"refused ({outcome.reason}); no build",
+        )
+        w.set_status(m, "won't-do")
+        closed += 1
+    # Last: the brief node is never done while the build is still open.
+    _close_brief_node(store, w, n, record, claims, post=None)
+    res.phases_closed += closed
+    res.asks += 1
+    res.notes.append(
+        f"td{n.id}: brief refused ({outcome.reason}) — "
+        + (f"asked in td{ask_id} on " if ask_id is not None else "would ask on ")
+        + f"td{source}, tagged needs-spec; plan td{n.root} closed won't-do, "
+        f"{closed} node(s) with it"
+    )
+
+
+def _close_brief_node(
+    store: Any,
+    w: _Writer,
+    n: _Node,
+    record: dict[str, Any],
+    claims: list[str],
+    *,
+    post: tuple[_Node, int, Brief] | None,
+) -> None:
+    """Close brief node ``n`` done, drop its claim and stamp the read; with
+    ``post`` — ``(build node, source id, brief)`` — the brief comment lands
+    in the same transaction, so the node never closes without it."""
+    if not w.dry_run:
+        with store.tx() as conn:
+            if post is not None:
+                build, source, brief = post
+                post_brief(store, build.id, source, n.id, brief.text, conn=conn)
+            for value in claims:
+                store.remove_tag(n.id, Tag.open(value), conn=conn)
+            store.add_tag(
+                n.id,
+                Tag.closed("STATUS", "done"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            store.append_event(n.id, source=NAME, event="status:done", conn=conn)
+            store.stamp_ref_meta(n.id, {_BRIEF_READ_KEY: record}, conn=conn)
+    # The in-memory node follows the write, so a raise leaves it untouched.
+    n.status = "done"
+    for value in claims:
+        n.open_tags.pop(value, None)
+    n.meta.update({_BRIEF_READ_KEY: record})
+
+
 # ── (3) phases ─────────────────────────────────────────────────────
 
 
@@ -4368,6 +4640,13 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
         if _is_pin_bump(n):
             # td659522 step 4: a pin-bump node closes only through its
             # land_slice; no verdict line stands for the bump on main.
+            continue
+        if _is_brief_node(n):
+            # A brief writer's only outcomes are a brief or a refusal
+            # (:func:`_step_todo_briefs`): a ``no-op:``/``moot:``/
+            # ``validated:`` line in its message would close it done —
+            # unblocking the build with no brief — and a ``moot:`` would
+            # kill the plan.
             continue
         if plan.live_job(n):
             continue
@@ -8622,6 +8901,14 @@ def _step_dispatch(
     # naming one routes to the coordinator like any deny-path text.
     deny = _lanes.deny_paths_for(w.store) + _governs.governed_skill_paths()
     for n in waiting:
+        if not (plan.blocked(n) or plan.paused(n)) and _awaits_brief(plan, n, w.store):
+            # A source-todo build starts from its brief alone: with the
+            # brief node closed or unblocked by hand and no ``brief:``
+            # comment posted, it still does not run.
+            res.dispatch_hold(
+                n, "not dispatched — no `brief:` comment on it yet; waits for its brief"
+            )
+            continue
         if n.id in source_holds and _reland_params(plan, n, w.store) is None:
             if not plan.live_job(n) or any(
                 j.status == "queued" and j.meta.get("job_type") == DEFAULT_OP
@@ -11177,6 +11464,7 @@ def run_pass(
         _step_gates(store, plan, w, res, now)
         _step_loops(store, plan, w, res, now)
         _step_reviews(store, plan, w, res, now, lane_table, rules)
+        _step_todo_briefs(store, plan, w, res, now, lane_table, rules)
         _step_reopen(plan, w, res)
         _step_conflict_clear(plan, w, res)
         _step_rearm(plan, w, res)
