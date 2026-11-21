@@ -1231,7 +1231,9 @@ When the review is settled:
    'expected_sha': '<sha from the trust line>'}})`.
    Use your reviewing model, the UTC review date and the SHA of the
    content you checked. For a repair, verify the updated content and use
-   its SHA with the `fixed` verdict. The structured reason is what
+   its SHA with the `fixed` verdict — `ok|fixed` is the verdict token at
+   the end of the `kg-review:` reason string; `confidence` itself only
+   takes `considered` or `hunch`. The structured reason is what
    review-due and fresh-review checks read.
 3. Once the stamp succeeds, summarize what you checked, the evidence and
    any change you made. Use
