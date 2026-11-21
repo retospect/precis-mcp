@@ -196,6 +196,12 @@ the reading-prep card loop — installed by `precis cast schedule`:
 Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on
 the next sync — own-guid lookups only, so your hand-made cards are unreachable.
 
+The `/learning` page's *I know this* retires your cards for that concept and
+marks it mastered; its **Undo** (under *Marked as mastered*) restores those
+cards and the prior mastery. If Anki already removed the notes, the next sync
+recreates them with fresh review schedules. This is web-only; there is no
+tool call for it.
+
 ## See also
 
 - [[precis-cloze]] — HOW to write good cards (the craft)
