@@ -4020,6 +4020,11 @@ class JobHandler(NumericRefHandler):
                     "put(kind='job', job_type='fix_gripe', link='gripe:N', rel='fixes')"
                 ),
             )
+        if str(job_type).strip() == "halt_heal":
+            raise BadInput(
+                "halt_heal is reserved for the halted cadence supervisor",
+                next="get(kind='alert', id='halt_heal/<halt_key>')",
+            )
         spec = get_job_type(str(job_type))
         if spec is None:
             raise BadInput(

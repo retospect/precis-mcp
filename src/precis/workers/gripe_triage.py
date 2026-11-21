@@ -122,8 +122,9 @@ rung):
   the halt is armed or re-armed (:func:`_halt`) it also asks the halt
   supervisor (:mod:`precis.workers.halt_heal`) for one frontier repair
   attempt per 24 h, and escalates to a critical alert plus an ops push when
-  that fails, never reports (:func:`_check_overdue`, on every halted tick)
-  or the halt returns; the first good batch afterwards resolves the alert
+  that fails, never reports (:func:`_check_overdue`, when the halt persists)
+  or the halt returns; a halted tick also adopts a halt that has no
+  supervisor record. The first good batch afterwards resolves the alert
   (:func:`_note_resumed`).
 
 A memory complaint is a plain gripe (gr657257): the filer writes
@@ -2656,14 +2657,15 @@ def _request_heal(store: Store, note: str, when: datetime) -> None:
         log.warning("gripe_triage: halt heal request failed", exc_info=True)
 
 
-def _check_overdue(store: Store) -> None:
-    """The halt stands and this tick runs no batch: let the supervisor
-    escalate a repair job that never reported (one settings read). Never
-    raises."""
+def _check_overdue(store: Store, note: str, when: datetime) -> None:
+    """Adopt an existing halt or check its supervisor's deadline. Never raises."""
     try:
-        from precis.workers.halt_heal import check_overdue
+        from precis.workers.halt_heal import check_overdue, load_last
 
-        check_overdue(store, _BLOCKED_KEY)
+        if load_last(store, _BLOCKED_KEY):
+            check_overdue(store, _BLOCKED_KEY, when=when)
+        else:
+            _request_heal(store, note, when)
     except Exception:
         log.warning("gripe_triage: halt overdue check failed", exc_info=True)
 
@@ -2820,7 +2822,7 @@ def run_gripe_triage_pass(
         # Halted by _BATCH_FAIL_LIMIT strikes — no claim, no call,
         # until the 6 h probe fires or an operator clears the flag.
         log.warning("gripe_triage: halted (%s)", blocked)
-        _check_overdue(store)
+        _check_overdue(store, blocked, when)
         return BatchResult(
             handler=SERVICE_NAME,
             claimed=0,
@@ -2851,6 +2853,8 @@ def run_gripe_triage_pass(
     # batch slots the open arm leaves, so open triage always wins.
     backfill = _claim_backfill(store, batch - len(claimed))
     if not claimed and not backfill:
+        if blocked:
+            _check_overdue(store, blocked, when)
         if notify:
             # An idle tick still sweeps (gr595189): an ask whose gripe
             # shed ``reto:ask`` since the last tick retires here.
@@ -2931,8 +2935,9 @@ def run_gripe_triage_pass(
         if probe:
             # The probe could not test anything — re-arm quietly so the
             # next probe is a full window out.
-            store.set_setting(_BLOCKED_KEY, f"{when:%Y-%m-%dT%H:%M:%SZ} probe paused")
-            _check_overdue(store)
+            note = f"{when:%Y-%m-%dT%H:%M:%SZ} probe paused"
+            store.set_setting(_BLOCKED_KEY, note)
+            _check_overdue(store, note, when)
         log.warning("gripe_triage: model call paused — leases kept")
         return BatchResult(
             handler=SERVICE_NAME,

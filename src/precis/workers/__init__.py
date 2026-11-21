@@ -37,10 +37,10 @@ Factory queues doable nodes; claims own capacity and overlaps.
 Gripe intake bounds frozen reports (``precis-work-help``).
 Mirror fetches avoid receive hooks (:mod:`.factory_git_mirror`).
 
-Planner-declared halts are runner-owned class transitions
-(:mod:`.halt_policy`, retry receipt :mod:`.halt_retry`): infra failures
-park for recovery, task-design failures get one repair attempt.
-:mod:`.halt_recovery` keeps the shared infra breaker and its cohort probe.
+Runner halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra
+failures and gives task-design failures one repair attempt. :mod:`.halt_recovery`
+keeps the infra breaker and cohort probe. :mod:`.halt_heal` locks
+cadence halt state when applying a supervisor verdict.
 
 ``run_loop`` is serial round-robin, so one slow handler starves other passes;
 hence scheduler leases, the separate GPU lane (``deploy/README.md``), and the

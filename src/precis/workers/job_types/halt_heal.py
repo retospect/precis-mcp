@@ -61,10 +61,12 @@ from precis.utils.secret_scan import mask_secrets
 from precis.workers.halt_heal import (
     HALTS,
     HaltSpec,
+    clear_if_current,
     clip,
     escalate,
     heal_mode,
     is_alerted,
+    load_last,
     save_last,
     since_of,
 )
@@ -141,14 +143,18 @@ def parse_verdict(text: str) -> Verdict | None:
     if m is None:
         return None
     verdict = m.group("verdict")
-    if verdict == "CLEAR" and len(_HEAL_LINE_RE.findall(body)) > 1:
-        verdict = "ESCALATE"
     evidence = tuple(
         clip(line[len("evidence:") :]) for line in m.group("evidence").splitlines()
     )
+    cause = clip(m.group("cause") or "")
+    if verdict == "CLEAR":
+        if not cause or not all(evidence):
+            return None
+        if len(_HEAL_LINE_RE.findall(body)) > 1:
+            verdict = "ESCALATE"
     return Verdict(
         verdict=verdict,
-        cause=clip(m.group("cause") or ""),
+        cause=cause,
         evidence=evidence,
         human_action=clip(m.group("action")),
     )
@@ -311,8 +317,9 @@ def _supervise(ctx: Any, halt: HaltSpec, params: dict[str, Any], armed: str) -> 
             max_turns=_MAX_TURNS,
             timeout_s=_TIMEOUT_S,
             disallowed_tools=_DISALLOWED_TOOLS,
+            openai_tool_allowlist=frozenset({"get", "search"}),
             output_format="stream-json",
-            extra_args=("--verbose",),
+            extra_args=("--verbose", "--tools", ""),
             ref_id=ctx.ref_id,
         )
     )
@@ -347,82 +354,45 @@ def _supervise(ctx: Any, halt: HaltSpec, params: dict[str, Any], armed: str) -> 
         )
         return
 
-    mode = heal_mode(store)
-    if verdict.verdict == "CLEAR" and mode == "heal":
-        if is_alerted(store, halt.key):
-            # A human was already paged for this episode: the supervisor no
-            # longer clears (this also covers a job queued before a newer
-            # halt). The diagnosis rides the open alert.
-            _escalate_job(
-                ctx,
-                halt,
-                note=store.get_setting(halt.key) or note,
-                since=since,
-                tried=(
-                    f"the session answered CLEAR (jo{ctx.ref_id}) after a human "
-                    "was already alerted; nothing was cleared"
-                ),
-                verdict=verdict,
-            )
-            ctx.append_chunk(
-                "job_event",
-                "halt_heal: CLEAR after a human was already alerted; nothing cleared",
-            )
-            ctx.set_status("succeeded")
-            return
-        now_armed = store.get_setting(halt.key) or ""
-        if now_armed and now_armed != armed:
-            # Re-armed while the session ran: the cadence failed again, so
-            # the cause the session judged gone is not.
-            _escalate_job(
-                ctx,
-                halt,
-                note=now_armed,
-                since=since,
-                tried=(
-                    f"the session answered CLEAR (jo{ctx.ref_id}) but the "
-                    "halt was re-armed while it ran"
-                ),
-                verdict=verdict,
-            )
-            ctx.append_chunk(
-                "job_event", "halt_heal: CLEAR, but the halt re-armed; escalated"
-            )
-            ctx.set_status("succeeded")
-            return
-        if not now_armed:
-            # A probe or an operator cleared it while the session ran: the
-            # supervisor cleared nothing and must not claim it did.
-            save_last(
-                store,
-                halt.key,
-                job=ctx.ref_id,
-                outcome="already-clear",
-                cause=verdict.cause,
-            )
-            ctx.append_chunk(
-                "job_event",
-                "halt_heal: CLEAR, but the halt was already empty (a probe or an "
-                "operator cleared it first); nothing to clear",
-            )
-            ctx.set_status("succeeded")
-            return
-        store.set_setting(halt.key, "")
-        save_last(
-            store,
-            halt.key,
-            job=ctx.ref_id,
-            outcome="cleared",
-            cleared_at=datetime.now(UTC).isoformat(),
-            cause=verdict.cause,
+    if verdict.verdict == "CLEAR":
+        outcome, value = clear_if_current(
+            store, halt.key, armed, job=ctx.ref_id, cause=verdict.cause
         )
-        ctx.append_chunk(
-            "job_event",
-            f"halt_heal: cleared {halt.key} (model diagnosis: {verdict.cause}; "
-            f"evidence: {' | '.join(verdict.evidence)})",
-        )
-        ctx.set_status("succeeded")
-        return
+        if outcome == "mode":
+            mode = value
+        else:
+            if outcome == "cleared":
+                event = (
+                    f"halt_heal: cleared {halt.key} (model diagnosis: {verdict.cause}; "
+                    f"evidence: {' | '.join(verdict.evidence)})"
+                )
+            elif outcome == "superseded":
+                event = "halt_heal: CLEAR after the reservation changed"
+            elif outcome == "already-clear":
+                event = (
+                    "halt_heal: CLEAR, but the halt was already empty (a probe or an "
+                    "operator cleared it first); nothing to clear"
+                )
+            else:
+                tried = (
+                    "after a human was already alerted; nothing was cleared"
+                    if outcome == "alerted"
+                    else "but the halt was re-armed while it ran"
+                )
+                _escalate_job(
+                    ctx,
+                    halt,
+                    note=value,
+                    since=since,
+                    tried=f"the session answered CLEAR (jo{ctx.ref_id}) {tried}",
+                    verdict=verdict,
+                )
+                event = f"halt_heal: CLEAR {tried}"
+            ctx.append_chunk("job_event", event)
+            ctx.set_status("succeeded")
+            return
+    else:
+        mode = heal_mode(store)
 
     if verdict.verdict == "CLEAR":
         tried = (
@@ -458,10 +428,22 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if halt is None:
         ctx.record_failure(f"halt_heal: no registered halt for key {key!r}")
         return
+    last = load_last(ctx.store, key)
+    if last.get("job") != ctx.ref_id:
+        ctx.record_failure("halt_heal: this job has no reserved supervisor attempt")
+        return
     armed = ""
     try:
+        if is_alerted(ctx.store, key):
+            ctx.append_chunk("job_event", "halt_heal: a human was already alerted")
+            ctx.set_status("succeeded")
+            return
+        if last.get("outcome") != "minted":
+            ctx.record_failure("halt_heal: this job's supervisor attempt already ended")
+            return
         armed = ctx.store.get_setting(key) or ""
         if not armed:
+            save_last(ctx.store, key, outcome="already-clear")
             ctx.append_chunk(
                 "job_event",
                 "halt_heal: the halt was already cleared before the session "
