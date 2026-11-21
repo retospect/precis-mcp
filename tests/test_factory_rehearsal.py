@@ -1605,6 +1605,49 @@ def test_settle_folders_waits_for_the_worker_pass_not_a_launch(tmp_path: Path) -
     assert ctx.settle_folders(timeout=0.3) == []
 
 
+def test_a_tick_runs_the_wake_pass_before_the_dispatcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker's ``--only`` passes carry no wake thread: without the
+    driver's own wake pass a review parked on a full lane is never re-queued
+    and the scenario waits out the park's 10-minute timer."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from rehearsal.driver import Driver
+
+    from precis.workers import _mint, wake_runner
+
+    order: list[str] = []
+
+    @contextmanager
+    def tx() -> Iterator[object]:
+        yield object()
+
+    store = SimpleNamespace(tx=tx)
+
+    def wake(got: Any, **_: Any) -> dict[str, int]:
+        assert got is store
+        order.append("wake")
+        return {"claimed": 0, "ok": 0, "failed": 0}
+
+    def mint(got: Any, **kw: Any) -> tuple[int, bool]:
+        order.append(f"mint {kw['job_type']}")
+        return 41, True
+
+    monkeypatch.setattr(wake_runner, "run_wake_pass", wake)
+    monkeypatch.setattr(_mint, "mint_job_once", mint)
+    driver = SimpleNamespace(
+        _tick_n=0,
+        store=store,
+        status=lambda job: "succeeded",
+        meta=lambda job: {"plan_dispatch": {"dispatched": 1}},
+    )
+    got = Driver.tick(cast(Any, driver))
+    assert order == ["wake", "mint plan_dispatch"]
+    assert got == {"status": "succeeded", "counts": {"dispatched": 1}, "job": 41}
+
+
 def test_the_worker_env_has_the_second_fences(tmp_path: Path) -> None:
     w = rworld.World(run_dir=tmp_path / "run", repo_root=tmp_path)
     env = rworker.build_env(w, GOOD_DSN)

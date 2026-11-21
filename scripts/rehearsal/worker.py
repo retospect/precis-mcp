@@ -20,8 +20,8 @@ factory needs:
 
 A pass-gate does not apply under ``--only`` (``cli/worker.py::run``), so no
 ``service_config`` row is needed. ``wake_runner`` and ``scheduler`` are not
-selectable with ``--only``; the driver runs a wake pass in-process when a
-scenario needs one.
+selectable with ``--only``; the driver runs a wake pass in-process before
+each dispatcher tick (``driver.py::Driver.tick``).
 
 The environment is built from nothing (:func:`.safety.worker_env`): scratch
 ``HOME`` and ``TMPDIR``, ``PATH`` led by the world's ``bin/`` (git url

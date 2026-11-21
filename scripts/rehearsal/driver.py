@@ -256,9 +256,18 @@ class Driver:
         self.events.append(f"{time.strftime('%H:%M:%S')} {text}")
 
     def tick(self, *, timeout: float = 120.0) -> dict[str, Any]:
-        """One dispatcher pass. Returns ``{status, counts}``."""
+        """One wake pass, then one dispatcher pass. Returns ``{status, counts}``.
+
+        The wake pass stands in for a deployed worker's wake thread, which
+        ``--only`` cannot select (``worker.py``): it re-queues a parked job
+        whose wake is due, such as a review that found its lane full and was
+        pulled forward when the slot freed.
+        """
         self._tick_n += 1
         from precis.workers._mint import mint_job_once
+        from precis.workers.wake_runner import run_wake_pass
+
+        run_wake_pass(self.store)
 
         key = f"rehearsal-tick-{int(time.time())}-{self._tick_n}"
         with self.store.tx() as conn:
