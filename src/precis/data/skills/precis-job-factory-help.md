@@ -37,6 +37,11 @@ no live `blocked-by` target, no `waiting-for:*` / `halt` /
 `{type: name, params: {todo_id}}`, default `run_slice`). Never put
 `meta.executor` on a plan node — the tick owns the jobs.
 
+A build also waits while its source gripe has an open `blocked-by`
+target: the tick mints no `run_slice` behind it (it records the
+`dispatch_hold` on the todo) and a queued build is held at claim. Held
+builds are not rescued or counted as a stalled chain.
+
 ## Dark-factory job types — the lanes that run slices
 
 | `job_type`          | Executor        | What it does                                  |

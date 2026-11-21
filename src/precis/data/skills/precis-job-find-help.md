@@ -49,7 +49,11 @@ class, its position in the executor's claim order (class, then
 factory-pipeline ops, then priority, then time queued — advisory; the
 lane-deficit share term isn't mirrored) with the per-class count of
 rows ahead, what is running on that executor now, and holds it can see
-(operator suspension, a `target_node` pin, a live lease).
+(operator suspension, a `target_node` pin, a live lease). A queued
+`run_slice` build held by the claim pass prints `queue: held — <reason>`
+(`files overlap td<N>`, a `blocked-by` hold, or `source gripe gr<N> is
+blocked-by <ref> (<status>)`) with no position line; held builds are left
+out of other jobs' positions.
 
 The card's status is verified against a fresh read before queue text is
 rendered: when the row's real state moved on (claimed, parked, finished),
