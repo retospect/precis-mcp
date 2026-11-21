@@ -954,6 +954,19 @@ def test_get_view_status_reads_as_the_card(handler: TodoHandler) -> None:
     )
 
 
+def test_get_view_card_reads_as_the_default(handler: TodoHandler) -> None:
+    """gr735602: the todo skills call a plain get "the todo card", so
+    ``view='card'`` kept arriving from real callers and was refused as
+    unknown — it has one reading, the default card, and folds like
+    'full'/'brief'/'tags'/'status'."""
+    todo_id = _id_of(handler.put(text="Card alias todo.", tags=["project:x"]).body)
+    plain = handler.get(id=todo_id)
+    out = handler.get(id=todo_id, view="card")
+    assert out.body == (
+        "interpreted: view='card' read as the default view\n" + plain.body
+    )
+
+
 def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None:
     """gr547804: an unknown get view lists todo's own get views —
     'comments' and 'tree' on top of the base views — and its ``next=``
@@ -1003,6 +1016,7 @@ def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
         "brief",
         "tags",
         "status",
+        "card",
         # Todo's own get views.
         "comments",
         "tree",
