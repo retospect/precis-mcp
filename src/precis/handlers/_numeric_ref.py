@@ -46,7 +46,8 @@ serve concurrent requests. Batch summaries reuse their bulk tag read and
 append selected open-tag chips only when requested, preserving the compact
 default and the existing lifecycle fields. Compact batch list/ids reads
 reuse the listing renderer and allow 300 IDs because each result is one
-line; block reads and writes retain the 50-ID bound. The batch summary
+line; block reads and edits retain the 50-ID bound; tag writes take 300
+(a deck move re-files a whole set of cards). The batch summary
 truncates titles at the list-view budget; a batch that cut a title names
 ``view='titles'`` — the full-title batch read (gr685126).
 """
@@ -182,7 +183,7 @@ _BASE_VIEWS: tuple[str, ...] = (
 #: Batch ``get`` views that mean the default summary block per id.
 _BATCH_SUMMARY_VIEWS = frozenset({"title", "index"})
 
-# Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
+# Most ids one block ``get`` call takes as ``id=[...]`` on a kind with
 # ``batch_ids = True``. Sized to the measured loops it replaces (runs of
 # 38-154 singleton calls, surface-review pass #1 2026-09-29) while
 # keeping one batch ``get`` render on the order of a search page. The
@@ -736,11 +737,13 @@ class NumericRefHandler(Handler):
     #: refuses ``view='ids'`` (memory accepts ``'index'``/``'count'``)
     #: points the caller at a view its search accepts (gr538076).
     search_ids_view: ClassVar[str] = "ids"
-    #: ``get``/``tag`` accept ``id=[...]`` (one call, many refs). Opt-in per
+    #: ``get``/``tag``/``link`` accept ``id=[...]`` (one call, many refs). Opt-in per
     #: kind; the base ``_coerce_id`` refuses a list everywhere else with a
     #: ``BadInput`` that names this form, so the one shape agents try after
     #: a long singleton loop degrades instead of crashing.
     batch_ids: ClassVar[bool] = False
+    #: Opt into tag batches independently of the other verbs.
+    tag_batch_ids: ClassVar[bool] = False
 
     #: ``link`` takes ``meta=``/``reason=`` (edge meta, gr662070). Kinds
     #: with their own ``link`` override (memory/todo/...) handle it there;
@@ -4256,7 +4259,7 @@ class NumericRefHandler(Handler):
         transaction. An empty call (no ``add`` / no ``remove``) is
         rejected — the caller almost certainly meant something
         specific and a silent no-op would mask the typo. ``id=[...]``
-        (kinds with ``batch_ids``) applies the same edit to every id in
+        (kinds with ``batch_ids`` or ``tag_batch_ids``) applies the same edit to every id in
         one transaction — see :meth:`_tag_batch`.
 
         ``reason=`` (gr504803) lands as a ``retagged`` ``ref_events``
@@ -5089,20 +5092,27 @@ class NumericRefHandler(Handler):
             ) from None
 
     @staticmethod
-    def _batch_kinds() -> set[str]:
-        """Kind names of every loaded numeric-ref handler with ``batch_ids``."""
+    def _batch_kinds(*, for_tag: bool) -> set[str]:
+        """Kind names of loaded numeric-ref handlers accepting this batch form."""
         found: set[str] = set()
         todo: list[type[NumericRefHandler]] = [NumericRefHandler]
         while todo:
             klass = todo.pop()
             todo.extend(klass.__subclasses__())
-            if klass.batch_ids and getattr(klass, "kind", None):
+            if (klass.batch_ids or (for_tag and klass.tag_batch_ids)) and getattr(
+                klass, "kind", None
+            ):
                 found.add(klass.kind)
         return found
 
     @classmethod
     def _coerce_ids(
-        cls, ids: list[Any], *, cap: int = BATCH_ID_CAP, view: str | None = None
+        cls,
+        ids: list[Any],
+        *,
+        cap: int = BATCH_ID_CAP,
+        view: str | None = None,
+        for_tag: bool = False,
     ) -> list[int]:
         """Normalise ``id=[...]`` to distinct integer ids, order kept.
 
@@ -5110,11 +5120,11 @@ class NumericRefHandler(Handler):
         string, ``<kind>:<int>``) plus this kind's universal handle
         (``gr123``) — the spelling a search table shows, so ids can be
         copied straight out of one. Refused: a kind without
-        ``batch_ids``, an empty list, more than ``cap`` IDs, an
+        batch support for the operation, an empty list, more than ``cap`` IDs, an
         element of another kind.
         """
-        if not cls.batch_ids:
-            takers = sorted(cls._batch_kinds())
+        if not (cls.batch_ids or (for_tag and cls.tag_batch_ids)):
+            takers = sorted(cls._batch_kinds(for_tag=for_tag))
             first = next((i for i in ids if i is not None), "<id>")
             raise BadInput(
                 f"{cls.kind} does not take id=[...]",
@@ -5127,17 +5137,26 @@ class NumericRefHandler(Handler):
         if not ids:
             raise BadInput(
                 "id=[] is empty",
-                next=f"get(kind={cls.kind!r}, id=[<int>, ...])",
+                next=(
+                    "Retry tag with at least one ref ID and the same tag changes."
+                    if for_tag
+                    else f"get(kind={cls.kind!r}, id=[<int>, ...])"
+                ),
             )
         if len(ids) > cap:
             raise BadInput(
                 f"id=[...] takes at most {cap} ids, got {len(ids)}",
-                next=_id_batch_next(
-                    "get",
-                    cls.kind,
-                    ids,
-                    cap=cap,
-                    extra=f", view={view!r}" if view else "",
+                next=(
+                    f"Split id= into tag calls of at most {cap} IDs each "
+                    "with the same tag changes."
+                    if for_tag
+                    else _id_batch_next(
+                        "get",
+                        cls.kind,
+                        ids,
+                        cap=cap,
+                        extra=f", view={view!r}" if view else "",
+                    )
                 ),
             )
         out: list[int] = []
@@ -5434,7 +5453,7 @@ class NumericRefHandler(Handler):
         the call and rolls every id back. The result carries one
         outcome line per id.
         """
-        ref_ids = self._coerce_ids(ids)
+        ref_ids = self._coerce_ids(ids, cap=COMPACT_BATCH_ID_CAP, for_tag=True)
         lines: list[str] = []
         with self.store.atomic():
             for rid in ref_ids:

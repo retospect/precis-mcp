@@ -1,6 +1,7 @@
 """``get``/``tag``/``link``/``edit`` with ``id=[...]`` on gripe, alert,
-todo, memory, finding (get/tag only there — link stays the single-id
-Taproot door, and alert/job have no ``edit``).
+todo, memory, finding and Anki (tag only for Anki). Finding supports
+get/tag only — link stays the single-id
+Taproot door, and alert/job have no ``edit``.
 
 Batch ``get`` is summary-shaped by default (one block per id, order
 kept, missing ids are a one-line block); a ``view=`` maps the kind's own
@@ -8,7 +9,7 @@ single-id view over the batch. Batch ``tag`` is one transaction (one bad
 id rolls every id back); batch ``link`` fans one target/rel across every
 source id, also in one transaction; batch ``edit`` applies the same edit
 to every id, again all-or-nothing (gr514482). All share the
-``_coerce_ids`` normaliser and its cap; every other verb and every other
+``_coerce_ids`` normaliser; every other verb and every other
 kind still refuses a list with a ``BadInput`` naming the batch form,
 never an ``Internal``.
 
@@ -302,6 +303,28 @@ def test_tag_batch_finding_applies_to_all(store: Store, hub: Hub) -> None:
     assert all("topic:batch-probe" in _tags(handler.store, int(rid)) for rid in ids)
 
 
+def test_tag_batch_anki_refiles_a_set_of_cards(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    """The reported 74-card deck move: one call, every card's tags and
+    ``meta.deck`` follow (beyond the 50-id cap of block reads)."""
+    handler = AnkiHandler(hub=hub)
+    ids = [
+        id_of(handler.put(text=f"{{{{c1::card {n}}}}}", tags=["deck-old"]).body)
+        for n in range(74)
+    ]
+    body = runtime_with_store.dispatch(
+        "tag",
+        {"kind": "anki", "id": ids, "add": ["deck-new"], "remove": ["deck-old"]},
+    )
+    assert "tagged 74 anki card" in body
+    for rid in ids:
+        tags = _tags(handler.store, int(rid))
+        assert "deck-new" in tags and "deck-old" not in tags
+        ref = handler.store.get_ref(kind="anki", id=int(rid))
+        assert ref is not None and ref.meta["deck"] == "Precis::new"
+
+
 def test_search_filter_accepts_an_in_use_unregistered_axis(
     store: Store, hub: Hub
 ) -> None:
@@ -346,9 +369,12 @@ def test_get_batch_cap_next_shows_the_split(hub: Hub) -> None:
     assert "; " in nxt
 
 
-def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
+def test_list_id_refused_cleanly_elsewhere(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    handler = AnkiHandler(hub=hub)
     with pytest.raises(BadInput, match="does not take id=") as refused:
-        AnkiHandler(hub=hub).get(id=_batch(1, 2))
+        handler.get(id=_batch(1, 2))
     assert "gripe" in str(refused.value.next) and "memory" in str(refused.value.next)
     assert "get(kind='anki', id=1)" in str(refused.value.next)
     assert "search(kind='anki'" in str(refused.value.next)
@@ -356,7 +382,13 @@ def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
     assert "anki" not in str(refused.value.next).split("take id=[...]: ")[1]
     # A non-batch kind's link still refuses a list.
     with pytest.raises(BadInput, match="does not take id="):
-        AnkiHandler(hub=hub).link(id=_batch(1, 2), target="anki:3")
+        handler.link(id=_batch(1, 2), target="anki:3")
+    tag_refused = runtime_with_store.dispatch(
+        "tag", {"kind": "quest", "id": [1, 2], "add": ["batch-probe"]}
+    )
+    assert "quest does not take id=[...]" in tag_refused
+    takers = tag_refused.split("take id=[...]: ")[1].splitlines()[0].split(", ")
+    assert "anki" in takers and "quest" not in takers
 
 
 def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:

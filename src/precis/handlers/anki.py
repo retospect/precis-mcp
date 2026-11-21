@@ -133,6 +133,9 @@ class AnkiHandler(NumericRefHandler):
     #: same as memory. `_card_combined_text` strips the cloze markup.
     emits_card: ClassVar[bool] = True
 
+    #: A deck move can re-file a set of cards in one tag call.
+    tag_batch_ids: ClassVar[bool] = True
+
     # ── create-time hooks (see NumericRefHandler) ──────────────────────
 
     def _validate_cloze(self, text: str) -> str:

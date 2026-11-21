@@ -131,7 +131,10 @@ link(kind="anki", id=204, target="pc12", rel="derived-from")
 ```
 
 To re-file a card, retag it — add the new `deck-<topic>` tag and remove the
-old one in the same `tag()` call; `meta.deck` follows the surviving deck tag
+old one in the same `tag()` call; a set of cards moves in one call with
+`id=[204, 205, ...]` (up to 300, all or nothing). To select cards by tag,
+page through `search(kind="anki", tags=["aixmat-2026"])` and pass the
+matching card IDs to `tag()`. `meta.deck` follows the surviving deck tag
 and the Anki move lands on the **next successful `anki-sync` push**. Keep one deck tag
 per card: the filed deck wins while its tag remains, so a second deck tag
 does nothing until the first is removed. A card you move by hand inside Anki

@@ -53,6 +53,7 @@ meta moves through `put(meta=…)` / `edit(args={'meta': …})`.
 ## How do I add the same tag to many refs?
 
 ```python
+tag(kind="anki", id=[204, 205], add=["deck-aixmat-2026"], remove=["deck-ml-potentials"])
 tag(kind="todo", id=[158, 159], add=["STATUS:done"], remove=["STATUS:open"])
 tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
 tag(kind="paper", id=["pa1190", "dynamat26", 160060], add=["aixmat-2026"], reason="conference reading list")
@@ -60,7 +61,8 @@ tag(kind="paper", id=["pa1190", "dynamat26", 160060], add=["aixmat-2026"], reaso
 
 `id=[...]` applies the same `add=` / `remove=` to every ref in the
 list in one transaction — one call replaces N single-id calls.
-Batch kinds include paper, todo, memory, gripe, job, alert and finding.
+Batch kinds include paper, anki, todo, memory, gripe, job, alert, finding
+and taxon.
 Quest, orcid, conv, md, tex, python and plaintext take one id per call.
 An empty list refuses. A missing id or failed edit aborts the whole batch.
 
@@ -69,7 +71,7 @@ Omit `kind=` for a list of `pa` handles. Duplicate addresses for the same
 paper collapse to one edit. Paper has no batch-size cap. The receipt starts
 with `tagged N paper refs in one transaction` and follows with one
 acknowledgment per distinct paper. Numeric-ref batch kinds accept up to
-50 ids per call.
+300 ids per call.
 
 `reason=` writes one `agent/retagged` row per affected ref, including one
 per distinct paper, on `ref_events` (`view='log'`).
