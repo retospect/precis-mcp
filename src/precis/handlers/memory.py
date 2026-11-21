@@ -4635,6 +4635,8 @@ class MemoryHandler(AuditedRetirementHandler):
         min_reads: int | None = None,
         id_min: int | str | None = None,
         id_max: int | str | None = None,
+        detector: str | None = None,
+        members: bool | str | None = None,
         **kw: Any,
     ) -> Response:
         """Memory search. An unscoped query whose hits cluster in one hub or
@@ -4654,6 +4656,11 @@ class MemoryHandler(AuditedRetirementHandler):
         default and ``view='index'`` renders leave absorbed, archived and
         retired rulings out of recall.
 
+        ``view='smells'`` rolls garden proposals up by detector and type;
+        ``args={'detector': '<name>', 'members': True}`` keeps one detector
+        and lists the handles behind each row
+        (:func:`~precis.handlers._memory_smells.render_smell_rollup`).
+
         A domain-bound connection defaults to the domain's ``SPACE:``
         set when ``tags=`` names no ``SPACE:`` axis (gr572723); a
         caller-supplied ``SPACE:`` tag wins, and the footer names the
@@ -4662,6 +4669,14 @@ class MemoryHandler(AuditedRetirementHandler):
             raise BadInput(
                 "group_by= only applies to view='count'",
                 next="search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})",
+            )
+        if (detector is not None or members is not None) and view != "smells":
+            raise BadInput(
+                "detector=/members= require view='smells'",
+                next=(
+                    "search(kind='memory', view='smells', args={'under': 'me<hub>', "
+                    "'detector': '<detector>', 'members': True})"
+                ),
             )
         id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         # Ordinary search and counts take bounds directly. The ranked index
@@ -4757,6 +4772,8 @@ class MemoryHandler(AuditedRetirementHandler):
                     mode=mode,
                     scope=scope,
                     status=status,
+                    detector=detector,
+                    members=members,
                 ),
                 domain=domain,
                 q=None,
@@ -4768,6 +4785,7 @@ class MemoryHandler(AuditedRetirementHandler):
                     include_ref_ids=scope_ids,
                     exclude_ref_ids=exclude_ref_ids,
                     tags=scope_tags,
+                    detector=detector,
                 ),
             )
         if view == "shape":

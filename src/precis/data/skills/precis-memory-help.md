@@ -490,8 +490,17 @@ No proposals does not mean the node passed review.
 the hub's live descendants up by detector and `section:<type>`, with pending,
 recently decided and node counts. `tags=` narrows further; omit `under`
 for all live memories. This is an aggregate, so `q`/`mode`/`scope`/`status`
-and pages beyond 1 are refused. Open a member with the single-node view
-to read its evidence.
+and pages beyond 1 are refused.
+
+```python
+search(kind='memory', view='smells', args={'under': 'me<hub>', 'detector': 'anchor_rot', 'members': True})
+```
+
+`detector` keeps one detector's rows. `members` adds one line per row
+with the node handles behind it, pending nodes first, at most 50 per row
+(the rest is a count; narrow with `tags=` or a deeper `under`). The list
+is handles only. Open a member with the single-node view to read its
+evidence.
 
 These reads create no proposals or reviews.
 

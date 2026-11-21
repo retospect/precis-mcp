@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 
 from precis.cli.garden import _stats
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.graph.garden.candidates import GardenCandidate
 from precis.graph.garden.proposals import (
     emit_proposal,
@@ -275,6 +277,132 @@ def test_hub_rollup_groups_by_detector_and_type_through_args(
         ("dangling_mention", "section:reference"): (0, 1, 1),
     }
     assert "title_shape" not in body
+
+
+def test_hub_rollup_lists_member_handles_for_one_detector(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr688168: a rollup row names its nodes, handle-only, on request."""
+    from precis.handlers import _memory_smells
+
+    store = runtime_with_store.live_store
+    root = _memory(store, "Smell hub", "index")
+    first = _memory(store, "First griped gotcha", "gotchas")
+    second = _memory(store, "Second griped gotcha", "gotchas")
+    other = _memory(store, "Anchor rot gotcha", "gotchas")
+    outside = _memory(store, "Griped outside this hub", "gotchas")
+    for member in (first, second, other):
+        store.add_link(src_ref_id=member, dst_ref_id=root, relation="part-of")
+    _proposal(store, first, "griped", evidence="first-griped-evidence")
+    decided = _proposal(store, second, "griped", evidence="second-griped-evidence")
+    assert (
+        resolve_proposal(store, decided, actor="fixture", verdict="approved")
+        is not None
+    )
+    _proposal(store, second, evidence="second-anchor-evidence")
+    _proposal(store, other, evidence="other-anchor-evidence")
+    _proposal(store, outside, "griped", evidence="outside-griped-evidence")
+    rendered: list[list[dict[str, Any]]] = []
+    render = _memory_smells.render_agent_table
+
+    def capture(rows: Any, **kwargs: Any) -> str:
+        rendered.append(list(rows))
+        return render(rows, **kwargs)
+
+    monkeypatch.setattr(_memory_smells, "render_agent_table", capture)
+    call = {"kind": "memory", "view": "smells", "under": f"me{root}"}
+
+    plain, plain_error = runtime_with_store.dispatch_with_status("search", dict(call))
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search", {**call, "__extras__": {"detector": "griped", "members": True}}
+    )
+
+    assert not plain_error, plain
+    assert not is_error, body
+    handles = set(re.findall(r"\bme\d+\b", body)) - {f"me{root}"}
+    assert handles == {f"me{first}", f"me{second}"}
+    assert "evidence" not in body.replace("evidence: get(", "")
+    assert "anchor_rot" not in body
+    plain_rows, member_rows = rendered
+    assert member_rows == [
+        {
+            "detector": "griped",
+            "type": "section:gotchas",
+            "pending": 1,
+            "decided": 1,
+            "nodes": 2,
+        }
+    ]
+    assert {
+        (row["detector"], row["type"]): (row["pending"], row["decided"], row["nodes"])
+        for row in plain_rows
+    } == {
+        ("anchor_rot", "section:gotchas"): (2, 0, 2),
+        ("griped", "section:gotchas"): (1, 1, 2),
+    }
+    assert not set(re.findall(r"\bme\d+\b", plain)) - {f"me{root}"}
+
+
+def test_rollup_member_list_is_capped_with_pending_nodes_first(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.handlers import _memory_smells
+
+    store = hub.live_store
+    decided_node = _memory(store, "Decided gotcha", "gotchas")
+    decided = _proposal(store, decided_node)
+    assert (
+        resolve_proposal(store, decided, actor="fixture", verdict="rejected")
+        is not None
+    )
+    open_nodes = [_memory(store, f"Open gotcha {n}", "gotchas") for n in range(3)]
+    for node in open_nodes:
+        _proposal(store, node)
+    scope = [decided_node, *open_nodes]
+    handler = MemoryHandler(hub=hub)
+
+    full = handler.search(view="smells", include_ref_ids=scope, members=True)
+    monkeypatch.setattr(_memory_smells, "MEMBER_CAP", 2)
+    capped = handler.search(view="smells", include_ref_ids=scope, members=True)
+
+    assert (
+        "- anchor_rot · section:gotchas: pending "
+        + " ".join(f"me{node}" for node in open_nodes)
+        + f"; decided me{decided_node}"
+    ) in full.body
+    assert re.findall(r"\bme\d+\b", capped.body) == [
+        f"me{node}" for node in open_nodes[:2]
+    ]
+    assert "(+2 more" in capped.body
+    assert capped.result_count == full.result_count == 4
+
+
+def test_rollup_detector_filter_names_the_detectors_present_when_empty(
+    hub: Hub,
+) -> None:
+    store = hub.live_store
+    target = _memory(store, "Only anchor rot", "reference")
+    _proposal(store, target)
+
+    response = MemoryHandler(hub=hub).search(
+        view="smells", include_ref_ids=[target], detector="griped", members=True
+    )
+
+    assert response.result_count == 0
+    assert "'griped'" in response.body
+    assert "anchor_rot" in response.body
+    assert f"me{target}" not in response.body
+
+
+def test_smells_args_are_refused_outside_the_smells_view(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    for extra in ({"detector": "anchor_rot"}, {"members": True}):
+        with pytest.raises(BadInput, match="require view='smells'"):
+            handler.search(q="anything", **extra)
+    with pytest.raises(BadInput, match="one detector name"):
+        handler.search(view="smells", detector=" ")
+    with pytest.raises(BadInput, match="members= takes true or false"):
+        handler.search(view="smells", members="banana")
 
 
 def test_stats_prints_zero_for_every_memory_detector(
