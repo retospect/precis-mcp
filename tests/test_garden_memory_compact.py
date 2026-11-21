@@ -7,11 +7,13 @@ the shell's fate — runs as one undoable unit.
 
 from __future__ import annotations
 
+import argparse
 import json
 from typing import Any
 
 import pytest
 
+from precis.cli import garden
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.graph.garden import apply as doors
@@ -21,6 +23,7 @@ from precis.graph.garden.consumer import ConsumerVerdict, consume_proposals
 from precis.graph.garden.proposals import (
     emit_proposal,
     pending_proposals,
+    proposal_holds,
     resolve_proposal,
 )
 from precis.store import Store
@@ -107,10 +110,11 @@ def _proposal(
     store: Store,
     body: str,
     *,
+    origin: str = "generated",
     meta: dict[str, Any] | None = None,
     plan: Any = None,
 ) -> tuple[int, int, cand.GardenCandidate]:
-    target = _memory(store, body, meta=meta)
+    target = _memory(store, body, origin=origin, meta=meta)
     candidate = _compact_candidate(store, target)
     assert candidate.action == "compact"
     if callable(plan):
@@ -707,14 +711,16 @@ def test_compact_related_bounded_to_firing_rows(
     assert set(quiet).isdisjoint(calls["dependants"])
 
 
+@pytest.mark.parametrize("origin", ["generated", "human"])
 def test_compact_consumer_approves_but_never_applies(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+    store: Store, monkeypatch: pytest.MonkeyPatch, origin: str
 ) -> None:
     """The consumer records the approval and holds for the explicit door."""
     monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
     target, review_id, _candidate = _proposal(
         store,
         SHELL_BODY,
+        origin=origin,
         meta={"expires": "2020-01-01T00:00:00+00:00"},
         plan=_keep_plan,
     )
@@ -732,3 +738,30 @@ def test_compact_consumer_approves_but_never_applies(
     assert retired is False
     assert "garden_compact" not in meta
     assert _body(store, target) == SHELL_BODY
+
+    hold = proposal_holds(store, [review_id])[review_id]
+    if origin == "generated":
+        assert hold["held"] == "explicit_apply"
+        assert report.digest_todo is None
+        return
+
+    assert hold["held"] == "human"
+    assert hold["verdict"] == "approve"
+    assert hold["judge_why"] == "the plan preserves every claim"
+    assert report.digest_todo is not None
+    with pytest.raises(MergeRefused, match="needs a human"):
+        doors.apply_compact(store, review_id, actor="fixture")
+
+    garden._accept(
+        argparse.Namespace(review_id=str(review_id), by="reto", why="read the plan"),
+        store,
+    )
+    assert _body(store, target).strip() == "Summary."
+    assert pending_proposals(store) == []
+    (decision,) = [
+        item
+        for _, _, _, note in _review_rows(store, target)
+        if note
+        and (item := json.loads(note).get("garden", {})).get("resolves") == review_id
+    ]
+    assert decision["why"] == "human ruling by reto: read the plan"

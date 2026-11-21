@@ -1240,6 +1240,30 @@ def memory_human_hold(store: Store, ref_id: int) -> bool:
     )
 
 
+def human_ruled(conn: Any, target: int, review_id: int) -> bool:
+    """Whether a recorded human ruling admits this proposal's apply on a
+    protected node (gr739890).
+
+    The ruling is the ``garden_ruling`` review row a human's
+    ``precis garden accept`` writes for exactly this proposal; it is the
+    only thing that lets an apply door touch a human-origin or considered
+    memory — nothing is ever applied to such a node without it.
+    """
+    rows = conn.execute(
+        "SELECT note FROM reviews WHERE target_kind = 'ref' AND target_id = %s "
+        "AND note LIKE %s",
+        (target, '%"garden_ruling"%'),
+    ).fetchall()
+    for (note,) in rows:
+        try:
+            ruling = json.loads(note).get("garden_ruling")
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if isinstance(ruling, dict) and ruling.get("proposal") == review_id:
+            return True
+    return False
+
+
 def _memory_successor(payload: dict[str, Any]) -> int | None:
     from precis.utils.handle_registry import parse
 
@@ -1409,7 +1433,7 @@ def _checked_memory_proposal(
         )
     if payload.get("base_sha") != sha:
         raise MergeRefused("apply_refused", "base_sha does not match the pinned target")
-    if memory_human_hold(store, target):
+    if memory_human_hold(store, target) and not human_ruled(conn, target, review_id):
         raise MergeRefused("human", "human-origin or considered memory needs a human")
     decided = conn.execute(
         "SELECT 1 FROM reviews WHERE note LIKE %s AND note ~ %s LIMIT 1",
@@ -2587,8 +2611,21 @@ def _plan_ref(value: Any) -> int | None:
     return None
 
 
+def compact_human_target(store: Store, target: int, plan: Any) -> int | None:
+    """Find a protected shell or edit target for the consumer's decision hold."""
+    if memory_human_hold(store, target):
+        return target
+    if not isinstance(plan, dict) or not isinstance(plan.get("edits"), list):
+        return None
+    for edit in plan["edits"]:
+        ref = _plan_ref(edit.get("ref")) if isinstance(edit, dict) else None
+        if ref is not None and memory_human_hold(store, ref):
+            return ref
+    return None
+
+
 def _checked_compact_plan(
-    store: Store, conn: Any, target: int, garden: dict[str, Any]
+    store: Store, conn: Any, target: int, garden: dict[str, Any], review_id: int
 ) -> dict[str, Any]:
     """Validate the reviewed plan against the pinned neighbourhood, under lock.
 
@@ -2630,7 +2667,7 @@ def _checked_compact_plan(
                 "the detector's neighbourhood; the shell's own body is not "
                 "an edit target"
             )
-        if memory_human_hold(store, ref):
+        if memory_human_hold(store, ref) and not human_ruled(conn, target, review_id):
             raise MergeRefused(
                 "human",
                 f"plan.edits[{i}] touches human-origin or considered me{ref}",
@@ -3050,8 +3087,8 @@ def apply_compact(
 
     The plan accounts for each detector sentence: keep it on the shell,
     move it to a related node, mint an atomic child, or drop it as
-    history or restatement. Apply is explicit via ``precis garden apply``;
-    the consumer can review the plan.
+    history or restatement. After review, apply is explicit via
+    ``precis garden apply`` or, for protected memories, ``precis garden accept``.
 
     Edits apply on the pinned related nodes, atomic children mint under
     the shell's hub, and the shell retires through the delete door (with
@@ -3065,7 +3102,7 @@ def apply_compact(
         target, garden, _body = _checked_memory_proposal(
             store, conn, review_id, "compact"
         )
-        plan = _checked_compact_plan(store, conn, target, garden)
+        plan = _checked_compact_plan(store, conn, target, garden, review_id)
         parents = [
             int(v)
             for v in ((garden.get("evidence") or {}).get("related") or {}).get(
@@ -4122,6 +4159,7 @@ __all__ = [
     "apply_structural",
     "apply_supersede",
     "compact_plan_shape",
+    "human_ruled",
     "undo_compact",
     "undo_merge",
     "undo_relink",

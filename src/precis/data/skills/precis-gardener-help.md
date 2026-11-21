@@ -169,6 +169,15 @@ while the target is unchanged. Rejecting an `apply_error` or
 once the held error is fixed. There is no MCP apply or undo: they
 repoint the live graph and stay operator-held.
 
+Held decision proposals (human-origin or considered targets, paper
+identity holds) are judged like any other; the approved survivors reach
+Reto as a single walkable digest todo tagged `garden-digest` — minted
+only when something is held, at most daily, never as one ask per
+proposal (gr739890). Work it top to bottom: `precis garden accept
+<review_id> [--why …]` records the ruling that alone lets an apply door
+touch a protected node and then applies the proposal;
+`precis garden reject <review_id>` closes the item.
+
 `get(kind='job', id='/garden')` reports `gardener: on|dark` plus
 `cooling: yes|no` — whether a `service_config` row lights the pass and
 whether a dry-run streak has cooled it.

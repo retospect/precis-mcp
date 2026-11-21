@@ -54,8 +54,14 @@ both run by the ``graph_garden`` job right after its tick
    a review call or ledger write. When enabled, only detectors with apply-time
    re-checks share the review budget; other memory proposals stay pending.
    Admitted proposals apply through the memory doors, which re-check SHA pins,
-   the detector predicate and human protection inside the transaction. Human-origin
-   or currently considered memories are held for a human. Rewrites keep
+   the detector predicate and human protection inside the transaction.
+   Human-origin or currently considered memories are judged like any
+   other proposal (gr739890): a rejection ends there, an approved
+   survivor is held for a human carrying the judge's verdict and reaches
+   Reto in the held-proposal digest (:mod:`~precis.graph.garden.digest`,
+   minted at most daily) — ``precis garden accept`` records the ruling
+   that alone lets the apply door touch such a node.
+   Rewrites keep
    an exact body/link reversal record for ``precis garden undo``.
    Paid approvals persist outside apply's transaction. Operational database
    failures leave the proposal pending for a bounded number of later ticks that
@@ -68,8 +74,9 @@ both run by the ``graph_garden`` job right after its tick
    re-propose only resolved ops for fresh review; wholly unresolved text gets
    a visible hold rather than silently occupying the pending window.
    A ``compact`` proposal is reviewed but never auto-applied: an approval is
-   recorded and the proposal held for the explicit door,
-   ``precis garden apply <review_id>``.
+   recorded and the proposal held for ``precis garden apply <review_id>``.
+   If the shell or an edit target is protected, the digest routes the plan
+   to ``precis garden accept <review_id>`` for a human ruling.
    One cell needs no review at all (gr564554): a ``dangling_mention``
    rewrite whose every op is a bare handle swap onto a successor the
    detector verified as a duplicate — a merge-made redirect whose resolved
@@ -160,6 +167,7 @@ from precis.graph.garden.candidates import (
     _replay_hits,
     short_sibling_pair,
 )
+from precis.graph.garden.digest import maybe_mint_digest
 from precis.graph.garden.paper_gate import (
     HOLD_REASONS,
     SHAPE_REASONS,
@@ -300,6 +308,9 @@ class ConsumeReport:
     #: duplicate-successor handle swaps (gr564554), a subset of
     #: ``rewrites``.
     mentions: list[str] = field(default_factory=list)
+    #: The held-proposal digest todo minted this pass, if any
+    #: (:mod:`~precis.graph.garden.digest`, gr739890).
+    digest_todo: int | None = None
 
     def as_meta(self) -> dict[str, Any]:
         return asdict(self)
@@ -845,11 +856,32 @@ def _apply_memory(
         apply_rewrite,
         apply_split,
         apply_supersede,
+        compact_human_target,
     )
 
     if prop.action == "compact":
-        # A compaction plan is never auto-applied: the recorded approval
-        # stands and a human reads the plan, then runs the explicit door.
+        try:
+            protected = compact_human_target(
+                store, prop.target_id, prop.payload.get("plan")
+            )
+        except OperationalError:
+            # The saved judge approval lets a later tick retry the hold.
+            log.exception(
+                "garden consumer: compact protection check failed on %s", prop.key
+            )
+            report.errors += 1
+            return
+        if protected is not None:
+            _hold_memory(
+                store,
+                prop,
+                report,
+                reason="human",
+                why=f"approved ({verdict.why}); compaction touches protected me{protected}",
+                apply=f"precis garden accept {prop.review_id}",
+                verdict=verdict,
+            )
+            return
         _hold_memory(
             store,
             prop,
@@ -925,12 +957,16 @@ def _apply_memory(
             )
     except MergeRefused as exc:
         if exc.reason == "human":
+            # The judge approved a proposal whose target a machine may not
+            # touch: the survivor is held for a human, carrying the
+            # verdict for the digest (gr739890).
             _hold_memory(
                 store,
                 prop,
                 report,
                 reason="human",
                 why=f"approved ({verdict.why}) but at apply: {exc.why}",
+                verdict=verdict,
             )
             return
         _close(
@@ -1297,10 +1333,19 @@ def _hold_memory(
     reason: str,
     why: str,
     apply: str | None = None,
+    verdict: ConsumerVerdict | None = None,
 ) -> None:
     """A failed hold must not abort the tick or skip recorded relink applies."""
     try:
-        _hold_for_human(store, prop, reason=reason, why=why, identity=None, apply=apply)
+        _hold_for_human(
+            store,
+            prop,
+            reason=reason,
+            why=why,
+            identity=None,
+            apply=apply,
+            verdict=verdict,
+        )
     except Exception:
         log.exception("garden consumer: memory hold failed on %s", prop.key)
         report.errors += 1
@@ -1429,12 +1474,38 @@ def _hold_for_human(
     why: str,
     identity: dict[str, Any] | None,
     apply: str | None = None,
+    verdict: ConsumerVerdict | None = None,
 ) -> None:
     """Leave a protected memory or ambiguous paper merge pending for a human.
 
     A non-terminal ``garden_review`` row (verdict ``proposed``) records why, and
     :func:`_consumer_reviewed_ids` keeps the consumer from reconsidering
-    it. A human decides the follow-up or rejects the proposal."""
+    it. A human decides the follow-up or rejects the proposal. A judge
+    ``verdict`` (gr739890) is recorded on the hold — ``verdict``,
+    ``judge_why``, ``by_model`` — so the held-proposal digest can show
+    the verdict and a recommended answer per item."""
+    body: dict[str, Any] = {
+        "v": 1,
+        "proposal": prop.review_id,
+        "key": prop.key,
+        "action": prop.action,
+        "detector": prop.detector,
+        "held": reason,
+        "why": why,
+        "loser": prop.payload.get("loser"),
+        "winner": prop.payload.get("winner"),
+        "identity": identity,
+        "apply": apply
+        or (
+            "by hand (apply failed; fix the error, then reject to retry)"
+            if reason == "apply_error"
+            else "by hand (human protection or unresolved evidence)"
+        ),
+    }
+    if verdict is not None and verdict.verdict:
+        body["verdict"] = verdict.verdict
+        body["judge_why"] = verdict.why
+        body["by_model"] = verdict.model
     store.record_target_review(
         prop.target_kind,
         prop.target_id,
@@ -1442,26 +1513,7 @@ def _hold_for_human(
         verdict="proposed",
         version=GARDEN_VERSION,
         note=json.dumps(
-            {
-                "garden_review": {
-                    "v": 1,
-                    "proposal": prop.review_id,
-                    "key": prop.key,
-                    "action": prop.action,
-                    "detector": prop.detector,
-                    "held": reason,
-                    "why": why,
-                    "loser": prop.payload.get("loser"),
-                    "winner": prop.payload.get("winner"),
-                    "identity": identity,
-                    "apply": apply
-                    or (
-                        "by hand (apply failed; fix the error, then reject to retry)"
-                        if reason == "apply_error"
-                        else "by hand (human protection or unresolved evidence)"
-                    ),
-                }
-            },
+            {"garden_review": body},
             ensure_ascii=False,
             sort_keys=True,
         ),
@@ -1830,17 +1882,10 @@ def review_pending(
                 )
                 continue
         if is_memory_action(prop.action, prop.detector):
-            from precis.graph.garden.apply import memory_human_hold
-
-            if memory_human_hold(store, prop.target_id):
-                _hold_memory(
-                    store,
-                    prop,
-                    report,
-                    reason="human",
-                    why="the memory is human-origin or currently considered",
-                )
-                continue
+            # Held proposals are judged like any other (gr739890): a
+            # protected (human-origin or considered) target no longer
+            # skips the review — a rejection ends there, and only an
+            # approved survivor is held, carrying the judge's verdict.
             try:
                 blocked = key_block(store, prop.target_kind, prop.target_id, prop.key)
                 mismatch = (
@@ -2012,6 +2057,15 @@ def consume_proposals(
         # rather than doubling the per-tick work.
         limit=max(0, review_limit - report.attempts - memory_retries),
     )
+    # The held-proposal digest (gr739890): judge-surviving holds reach
+    # Reto as one walkable todo — minted only when something is held,
+    # at most daily, never while an unwalked digest lists live items.
+    # A mint failure counts an error and does not fail the pass.
+    try:
+        report.digest_todo = maybe_mint_digest(store)
+    except Exception:
+        log.exception("garden consumer: held digest mint failed")
+        report.errors += 1
     return report
 
 

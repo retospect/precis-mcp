@@ -111,7 +111,13 @@ trust acts retain the original model string.
    proposals from ``dangling_mention``, ``anchor_rot``, ``grab_bag``,
    ``griped`` and ``thread_shape`` share this review budget. Eligibility and
    apply-time re-checks use one detector registry so proposals that cannot
-   apply do not spend a review. A ``dangling_mention`` proposal whose ops
+   apply do not spend a review. Held proposals are judged like any other;
+   survivors reach Reto as a walkable digest todo (:mod:`.digest`, at most
+   daily), answered with ``precis garden accept`` — a ruling, the only
+   door-opener for protected nodes — or ``reject`` (gr739890). This
+   includes approved compactions that would edit a protected neighbour
+   or change a protected shell.
+   A ``dangling_mention`` proposal whose ops
    are all bare swaps onto verified duplicate successors applies without a
    call (``garden.applied='mention'``, before/after spans recorded).
    ``md:``/``python:`` successors refuse (their content cannot be

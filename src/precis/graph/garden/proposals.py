@@ -565,6 +565,49 @@ def resolve_proposal(
         return _do(c)
 
 
+def record_human_ruling(
+    store: Store,
+    prop: GardenProposal,
+    *,
+    actor: str,
+    why: str = "",
+    conn: Any = None,
+) -> Any:
+    """Record the human ruling that admits a held proposal's apply (gr739890).
+
+    A ``garden_ruling`` review row on the target names exactly this
+    proposal; :func:`~precis.graph.garden.apply.human_ruled` is the only
+    check that lets an apply door touch a human-origin or considered
+    memory — nothing is ever applied to such a node without it. The row
+    is not a terminal verdict on the proposal: the apply door it admits
+    resolves the proposal in its own transaction. The note carries no
+    top-level ``garden`` object, so the pending fold never sees it.
+    """
+    note = json.dumps(
+        {
+            "garden_ruling": {
+                "v": 1,
+                "proposal": prop.review_id,
+                "key": prop.key,
+                "action": prop.action,
+                "accepted_by": actor,
+                "why": why,
+            }
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return store.record_target_review(
+        prop.target_kind,
+        prop.target_id,
+        actor=actor,
+        verdict="approved",
+        version=GARDEN_VERSION,
+        note=note,
+        conn=conn,
+    )
+
+
 def pending_proposals(
     store: Store,
     *,
@@ -930,6 +973,7 @@ __all__ = [
     "pending_proposals",
     "proposal_holds",
     "proposal_key_pending",
+    "record_human_ruling",
     "record_rejection",
     "resolve_proposal",
 ]

@@ -843,9 +843,13 @@ def test_rewrite_refuses_links_anchoring_measures_before_mutation(
 
 @pytest.mark.parametrize("action", ["rewrite", "supersede", "retire"])
 @pytest.mark.parametrize("protection", ["human", "considered"])
-def test_consumer_holds_protected_memories_without_review(
+def test_consumer_judges_protected_memories_then_holds(
     store: Store, monkeypatch: pytest.MonkeyPatch, action: str, protection: str
 ) -> None:
+    """gr739890 ruling (1): the judge reviews held proposals like any
+    other. An approved survivor on a protected (human-origin or
+    considered) memory is held carrying the judge's verdict — and the
+    digest mints so it reaches Reto."""
     monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
     prop = _proposal(
         store, action, origin="human" if protection == "human" else "generated"
@@ -853,17 +857,53 @@ def test_consumer_holds_protected_memories_without_review(
     if protection == "considered":
         _consider(store, prop.target)
 
-    def never_review(_store: Store, _prop: GardenProposal) -> ConsumerVerdict:
-        pytest.fail("protected memories must be held before model review")
+    report = consume_proposals(store, review=_approve)
 
-    report = consume_proposals(store, review=never_review)
-    assert (report.held, report.applied, report.attempts) == (1, 0, 0)
+    assert (report.held, report.applied, report.attempts) == (1, 0, 1)
     notes = [json.loads(row[3]) for row in _reviews(store, prop.target)]
-    assert any(n.get("garden_review", {}).get("held") == "human" for n in notes)
+    hold = next(
+        n["garden_review"]
+        for n in notes
+        if n.get("garden_review", {}).get("held") == "human"
+    )
+    assert hold["verdict"] == "approve"
+    assert hold["judge_why"] == (
+        "Current facts are preserved in the successor; only old wording changes."
+    )
+    assert hold["by_model"] == "fixture-reviewer"
     assert any(p.review_id == prop.review_id for p in pending_proposals(store))
     assert _body(store, prop.target) == prop.body
-    second = consume_proposals(store, review=never_review)
+    assert report.digest_todo is not None
+    second = consume_proposals(store, review=_approve)
     assert (second.held, second.applied, second.attempts) == (0, 0, 0)
+
+
+@pytest.mark.parametrize("action", ["rewrite", "supersede", "retire"])
+def test_consumer_rejected_protected_memory_ends_at_the_judge(
+    store: Store, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """gr739890 ruling (1): weak proposals on protected nodes end at the
+    judge — rejected and closed, never held, never digested."""
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    prop = _proposal(store, action, origin="human")
+
+    def reject(_store: Store, _prop: GardenProposal) -> ConsumerVerdict:
+        return ConsumerVerdict(
+            verdict="reject",
+            reason="insufficient_evidence",
+            why="the evidence does not support the action",
+            model="fixture-reviewer",
+        )
+
+    report = consume_proposals(store, review=reject)
+
+    assert (report.held, report.rejected, report.attempts) == (0, 1, 1)
+    assert pending_proposals(store) == []
+    assert report.digest_todo is None
+    assert all(
+        json.loads(row[3]).get("garden_review", {}).get("held") != "human"
+        for row in _reviews(store, prop.target)
+    )
 
 
 def test_consumer_holds_considered_at_apply_time(

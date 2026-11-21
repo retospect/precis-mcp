@@ -23,6 +23,11 @@ acts:
   or delete the edge a relink wrote (``links.meta.garden_relink``,
   ids ``garden-relink:…``). Memory rewrites, supersedes and retirements
   restore their saved node/link snapshots and reject the restored key.
+* ``precis garden accept <review_id> [--why …]`` — rule on one held
+  decision proposal from the held-proposal digest (gr739890): records
+  the human ruling that alone lets an apply door touch a human-origin
+  or considered node, then runs the proposal's apply door. Rejecting
+  instead closes the proposal.
 * ``precis garden restore <slug-or-id>`` — revive a superseded paper
   without reversing migrated content. This operator-only CLI resolves the
   original row, bypassing redirects; garden merges must use ``undo`` so
@@ -95,6 +100,11 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "review_id",
         ),
         (
+            "accept",
+            "Rule on a held decision proposal: record the ruling and apply it.",
+            "review_id",
+        ),
+        (
             "undo",
             "Undo an applied merge, relink or memory action by its recorded id.",
             "apply_id",
@@ -108,6 +118,12 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             help="Actor recorded on the verdict/merge (default: $USER).",
         )
         sp.add_argument("--dsn", default=None, help="Database URL override.")
+        if name == "accept":
+            sp.add_argument(
+                "--why",
+                default=None,
+                help="Reason recorded on the ruling (default: a digest accept).",
+            )
 
     restore = gp.add_parser(
         "restore", help="Restore a superseded paper without moving content back."
@@ -220,6 +236,146 @@ def _apply(args: argparse.Namespace, store: Store) -> None:
         f"({rec.merge_id}) — {len(rec.links)} edge(s) replayed; "
         f"`precis garden undo {rec.merge_id}` reverses"
     )
+
+
+def _accept(args: argparse.Namespace, store: Store) -> None:
+    """Rule on one held decision proposal: record the human ruling and
+    apply the proposal through its reviewed door (gr739890)."""
+    from precis.graph.garden import apply as doors
+    from precis.graph.garden.consumer import decision_record
+    from precis.graph.garden.digest import DECISION_HOLDS
+    from precis.graph.garden.proposals import (
+        pending_proposals,
+        proposal_holds,
+        record_human_ruling,
+    )
+
+    review_id = int(args.review_id)
+    prop = next(
+        (p for p in pending_proposals(store) if p.review_id == review_id),
+        None,
+    )
+    if prop is None:
+        print(
+            f"no pending garden proposal review_id={review_id}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    hold = proposal_holds(store, [review_id]).get(review_id, {})
+    if hold.get("held") not in DECISION_HOLDS:
+        print(
+            f"review {review_id} is held as {hold.get('held')!r} — accept rules "
+            "decision holds only (human protection, paper identity); use "
+            f"`precis garden apply {review_id}` or "
+            f"`precis garden reject {review_id}` instead",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    actor = _actor(args)
+    why = args.why or "accepted from the held-proposal digest"
+    record_human_ruling(store, prop, actor=actor, why=why)
+    extra = decision_record(
+        prop, outcome="applied", why=f"human ruling by {actor}: {why}", model=None
+    )
+    try:
+        if prop.action == "rewrite":
+            rec = doors.apply_rewrite(
+                store, review_id, actor=actor, verdict_extra=extra
+            )
+            print(
+                f"applied rewrite on ref {rec.target} ({rec.rewrite_id}) — "
+                f"`precis garden undo {rec.rewrite_id}` reverses"
+            )
+            return
+        if prop.action == "supersede":
+            superseded = doors.apply_supersede(
+                store, review_id, actor=actor, verdict_extra=extra
+            )
+            print(
+                f"superseded ref {superseded['target']} by me{superseded['successor']} "
+                f"(`precis garden undo garden-supersede:{superseded['target']}:{review_id}` "
+                "reverses)"
+            )
+            return
+        if prop.action == "retire":
+            retired = doors.apply_retire(
+                store, review_id, actor=actor, verdict_extra=extra
+            )
+            print(
+                f"retired ref {retired['target']} "
+                f"(`precis garden undo garden-retire:{retired['target']}:{review_id}` "
+                "reverses)"
+            )
+            return
+        if prop.action == "split":
+            split = doors.apply_split(
+                store, review_id, actor=actor, verdict_extra=extra
+            )
+            print(
+                f"split ref {split.target} ({split.split_id}) — "
+                f"`precis garden undo {split.split_id}` reverses"
+            )
+            return
+        if prop.action == "compact":
+            compact = doors.apply_compact(
+                store, review_id, actor=actor, verdict_extra=extra
+            )
+            print(
+                f"compacted ref {compact['target']} ({compact['compact_id']}) — "
+                f"{len(compact['edits'])} edit(s), "
+                f"{len(compact['puts'])} minted child(ren), "
+                f"shell {compact['shell']['fate']}; "
+                f"`precis garden undo {compact['compact_id']}` reverses"
+            )
+            return
+        if prop.action == "relink":
+            relinked = doors.apply_relink(
+                store, review_id, actor=actor, verdict_extra=extra
+            )
+            print(
+                f"relinked review {review_id} ({relinked.relink_id}) — "
+                f"`precis garden undo {relinked.relink_id}` reverses"
+            )
+            return
+        if prop.action == "merge":
+            loser, winner = prop.payload.get("loser"), prop.payload.get("winner")
+            if not isinstance(loser, int) or not isinstance(winner, int):
+                print(
+                    f"review {review_id} has no loser/winner payload — refusing",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            merged = doors.apply_merge(
+                store,
+                loser,
+                winner,
+                actor=actor,
+                review_id=review_id,
+                # A human ruling decides the identity question — the paper
+                # gate does not re-refuse a pair Reto accepted (gr739890).
+                verdict_extra=extra,
+            )
+            print(
+                f"merged ref {merged.loser} into {merged.winner} "
+                f"({merged.merge_id}) — {len(merged.links)} edge(s) replayed; "
+                f"`precis garden undo {merged.merge_id}` reverses"
+            )
+            return
+        print(
+            f"review {review_id} is a {prop.action!r} proposal with no apply "
+            "door — the ruling is recorded; carry the action out by hand or "
+            f"`precis garden reject {review_id}`.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    except (doors.MergeRefused, BadInput, NotFound) as exc:
+        # The ruling stays on the ledger — it names this proposal only —
+        # but the proposal is still pending: the refusal says why.
+        print(
+            f"garden: ruling recorded but apply refused on review {review_id}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 def _reject(args: argparse.Namespace, store: Store) -> None:
@@ -526,6 +682,7 @@ def run(args: argparse.Namespace) -> None:
         {
             "proposals": _proposals,
             "apply": _apply,
+            "accept": _accept,
             "reject": _reject,
             "undo": _undo,
             "restore": _restore,

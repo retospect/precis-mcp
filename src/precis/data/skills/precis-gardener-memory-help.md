@@ -99,6 +99,12 @@ sections the evaluator read.
 - A supersede/retire proposal asks whether still-true claims and needed
   figures already live on the survivor — "preserve them later" is not
   an answer.
+- A proposal approved on a `trust_origin='human'` or currently
+  `considered` node is held, not applied — the judge already reviewed
+  it (a weak one closed there) and the survivor waits in the
+  held-proposal digest ([[precis-gardener-help]]); `precis garden
+  accept <review_id>` records Reto's ruling and applies it. Nothing is
+  applied to such a node without that ruling (gr739890).
 - Unsure → file a `memory-review` todo rather than acting on
   suspicion.
 
