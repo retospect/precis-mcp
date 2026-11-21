@@ -1155,6 +1155,10 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         "stalled": stalled,
         "breaker": breaker,
         "slots": slots,
+        # What the todo pass reads to decide whether the gripe pass left
+        # build slots free (``todo_dispatch.offer_from``).
+        "parked_full": parked_full,
+        "picked": len(picks) - len(waivers),
         "waivers": [w.gripe_id for w in waivers],
         "minted": [],
     }

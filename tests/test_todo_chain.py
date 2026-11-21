@@ -201,7 +201,8 @@ def test_post_brief_writes_one_comment_in_the_builders_form(
         for c in store.chunks.list_chunks_for_ref(build)
         if c.chunk_kind == "todo_comment"
     ]
-    assert _select_slice_brief(chunks, reviewer=False, open_tags=lambda: []) == text
+    picked, _ord = _select_slice_brief(chunks, reviewer=False, open_tags=lambda: [])
+    assert picked == text
 
 
 def test_post_brief_is_idempotent_per_brief_node(
@@ -304,6 +305,30 @@ def test_refuse_source_rejects_an_unknown_reason(
         refuse_source(store, mint.root_id, source, "because", "x")
     assert _children(store, source) == []
     assert _status(store, mint.root_id) != "won't-do"
+
+
+def test_refuse_source_without_a_chain_closes_no_root(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The dispatcher's own pre-check refuses before any chain exists: no
+    root to close, no plan handle in the wording, one ask."""
+    source = id_of(handler.put(text="Edit scripts/ship.", tags=["factory:build"]).body)
+    ask = refuse_source(store, None, source, "decide", "names scripts/ship")
+    assert _children(store, source) == [ask]
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None
+    assert ref.meta[REFUSAL_KEY] == {"source": source, "reason": "decide"}
+    body = "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_body"
+    )
+    assert "plan td" not in body and "names scripts/ship" in body
+    assert NEEDS_SPEC_TAG in _open_tags(store, source)
+    assert _blockers(store, source) == [ask]
+    # repeat: the same ask, still no second one
+    assert refuse_source(store, None, source, "decide", "again") == ask
+    assert _children(store, source) == [ask]
 
 
 def test_meta_shape_is_what_the_ask_guard_accepts(

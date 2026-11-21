@@ -305,6 +305,15 @@ def test_get_dispatches_by_registered_type(monkeypatch: pytest.MonkeyPatch) -> N
     assert isinstance(psettings.get("budget.hourly_usd", store=None), float)
 
 
+def test_todo_dispatch_settings_are_registered_and_off_by_default() -> None:
+    enabled = psettings.REGISTRY["factory.todo_dispatch.enabled"]
+    max_open = psettings.REGISTRY["factory.todo_dispatch.max_open"]
+    assert (enabled.type, enabled.default, enabled.env_var) == ("bool", False, None)
+    assert (max_open.type, max_open.default, max_open.env_var) == ("int", 3, None)
+    assert psettings.get_bool("factory.todo_dispatch.enabled", store=None) is False
+    assert psettings.get_int("factory.todo_dispatch.max_open", store=None) == 3
+
+
 def test_is_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_BUDGET_HOURLY_USD", raising=False)
     assert psettings.is_available("budget.hourly_usd", store=None) is True

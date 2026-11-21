@@ -156,6 +156,19 @@ def test_source_todo_hold_reasons(store: Store) -> None:
     assert _holds(store, build) is None
 
 
+def test_skip_tag_holds_a_todo_chain_like_needs_spec(store: Store) -> None:
+    source = _todo_source(store)
+    _root, build = _todo_chain_for(store, source)
+    assert _holds(store, build) is None
+    store.add_tag(source, Tag.open("factory:skip"), set_by="agent")
+    reason = _holds(store, build)
+    assert reason is not None and "hold tag factory:skip" in reason
+    # a hold tag is no blocker: the stalled-chain census does not shield it
+    assert _holds(store, build, blockers_only=True) is None
+    store.remove_tag(source, Tag.open("factory:skip"))
+    assert _holds(store, build) is None
+
+
 def test_source_todo_holds_leave_gripe_chains_alone(store: Store) -> None:
     from precis.workers.executors._common import source_holds
 

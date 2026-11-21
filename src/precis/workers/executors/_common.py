@@ -1596,8 +1596,8 @@ def source_todo_holds(
     The source of a todo chain is the todo named by ``meta.source_todo``
     on the plan root (the parent or an ancestor), read here after mint:
     it holds the build while it carries an open ``blocked-by``, one of the
-    dispatcher's hold tags or ``needs-spec``, no longer carries
-    ``factory:build``, or is terminal or retired. ``blockers_only`` keeps
+    dispatcher's hold tags, ``needs-spec`` or ``factory:skip``, no longer
+    carries ``factory:build``, or is terminal or retired. ``blockers_only`` keeps
     the open-blocker reason alone: the stalled-chain census shields a
     chain only for a blocker — a withdrawn tag is a stall to ask about."""
     if not parent_ids:
@@ -1605,6 +1605,7 @@ def source_todo_holds(
     from precis.plans.todo_chain import (
         FACTORY_BUILD_TAG,
         NEEDS_SPEC_TAG,
+        SKIP_TAG,
         SOURCE_TODO_KEY,
     )
     from precis.workers.gripe_dispatch import HOLD_TAGS
@@ -1657,7 +1658,7 @@ def source_todo_holds(
         (
             parent_ids,
             FACTORY_BUILD_TAG,
-            [*HOLD_TAGS, NEEDS_SPEC_TAG],
+            [*HOLD_TAGS, NEEDS_SPEC_TAG, SKIP_TAG],
             SOURCE_TODO_KEY,
             SOURCE_TODO_KEY,
         ),

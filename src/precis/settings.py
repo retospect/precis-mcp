@@ -697,6 +697,31 @@ REGISTRY: dict[str, SettingSpec] = {
             "(chain-stalls:<n>).",
         ),
         SettingSpec(
+            key="factory.todo_dispatch.enabled",
+            type="bool",
+            env_var=None,
+            default=False,
+            doc="DB-only. Switch of the todo dispatch pass "
+            "(precis.workers.todo_dispatch), which runs right after the "
+            "gripe_dispatch pass on a host where that service is lit and "
+            "mints one todo-build chain for each open todo tagged "
+            "factory:build that passes its checks. Off (default): the "
+            "pass reads nothing and writes nothing.",
+        ),
+        SettingSpec(
+            key="factory.todo_dispatch.max_open",
+            type="int",
+            env_var=None,
+            default=3,
+            doc="DB-only. Todo chains the todo dispatch pass may hold open "
+            "at once (every chain whose build has not landed counts, "
+            "including one in its brief step or stalled). In a pass where "
+            "the gripe dispatcher finds no eligible gripe the pass may "
+            "start chains beyond this up to the build slots that pass "
+            "left free, at most three new chains per pass. A negative "
+            "value reads as 0. Chains already started are never cancelled.",
+        ),
+        SettingSpec(
             key="asks_triage.tier",
             type="str",
             env_var="PRECIS_ASKS_TRIAGE_TIER",

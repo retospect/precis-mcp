@@ -1910,3 +1910,29 @@ def test_parked_todo_chains_do_not_trip_gripe_backstop(
     assert res.ok == 1 and _roots_for(store, g)
     assert res.extra["parked"] == 0 and res.extra["max_parked"] == 1
     assert (res.extra["todo_chains"], res.extra["todo_parked"]) == (1, 1)
+
+
+def test_pass_reports_parked_full_and_picked(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the todo pass reads: ``picked`` counts the non-waiver gripes the
+    pass found (before minting), ``parked_full`` the backstop."""
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["parked_full"] is False and res.extra["picked"] == 0
+    assert res.extra["slots"] > 0
+    _gripe(store, "a", prio=1)
+    _gripe(store, "b", prio=2)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (
+        res.extra["picked"] == 2 and res.ok == 2 and res.extra["parked_full"] is False
+    )
+    # a backstop of one parked chain: the pass looks at no gripe
+    psettings.set_setting(gd.MAX_PARKED_KEY, "1", store=store)
+    parked = _gripe(store, "parked", prio=1)
+    _root, build = _chain_for(store, parked)
+    _park(store, build, "paused")
+    _gripe(store, "c", prio=1)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["parked_full"] is True and res.extra["picked"] == 0

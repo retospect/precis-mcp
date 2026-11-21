@@ -486,8 +486,10 @@ def _run_gripe_dispatch(store: Store, batch_size: int) -> None:
     a ``gripe-fix-direct`` chain for the hottest ``fix:code`` / ``fix:skill``
     / ``fix:docs`` / ``fix:web`` / ``fix:mcp`` gripes, as many as the code lanes have free slots. Dark
     unless ``service_config`` lights ``gripe_dispatch`` for this host.
-    ``batch_size`` is unused — the lane caps are the throttle. No model
-    call: spends=False."""
+    ``batch_size`` is unused — the lane caps are the throttle. The todo
+    dispatch pass (``workers.todo_dispatch``, its own switch, off by
+    default) runs right after it in the same fire. No model call:
+    spends=False."""
     del batch_size
     from precis.workers.gripe_dispatch import run_gripe_dispatch_pass
 
@@ -498,6 +500,21 @@ def _run_gripe_dispatch(store: Store, batch_size: int) -> None:
         result.ok,
         result.failed,
     )
+    # The todo pass rides this fire (dark unless its own switch is on) and
+    # reads the gripe pass's figures; a failure in it must never touch the
+    # gripe pass's result or the cadence.
+    try:
+        from precis.workers.todo_dispatch import offer_from, run_todo_dispatch_pass
+
+        todo = run_todo_dispatch_pass(store, offer=offer_from(result))
+        log.info(
+            "scheduler: todo_dispatch inner result claimed=%d ok=%d failed=%d",
+            todo.claimed,
+            todo.ok,
+            todo.failed,
+        )
+    except Exception:
+        log.warning("scheduler: todo_dispatch pass failed", exc_info=True)
 
 
 #: ``anki_sync`` failure backoff (§A). A failed tick holds the *cadence* back

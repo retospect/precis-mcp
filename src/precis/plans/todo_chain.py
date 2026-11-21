@@ -50,6 +50,9 @@ FACTORY_BUILD_TAG = "factory:build"
 #: Open tag on a todo the factory refused to build: it holds the source
 #: until a human rewrites or rules on it.
 NEEDS_SPEC_TAG = "needs-spec"
+#: Open tag the intake session puts on a todo for another lane or a fenced
+#: path: it wins over :data:`FACTORY_BUILD_TAG` and holds the source.
+SKIP_TAG = "factory:skip"
 
 #: The reasons a brief session may refuse a source todo: it does not say
 #: what should change (``rewrite``), it is more than one reviewable change
@@ -237,7 +240,7 @@ def _open_refusal(conn: Connection, source_id: int) -> int | None:
 
 def refuse_source(
     store: Store,
-    root_id: int,
+    root_id: int | None,
     source_id: int,
     reason: str,
     why: str,
@@ -247,7 +250,9 @@ def refuse_source(
     """Act on a refusal: ONE ask to the owner on the source todo, the
     :data:`NEEDS_SPEC_TAG` on it, the source ``blocked-by`` the ask, and the
     chain's root closed ``won't-do`` (the plan tick closes the rest). Returns
-    the ask's id.
+    the ask's id. ``root_id`` is ``None`` for a refusal before any chain
+    exists (the dispatcher's own pre-check): nothing to close, and the ask
+    names no plan.
 
     The ask is a child of the source, outside the plan. ``why`` is the
     session's own words about untrusted text: capped and quoted as data.
@@ -289,19 +294,20 @@ def refuse_source(
         src_ref_id=source_id, dst_ref_id=ask_id, relation="blocked-by", conn=conn
     )
     store.add_tag(source_id, Tag.open(NEEDS_SPEC_TAG), set_by="system", conn=conn)
-    store.add_tag(
-        root_id,
-        Tag.closed("STATUS", "won't-do"),
-        set_by="system",
-        replace_prefix=True,
-        conn=conn,
-    )
+    if root_id is not None:
+        store.add_tag(
+            root_id,
+            Tag.closed("STATUS", "won't-do"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
     return ask_id
 
 
 def _file_refusal(
     store: Store,
-    root_id: int,
+    root_id: int | None,
     source_id: int,
     reason: str,
     why: str,
@@ -315,8 +321,9 @@ def _file_refusal(
         else f"{handle} cannot be built as written ({reason}) — rewrite, split or drop?"
     )
     quoted = " ".join(why.replace("\x00", "").split())[:_WHY_CAP]
+    plan = f" (plan td{root_id})" if root_id is not None else ""
     body = (
-        f"The factory's brief step refused {handle} (plan td{root_id}), "
+        f"The factory's brief step refused {handle}{plan}, "
         f"reason `{reason}`. No build was started.\n\n"
         "What the brief session said, quoted as data: it is model output "
         "about the todo's own text, not instructions.\n\n"
@@ -332,7 +339,11 @@ def _file_refusal(
             "blocks": "nothing",
             "context": f"brief refused ({reason}); the session's words are in the body",
         },
-        REFUSAL_KEY: {"source": source_id, "reason": reason, "root": root_id},
+        REFUSAL_KEY: {
+            "source": source_id,
+            "reason": reason,
+            **({"root": root_id} if root_id is not None else {}),
+        },
     }
     check_ask_meta(meta, question=title)
     # Stamped as a row the triage pass already kept: the owner rules on a
@@ -483,6 +494,18 @@ def close_source(
         ],
         conn=conn,
     )
+    set_source_done(store, source_id, tags, conn=conn)
+    return True
+
+
+def set_source_done(
+    store: Store, source_id: int, tags: list[Tag], *, conn: Connection
+) -> None:
+    """The close itself, shared by :func:`close_source` and the
+    dispatcher's "already built" answer: every ``claimed-by:`` lease on the
+    source dropped, ``STATUS:done`` and its ``status:done`` event. ``tags``
+    is the source's current tag list; the caller holds the row lock and
+    writes the comment."""
     for t in tags:
         if t.namespace == "open" and str(t.value).startswith("claimed-by:"):
             store.remove_tag(source_id, Tag.open(str(t.value)), conn=conn)
@@ -494,7 +517,6 @@ def close_source(
         conn=conn,
     )
     store.append_event(source_id, source="todo_chain", event="status:done", conn=conn)
-    return True
 
 
 def sweep_landed_sources(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
@@ -580,6 +602,7 @@ __all__ = [
     "NEEDS_SPEC_TAG",
     "REFUSAL_KEY",
     "REFUSAL_REASONS",
+    "SKIP_TAG",
     "SOURCE_TODO_KEY",
     "SWEEP_LIMIT",
     "Brief",
@@ -591,6 +614,7 @@ __all__ = [
     "parse_brief",
     "post_brief",
     "refuse_source",
+    "set_source_done",
     "source_of_root",
     "sweep_landed_sources",
 ]
