@@ -42,12 +42,13 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.graph.garden.candidates import GardenCandidate
 from precis.utils.handle_registry import parse as parse_handle
+from precis.utils.handle_registry import try_format as _format_handle
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -91,7 +92,15 @@ def is_memory_action(action: str, detector: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class GardenProposal:
-    """One ``reviews`` row decoded as a garden proposal."""
+    """One ``reviews`` row decoded as a garden proposal.
+
+    ``target_retired`` marks a proposal whose ref target already has a
+    tombstone — the retirement completed elsewhere, so the pending row is
+    redundant however fresh its sha pin looks (retirement does not move
+    ``precis_target_sha``). ``retired_successor`` is the tombstone's
+    successor handle, or ``None`` for a successorless retirement (and for
+    live targets). A retired target also forces ``current`` False: the
+    live target the proposal was written against is gone."""
 
     review_id: int
     target_kind: str
@@ -106,6 +115,23 @@ class GardenProposal:
     model: str | None
     at: Any
     current: bool
+    target_retired: bool = False
+    retired_successor: str | None = None
+
+    def stale_marker(self) -> str:
+        """The bracketed flag the pending views print after the target.
+
+        A retired target outranks a plain sha drift: the marker names the
+        retirement and its successor so an operator can tell a proposal
+        that still has a live target from a retirement already completed
+        elsewhere (gr714718)."""
+        if self.target_retired:
+            if self.retired_successor:
+                return f"  [stale: target retired → {self.retired_successor}]"
+            return "  [stale: target retired (no successor)]"
+        if not self.current:
+            return "  [stale: target changed]"
+        return ""
 
 
 def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
@@ -549,7 +575,11 @@ def pending_proposals(
     to ``actor='graph-garden'``: the terminal verdict carries whoever
     decided it (a human, the apply door), so the fold has to read garden
     payloads regardless of actor. ``current=False`` marks proposals the
-    target has drifted past (sha no longer matches).
+    target has drifted past (sha no longer matches); a ref target that
+    already has a tombstone is also marked ``current=False`` and carries
+    ``target_retired``/``retired_successor`` — retirement does not move
+    the ref's sha, so without the explicit tombstone read the row would
+    present as fresh (gr714718).
 
     Proposer rejections (graph-garden's own ``rejected`` rows) are left
     out of the scan: no proposal precedes them, so they decide nothing
@@ -604,7 +634,71 @@ def pending_proposals(
         )
         if len(out) >= limit:
             break
-    return out
+    return _annotate_tombstones(store, out)
+
+
+def _annotate_tombstones(
+    store: Store, proposals: list[GardenProposal]
+) -> list[GardenProposal]:
+    """Mark pending proposals whose ref target already has a tombstone.
+
+    Retirement sets ``refs.retired_at`` without moving
+    ``precis_target_sha``, so the sha pin still matches and the row would
+    present as fresh. Each retired target becomes ``current=False`` with
+    ``target_retired=True``; ``retired_successor`` carries the
+    tombstone's ``meta.superseded_by`` (a handle string from the audited
+    delete door, or a raw ref id from ``supersede`` — formatted here), or
+    ``None`` for a successorless retirement. Both decisions stay in the
+    audit history: this read annotates, nothing is resolved. Distinct
+    pending rows on the same retired target each carry the mark.
+    """
+    ref_ids = sorted({p.target_id for p in proposals if p.target_kind == "ref"})
+    if not ref_ids:
+        return proposals
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta->>'superseded_by' FROM refs "
+            "WHERE ref_id = ANY(%s) AND retired_at IS NOT NULL",
+            (ref_ids,),
+        ).fetchall()
+    if not rows:
+        return proposals
+    raw_successor = {int(ref_id): raw for ref_id, raw in rows}
+    digit_ids = [
+        int(str(raw))
+        for raw in raw_successor.values()
+        if raw is not None and str(raw).isdigit()
+    ]
+    kind_of: dict[int, str] = {}
+    if digit_ids:
+        kind_of = {
+            int(ref.id): str(ref.kind)
+            for ref in store.fetch_refs_by_ids(digit_ids, include_deleted=True).values()
+        }
+
+    def successor_handle(raw: Any) -> str | None:
+        if raw is None:
+            return None
+        text = str(raw)
+        if text.isdigit():
+            kind = kind_of.get(int(text))
+            return _format_handle(kind, int(text)) if kind else f"ref {text}"
+        return text
+
+    tombstones = {
+        ref_id: successor_handle(raw) for ref_id, raw in raw_successor.items()
+    }
+    return [
+        replace(
+            p,
+            current=False,
+            target_retired=True,
+            retired_successor=tombstones[p.target_id],
+        )
+        if p.target_kind == "ref" and p.target_id in tombstones
+        else p
+        for p in proposals
+    ]
 
 
 def proposal_holds(store: Store, review_ids: list[int]) -> dict[int, dict[str, Any]]:

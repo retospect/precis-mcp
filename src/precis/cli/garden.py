@@ -158,10 +158,9 @@ def _proposals(args: argparse.Namespace, store: Store) -> None:
         return
     holds = proposal_holds(store, [p.review_id for p in rows])
     for p in rows:
-        stale = "" if p.current else "  [stale: target changed]"
         print(
             f"review {p.review_id}: {p.action} {p.target_kind}:{p.target_id}"
-            f"{stale}\n    {p.title} — {p.rationale}"
+            f"{p.stale_marker()}\n    {p.title} — {p.rationale}"
         )
         if hold := holds.get(p.review_id):
             print(f"    held: {hold['held']} — {hold.get('why', '')}")

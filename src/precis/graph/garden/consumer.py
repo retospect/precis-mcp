@@ -349,6 +349,7 @@ def _close(
     report: ConsumeReport,
     identity: PaperIdentity | None = None,
     retryable: bool = False,
+    conn: Any = None,
 ) -> None:
     extra = decision_record(
         prop, outcome="rejected", why=why, model=model, identity=identity
@@ -363,6 +364,7 @@ def _close(
         verdict="rejected",
         model=model,
         extra=extra,
+        conn=conn,
     ):
         report.rejected += 1
         report.reasons[reason] = report.reasons.get(reason, 0) + 1
@@ -1708,6 +1710,35 @@ def review_pending(
             and prop.detector in MEMORY_APPLY_DETECTORS
             and env_flag("PRECIS_GARDEN_MEMORY_APPLY")
         )
+        if memory_enabled and prop.target_retired:
+            # The retirement completed elsewhere (another door, a human)
+            # — the tombstone is terminal, so this close is not retryable
+            # and the reason says retired, not merely changed (gr714718).
+            # Both decisions stay in the audit history: the tombstone on
+            # the ref, this terminal row on the proposal.
+            successor = (
+                f" (successor {prop.retired_successor})"
+                if prop.retired_successor
+                else " without a successor"
+            )
+            with store.pool.connection() as conn, conn.transaction():
+                target = conn.execute(
+                    "SELECT retired_at FROM refs WHERE ref_id = %s FOR UPDATE",
+                    (prop.target_id,),
+                ).fetchone()
+                if target is not None and target[0] is not None:
+                    _close(
+                        store,
+                        prop,
+                        actor=CONSUMER_ACTOR,
+                        reason="target_gone",
+                        why=f"the target already retired elsewhere{successor}",
+                        model=None,
+                        report=report,
+                        conn=conn,
+                    )
+            # An undo after the scan leaves this proposal for a fresh scan.
+            continue
         if memory_enabled and not prop.current:
             _close(
                 store,

@@ -1727,8 +1727,9 @@ class JobHandler(NumericRefHandler):
             header += f" (action={raw_action})"
         lines = [header]
         for p in rows:
-            stale = "" if p.current else "  [stale: target changed]"
-            lines.append(f"review {p.review_id}: {p.action} {_target(p)}{stale}")
+            lines.append(
+                f"review {p.review_id}: {p.action} {_target(p)}{p.stale_marker()}"
+            )
             lines.append(f"    {p.title} — {p.rationale}")
             if hold := holds.get(p.review_id):
                 lines.append(f"    held: {hold['held']} — {hold.get('why', '')}")

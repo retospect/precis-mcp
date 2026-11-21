@@ -29,6 +29,9 @@ removals refuse, preventing model overrides from expanding detector edit scope.
 Notation review pins one authored token per memory to bound edits.
 Undo terminally rejects restored content, preventing next-tick reapplication.
 Supersede and retire snapshot links for undo, refusing changed endpoints.
+Pending reads mark tombstones stale and show any successor. With memory apply
+enabled, the consumer locks and rechecks the target before recording a terminal
+``target_gone`` rejection. Restored targets await the next scan.
 Retirement validates successor evidence before compaction so stale proposals close retryably.
 Supersede checks incoming and outgoing part-of migrations
 before writing and refuses edges that close a containment cycle. A direct
@@ -113,20 +116,13 @@ trust acts retain the original model string.
    ``rejected``: unchanged candidates are asked once per prompt version
    (gr506046). Candidate-producing detectors share ``max_proposals``
    round-robin; ``griped`` candidates drain first (gr657257).
-4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
-   ``precis garden review``) — a FRONTIER-tier burn-down over open
-   proposals older than a few days: one approve/reject verdict per
-   sampled proposal, recorded as a NON-TERMINAL ``garden-reviewer``
-   row (the proposal stays open for a human; apply doors exist for
-   merge and relink). The per-detector agreement rate is the proposer's
-   quality bar — ``precis garden stats``, reporting only.
-5. The consumer (:mod:`precis.graph.garden.consumer`, gr506044, Reto's
-   2026-10-23 ruling) — the one place a pass applies anything. Run by
-   the job after each tick: dangling-edge prunes apply; Opus approves
-   or rejects (terminal row with a reason code) pending merge/relink
-   proposals, and an approve applies through the undoable door
-   (merge repointing, or the reviewed structural write for a relink —
-   gr507641).
+4. Sampled review (:mod:`precis.graph.garden.reviewer`, ``precis garden review``)
+   uses FRONTIER to judge older pending proposals. Its nonterminal
+   ``garden-reviewer`` verdicts measure per-detector agreement in
+   ``precis garden stats``; humans still decide those proposals.
+5. The consumer (:mod:`precis.graph.garden.consumer`, gr506044) applies
+   dangling-edge prunes after each tick. Opus rejections record terminal
+   reason codes; merge and relink approvals use undoable apply doors (gr507641).
    With ``PRECIS_GARDEN_MEMORY_APPLY`` enabled, memory rewrite/supersede/retire/split
    proposals from ``dangling_mention``, ``anchor_rot``, ``grab_bag``,
    ``griped`` and ``thread_shape`` share this review budget. Eligibility and
