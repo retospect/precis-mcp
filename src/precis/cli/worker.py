@@ -381,6 +381,7 @@ _PASS_CHOICES: tuple[str, ...] = (
     "bib_retag",
     "chase",
     "chase_trigger",
+    "inbound_chase",
     "inbound_ground",
     "hub_refine",
     "plan_tick",
@@ -851,6 +852,9 @@ def run(args: argparse.Namespace) -> None:
         # ``PRECIS_CLASSIFY_TOPICS_ENABLED``. Skipped under ``--only`` (an
         # explicit one-pass invocation shouldn't be silently DB-gated).
         def _gate_default_on(service: str) -> bool:
+            # The spend flag does not place inbound chase on a host.
+            if service == "inbound_chase":
+                return False
             axis_default = _axis_id_default_on(service, _axes_env_set)
             if axis_default is not None:
                 return axis_default
@@ -900,18 +904,18 @@ def run(args: argparse.Namespace) -> None:
                     ", ".join(_claude_vetoed),
                 )
 
-        _pass_gate = (
-            None
-            if args.only is not None
-            else (
-                lambda service: (
-                    _claude_ok_for(service, _claude_lane_ok)
-                    and _svc_resolver.enabled(
-                        service, default_on=_gate_default_on(service)
-                    )
-                )
+        from precis.workers.inbound_chase import inbound_chase_enabled
+
+        def _pass_gate(service: str) -> bool:
+            # The spend flag gates even manual runs. Per-host service
+            # priority remains an additional operator stop in the rotation.
+            if service == "inbound_chase" and not inbound_chase_enabled(store=store):
+                return False
+            if args.only is not None:
+                return True
+            return _claude_ok_for(service, _claude_lane_ok) and _svc_resolver.enabled(
+                service, default_on=_gate_default_on(service)
             )
-        )
 
         stop_flag = _install_signal_handlers()
         # gr191264: the rotation above is strictly serial (handlers then
@@ -943,7 +947,7 @@ def run(args: argparse.Namespace) -> None:
         # lease claims are atomic conditional advances, so a double-fire is
         # a harmless `claimed=0` for the loser (the heartbeat argument).
         # `_register` is pure, so asking "did scheduler register" a second
-        # time is safe. `_pass_gate` (None under `--only`) is consulted per
+        # time is safe. `_pass_gate` is consulted per
         # tick as `gate("scheduler")`, so a live `service_config` flip dims
         # the thread within one TTL — UNLIKE heartbeat, which must not
         # depend on a DB read, the scheduler's whole job is leases and may.

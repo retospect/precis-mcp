@@ -1243,6 +1243,22 @@ class TestBatchGet:
         assert "first" in resp.body
         assert "second" in resp.body
 
+    def test_chunk_sidecars_use_handler_store_for_chase_flag(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import settings
+
+        monkeypatch.setattr(settings, "_STORE", None)
+        monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "0")
+        monkeypatch.setattr(
+            "precis.handlers._citer_sidecar.render_citer_sidecar",
+            lambda *_args: "verified citation sidecar",
+        )
+        paper = _seed_paper(store, slug="paper-a", title="Alpha", blocks=["first"])
+        settings.set_setting("inbound_chase.enabled", "true", store=store)
+
+        assert "verified citation sidecar" in handler.get(id=f"pa{paper}~0").body
+
     def test_legacy_glyph_damage_warns_on_the_matching_passage(
         self, store: Store, handler: PaperHandler, runtime_with_store: PrecisRuntime
     ) -> None:

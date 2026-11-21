@@ -220,9 +220,11 @@ redeploy) — since the §L cutover a ``ServiceSpec``'s ``enable_env`` is
 nothing; the per-cycle ``pass_gate`` is the one decision point. A
 **sub-feature of another pass** has no ``ServiceSpec``, so it keeps a
 genuine in-pass env flag: the forward chase bridge
-(``PRECIS_TAPROOT_CHASE_ENABLED``) and the inbound chase/citer sidecar
-(``PRECIS_INBOUND_CHASE_ENABLED``) are live env vars — do not "modernize"
-them into ``service prio``. Enable a service producer on **one host** —
+(``PRECIS_TAPROOT_CHASE_ENABLED``) is a live env var — do not "modernize"
+it into ``service prio``. The inbound chase/citer sidecar is the third
+case: an audited ``app_settings`` flag (``inbound_chase.enabled``, DB
+row over the env bootstrap) gates it alongside positive per-host priority
+from ``service_config``. Enable a service producer on **one host** —
 ``hub_refine``'s rejection memo is a read-modify-write on ``meta``
 (``docs/runbooks/taproot-chase-enablement.md``).
 

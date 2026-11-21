@@ -9,7 +9,9 @@ caps seeded in :data:`precis.settings.REGISTRY` (Slice 1).
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, cast
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -82,14 +84,20 @@ class _FakeConn:
         self.last_params: tuple | None = None
         self.rolled_back = False
         self.committed = False
+        self.audit: list[tuple] = []
 
-    def __enter__(self) -> _FakeConn:
-        return self
-
-    def __exit__(self, *a: object) -> Literal[False]:
-        return False
+    @contextmanager
+    def transaction(self) -> Iterator[_FakeConn]:
+        try:
+            yield self
+        except Exception:
+            self.rollback()
+            raise
 
     def execute(self, sql: str, params: tuple = ()) -> _Cursor:
+        if "INTO APP_SETTINGS_AUDIT" in sql.upper():
+            self.audit.append(params)
+            return _Cursor(None)
         self.sql.append(sql)
         self.last_params = params
         s = sql.upper()
@@ -119,8 +127,11 @@ class _FakePool:
     def __init__(self, conn: _FakeConn) -> None:
         self._conn = conn
 
-    def connection(self) -> _FakeConn:
-        return self._conn
+    @contextmanager
+    def connection(self) -> Iterator[_FakeConn]:
+        with self._conn.transaction() as conn:
+            yield conn
+            conn.commit()
 
 
 class _FakeStore:
@@ -350,3 +361,42 @@ def test_advertised_env_presence_empty_when_nothing_set(
         if spec.env_var:
             monkeypatch.delenv(spec.env_var, raising=False)
     assert psettings.advertised_env_presence() == []
+
+
+def test_inbound_chase_flag_db_beats_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.workers.inbound_chase import inbound_chase_enabled
+
+    store = cast("Any", _FakeStore(_FakeConn(value="true")))
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "0")
+    assert psettings.get_bool("inbound_chase.enabled", store=store) is True
+    psettings.bind_store(cast("Any", store))
+    try:
+        assert inbound_chase_enabled() is True
+    finally:
+        psettings.bind_store(None)
+    none_store = cast("Any", _FakeStore(_FakeConn(value=None)))
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "1")
+    assert psettings.get_bool("inbound_chase.enabled", store=none_store) is True
+    monkeypatch.delenv("PRECIS_INBOUND_CHASE_ENABLED")
+    assert psettings.get_bool("inbound_chase.enabled", store=none_store) is False
+
+
+def test_set_setting_writes_audit_row() -> None:
+    conn = _FakeConn(value="false")
+    store = cast("Any", _FakeStore(conn))
+    psettings.set_setting(
+        "inbound_chase.enabled",
+        "true",
+        store=store,
+        reason="spend watch",
+        motivating_ref="td489406",
+        confirmed_quote="yes flip it",
+    )
+    assert len(conn.audit) == 1
+    key, old, new, actor, reason, ref, quote = conn.audit[0]
+    assert (key, old, new) == ("inbound_chase.enabled", "false", "true")
+    assert actor and reason == "spend watch" and ref == "td489406"
+    assert quote == "yes flip it"
+    psettings.clear_setting("inbound_chase.enabled", store=store, reason="undo")
+    assert len(conn.audit) == 2
+    assert conn.audit[1][1] == "true" and conn.audit[1][2] is None

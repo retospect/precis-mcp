@@ -806,8 +806,11 @@ frontier signal, not a citable claim yet. This is NOT the patent kind's
 ## Chunk-level citation grounding (dark, opt-in)
 ## Does this specific claim actually check out against what it cites?
 
-Cluster-side only (`inbound_chase` service, default off — flip with
-`precis service prio '*' inbound_chase <n>` or `/categorizers`): once
+Cluster-side only (`inbound_chase` pass, dark behind the
+`inbound_chase.enabled` settings flag — flippable via
+`put(kind='job', id='/settings')` only after your explicit
+confirmation, per `precis-job-observe-help`; a per-host service_config
+priority stays the operator's stop): once
 a paper has been read
 at least once, a background pass exhaustively resolves *who cites it*
 at chunk granularity, using an LLM to verify support

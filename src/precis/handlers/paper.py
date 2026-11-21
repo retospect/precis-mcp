@@ -2786,8 +2786,8 @@ class PaperHandler(Handler):
         # workers/inbound_chase.py): the first
         # time a paper is actually read — any view, any chunk range —
         # flags it for the inbound-citer sweep, once, permanently. Dark
-        # behind PRECIS_INBOUND_CHASE_ENABLED (no-op check + no tag write
-        # while off); no-op on every later read once tagged.
+        # behind the ``inbound_chase.enabled`` setting (no-op check + no
+        # tag write while off); no-op on every later read once tagged.
         from precis.workers.inbound_chase import mark_paper_active
 
         mark_paper_active(self.store, ref)
@@ -11843,7 +11843,7 @@ class PaperHandler(Handler):
             # the data (nothing to show until it's on).
             from precis.workers.inbound_chase import inbound_chase_enabled
 
-            if inbound_chase_enabled():
+            if inbound_chase_enabled(store=self.store):
                 from precis.handlers._citer_sidecar import (
                     render_cited_by_sidecar,
                     render_citer_sidecar,

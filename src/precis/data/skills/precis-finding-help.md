@@ -617,8 +617,11 @@ control on its `/claim/<head>` web page.
 ## The inbound counterpart — who cites *this* paper (dark, opt-in)
 
 Everything above is outbound: X cites Y, chase it down to Y's
-supporting chunk. The inbound pass (dark by default; flip with `precis
-service prio '*' inbound_chase <n>` or `/categorizers`) runs the other
+supporting chunk. The inbound pass (dark behind the
+`inbound_chase.enabled` settings flag, flippable via
+`put(kind='job', id='/settings')` after your explicit confirmation per
+`precis-job-observe-help`; a per-host service_config priority stays
+the operator's stop) runs the other
 direction — once a paper has been read, it exhaustively
 resolves every corpus-intersecting citer at chunk granularity, no
 todo/finding needed. Nothing to register from the agent side; read

@@ -32,8 +32,9 @@ from uuid import uuid4
 
 import pytest
 
-from precis import health_checks
+from precis import health_checks, settings
 from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts, raise_alert
+from precis.store import Store
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
@@ -62,7 +63,7 @@ from precis.workers.health_digest import (
     _sync_alerts,
     run_health_digest_pass,
 )
-from precis.workers.registry import ServiceKind, ServiceSpec
+from precis.workers.registry import SERVICES_BY_NAME, ServiceKind, ServiceSpec
 from precis.workers.scheduler import Cadence, run_scheduler_pass
 from precis.workers.service_config import set_service_prio
 from tests._refs import insert_gripe
@@ -956,6 +957,29 @@ def test_layer2_ignores_an_enable_env_only_spec(store) -> None:
     )
     results = _layer2_checks(store, specs=[fake])
     assert results == []
+
+
+@pytest.mark.parametrize("host", ["*", "maple"])
+def test_layer2_inbound_chase_requires_placement_and_flag(
+    store: Store, host: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = "inbound_chase"
+    key = "inbound_chase.enabled"
+    specs = [SERVICES_BY_NAME[name]]
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "1")
+    assert _layer2_checks(store, specs=specs) == []
+
+    set_service_prio(store, host, name, 5)
+    settings.set_setting(key, "false", store=store)
+    assert _layer2_checks(store, specs=specs) == []
+
+    settings.set_setting(key, "true", store=store)
+    results = _layer2_checks(store, specs=specs)
+    assert [result.name for result in results] == [name]
+    assert "intended-on but silent" in results[0].detail
+
+    set_service_prio(store, host, name, 0)
+    assert _layer2_checks(store, specs=specs) == []
 
 
 # ── (1) Layer-2 idle-vs-stuck: claimed=0-only is not "silent" ───────────

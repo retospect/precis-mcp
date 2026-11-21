@@ -129,6 +129,7 @@ from precis.alerts import (
 from precis.nanopub.stale import candidate_stale_reason
 from precis.store import Store
 from precis.workers._embed_jobs import targeted_embed_job_sql
+from precis.workers.inbound_chase import inbound_chase_enabled
 from precis.workers.registry import SERVICES, ServiceKind, ServiceSpec
 from precis.workers.runner import BatchResult
 from precis.workers.scheduler import CADENCES
@@ -2330,8 +2331,13 @@ def _resolve_enabled_somewhere(
     (``default_profiles`` non-empty and on this host's profile). §L retired
     ``enable_env`` as a default source: an ``enable_env``-only spec defaults
     OFF absent an explicit ``service_config`` row.
+
+    Inbound chase registers by profile but requires positive priority
+    and the live spend flag before the rotation expects activity.
     """
-    structural = {s.name: bool(s.default_profiles) for s in specs}
+    structural = {
+        s.name: bool(s.default_profiles) and s.name != "inbound_chase" for s in specs
+    }
     if not structural:
         return {}
     try:
@@ -2349,6 +2355,9 @@ def _resolve_enabled_somewhere(
 
     out: dict[str, bool] = {}
     for name, default_on in structural.items():
+        if name == "inbound_chase" and not inbound_chase_enabled(store=store):
+            out[name] = False
+            continue
         service_rows = by_service.get(name, [])
         if any(host != "*" and prio > 0 for host, prio in service_rows):
             out[name] = True

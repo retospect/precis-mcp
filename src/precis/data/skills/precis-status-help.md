@@ -261,6 +261,10 @@ with priority >= 1), `off` (priority 0) or `dark` (no row: nobody has set a
 priority, so it is not running; not a fault). `setting` lists the
 controlling `host=priority` rows.
 
+For `inbound_chase`, the table reports placement only. The worker rotation
+requires positive resolved host priority and the live `inbound_chase.enabled`
+flag. Read the flag with `get(kind='job', id='/settings')`.
+
 ## The server refused my call as busy — `the server is busy` / `retry_after_s`
 
 A call that waits for a dispatch slot past `queue_wait_s` is refused

@@ -47,6 +47,7 @@ _EXPECTED_SYSTEM = frozenset(
         "bib_parse",
         "bib_mark",
         "chase",
+        "inbound_chase",
         "fetch",
         "gp_fetch",
         "tag_embeddings",

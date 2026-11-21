@@ -39,7 +39,7 @@ from urllib.parse import parse_qsl, urlencode
 from psycopg import Connection
 
 from precis._result_budget import size_cell
-from precis.errors import BadInput, Denied, NotFound
+from precis.errors import BadInput, Denied, NotFound, Upstream
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
     _COUNT_GROUP_LIMIT,
@@ -1132,6 +1132,15 @@ def _run_file_content(payload: Any) -> str:
     )
 
 
+_SETTINGS_PUT_NEXT = (
+    "put(kind='job', id='/settings', args={'key': 'inbound_chase.enabled', "
+    "'value': True, 'reason': '...', 'motivating_ref': 'td489406', "
+    "'confirmed_by_user': True, 'user_said': '<user words>'}); "
+    "revert: args={'key': ..., 'revert': True, 'reason': ..., 'motivating_ref': ..., "
+    "'confirmed_by_user': True, 'user_said': ...}"
+)
+
+
 class JobHandler(NumericRefHandler):
     list_drop_constant_cols = ("remaining_words", "links", "age", "size")
     extra_search_views = ("parked",)
@@ -1268,8 +1277,17 @@ class JobHandler(NumericRefHandler):
         # ``/garden/proposals``'s action filter (gr681311):
         # ``args={'action': 'merge'}``. Declared for the args= gate.
         action: str | None = None,
+        # ``/settings`` audit history (gr635487): ``args={'history': '<key>'}``.
+        history: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if history is not None:
+            if not (isinstance(id, str) and id.strip() == "/settings"):
+                raise BadInput(
+                    "history= only applies to id='/settings'",
+                    next="get(kind='job', id='/settings', args={'history': '<key>'})",
+                )
+            return self._render_settings_history(history)
         # ``/logs`` takes its filters from the id's query string; a
         # top-level ``q=`` (and plain ``handler=``/``host=``/... args)
         # fold into it, the id's own value winning (gr500645).
@@ -2186,11 +2204,118 @@ class JobHandler(NumericRefHandler):
         )
         return Response(body="\n".join(lines), result_count=1)
 
+    def _render_settings_history(self, key: str) -> Response:
+        """Last 10 ``app_settings_audit`` rows for ``key`` (gr635487)."""
+        import psycopg
+
+        from precis import settings as _settings
+
+        key = str(key).strip()
+        spec = _settings.REGISTRY.get(key)
+        if spec is None or not spec.agent_settable or spec.type != "bool":
+            raise BadInput(
+                "history is available for agent-settable bool flags",
+                next="get(kind='job', id='/settings')",
+            )
+        try:
+            rows = _settings.audit_history(key, store=self.store, limit=10)
+        except psycopg.Error as exc:
+            raise Upstream(
+                "settings audit history unavailable",
+                next="retry when the settings audit database is available",
+            ) from exc
+        if not rows:
+            return Response(body=f"no audit rows for {key}", result_count=0)
+        lines = [f"audit history for {key} (newest first):"]
+        for r in rows:
+            lines.append(
+                f"- #{r['id']} {_fmt_utc(r['at'])}: "
+                f"{_flag_value(r['old'])} -> {_flag_value(r['new'])}"
+            )
+        return Response(body="\n".join(lines), result_count=len(rows))
+
+    def _put_agent_setting(
+        self,
+        *,
+        key: str | None,
+        value: Any,
+        reason: str | None,
+        motivating_ref: str | None,
+        confirmed_by_user: bool | str | None,
+        user_said: str | None,
+        revert: bool | str | None,
+    ) -> Response:
+        """``put(id='/settings')`` — audited flip/revert of an allowlisted
+        bool flag, only with the user's attested in-session confirmation
+        (gr635487). Secrets, deploys and restarts stay out of reach."""
+        import psycopg
+
+        from precis import settings as _settings
+
+        k = key.strip() if isinstance(key, str) else ""
+        spec = _settings.REGISTRY.get(k)
+        if spec is None or not spec.agent_settable or spec.type != "bool":
+            allowed = sorted(
+                n
+                for n, sp in _settings.REGISTRY.items()
+                if sp.agent_settable and sp.type == "bool"
+            )
+            raise BadInput(
+                f"{k!r} is not an agent-settable flag",
+                options=allowed,
+                next=_SETTINGS_PUT_NEXT,
+            )
+        why = reason.strip() if isinstance(reason, str) else ""
+        said = user_said.strip() if isinstance(user_said, str) else ""
+        ref = motivating_ref.strip() if isinstance(motivating_ref, str) else ""
+        if not why or not ref:
+            raise BadInput(
+                "reason= and motivating_ref= are required", next=_SETTINGS_PUT_NEXT
+            )
+        if confirmed_by_user is not True or not said:
+            raise BadInput(
+                "agents may set a flag only after the user's explicit "
+                "in-session confirmation: pass confirmed_by_user=True and "
+                "user_said='<their words>'",
+                next=_SETTINGS_PUT_NEXT,
+            )
+        is_revert = str(revert).strip().lower() in ("true", "1", "yes")
+        parsed = None
+        if not is_revert:
+            parsed = _settings._coerce_bool(value, k)
+            if parsed is None:
+                raise BadInput(
+                    f"value={value!r} is not a bool", next=_SETTINGS_PUT_NEXT
+                )
+        receipt = dict(reason=why, motivating_ref=ref, confirmed_quote=said)
+        try:
+            if is_revert:
+                old, new = _settings.revert_setting(k, store=self.store, **receipt)
+            else:
+                old, new = _settings.set_setting(
+                    k, "true" if parsed else "false", store=self.store, **receipt
+                )
+        except _settings.NoSettingHistory as exc:
+            raise BadInput(
+                f"no audit history for {k} to revert",
+                next=f"get(kind='job', id='/settings', args={{'history': '{k}'}})",
+            ) from exc
+        except psycopg.Error as exc:
+            raise Upstream(
+                "settings change could not be audited",
+                next="check settings history before retrying when the database is available",
+            ) from exc
+        verb = "reverted" if is_revert else "set"
+        return Response(
+            body=f"{verb} {k}: {_flag_value(old)} -> {_flag_value(new)} (audited)",
+            result_count=1,
+        )
+
     def _render_settings_view(self, query_string: str) -> Response:
         """``id='/settings'`` — the live DB switches, read-only (gr538186).
 
-        Two tables. ``app_settings``: every row IS a non-default
-        override (an absent key falls back to env/compiled defaults —
+        Agent flags show their effective DB/env/default value. An
+        ``app_settings`` row is an override (an absent key falls back to env/compiled defaults —
         ``precis.settings``' typed registry and
         ``precis.budget.settings``' generic KV both read it).
         ``service_config``: every ``(host, service)`` run-control row
@@ -2213,12 +2338,13 @@ class JobHandler(NumericRefHandler):
         — and ``service_config`` cells pass the same rule, ``host``
         excepted (always masked). The view is deliberately ungated:
         typed-only output makes it safe for ANY agent caller — there is
-        no privileged read that shows more. Writes stay with the
-        operator surfaces (``precis service``, ``precis settings``,
-        /budget) — there is no put path here.
+        no privileged read that shows more. Writes: operator surfaces
+        (``precis service``, ``precis settings``, /budget), plus the
+        attested agent flag put on this id (gr635487).
         """
         import psycopg
 
+        from precis import settings
         from precis.format import render_agent_table
         from precis.workers.service_config import list_service_config
 
@@ -2243,11 +2369,18 @@ class JobHandler(NumericRefHandler):
         # line per stem — 100 daily keys can't fill the card. ``daily``
         # groups ``(key, piece, value, updated_at, updated_by)`` under
         # the match's stem.
+        flags = sorted(
+            key
+            for key, spec in settings.REGISTRY.items()
+            if spec.agent_settable and spec.type == "bool"
+        )
         daily: dict[str, list[tuple[str, str, Any, Any, Any]]] = {}
         rest: list[tuple[str, Any, Any, Any]] = []
         withheld_keys = 0
         for row in app_rows:
             key = str(row[0])
+            if key in flags:
+                continue
             allowed = (
                 _allowlisted_setting_key(key) and key not in _WITHHELD_SETTING_KEYS
             )
@@ -2299,15 +2432,22 @@ class JobHandler(NumericRefHandler):
         display.sort(key=lambda r: r[0])
 
         lines = [
-            "# settings — live DB switches (read-only)",
+            "# settings — live switches",
             "",
             "An app_settings row is a non-default override; a "
             "service_config row is the live run-control knob (absent "
             "row = env/profile default). Values render only for "
             "allowlisted keys and only as typed scalars (bool, number, "
             "timestamp, duration, vetted word); unknown key segments "
-            "render as <name>. Writes stay with the operator surfaces "
-            "(precis service / precis settings / /budget).",
+            "render as <name>.",
+            "",
+            "## Agent-settable flags",
+        ]
+        for key in flags:
+            value, layer = settings.resolve(key, store=self.store)
+            effective = "true" if value is True else "false"
+            lines.append(f"- {key}: {effective} ({layer})")
+        lines += [
             "",
             f"## app_settings ({len(display)} shown, {withheld_keys} withheld)",
         ]
@@ -2377,7 +2517,8 @@ class JobHandler(NumericRefHandler):
                 "profile/env default."
             )
         return Response(
-            body="\n".join(lines), result_count=len(display) + len(svc_rows)
+            body="\n".join(lines),
+            result_count=len(flags) + len(display) + len(svc_rows),
         )
 
     def _render_claim_view(self, query_string: str) -> Response:
@@ -3670,8 +3811,34 @@ class JobHandler(NumericRefHandler):
         seconds: int | str | None = None,
         under: str | int | None = None,
         review_id: int | str | None = None,
+        # id='/settings' agent flag write (gr635487).
+        motivating_ref: str | None = None,
+        confirmed_by_user: bool | str | None = None,
+        user_said: str | None = None,
+        revert: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, str) and id.strip() == "/settings":
+            return self._put_agent_setting(
+                key=key,
+                value=value,
+                reason=reason,
+                motivating_ref=motivating_ref,
+                confirmed_by_user=confirmed_by_user,
+                user_said=user_said,
+                revert=revert,
+            )
+        if (
+            motivating_ref is not None
+            or confirmed_by_user is not None
+            or user_said is not None
+            or revert is not None
+        ):
+            raise BadInput(
+                "motivating_ref=/confirmed_by_user=/user_said=/revert= only "
+                "apply to put(kind='job', id='/settings')",
+                next=_SETTINGS_PUT_NEXT,
+            )
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
         # failed job by clearing the parent todo's failure bubble so the
         # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
@@ -7378,6 +7545,16 @@ def _parse_logs_int(
                 except ValueError:
                     pass
         raise BadInput(f"{field}={raw!r} is not an integer", next=example) from exc
+
+
+def _flag_value(value: str | None) -> str:
+    if value is None:
+        return "(env/default)"
+    if value.strip().lower() in {"true", "1", "yes", "on"}:
+        return "true"
+    if value.strip().lower() in {"false", "0", "no", "off"}:
+        return "false"
+    return "(invalid bool)"
 
 
 def _allowlisted_setting_key(key: str) -> bool:

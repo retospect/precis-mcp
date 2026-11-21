@@ -196,7 +196,7 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-files-help": 5,
         "precis-finding-help": 1,
         "precis-md-help": 1,
-        "precis-paper-help": 2,
+        "precis-paper-help": 1,
         "precis-patent-power": 9,
         "precis-perplexity-help": 3,
         "precis-provenance-help": 4,
