@@ -174,6 +174,10 @@ class TaxonHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "taxon"
     sense: ClassVar[str] = "taxon"
+    #: ``put`` declares ``title=`` (composed with ``body=`` below), yet a
+    #: ``title=`` + ``text=`` pair still reads as the first-line fold —
+    #: dispatch resolves it before this method's ambiguity refusal.
+    title_is_first_line: ClassVar[bool] = True
 
     #: Embeddable `card_combined` (name + definition + aliases), as concept.
     emits_card: ClassVar[bool] = True

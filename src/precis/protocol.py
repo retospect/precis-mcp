@@ -438,6 +438,17 @@ class Handler(ABC):
     #: writer until it runs inside its own trust context.
     trust_origin: ClassVar[str | None] = None
 
+    #: The kind's title IS the first line of ``text=`` even though the
+    #: handler declares ``title`` as its own kwarg (taxon reads it to
+    #: compose ``title=`` + ``body=`` into ``text='<name> — <def>'``).
+    #: :func:`precis.runtime.dispatch._fold_title_kwarg` still folds a
+    #: ``title=`` + ``text=`` pair — a declared title would otherwise
+    #: reach the handler and die on its own ambiguity check — while a
+    #: lone ``title`` keeps going to the handler that composes it. Kinds
+    #: whose ``title`` is a field of its own (memory, gripe, finding)
+    #: keep the default and their kwarg untouched.
+    title_is_first_line: ClassVar[bool] = False
+
     #: Populated by :meth:`_register_with` so handlers that need
     #: hub introspection (e.g. SkillHandler rendering
     #: ``precis-help``, or any handler that wants the embedder /
