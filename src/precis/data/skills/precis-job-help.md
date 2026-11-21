@@ -133,10 +133,12 @@ put(kind='job', link='gripe:42', rel='fixes',
   `child-failed:<job_id>`; the sweeper's `unpark` phase then retries
   it autonomously on an escalating cool-down (12 h / 24 h / 48 h,
   cap 3) before latching the terminal `child-failed-final` tag.
-  Transient causes retry sooner: a failure reason reading as a
-  rate/spend limit or transient API fault stamps `meta.retry_after`
-  on the job, and the unpark fires at that time (15 min–2 h) instead
-  of the 12 h base — same cap. `child-failed-final` —
+  For a recognized transient failure, the executor stamps
+  `meta.retry_after` on the job. Rate limits wait 15 min, spend caps
+  2 h, and transport faults 30 min. A Claude quota notice uses its
+  parsed reset time, and an account API usage-limit notice uses its
+  stated date. The sweeper uses that timestamp for unpark with the
+  same retry cap. `child-failed-final` —
   only *that* tag means the substrate has given up and a human (or
   the parent's owner) must decide. The nursery surfaces
   still-recoverable parks per-leaf and finals as one aggregate.

@@ -241,7 +241,13 @@ tagged. The doable view excludes parents with that tag so they
 don't keep getting re-picked. The sweeper auto-unparks bounded
 (see [[precis-job-help]] §The contract), so manual retry is for
 *now* rather than *eventually*
-— and mandatory only once `child-failed-final` is latched:
+— and mandatory only once `child-failed-final` is latched.
+
+Before calling `put(kind='job', id=<failed_job_id>, mode='retry')`,
+verify that the root cause has cleared or that your retry settings
+address it. For example, after a planner service outage, look for a
+recent `plan_tick` with `STATUS:succeeded` on the affected route. If
+the cause persists, the fresh attempt will fail again.
 
 ```python
 # Option A (preferred): the retry verb. One call clears the bubble
