@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from dataclasses import replace
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -45,6 +46,7 @@ from precis.anki.cloze import (
     space_adjacent_braces,
     strip_cloze,
 )
+from precis.anki.media import fetch_image
 from precis.anki.work_tracking import (
     has_work_source_tag,
     is_work_item_text,
@@ -55,7 +57,7 @@ from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store import Tag
+from precis.store import Ref, Tag
 from precis.utils.link_target import parse_link_target
 
 #: A lone ``---`` line separating the cloze body from an optional Back Extra.
@@ -174,9 +176,49 @@ class AnkiHandler(NumericRefHandler):
     #: The body is the card, so emit a `card_combined` search chunk (ord=-1) —
     #: same as memory. `_card_combined_text` strips the cloze markup.
     emits_card: ClassVar[bool] = True
+    accepts_put_meta: ClassVar[bool] = True
+
+    def put(self, *, image: str | None = None, **kw: Any) -> Response:
+        # Only the typed attachment option feeds the numeric create hook.
+        kw["meta"] = {"image": image} if image is not None else None
+        return super().put(**kw)
+
+    def _merge_put_meta(
+        self, text: str, initial_meta: dict[str, Any], put_meta: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {**initial_meta, "anki_image": fetch_image(put_meta["image"])}
 
     #: A deck move can re-file a set of cards in one tag call.
     tag_batch_ids: ClassVar[bool] = True
+
+    @staticmethod
+    def _without_image_data(ref: Ref) -> Ref:
+        meta = ref.meta or {}
+        image = meta.get("anki_image")
+        if not image:
+            return ref
+        data = image["data"]
+        return replace(
+            ref,
+            meta={
+                **meta,
+                "anki_image": {
+                    "filename": image["filename"],
+                    "size_bytes": len(data) * 3 // 4
+                    - (len(data) - len(data.rstrip("="))),
+                },
+            },
+        )
+
+    def _render_meta_view(self, ref: Ref) -> str:
+        return super()._render_meta_view(self._without_image_data(ref))
+
+    def _render_raw(
+        self, ref: Ref, tags: list[Tag], *, meta_key: str | None = None
+    ) -> str:
+        return super()._render_raw(
+            self._without_image_data(ref), tags, meta_key=meta_key
+        )
 
     # ── create-time hooks (see NumericRefHandler) ──────────────────────
 

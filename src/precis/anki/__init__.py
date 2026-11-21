@@ -9,7 +9,16 @@ designated sync runner by ansible, gated behind PRECIS_ANKI_ENABLED. Sync is
 add-only-own-notes by deterministic guid (``precis:<ref_id>`` — a text edit
 updates the note in place, never re-guids, so Anki's scheduling history
 survives); the guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, so
-precis can never clobber an account. Media never syncs (cards are text).
+precis can never overwrite the account's collection. Image attachments are
+fetched at card creation and stored with the ref so retries and rebuilt
+mirrors use the same bytes after the source changes or disappears. The
+worker writes content-addressed files through Anki's media manager and
+waits for separate, two-way media sync on accounts with attached cards.
+The initial transfer can download the account's existing media library
+to the runner. After a media timeout, the collection receipts still
+advance and the next tick retries media. Card metadata views show the
+attachment filename and byte size. The ``Text`` field uses the filename
+returned by Anki, including when Anki renames a file to avoid a collision.
 Soft-deleted refs retire their notes on the next tick, scoped to their
 owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. Decay
 stats read back into ``meta.anki_stats``. Recent graded revlog entries feed

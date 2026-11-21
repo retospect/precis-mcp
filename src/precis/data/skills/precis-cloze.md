@@ -133,6 +133,10 @@ but not a guess: `::meaning`, `::pronunciation`, `::domain`, `::number`,
 `::date`, `::mechanism`, `::example`, `::term`, `::image`, `::latex`. Terse,
 one word.
 
+For a recognition card with a photo, attach it with
+`put(kind="anki", args={"image": "<direct portrait URL>"}, ...)`. See
+`precis-anki-help` for the image requirements and a conference example.
+
 For an acronym or abbreviation, show the short form and cloze the expansion
 or meaning. Never hide the short form with its expansion as the hint.
 `RMSD ({{c1::root-mean-square deviation::expansion}})` tests recall of what

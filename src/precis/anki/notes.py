@@ -13,6 +13,7 @@ forgetting curve). Notes also carry a human-findable `precis::id::<ref_id>` tag.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +68,7 @@ class AnkiCardSpec:
     # manual deck moves on existing notes, including notes synced before rollout.
     pending_deck_revision: str | None = None
     restore_pending: bool = False
+    image: tuple[str, bytes] | None = None
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
@@ -90,6 +92,7 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
     if extra:
         out["Back Extra"] = extra
     deck_revision = meta.get("anki_deck_revision")
+    image = meta.get("anki_image")
     return AnkiCardSpec(
         ref_id=ref.id,
         fields=out,
@@ -97,6 +100,7 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
         previously_synced=bool(meta.get("anki_synced_at")),
         restore_pending=bool(meta.get("anki_restore_pending")),
         boost=bool(meta.get("anki_boost_due")),
+        image=(image["filename"], base64.b64decode(image["data"])) if image else None,
         pending_deck_revision=(
             deck_revision
             if deck_revision != meta.get("anki_synced_deck_revision")

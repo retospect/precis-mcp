@@ -71,6 +71,31 @@ aka the citric-acid / TCA cycle""",
 
 Everything before `---` is the cloze card; everything after is Back Extra.
 
+## Attach a photo to a card
+
+```python
+put(
+    kind="anki",
+    text=(
+        "At the poster session, ask {{c1::Avery Chen}} (Example Lab) "
+        "about replication data."
+    ),
+    args={"image": "https://example.org/speakers/avery-chen.jpg"},
+    tags=["deck-conference"],
+)
+```
+
+Use a direct public HTTPS URL serving a PNG or JPEG up to 1 MiB. The card
+saves a copy when you create it. After AnkiWeb sync, the photo appears on
+both sides of the cloze card. Anki clients need media sync enabled to
+download it.
+
+For conference prep, use a memory ref for a speaker or talk. Record the
+speaker's name and affiliation, the talk title, the event source and the
+direct portrait URL in the note. Pass the portrait URL as `args.image` when
+creating the card and link the memory with `link=` and `rel="derived-from"`.
+Put the question you want to ask in the card text.
+
 ## Showing a card in chat
 
 When you tell the user about a cloze card — confirming what you just made,

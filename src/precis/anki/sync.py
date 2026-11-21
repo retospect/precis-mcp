@@ -19,8 +19,10 @@ overwrite AnkiWeb, so it is **refused** — the tick aborts and reports.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
+from html import escape
 from typing import Any
 
 from precis.anki.notes import (
@@ -33,6 +35,8 @@ from precis.anki.notes import (
     precis_tag,
     ref_id_from_guid,
 )
+
+log = logging.getLogger(__name__)
 
 
 class AnkiSyncError(Exception):
@@ -99,18 +103,27 @@ def upsert_notes(
     ``(pushed, updated)``. Add-only-own-notes: only touches notes whose guid we
     minted, so a foreign note is unreachable here. A pending deck retag
     relocates the existing note's cards in place. Otherwise the cards keep
-    their Anki deck, including manual moves made before retag tracking."""
+    their Anki deck, including manual moves made before retag tracking.
+    Attachments are written to the mirror's media collection and an
+    image tag with Anki's returned filename is appended to ``Text``."""
     cloze = col.models.by_name("Cloze")
     if cloze is None:
         raise AnkiSyncError("stock Cloze notetype missing from the collection")
     pushed = updated = 0
     for spec in specs:
+        fields = spec.fields
+        if spec.image is not None:
+            filename = col.media.write_data(*spec.image)
+            fields = {
+                **fields,
+                "Text": f'{fields["Text"]}<br><img src="{escape(filename)}">',
+            }
         guid = guid_for(spec.ref_id)
         existing = col.db.list("select id from notes where guid = ?", guid)
         if existing:
             note = col.get_note(existing[0])
             changed = False
-            for name, val in spec.fields.items():
+            for name, val in fields.items():
                 if name in note.keys() and note[name] != val:  # noqa: SIM118 (anki Note, not a dict)
                     note[name] = val
                     changed = True
@@ -132,7 +145,7 @@ def upsert_notes(
         else:
             note = col.new_note(cloze)
             note.guid = guid
-            for name, val in spec.fields.items():
+            for name, val in fields.items():
                 if name in note.keys():  # noqa: SIM118 (anki Note, not a dict)
                     note[name] = val
             note.tags = [precis_tag(spec.ref_id), MANAGED_TAG]
@@ -330,9 +343,9 @@ def sync_tick(
         if out.required in (CR.FULL_SYNC, CR.FULL_DOWNLOAD):
             # Account-safe: download replaces only our local mirror.
             col.close_for_full_sync()
-            col.full_upload_or_download(
-                auth=auth, server_usn=out.server_media_usn, upload=False
-            )
+            # A media USN starts background media sync. Defer that transfer
+            # until after the note push, and only for accounts with attachments.
+            col.full_upload_or_download(auth=auth, server_usn=None, upload=False)
             col.reopen(after_full_sync=True)
             result.bootstrapped = True
 
@@ -388,6 +401,21 @@ def sync_tick(
         result.review_ids = col.db.list(
             "SELECT id FROM revlog WHERE id >= ? AND ease > 0", cutoff_ms
         )
+
+        if any(spec.image is not None for spec in specs):
+            # Keep the mirror open for the background transfer. A timeout
+            # leaves the completed collection push eligible for receipts.
+            col.sync_media(
+                sp.SyncAuth(hkey=auth.hkey, endpoint=out2.new_endpoint or auth.endpoint)
+            )
+            deadline = time.monotonic() + 600
+            while col.media_sync_status().active:
+                if time.monotonic() >= deadline:
+                    col.abort_media_sync()
+                    log.warning("Anki media sync timed out; will retry next tick")
+                    break
+                time.sleep(0.25)
+
         stats = read_precis_stats(col)
         result.stats_written = len(stats)
         if project:

@@ -781,8 +781,8 @@ class NumericRefHandler(Handler):
         the body verbatim. ``anki`` strips ``{{cN::…}}`` cloze markup here."""
         return text
 
-    #: Opt-in: forward the verb-level ``put(meta=...)`` dict into create. Off
-    #: for every kind but ``taxon``, where ``meta=`` was (and stays) ignored.
+    #: Opt-in: forward a ``put(meta=...)`` dict into create for validation
+    #: and merging by the kind.
     accepts_put_meta: ClassVar[bool] = False
 
     def _merge_put_meta(

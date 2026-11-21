@@ -16,6 +16,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.anki import AnkiHandler, _split_extra, _strip_cloze
+from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 
 
@@ -56,6 +57,45 @@ class TestClozeHelpers:
 
 
 class TestAnkiCard:
+    def test_put_image_through_dispatch(
+        self,
+        runtime_with_store: PrecisRuntime,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from precis.anki.notes import spec_from_ref
+
+        url = "https://example.org/speaker.png"
+        attachment = {"filename": "precis-portrait.png", "data": "aW1hZ2U="}
+
+        def fetch_image(source: str) -> dict[str, str]:
+            assert source == url
+            return attachment
+
+        monkeypatch.setattr("precis.handlers.anki.fetch_image", fetch_image)
+        body = "Ask {{c1::Avery Chen}} (Example Lab) about replication."
+        result = runtime_with_store.dispatch(
+            "put", {"kind": "anki", "text": body, "__extras__": {"image": url}}
+        )
+        ref = store.get_ref(kind="anki", id=int(_search(r"id=(\d+)", result).group(1)))
+        assert ref is not None
+        spec = spec_from_ref(ref)
+        assert spec is not None
+        assert spec.fields == {"Text": body}
+        assert spec.image == ("precis-portrait.png", b"image")
+        for view, extras in (
+            ("meta", {}),
+            ("raw", {}),
+            ("raw", {"meta_key": "anki_image"}),
+        ):
+            rendered = runtime_with_store.dispatch(
+                "get",
+                {"kind": "anki", "id": ref.id, "view": view, "__extras__": extras},
+            )
+            assert attachment["data"] not in rendered
+            assert attachment["filename"] in rendered
+            assert re.search(r'"size_bytes":\s*5', rendered)
+
     def test_put_emits_stripped_card_combined(self, store) -> None:
         h = _make_handler(store)
         resp = h.put(text="Paris is the {{c1::capital}} of France.")

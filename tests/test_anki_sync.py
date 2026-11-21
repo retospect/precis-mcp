@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -27,6 +27,76 @@ from precis.anki.notes import (
     spec_from_ref,
 )
 from precis.store import Store
+
+
+@pytest.mark.parametrize("media_times_out", [False, True])
+def test_attached_note_uses_media_filename_and_preserves_collection_stats(
+    monkeypatch: pytest.MonkeyPatch,
+    media_times_out: bool,
+) -> None:
+    from precis.anki import sync
+
+    col = MagicMock()
+    col.db.all.return_value = []
+    col.db.list.return_value = []
+    col.media.write_data.return_value = "renamed&photo.png"
+    col.media_sync_status.side_effect = [
+        SimpleNamespace(active=True),
+        SimpleNamespace(active=False),
+    ]
+    col.sync_collection.side_effect = [
+        SimpleNamespace(required=0, new_endpoint=None),
+        SimpleNamespace(required=0, new_endpoint="https://example.org/sync"),
+    ]
+
+    class Note(dict[str, str]):
+        guid: str
+        tags: list[str]
+
+    note = Note(Text="", **{"Back Extra": ""})
+    col.new_note.return_value = note
+    changes = SimpleNamespace(FULL_UPLOAD=1, FULL_SYNC=2, FULL_DOWNLOAD=3)
+    sp = SimpleNamespace(
+        SyncCollectionResponse=SimpleNamespace(ChangesRequired=changes),
+        SyncAuth=lambda **kw: SimpleNamespace(**kw),
+    )
+    monkeypatch.setattr(sync, "_import_anki", lambda: (lambda path: col, sp))
+    stats = {12: {"reviews": 1}}
+    monkeypatch.setattr(sync, "read_precis_stats", lambda _col: stats)
+    if media_times_out:
+        clock = iter([0, 600])
+        monkeypatch.setattr(
+            sync, "time", SimpleNamespace(time=lambda: 0, monotonic=lambda: next(clock))
+        )
+    else:
+        monkeypatch.setattr(
+            sync,
+            "time",
+            SimpleNamespace(time=lambda: 0, monotonic=lambda: 0, sleep=lambda _: None),
+        )
+    spec = AnkiCardSpec(
+        12,
+        {"Text": "{{c1::Avery}}", "Back Extra": "Ask about replication"},
+        image=("precis-photo.png", b"image"),
+    )
+
+    result, returned_stats = sync.sync_tick(
+        mirror_path="unused", user="user", password="pw", specs=[spec]
+    )
+
+    assert result.pushed == 1
+    assert result.aborted is None
+    assert returned_stats == stats
+    assert result.stats_written == 1
+    assert note == {
+        "Text": '{{c1::Avery}}<br><img src="renamed&amp;photo.png">',
+        "Back Extra": "Ask about replication",
+    }
+    col.media.write_data.assert_called_once_with("precis-photo.png", b"image")
+    assert col.sync_media.call_args.args[0].endpoint == "https://example.org/sync"
+    assert col.media_sync_status.call_count == (1 if media_times_out else 2)
+    assert col.abort_media_sync.call_count == int(media_times_out)
+    assert col.method_calls[-1] == call.close()
 
 
 @pytest.mark.parametrize("full_download", [False, True])
