@@ -1603,8 +1603,12 @@ Known limits:
   stored `pushed` record is still on disk. If that folder held work
   newer than its record, the sweep saves it under the earlier job's
   ref and the new attempt does not continue from it.
-- Run dirs under the worker's `precis-slice-ops` are never removed
-  (gr743294).
+- The host sweep removes a run dir under the worker's
+  `precis-slice-ops` once the dir is a day old, its job is terminal and
+  nothing of its session still answers (gr743294). The newest run dir
+  of each task always stays. A dir whose job cannot be proven terminal
+  — no launch record, an unreadable or another task's job row — is
+  never removed.
 
 ## Slice write scope (mcp.slice_scope)
 

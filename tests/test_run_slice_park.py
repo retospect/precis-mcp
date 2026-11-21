@@ -14,10 +14,12 @@ failed end) is retired."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -796,6 +798,177 @@ def test_tidy_survives_a_failing_sweep(
     monkeypatch.setattr(_slice_ws, "sweep", boom)
     run_slice.tidy(_Store(), None)
     assert calls == [tmp_path, second]
+
+
+# ── the run dirs (gr743294) ────────────────────────────────────────
+
+
+def _run_dir(
+    ops: Path, todo: int, attempt: str, tree: Path, *, age_s: float = 0.0
+) -> Path:
+    """A launch's run dir the way ``_launch_attempt_dir`` leaves it:
+    ``baseline`` naming the job's folder, a ``log``. ``age_s`` back-dates
+    the dir's mtime — what ``_live_session_for`` and the sweep order by."""
+    d = ops / f"td{todo}" / attempt
+    d.mkdir(parents=True)
+    run_slice._write_launch_record(d / "baseline", {"worktree": str(tree)})
+    (d / "log").write_text("session log\n", encoding="utf-8")
+    if age_s:
+        stamp = time.time() - age_s
+        os.utime(d, (stamp, stamp))
+    return d
+
+
+def test_tidy_removes_a_settled_run_dir_older_than_a_day_and_keeps_the_newest(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr743294: a run dir goes once its job is terminal and the dir is a
+    day old — a build's and a land's alike. The newest of each task always
+    stays for a look (and keeps the ``run_slice.log`` symlink's target)."""
+    ops = tmp_path / "ops"
+    age = run_slice.RUN_DIR_MAX_AGE_S + 60
+    first = _run_dir(ops, 42, "a" * 32, _job_tree(tmp_path, 42, 70), age_s=age)
+    land = _run_dir(
+        ops,
+        42,
+        "c" * 32,
+        _slice_ws.attempt_dir(tmp_path, 42, 72, "land"),
+        age_s=age - 5,
+    )
+    newest = _run_dir(ops, 42, "b" * 32, _job_tree(tmp_path, 42, 71), age_s=age - 10)
+    (ops / "td42" / "run_slice.log").symlink_to(newest / "log")
+    seams["job_row"] = {
+        70: ("failed", {"params": {"todo_id": 42}}),
+        71: ("succeeded", {"params": {"todo_id": 42}}),
+        72: ("succeeded", {"params": {"todo_id": 42}}),
+    }
+    run_slice.tidy(_Store(), None)
+    assert not first.exists() and not land.exists()
+    assert (newest / "log").is_file()
+    assert (ops / "td42" / "run_slice.log").is_symlink()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        (run_slice.ROW_ABSENT, {}),
+        ("running", {"params": {"todo_id": 42}}),
+        ("failed", {"params": {"todo_id": 7}}),
+        ("failed", {}),
+    ],
+    ids=["unreadable", "absent", "running", "other-task", "no-params"],
+)
+def test_tidy_keeps_a_run_dir_whose_job_is_not_proven_terminal(
+    seams: dict[str, Any],
+    tmp_path: Path,
+    row: Any,
+) -> None:
+    """The terminal check is the licence, not the age: a row that cannot
+    be read, is absent, names a job still running or another task's job —
+    the dir stays, because ``_live_session_for`` and a relaunch may still
+    need it."""
+    ops = tmp_path / "ops"
+    keep = _run_dir(
+        ops,
+        42,
+        "a" * 32,
+        _job_tree(tmp_path, 42, 70),
+        age_s=run_slice.RUN_DIR_MAX_AGE_S + 60,
+    )
+    _run_dir(ops, 42, "b" * 32, _job_tree(tmp_path, 42, 71))
+    seams["job_row"] = {70: row, 71: ("failed", {"params": {"todo_id": 42}})}
+    run_slice.tidy(_Store(), None)
+    assert keep.is_dir()
+
+
+def test_tidy_keeps_a_run_dir_younger_than_a_day(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """Settled but fresh: the day is the grace a look at a just-ended run
+    gets, before the dir goes."""
+    ops = tmp_path / "ops"
+    old = _run_dir(
+        ops,
+        42,
+        "a" * 32,
+        _job_tree(tmp_path, 42, 70),
+        age_s=run_slice.RUN_DIR_MAX_AGE_S + 3600,
+    )
+    young = _run_dir(
+        ops,
+        42,
+        "b" * 32,
+        _job_tree(tmp_path, 42, 71),
+        age_s=run_slice.RUN_DIR_MAX_AGE_S - 60,
+    )
+    newest = _run_dir(ops, 42, "c" * 32, _job_tree(tmp_path, 42, 72))
+    seams["job_row"] = (
+        "failed",
+        {"params": {"todo_id": 42}},
+    )
+    run_slice.tidy(_Store(), None)
+    assert not old.exists()
+    assert young.is_dir() and newest.is_dir()
+
+
+def test_tidy_keeps_a_run_dir_whose_session_still_answers(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The job is terminal but the recorded session's leader still answers:
+    its log may still be written, so the dir stays until nothing does."""
+    ops = tmp_path / "ops"
+    keep = _run_dir(
+        ops,
+        42,
+        "a" * 32,
+        _job_tree(tmp_path, 42, 70),
+        age_s=run_slice.RUN_DIR_MAX_AGE_S + 60,
+    )
+    _run_dir(ops, 42, "b" * 32, _job_tree(tmp_path, 42, 71))
+    (keep / "pid").write_text("4242", encoding="utf-8")
+    run_slice._write_launch_record(
+        keep / "handle",
+        {
+            "pid": 4242,
+            "pgid": 4242,
+            "ps_identity": seams["ps_identity"],
+            "exit_file": str(keep / "exit"),
+            "log": str(keep / "log"),
+        },
+    )
+    stamp = time.time() - run_slice.RUN_DIR_MAX_AGE_S - 60
+    os.utime(keep, (stamp, stamp))  # the later writes bumped the mtime
+    seams["job_row"] = ("failed", {"params": {"todo_id": 42}})
+    run_slice.tidy(_Store(), None)
+    assert keep.is_dir()
+    seams["alive"] = False  # the leader is gone: a later pass removes the dir
+    monkeypatch.setattr(
+        run_slice,
+        "_tidy_last",
+        run_slice.time.monotonic() - run_slice.TIDY_EVERY_S - 1,
+    )
+    run_slice.tidy(_Store(), None)
+    assert not keep.exists()
+
+
+def test_tidy_keeps_a_run_dir_with_no_launch_record(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """No ``baseline``: nothing proves which job the dir served, so it
+    stays — and non-run-dir entries of ``td<todo>`` are never touched."""
+    ops = tmp_path / "ops"
+    bare = ops / "td42" / ("d" * 32)
+    bare.mkdir(parents=True)
+    (bare / "log").write_text("session log\n", encoding="utf-8")
+    stamp = time.time() - run_slice.RUN_DIR_MAX_AGE_S - 60
+    os.utime(bare, (stamp, stamp))
+    keep = _run_dir(ops, 42, "b" * 32, _job_tree(tmp_path, 42, 71))
+    venv = ops / "td42" / "pin_venv"
+    venv.mkdir()
+    seams["job_row"] = ("failed", {"params": {"todo_id": 42}})
+    run_slice.tidy(_Store(), None)
+    assert bare.is_dir() and keep.is_dir() and venv.is_dir()
 
 
 # ── floor, legacy import (gr741695 round 2) ────────────────────────

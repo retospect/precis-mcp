@@ -298,9 +298,11 @@ that holds the lane's credentials with ``params.target_node``):
   ``baseline``, ``handle`` and ``pid``), a launch from the poll included, so
   a session whose handle was never saved is found by the task and job ids
   (:func:`_live_session_for`), by the sweep for a build or a land folder and
-  by the poll for any parked handle. An identity that cannot be read with
-  the pid answering is a live session, here and in the run-dir lookup; only
-  a mismatch is another process. A signal goes out only where one identity
+  by the poll for any parked handle. The same sweep reaps a run dir once
+  its job is terminal and the dir is a day old, keeping the newest of each
+  task (:func:`_sweep_run_dirs`, gr743294). An identity that cannot be read
+  with the pid answering is a live session, here and in the run-dir lookup;
+  only a mismatch is another process. A signal goes out only where one identity
   read of its own says the number is still the session's
   (:func:`_signal_target_ok`, behind :func:`_may_signal`); a live
   acceptance-test group keeps the folder like a session does.
@@ -1011,7 +1013,9 @@ def _launch_attempt_dir(ctx: Any, todo_id: int) -> Path:
     ``<ops>/td<todo>/<uuid4 hex>``. Either way the launch writes ``baseline``,
     ``pid`` and ``handle`` there, so a restart, a relaunch and the host sweep
     can find a session whose handle was never saved
-    (:func:`_live_session_for`). Nothing deletes run dirs."""
+    (:func:`_live_session_for`). The host sweep removes a run dir once its
+    job is terminal and the dir is a day old (:func:`_sweep_run_dirs`,
+    gr743294)."""
     attempt_dir = _submit_attempt_dir(ctx, todo_id)
     if attempt_dir is None:
         attempt_dir = ops_root() / f"td{todo_id}" / uuid.uuid4().hex
@@ -11586,6 +11590,98 @@ TIDY_BUDGET_S = 60.0
 _tidy_last: float | None = None
 _tidy_turn = 0
 
+#: A launch's run dir (``<ops>/td<todo>/<attempt>``,
+#: :func:`_launch_attempt_dir`) stays at least this long before the host
+#: sweep may remove it (gr743294): the dir holds the session's whole log,
+#: the evidence a look at a just-ended run wants first.
+RUN_DIR_MAX_AGE_S = 24 * 3600
+
+#: A task's run state lives under ``td<todo>`` (:func:`run_dir`); a run dir
+#: under it is the 32-hex name :func:`_launch_attempt_dir` mints (a fresh
+#: ``uuid4`` or the validated ``meta.submit_attempt``) — the ``pin_venv``
+#: subdirs and the ``run_slice.log`` symlink beside them are not the
+#: sweep's.
+_TASK_DIR_NAME = re.compile(r"td(\d+)")
+_RUN_DIR_NAME = re.compile(r"[0-9a-f]{32}")
+
+
+def _run_dir_terminal(store: Any, todo_id: int, attempt_dir: Path) -> bool:
+    """Whether the run dir's job is terminal and nothing of its session
+    still answers — the licence a removal needs (gr743294). ``False``
+    when nothing proves it: the launch record missing or naming no
+    attempt folder of this task, the job row unreadable or not this
+    task's (a row of another database is that database's evidence, the
+    same rule the folder sweep judges by), the job not terminal — or a
+    process of the recorded session still answering, the log still
+    growing. :func:`_live_session_for` judges a folder by the newest run
+    dir that names it, so the dir of a job that is not terminal is never
+    removed."""
+    record = _read_launch_record(attempt_dir / "baseline")
+    worktree = str(record.get("worktree") or "") if record else ""
+    parsed = _slice_ws.parse_attempt_dir(Path(worktree)) if worktree else None
+    if parsed is None or parsed[0] != todo_id:
+        return False
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    got = _job_row(store, parsed[1])
+    if got is None:
+        return False
+    status, meta = got
+    if status == ROW_ABSENT or status not in JOB_TERMINAL_STATUSES:
+        return False
+    params = meta.get("params")
+    if not isinstance(params, dict) or params.get("todo_id") != todo_id:
+        return False
+    handle = _recover_attempt(attempt_dir)
+    return handle is None or not _session_alive(handle)
+
+
+def _sweep_run_dirs(store: Any) -> list[str]:
+    """The run-dir half of the host sweep (gr743294): every launch — a
+    submit's own, a poll's outage relaunch, a parked land's — mints a
+    dir ``<ops>/td<todo>/<32-hex>`` and nothing removed them, so they
+    accumulated a session log each. One call removes a dir only when it
+    is at least :data:`RUN_DIR_MAX_AGE_S` old and
+    :func:`_run_dir_terminal` proves its job terminal with no live
+    session left; the newest dir of each task always stays for a look —
+    it is also the ``run_slice.log`` symlink's target. Best effort:
+    never raises; returns one note per removal."""
+    notes: list[str] = []
+    try:
+        task_dirs = [d for d in ops_root().iterdir() if d.is_dir()]
+    except OSError:
+        return notes
+    now = time.time()
+    for task_dir in task_dirs:
+        m = _TASK_DIR_NAME.fullmatch(task_dir.name)
+        if m is None:
+            continue
+        todo_id = int(m.group(1))
+        try:
+            attempts = sorted(
+                (
+                    d
+                    for d in task_dir.iterdir()
+                    if d.is_dir() and _RUN_DIR_NAME.fullmatch(d.name)
+                ),
+                key=lambda d: d.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            continue
+        for attempt_dir in attempts[1:]:  # the newest of the task stays
+            try:
+                if (
+                    now - attempt_dir.stat().st_mtime < RUN_DIR_MAX_AGE_S
+                    or not _run_dir_terminal(store, todo_id, attempt_dir)
+                ):
+                    continue
+                shutil.rmtree(attempt_dir, onexc=_slice_ws._make_writable_and_retry)
+            except OSError:
+                continue  # a later pass tries again
+            notes.append(f"removed run dir {task_dir.name}/{attempt_dir.name}")
+    return notes
+
 
 def tidy(store: Any, node: str | None) -> None:
     """The host sweep (gr741695), the ``tidy`` hook of the job type: the
@@ -11598,7 +11694,9 @@ def tidy(store: Any, node: str | None) -> None:
     :data:`TIDY_EVERY_S` in this process. Every worker that runs the
     executor calls this, also on a host that builds nothing: a checkout
     with neither a hub nor a folders directory is passed over before any
-    database read.
+    database read. After the folders, the same call reaps the launches'
+    run dirs under :func:`ops_root` (:func:`_sweep_run_dirs`, gr743294) —
+    a pass on a host that builds nothing still sweeps those.
 
     One call has a shared budget, :data:`TIDY_BUDGET_S`: each root is given
     what is left as its sweep's ``budget_s`` and a root reached with nothing
@@ -11616,28 +11714,34 @@ def tidy(store: Any, node: str | None) -> None:
         for root in _host_roots()
         if worktrees_dir(root).is_dir() or (_slice_ws.hub_path(root) / "HEAD").is_file()
     ]
-    if not roots:
-        return
-    turn = _tidy_turn % len(roots)
-    _tidy_turn += 1
-    for root in roots[turn:] + roots[:turn]:
-        left = TIDY_BUDGET_S - (time.monotonic() - now)
-        if left <= 0:
-            log.info("run_slice: sweep budget spent; %s waits for the next", root)
-            continue
-        notes: list[str] = []
-        try:
-            notes = _slice_ws.sweep(root, _settler(store, root), budget_s=left)
-        except Exception:  # best effort: one root's failure spares the next
-            log.warning("run_slice: sweep of %s failed", root, exc_info=True)
-        for note in notes:
-            log.info("run_slice: sweep %s: %s", root, note)
-        try:
-            _alert_kept_folders(store, root, notes)
-        except Exception:
-            log.warning(
-                "run_slice: kept-folder reports for %s failed", root, exc_info=True
-            )
+    if roots:
+        turn = _tidy_turn % len(roots)
+        _tidy_turn += 1
+        for root in roots[turn:] + roots[:turn]:
+            left = TIDY_BUDGET_S - (time.monotonic() - now)
+            if left <= 0:
+                log.info("run_slice: sweep budget spent; %s waits for the next", root)
+                continue
+            notes: list[str] = []
+            try:
+                notes = _slice_ws.sweep(root, _settler(store, root), budget_s=left)
+            except Exception:  # best effort: one root's failure spares the next
+                log.warning("run_slice: sweep of %s failed", root, exc_info=True)
+            for note in notes:
+                log.info("run_slice: sweep %s: %s", root, note)
+            try:
+                _alert_kept_folders(store, root, notes)
+            except Exception:
+                log.warning(
+                    "run_slice: kept-folder reports for %s failed",
+                    root,
+                    exc_info=True,
+                )
+    try:
+        for note in _sweep_run_dirs(store):
+            log.info("run_slice: run dirs: %s", note)
+    except Exception:
+        log.warning("run_slice: the run-dir sweep failed", exc_info=True)
 
 
 def release(ctx: Any, handle: Any) -> None:
