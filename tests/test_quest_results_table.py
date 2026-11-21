@@ -349,6 +349,64 @@ class TestParamsStamp:
         )
         assert two_atoms["n_dopant"] == 2
 
+    def test_vacancy_drops_removed_dopants(self) -> None:
+        """Review td743564 — a ``vacancy`` is part of the param point:
+        removing the sole Cu dopant reads as no doping, not a stale
+        ``dopant=Cu`` stamp."""
+        from precis.quest.compute import params_from_spec
+
+        assert (
+            params_from_spec(
+                {
+                    "ops": [
+                        {"op": "slab", "element": "Pd", "size": [3, 3, 4]},
+                        {"op": "set_element", "atom": "aPd35", "element": "Cu"},
+                        {"op": "vacancy", "atoms": ["aPd35"]},
+                    ]
+                }
+            )
+            == {}
+        )
+
+    def test_site_vacancy_count_drops_anonymous_dopants(self) -> None:
+        """An ``element``+``count`` site vacancy removes that many atoms
+        of the element — which ones is unknowable from the ops, the
+        count isn't: two Cu in, one site-picked out, one Cu remains."""
+        from precis.quest.compute import params_from_spec
+
+        out = params_from_spec(
+            {
+                "ops": [
+                    {"op": "slab", "element": "Pd", "size": [3, 3, 4]},
+                    {"op": "set_element", "atom": "aPd34", "element": "Cu"},
+                    {"op": "set_element", "atom": "aPd35", "element": "Cu"},
+                    {
+                        "op": "vacancy",
+                        "site": {"type": "top", "element": "Cu", "count": 1},
+                    },
+                ]
+            }
+        )
+        assert out["dopant"] == "Cu" and out["n_dopant"] == 1
+
+    def test_vacancy_drops_a_minted_adatom_dopant(self) -> None:
+        """An unlabelled ``add_atom`` mints ``a<El><n>`` — a by-label
+        ``vacancy`` on that mint leaves the stamp too."""
+        from precis.quest.compute import params_from_spec
+
+        assert (
+            params_from_spec(
+                {
+                    "ops": [
+                        {"op": "slab", "element": "Pd", "size": [2, 2, 3]},
+                        {"op": "add_atom", "element": "Cu", "frac": [0.5, 0.5, 0.9]},
+                        {"op": "vacancy", "atom": "aCu1"},
+                    ]
+                }
+            )
+            == {}
+        )
+
     def test_bare_slab_stamps_no_params(self, store: Any) -> None:
         qid = _mk_quest(store)
         sid = _mk_candidate(store, qid, "bare", [])

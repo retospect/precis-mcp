@@ -6,6 +6,8 @@ store + handler (DB layer) are covered separately once they land.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -126,6 +128,221 @@ def test_bonds_add_remove_and_constrain() -> None:
     assert scene.atoms["aC1"].fixed == 7  # FIX_ALL
     apply_ops(scene, [{"op": "remove_bond", "i": "aC2", "j": "aC1"}])
     assert scene.bonds == []
+
+
+# -- vacancy atoms/site (remove-site + ordered-vacancy set, gr733200) ---------
+
+
+def test_vacancy_atoms_removes_the_label_list_and_its_bonds() -> None:
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.3, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.6, 0.0, 0.0]},
+            {"op": "add_bond", "i": "aPd1", "j": "aPd2"},
+            {"op": "add_bond", "i": "aPd2", "j": "aPd3"},
+        ],
+    )
+    apply_ops(scene, [{"op": "vacancy", "atoms": ["aPd1", "aPd3"]}])
+    assert set(scene.atoms) == {"aPd2"}
+    assert scene.bonds == []
+
+
+def test_vacancy_form_errors_remove_nothing() -> None:
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic())
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "atoms": ["aPd1", "aPd1"]}])
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "atoms": "aPd1"}])
+    with pytest.raises(OpError) as exc:
+        apply_ops(scene, [{"op": "vacancy", "atom": "aPd1", "atoms": ["aPd1"]}])
+    assert "exactly one" in str(exc.value)
+    assert "aPd1" in scene.atoms
+
+
+def _pd_slab_333() -> Scene:
+    """A 3x3x3 fcc(111) Pd slab — 27 atoms in 3 layers of 9."""
+    pytest.importorskip("ase")
+    scene = Scene(cell=_cubic(1.0))
+    apply_ops(scene, [{"op": "slab", "element": "Pd", "size": [3, 3, 3]}])
+    return scene
+
+
+def _removed(before: dict[str, Any], scene: Scene) -> set[str]:
+    return set(before) - set(scene.atoms)
+
+
+def test_vacancy_site_top_removes_a_top_layer_host() -> None:
+    scene = _pd_slab_333()
+    before = dict(scene.atoms)
+    apply_ops(scene, [{"op": "vacancy", "site": {"type": "top"}}])
+    removed = _removed(before, scene)
+    assert len(removed) == 1
+    top_z = max(a.frac[2] for a in before.values())
+    (la,) = removed
+    assert before[la].frac[2] == pytest.approx(top_z)
+
+
+def test_vacancy_site_subsurface_and_bottom_pick_other_layers() -> None:
+    scene = _pd_slab_333()
+    before = dict(scene.atoms)
+    zs = sorted({round(float(a.frac[2]), 6) for a in before.values()})
+    assert len(zs) == 3
+    apply_ops(scene, [{"op": "vacancy", "site": {"type": "subsurface"}}])
+    (mid,) = _removed(before, scene)
+    assert round(float(before[mid].frac[2]), 6) == zs[1]
+    scene_b = _pd_slab_333()
+    before_b = dict(scene_b.atoms)
+    apply_ops(scene_b, [{"op": "vacancy", "site": {"type": "bottom"}}])
+    (bot,) = _removed(before_b, scene_b)
+    assert round(float(before_b[bot].frac[2]), 6) == zs[0]
+
+
+def test_vacancy_site_count_removes_a_spread_ordered_set() -> None:
+    """The vacancy-ordering helper: ``count`` >1 picks the layer's
+    greedy farthest-point subset — an ordered 1/3-vacancy set on a 3x3
+    layer keeps vacancies apart, never adjacent."""
+    from precis.structure.ops import _mic_dists
+
+    scene = _pd_slab_333()
+    before = dict(scene.atoms)
+    apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "count": 3}}])
+    removed = sorted(_removed(before, scene))
+    assert len(removed) == 3
+    top_z = max(a.frac[2] for a in before.values())
+    assert all(before[la].frac[2] == pytest.approx(top_z) for la in removed)
+    top = [a.frac for la, a in before.items() if a.frac[2] == pytest.approx(top_z)]
+    nn = min(
+        _mic_dists(scene, f, np.array([o for o in top if o is not f])).min()
+        for f in top
+    )
+    fr = np.array([before[la].frac for la in removed])
+    pair_min = min(
+        _mic_dists(scene, fr[i], fr[j : j + 1]).min()
+        for i in range(3)
+        for j in range(3)
+        if i != j
+    )
+    assert pair_min > nn
+
+
+def test_vacancy_site_fraction_removes_a_third_of_the_layer() -> None:
+    scene = _pd_slab_333()  # 9 atoms per layer
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "vacancy",
+                "site": {"type": "top", "element": "Pd", "fraction": 1 / 3},
+            }
+        ],
+    )
+    assert len(scene.atoms) == 27 - 3
+
+
+def test_vacancy_site_near_self_picks_that_atom() -> None:
+    scene = _pd_slab_333()
+    top_z = max(a.frac[2] for a in scene.atoms.values())
+    a_top = next(la for la, a in scene.atoms.items() if a.frac[2] == top_z)
+    apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "near": a_top}}])
+    assert a_top not in scene.atoms
+
+
+def test_vacancy_site_element_selects_an_anion_sublattice() -> None:
+    """gr733200's would_unblock: an anion vacancy (NbN) resolves on the
+    element's own z-sublattice — ``_metal_layers`` can't see N at all."""
+    scene = Scene(cell=_cubic(12.0))
+    ops: list[dict[str, Any]] = []
+    for x, y in ((0.2, 0.2), (0.6, 0.2), (0.2, 0.6), (0.6, 0.6)):
+        ops += [
+            {"op": "add_atom", "element": "Nb", "frac": [x, y, 0.25]},
+            {"op": "add_atom", "element": "Nb", "frac": [x, y, 0.75]},
+            {"op": "add_atom", "element": "N", "frac": [x, y, 0.1]},
+            {"op": "add_atom", "element": "N", "frac": [x, y, 0.5]},
+        ]
+    apply_ops(scene, ops)
+    before = dict(scene.atoms)
+    apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "element": "N"}}])
+    (la,) = _removed(before, scene)
+    assert before[la].element == "N"
+    n_z = max(a.frac[2] for a in before.values() if a.element == "N")
+    assert before[la].frac[2] == pytest.approx(n_z)
+
+
+def test_vacancy_site_errors_name_the_valid_forms() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_slab_333()
+    with pytest.raises(OpError) as exc:
+        apply_ops(scene, [{"op": "vacancy", "site": {"type": "middle"}}])
+    assert "top" in str(exc.value)
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "count": 99}}])
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "count": 2.5}}])
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "count": "2"}}])
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "count": True}}])
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "site": {"type": "top", "fraction": 1.0}}])
+    with pytest.raises(OpError):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "vacancy",
+                    "site": {"type": "top", "count": 1, "fraction": 0.5},
+                }
+            ],
+        )
+    with pytest.raises(OpError):
+        apply_ops(
+            scene,
+            [{"op": "vacancy", "site": {"type": "top", "element": "Xe"}}],
+        )
+    with pytest.raises(OpError):
+        apply_ops(scene, [{"op": "vacancy", "site": "top"}])
+    assert len(scene.atoms) == 27
+
+
+def test_vacancy_site_malformed_values_stay_operror() -> None:
+    """Review td743564 — malformed site values surface the handler's
+    retryable ``OpError``, never a raw ``TypeError``/``OverflowError``."""
+    from precis.structure import OpError
+
+    scene = _pd_slab_333()
+    sites: list[dict[str, Any]] = [
+        {"type": []},  # unhashable — used to raise TypeError
+        {"type": "top", "count": float("inf")},  # OverflowError on int()
+        {"type": "top", "count": float("nan")},
+        {"type": "top", "count": {}},
+        {"type": "top", "fraction": 10**400},  # OverflowError on float()
+        {"type": "top", "fraction": float("inf")},
+    ]
+    for site in sites:
+        with pytest.raises(OpError):
+            apply_ops(scene, [{"op": "vacancy", "site": site}])
+    assert len(scene.atoms) == 27
+
+
+def test_delete_atom_guess_names_the_vacancy_op() -> None:
+    """gr733200: a model guessing ``delete_atom``/``remove_site`` learns the
+    real op and its forms from the refusal, not a bare 'unknown op'."""
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic())
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])
+    for guess in ("delete_atom", "remove_site"):
+        with pytest.raises(OpError) as exc:
+            apply_ops(scene, [{"op": guess, "atom": "aPd1"}])
+        assert "vacancy" in str(exc.value)
+    assert "aPd1" in scene.atoms
 
 
 # -- add_atom_site (site-symbolic placement) ---------------------------------

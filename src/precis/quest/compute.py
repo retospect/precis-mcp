@@ -280,6 +280,25 @@ _COADSORBATE_SPECIES = frozenset({"H", "O", "OH", "H2O", "N", "NH", "NH2", "NH3"
 #: "placed, site not named", never a guessed hollow/bridge/top.
 _RAW_SITE = "frac"
 
+#: Ops whose label mints the arithmetic can't account for — mirrored from
+#: ``precis.structure.catalyst_label._UNCOUNTABLE_MINTS`` (the quest
+#: package layers above structure, so the closed set is duplicated here
+#: with its source named, not imported — the same convention
+#: ``catalyst_label._ADSORBATE_ELEMENTS`` uses for this module).
+_UNCOUNTABLE_MINTS = frozenset({"from_smiles", "import_fragment"})
+
+#: Hill-formula parse for an ``add_adsorbate`` species' mint bookkeeping —
+#: mirrored from ``precis.structure.catalyst_label._FORMULA_RE`` (same
+#: duplication convention).
+_FORMULA_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+
+def _formula_counts(species: str) -> dict[str, int] | None:
+    """``'H2O' → {'H': 2, 'O': 1}`` — mirrored from
+    :func:`precis.structure.catalyst_label._formula_counts`."""
+    counts = {el: int(n) if n else 1 for el, n in _FORMULA_RE.findall(species)}
+    return counts or None
+
 
 def _adsorbates() -> dict[str, Any]:
     """:data:`precis.structure.ops.ADSORBATES`, imported lazily — this
@@ -327,6 +346,16 @@ def params_from_spec(
     it. More host atoms are never a dopant — a spec that builds its slab
     out of bare ``add_atom`` ops (test fixtures, hand-written specs) would
     otherwise read as an N-atom self-doping.
+
+    ``vacancy`` ops are part of the point too (review td743564): a
+    label-list removal names exactly which atoms left (a removed dopant
+    leaves the stamp); an ``element``+``count`` site pick removes that
+    many atoms of the element — *which* ones is unknowable from the ops
+    alone, the count isn't — while an element-less pick draws the
+    layer's majority (host) atoms and a ``fraction`` pick's count can't
+    be sized off the ops. Mint bookkeeping (``hi`` counters like
+    ``precis.structure.catalyst_label``'s) lets a by-label removal find
+    an ``add_atom``/``add_adsorbate`` mint that never named its label.
     """
     ops = (spec or {}).get("ops")
     if not isinstance(ops, list):
@@ -337,10 +366,6 @@ def params_from_spec(
             el = op.get("element")
             if isinstance(el, str) and el:
                 host = el
-    dopants: list[str] = []
-    dopant_sites: list[str] = []
-    coads: dict[str, int] = {}
-    coads_sites: dict[str, set[str]] = {}
     # ``set_element`` is keyed by atom LABEL and labels are stable
     # (:func:`precis.structure.ops._no_atom_msg` — a transmuted atom keeps
     # its mint name), so the same atom can be re-transmuted by a later op.
@@ -349,42 +374,154 @@ def params_from_spec(
     # is none. Counting per op instead would report two dopants for a
     # corrected choice.
     substituted: dict[str, str] = {}
-    for op in ops:
+    added: dict[str, str] = {}  # adatom dopant label -> element
+    groups: list[dict[str, Any]] = []  # coads groups: species/site/els/labels
+    removed: set[str] = set()  # labels a ``vacancy`` named directly
+    site_kills: dict[str, int] = {}  # element -> count an anonymous pick removed
+    hi: dict[str, int] = {}  # per-element mint high-water (labels never recycle)
+    trusted = True  # mint arithmetic intact (an uncountable mint breaks it)
+    for i, op in enumerate(ops):
         if not isinstance(op, dict):
             continue
-        name, element = op.get("op"), op.get("element")
+        name = op.get("op")
+        element = op.get("element")
         if not isinstance(element, str) or not element:
-            continue
-        if name == "set_element":
+            element = None
+        if name == "slab":
+            # The op mints ``a<El><hi+1>`` … ``a<El><hi+nx*ny*nz>`` — the
+            # counter moves even though the slab's atoms are never dopants.
+            size = op.get("size")
+            if element and isinstance(size, (list, tuple)) and len(size) == 3:
+                try:
+                    n_mint = int(size[0]) * int(size[1]) * int(size[2])
+                except (TypeError, ValueError):
+                    n_mint = 0
+                if n_mint > 0:
+                    hi[element] = hi.get(element, 0) + n_mint
+        elif name == "set_element":
+            if element is None:
+                continue
             atom = op.get("atom")
             substituted[str(atom) if atom is not None else f"?{len(substituted)}"] = (
                 element
             )
+        elif name == "vacancy":
+            if op.get("atom") is not None:
+                removed.add(str(op["atom"]))
+            elif isinstance(op.get("atoms"), list):
+                removed.update(str(a) for a in op["atoms"])
+            elif isinstance(op.get("site"), dict):
+                v_site = op["site"]
+                vel, cnt = v_site.get("element"), v_site.get("count")
+                try:
+                    countable = (
+                        isinstance(vel, str)
+                        and bool(vel)
+                        and vel != host
+                        and isinstance(cnt, (int, float))
+                        and not isinstance(cnt, bool)
+                        and cnt >= 1
+                        and float(cnt).is_integer()
+                    )
+                except OverflowError:
+                    countable = False
+                if countable:
+                    site_kills[str(vel)] = site_kills.get(str(vel), 0) + int(cnt)
         elif name in ("add_atom", "add_atom_site"):
+            if element is None:
+                continue
+            lab = op.get("label")
+            if lab is not None:
+                label = str(lab)
+            elif trusted:
+                hi[element] = hi.get(element, 0) + 1
+                label = f"a{element}{hi[element]}"
+            else:
+                label = f"?add{i}"
             if element == host:
                 continue
             site = _site_name(op.get("site")) if name == "add_atom_site" else _RAW_SITE
             if element in _COADSORBATE_SPECIES:
-                coads[element] = coads.get(element, 0) + 1
-                coads_sites.setdefault(element, set()).add(site)
+                groups.append(
+                    {
+                        "species": element,
+                        "site": site,
+                        "els": {element},
+                        "labels": {label},
+                    }
+                )
             else:
-                dopants.append(element)
-                dopant_sites.append("adatom")
+                added[label] = element
+        elif name == "add_adsorbate":
+            # A whole group (OH, H2O, NH2, …) from one named site — it
+            # carries its species directly, no element-sniffing needed.
+            species = op.get("species")
+            if not isinstance(species, str) or not species:
+                continue
+            counts = _formula_counts(species)
+            if counts is None:
+                trusted = False
+            labels: set[str] = set()
+            if counts is not None and trusted:
+                for e, n in counts.items():
+                    start = hi.get(e, 0)
+                    labels.update(f"a{e}{start + k}" for k in range(1, n + 1))
+                    hi[e] = start + n
+            groups.append(
+                {
+                    "species": species,
+                    "site": _site_name(op.get("site")),
+                    "els": set(counts) if counts else set(),
+                    "labels": labels,
+                }
+            )
+        elif name == "ring":
+            # Mint bookkeeping only — a ring's atoms are never dopants,
+            # but its minted labels move every later implicit mint.
+            if element is not None:
+                n_raw = op.get("n")
+                try:
+                    ring_n = int(n_raw) if isinstance(n_raw, (int, float, str)) else 0
+                except (TypeError, ValueError):
+                    ring_n = 0
+                if ring_n > 0:
+                    hi[element] = hi.get(element, 0) + ring_n
+        elif name in _UNCOUNTABLE_MINTS:
+            trusted = False
+    units: list[tuple[str, Any]] = []  # ("entry", (element, site)) | ("group", g)
     for _label, element in sorted(substituted.items()):
-        if element == host:  # transmuted back to the host: no net doping
+        if element == host or _label in removed:  # back to host / removed
             continue
-        dopants.append(element)
-        dopant_sites.append("subst")
-    # ``add_adsorbate`` places a whole group (OH, H2O, NH2, …) from one named
-    # site — it carries its species directly, no element-sniffing needed.
-    for op in ops:
-        if not isinstance(op, dict) or op.get("op") != "add_adsorbate":
+        units.append(("entry", (element, "subst")))
+    for _label, element in added.items():
+        if _label in removed or _label in substituted:
             continue
-        species = op.get("species")
-        if not isinstance(species, str) or not species:
-            continue
-        coads[species] = coads.get(species, 0) + 1
-        coads_sites.setdefault(species, set()).add(_site_name(op.get("site")))
+        units.append(("entry", (element, "adatom")))
+    for g in groups:
+        # A removed atom destroys the whole adsorbate — a remnant is not
+        # the species the stamp names.
+        if not g["labels"] & removed:
+            units.append(("group", g))
+    for element, n in site_kills.items():
+        kept: list[tuple[str, Any]] = []
+        for kind, u in units:
+            hit = u[0] == element if kind == "entry" else element in u["els"]
+            if hit and n:
+                n -= 1
+            else:
+                kept.append((kind, u))
+        units = kept
+    dopants: list[str] = []
+    dopant_sites: list[str] = []
+    coads: dict[str, int] = {}
+    coads_sites: dict[str, set[str]] = {}
+    for kind, u in units:
+        if kind == "entry":
+            dopants.append(u[0])
+            dopant_sites.append(u[1])
+        else:
+            coads[u["species"]] = coads.get(u["species"], 0) + 1
+            coads_sites.setdefault(u["species"], set()).add(u["site"])
     out: dict[str, Any] = {}
     if dopants:
         out["dopant"] = ",".join(sorted(set(dopants)))

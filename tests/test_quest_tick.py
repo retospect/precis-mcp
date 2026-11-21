@@ -2474,6 +2474,18 @@ class TestReactionContext:
         assert "catalyst slab" not in prompt
         assert "Reaction R" not in prompt
 
+    def test_generic_quest_prompt_names_the_vacancy_op(self, store: Any) -> None:
+        """gr733200 — qu682293 declared a delete_atom/remove-site op
+        missing because the generic proposals paragraph enumerated only
+        add_atom/set_element/slab/derive_from; it must name ``vacancy``
+        and its ordered-set site form."""
+        qid = _mk_quest(store, "A generic materials striving with no reaction")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "vacancy" in prompt
+        assert "set_element" in prompt
+        assert '"type":"top"|"subsurface"|"bottom"' in prompt
+
     def test_generic_quest_prompt_offers_the_neb_door(self, store: Any) -> None:
         """neb-structure-builder slice 4: a quest WITHOUT ``reaction_config``
         still measures barriers — the tick prompt carries the derive-FS →

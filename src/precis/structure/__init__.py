@@ -81,6 +81,15 @@ Compute-adjacent seams, each with its own module docstring:
   quest candidates opt in via ``StructureHandler.put(normalize=True)`` so
   translation twins ("corner" vs "central") collapse to one candidate.
 
+By-site ops (`set_element`, `vacancy`, the auto-picked
+``add_atom_site``/``add_adsorbate`` forms) resolve slab layers as
+Cartesian-z clusters that hold **more than half the fullest cluster's
+atoms** (``ops._z_layers`` — the layer-eligibility rule): a sparse
+partial layer — a lone dopant adatom, a slab layer gutted to a leftover —
+is never a layer, so a ``top`` pick slides to the next eligible layer
+rather than landing on stragglers, and an element-less pick then draws
+that layer's majority metal.
+
 **Unit enclave** (the vocabulary taxonomy (tn559460), `src/precis/utils/units.py` module
 docstring): this
 package is Å (length) / eV (energy) native throughout, by design — it is

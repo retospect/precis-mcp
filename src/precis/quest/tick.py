@@ -2025,8 +2025,11 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '"element":"Cu"}, or let code pick the host atom: '
         '{"op":"set_element","element":"Cu","site":{"type":"top"}} '
         '("subsurface" = one layer down; "near" works as above)\n'
-        "- vacancy — REMOVE a surface atom (defect site): "
-        f'{{"op":"vacancy","atom":"{top_label}"}}\n'
+        "- vacancy — REMOVE surface atom(s) (a defect site, or an ordered "
+        f'vacancy set): {{"op":"vacancy","atom":"{top_label}"}}, a label '
+        'list "atoms":[…], or a layer pick "site":{"type":"top",'
+        '"element":"<el>","count":<n>} — a multi-pick spreads by greedy '
+        "farthest-point selection\n"
         "- add_atom (escape hatch) — a raw fractional coordinate. On a "
         "slab use it ONLY for a deliberate subsurface or interstitial "
         'atom, declaring the intent: {"op":"add_atom","element":"B",'
@@ -2667,7 +2670,12 @@ experiment rather than a spread) are candidate \
 materials to simulate — each an atomistic \
 `structure` (a periodic `cell` + `add_atom` ops with fractional coords, a \
 `slab` bulk-template op that builds a metal surface for you, or a \
-`derive_from` clone of an existing candidate whose `ops` then vary it — see \
+`derive_from` clone of an existing candidate whose `ops` then vary it — \
+`set_element` transmutes a labelled atom, `vacancy` removes atoms \
+(`atom`, `atoms:[…]`, or `site`: {{"type":"top"|"subsurface"|"bottom", \
+"element":<el>, "count"|"fraction":<n>}} for an ORDERED vacancy set by \
+greedy farthest-point selection, e.g. a 1/3-vacancy boridene off its \
+MBene parent — the surviving atoms keep their labels); see \
 the reaction rules above if this is a catalyst quest). A periodic cell TILES: specs \
 differing only by a lattice translation/rotation/mirror are one candidate. \
 Only propose a candidate you can \

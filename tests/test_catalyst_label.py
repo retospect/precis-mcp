@@ -57,6 +57,162 @@ def test_vacancy_without_colocation() -> None:
     assert catalyst_label(ops) == "Pd(111) + vacancy (surface)"
 
 
+def test_atoms_vacancy_removes_the_set_and_its_dopants() -> None:
+    """``atoms``-form vacancy (gr733200): every named label books like
+    the single-atom form — a substituted label's dopant leaves the
+    count."""
+    ops = [
+        _SLAB,
+        {"op": "set_element", "atom": "aPd35", "element": "Cu"},
+        {"op": "vacancy", "atoms": ["aPd35", "aPd34"]},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + 2 vacancies (surface)"
+
+
+def test_site_vacancy_drops_removed_dopants() -> None:
+    """``site``-form vacancy: five Cu substitutions, then a two-atom
+    pick of the Cu sublattice — only three Cu survive (review
+    td743564)."""
+    ops = [_SLAB] + [
+        {"op": "set_element", "element": "Cu", "site": {"type": "top"}}
+        for _ in range(5)
+    ]
+    ops.append({"op": "vacancy", "site": {"type": "top", "element": "Cu", "count": 2}})
+    assert (
+        catalyst_label(ops)
+        == "Pd(111) + 3 Cu (surface substitution) + 2 vacancies (surface)"
+    )
+
+
+def test_site_vacancy_without_element_picks_the_layer_majority() -> None:
+    """An element-less ``site`` vacancy removes the layer's majority
+    metal — five Cu in a nine-atom top layer make Cu the majority, so
+    the pick drops Cu, not Pd."""
+    ops = [_SLAB] + [
+        {"op": "set_element", "element": "Cu", "site": {"type": "top"}}
+        for _ in range(5)
+    ]
+    ops.append({"op": "vacancy", "site": {"type": "top", "count": 2}})
+    assert (
+        catalyst_label(ops)
+        == "Pd(111) + 3 Cu (surface substitution) + 2 vacancies (surface)"
+    )
+
+
+def test_site_substitution_near_its_own_atom_books_the_label() -> None:
+    """A ``site`` substitution ``near`` a live majority atom of the
+    target layer lands on that atom exactly (distance 0 is the unique
+    minimum): removing ``aPd35`` after drops the phantom Cu too —
+    not a Pd the bookkeeping never touched (review td743564)."""
+    ops = [
+        _SLAB,
+        {
+            "op": "set_element",
+            "element": "Cu",
+            "site": {"type": "top", "near": "aPd35"},
+        },
+        {"op": "vacancy", "atom": "aPd35"},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + vacancy (surface, co-located)"
+
+
+def test_site_vacancy_of_the_dopant_sublattice_clears_it() -> None:
+    """An ``element`` site vacancy resolves on that element's own
+    sublattice — removing the only Cu clears the dopant, not the host."""
+    ops = [
+        _SLAB,
+        {"op": "set_element", "element": "Cu", "site": {"type": "top"}},
+        {"op": "vacancy", "site": {"type": "top", "element": "Cu"}},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + vacancy (surface)"
+
+
+def test_anion_vacancy_resolves_off_the_metal_pool() -> None:
+    """The anion-vacancy case (anion-vacancy NbN slabs, ordered-vacancy
+    boridenes): a non-metal ``element`` pick drops the N substitutions —
+    an element-less pick could never reach them (not in the metal pool)."""
+    ops = [_SLAB] + [
+        {"op": "set_element", "element": "N", "site": {"type": "top"}} for _ in range(2)
+    ]
+    ops.append({"op": "vacancy", "site": {"type": "top", "element": "N"}})
+    assert (
+        catalyst_label(ops) == "Pd(111) + N (surface substitution) + vacancy (surface)"
+    )
+
+
+def test_site_vacancy_fraction_sizes_off_the_accounted_pool() -> None:
+    """``fraction`` sizes off the pool the bookkeeping counts — a bare
+    slab's nine-atom surface is all host, so 1/3 is three."""
+    ops = [_SLAB, {"op": "vacancy", "site": {"type": "top", "fraction": 0.333}}]
+    assert catalyst_label(ops) == "Pd(111) + 3 vacancies (surface)"
+
+
+def test_site_vacancy_near_seed_books_the_right_label() -> None:
+    """Review td743564: ``site.near`` naming a live pool atom is the
+    pick exactly — removing Cu ``near`` ``aPd35`` kills ``aPd35``, not
+    the first Cu the bookkeeping happens to reach, so restoring
+    ``aPd34`` to Pd leaves no phantom Cu."""
+    ops = [
+        _SLAB,
+        {"op": "set_element", "atom": "aPd34", "element": "Cu"},
+        {"op": "set_element", "atom": "aPd35", "element": "Cu"},
+        {
+            "op": "vacancy",
+            "site": {"type": "top", "element": "Cu", "near": "aPd35"},
+        },
+        {"op": "set_element", "atom": "aPd34", "element": "Pd"},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + vacancy (surface, co-located)"
+
+
+def test_site_vacancy_near_pool_element_picks_the_smallest_label() -> None:
+    """``near`` naming the pool's own element ties every pool member at
+    distance 0 — the engine's label-tie-break takes the smallest, so the
+    bookkeeping dies the same label."""
+    ops = [
+        _SLAB,
+        {"op": "set_element", "atom": "aPd35", "element": "Cu"},
+        {"op": "set_element", "atom": "aPd34", "element": "Cu"},
+        {"op": "vacancy", "site": {"type": "top", "element": "Cu", "near": "Cu"}},
+    ]
+    assert (
+        catalyst_label(ops)
+        == "Pd(111) + Cu (surface substitution) + vacancy (surface, co-located)"
+    )
+
+
+def test_site_vacancy_slides_past_a_gutted_layer() -> None:
+    """Review td743564: five of nine top-layer atoms removed leaves a
+    sparse leftover that stops being a layer (the ``_z_layers``
+    half-the-fullest rule), so an element-less ``top`` pick at
+    ``fraction: 0.5`` lands on the next eligible layer — four atoms of
+    nine subsurface, not two of the surface remnant."""
+    ops = [
+        _SLAB,
+        {
+            "op": "vacancy",
+            "atoms": ["aPd28", "aPd29", "aPd30", "aPd31", "aPd32"],
+        },
+        {"op": "vacancy", "site": {"type": "top", "fraction": 0.5}},
+    ]
+    assert (
+        catalyst_label(ops)
+        == "Pd(111) + 5 vacancies (surface) + 4 vacancies (subsurface)"
+    )
+
+
+def test_site_vacancy_count_survives_untrusted_mints() -> None:
+    """Bookkeeping the label arithmetic can't account for turns the
+    anonymous pick honest — the removal still renders with its count,
+    no layer guesswork."""
+    ops = [
+        _SLAB,
+        {"op": "from_smiles", "smiles": "CCO"},
+        {"op": "vacancy", "site": {"type": "top", "count": 2}},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + 2 vacancies (surface)"
+
+
 def test_adatom_on_a_named_site() -> None:
     ops = [
         _SLAB,
