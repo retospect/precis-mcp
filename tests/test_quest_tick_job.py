@@ -765,6 +765,74 @@ class TestTickSlicing:
         assert len(calls) == 1  # run_quest_tick, not weave_tick
 
 
+class TestUnknownStageResume:
+    """gr692360: a checkpoint naming a stage this build doesn't know (a
+    deploy bounce over a mid-flight tick) restarts the tick at ``llm``. The
+    old tick's agentlog row must be closed on the way, or it shows as
+    running in /agentlogs until retention GC. Real PG and a real
+    ``run_quest_tick``, unlike the stubbed phase-machine tests above."""
+
+    def test_unknown_stage_finalizes_the_old_agentlog_before_restarting(
+        self, store: Any
+    ) -> None:
+        import re
+
+        from precis import agentlog
+        from precis.dispatch import Hub
+        from precis.handlers.quest import QuestHandler
+        from precis.quest.tick import TickSlice, run_quest_tick
+
+        resp = QuestHandler(hub=Hub(store=store)).put(text="A striving")
+        m = re.search(r"\bqu(\d+)\b", resp.body)
+        assert m is not None, resp.body
+        qid = int(m.group(1))
+        old_id = agentlog.open_log(
+            store,
+            source="quest_tick",
+            title="a tick parked by another build",
+            prompt="the old prompt",
+            parent_ref_id=qid,
+        )
+        agentlog.stash_checkpoint(
+            store, log_id=old_id, checkpoint={"payload": {"logbook": []}}
+        )
+        reqs: list[Any] = []
+
+        def _disp(req: Any) -> Any:
+            reqs.append(req)
+            return SimpleNamespace(
+                data={"logbook": [{"entry_type": "observation", "text": "seen"}]},
+                text="",
+                error=None,
+                cost_usd=None,
+                paused=False,
+                timed_out=False,
+                quota_exhausted=False,
+            )
+
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_disp,
+            tick_state={"stage": "renamed-stage", "agentlog_id": old_id},
+            sliced=True,
+        )
+
+        # Restarted at ``llm``: the primary call ran again, on a fresh
+        # agentlog, and the tick parked at that stage's successor.
+        assert len(reqs) == 1
+        assert isinstance(out, TickSlice)
+        assert out.stage == "apply"
+        assert out.state["agentlog_id"] not in (None, old_id)
+        # The row the stale checkpoint pointed at is closed, not orphaned.
+        old = store.get_ref(kind="agentlog", id=old_id)
+        assert old is not None
+        meta = old.meta or {}
+        assert meta.get("status") == "stale-stage"
+        assert meta.get("ended_at")
+        assert meta.get(agentlog.CHECKPOINT_KEY) == {}
+
+
 class TestPhaseAwait:
     def test_still_pending_reyields_heartbeat(
         self, monkeypatch: pytest.MonkeyPatch

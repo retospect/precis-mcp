@@ -3782,6 +3782,31 @@ class _TickRun:
             # costs one LLM call; honoring an unknown stage would silently
             # skip work, so restart loudly.
             log.warning("run_quest_tick: unknown stage %r — restarting the tick", stage)
+            stale_id = self.st.get("agentlog_id")
+            if stale_id is not None:
+                # gr692360: the restart opens a fresh agentlog, so close the
+                # one the stale checkpoint points at — nothing else ever
+                # will, and an unfinalized row reads as a tick still running
+                # (with its payload parked) until retention GC.
+                from precis import agentlog
+
+                try:
+                    agentlog.finalize_log(
+                        self.store,
+                        log_id=int(stale_id),
+                        status="stale-stage",
+                        meta_extra={
+                            agentlog.CHECKPOINT_KEY: {},
+                            "error": f"checkpoint named unknown stage {stage!r}; "
+                            "tick restarted",
+                        },
+                    )
+                except Exception:
+                    log.warning(
+                        "run_quest_tick: failed to finalize stale agentlog %s",
+                        stale_id,
+                        exc_info=True,
+                    )
             self.st = {"stage": "llm"}
             fn = self._stage_llm
         return fn()
