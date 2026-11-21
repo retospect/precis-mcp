@@ -14316,3 +14316,138 @@ def test_gripe_chain_tick_unchanged(
     out = pd.PassResult(dry_run=False)
     pd._step_todo_briefs(store, plan, writer, out, datetime.now(UTC), (), None)
     assert (out.notes, out.asks, out.phases_closed) == ([], 0, 0)
+
+
+# -- todo-build chain: the source todo's completion (td-dispatch U4) ---------
+
+_LANDED_SHA = "abc1234def5678" + "0" * 26
+
+
+def _landed_chain(store: Store, hub: Any) -> tuple[int, T.PlanMint]:
+    """A todo-build chain after its land: brief and build done, the gate
+    holding the landed sha, the source carrying the ``landed:`` comment."""
+    source, mint = _todo_chain(store, hub)
+    _mark_done(store, mint.ids["brief"], mint.ids["build"])
+    store.stamp_ref_meta(
+        mint.ids["gate"],
+        {"gate": {"kind": "sha-in-prod", "args": {"sha": _LANDED_SHA}}},
+    )
+    build = mint.ids["build"]
+    _todo_comment(store, build, f"landed: {_LANDED_SHA[:9]} — fix the leak")
+    _todo_comment(
+        store, source, f"landed: {_LANDED_SHA[:9]} — fix the leak (built by td{build})"
+    )
+    return source, mint
+
+
+def _deploy(store: Store, head: str) -> None:
+    """Record ``head`` as the deployed build."""
+    import json
+
+    from precis.plans import gates
+
+    rec = {"head": head, "deployed_at": "2026-11-20T12:00:00Z", "landed": []}
+    psettings.set_setting(gates.PROD_HEAD_KEY, json.dumps(rec), store=store)
+    psettings.invalidate(gates.PROD_HEAD_KEY)
+
+
+def _done_notes(store: Store, todo: int) -> list[str]:
+    return [c for c in _todo_comments(store, todo) if c.startswith("done:")]
+
+
+def test_gate_open_closes_source(store: Store, hub: Any) -> None:
+    source, mint = _landed_chain(store, hub)
+    gate = mint.ids["gate"]
+    # Landed but not deployed: the gate stays closed, the source open.
+    _deploy(store, "f" * 40)
+    pd.run_pass(store)
+    assert _status(store, gate) != "done" and _status(store, source) == "open"
+    assert _done_notes(store, source) == []
+    # The deploy that carries the commit: the gate opens, the source is done.
+    _deploy(store, _LANDED_SHA)
+    res = pd.run_pass(store)
+    assert _status(store, gate) == "done"
+    assert _status(store, source) == "done"
+    assert _done_notes(store, source) == [
+        f"done: {_LANDED_SHA[:9]} is in prod (chain td{mint.root_id})"
+    ]
+    assert any(f"source todo td{source} closed" in n for n in res.notes)
+    # The landed comment stays; later passes write nothing more.
+    assert any(c.startswith("landed:") for c in _todo_comments(store, source))
+    pd.run_pass(store)
+    assert len(_done_notes(store, source)) == 1
+
+
+def test_gripe_gate_open_closes_no_source(store: Store) -> None:
+    """A gripe chain's gate opening goes through the same hook and touches
+    no todo: there is no source."""
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    _mark_done(store, mint.ids["build"])
+    store.stamp_ref_meta(
+        mint.ids["gate"],
+        {"gate": {"kind": "sha-in-prod", "args": {"sha": _LANDED_SHA}}},
+    )
+    _deploy(store, _LANDED_SHA)
+    res = pd.run_pass(store)
+    assert _status(store, mint.ids["gate"]) == "done"
+    assert not any("source todo" in n for n in res.notes)
+
+
+def test_wont_do_chain_leaves_source_open(store: Store, hub: Any) -> None:
+    """A chain closed ``won't-do`` (a refusal) never lands: its gate never
+    opens, and neither the tick nor the sweep marks the source done, even
+    with a deployed build."""
+    from precis.plans.todo_chain import sweep_landed_sources
+
+    source, mint = _todo_chain(store, hub)
+    _brief_session(store, mint, "refuse: rewrite — no `Where:` line")
+    _deploy(store, _LANDED_SHA)
+    pd.run_pass(store)
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _status(store, mint.ids["gate"]) == "won't-do"
+    pd.run_pass(store)
+    assert sweep_landed_sources(store) == []
+    assert _status(store, source) == "open"
+    assert _done_notes(store, source) == []
+    # A chain dropped by hand after a land that never reached prod: same.
+    source2, mint2 = _landed_chain(store, hub)
+    store.add_tag(
+        mint2.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    _deploy(store, "f" * 40)
+    pd.run_pass(store)
+    assert _status(store, source2) == "open" and _done_notes(store, source2) == []
+
+
+def test_close_source_failure_does_not_fail_the_gate(
+    store: Store, hub: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source close that raises is noted and logged; the gate stays done,
+    the pass finishes, and the sweep (the dispatcher's backstop) closes the
+    source later."""
+    from precis.plans.todo_chain import sweep_landed_sources
+
+    source, mint = _landed_chain(store, hub)
+    _deploy(store, _LANDED_SHA)
+
+    def boom(*_a: Any, **_k: Any) -> bool:
+        raise RuntimeError("db hiccup")
+
+    real = pd.close_source
+    monkeypatch.setattr(pd, "close_source", boom)
+    res = pd.run_pass(store)
+    assert _status(store, mint.ids["gate"]) == "done"
+    assert _status(store, source) == "open"
+    assert any(
+        f"td{mint.root_id}: source todo close FAILED (db hiccup)" in n
+        for n in res.notes
+    )
+    monkeypatch.setattr(pd, "close_source", real)
+    pd.run_pass(store)  # the gate is already done: the tick does not retry
+    assert _status(store, source) == "open"
+    assert sweep_landed_sources(store) == [source]
+    assert _status(store, source) == "done"

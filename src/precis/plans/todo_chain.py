@@ -13,10 +13,17 @@ The brief step's two outcomes live here too: :func:`parse_brief` reads the
 session's final message, :func:`post_brief` copies a brief onto the build
 node and :func:`refuse_source` acts on a refusal. The plan tick
 (``plan_dispatch._step_todo_briefs``) is their only caller.
+
+The source todo carries the chain's two completion marks. The land
+(``land_slice``) writes a ``landed: <sha>`` comment on it and leaves its
+status alone; when that sha is in the deployed build :func:`close_source`
+(the tick's ``sha-in-prod`` gate, :func:`sweep_landed_sources` as the
+backstop) sets it done. A chain that never landed never closes its source.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,6 +39,8 @@ if TYPE_CHECKING:
     from psycopg import Connection
 
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 #: Plan-root ``meta`` key holding the source todo's ref id (an integer).
 SOURCE_TODO_KEY = "source_todo"
@@ -358,6 +367,212 @@ def _file_refusal(
     return int(ref.id)
 
 
+#: ``landed: <sha>`` — the first line of the comment the land writes on a
+#: todo (``land_slice._record_land`` and the source todo's own note).
+_LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+#: Sources one :func:`sweep_landed_sources` call closes at most.
+SWEEP_LIMIT = 25
+#: The pieces of the ``done:`` comment :func:`close_source` writes and the
+#: sweep's SQL excludes on: ``done: <sha9> is in prod (chain td<root>)``.
+_DONE_HEAD = "done: "
+_DONE_MID = " is in prod (chain td"
+_DONE_TAIL = ")"
+
+
+def done_note(sha: str, root_id: int) -> str:
+    """The ``done:`` comment a chain's close leaves on its source."""
+    return f"{_DONE_HEAD}{sha.strip().lower()[:9]}{_DONE_MID}{root_id}{_DONE_TAIL}"
+
+
+def source_of_root(
+    store: Store, root_id: int, *, conn: Connection | None = None
+) -> int | None:
+    """The source todo's ref id of the chain rooted at ``root_id`` (its
+    ``meta.source_todo``), or ``None`` for any other plan root."""
+    # ``conn`` rides only when given: ``land_slice`` reads through the
+    # plain store calls its neighbours use.
+    root = (
+        store.get_ref(kind="todo", id=root_id)
+        if conn is None
+        else store.get_ref(kind="todo", id=root_id, conn=conn)
+    )
+    value = (getattr(root, "meta", None) or {}).get(SOURCE_TODO_KEY)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def has_landed_comment(
+    store: Store, todo_id: int, sha: str, *, conn: Connection | None = None
+) -> bool:
+    """Whether ``todo_id`` carries a ``landed: <sha>`` comment naming
+    ``sha`` (either side may be the abbreviation). A ``landed: nothing``
+    note names no sha and matches none."""
+    want = sha.strip().lower()
+    if len(want) < 7:
+        return False
+    chunks = (
+        store.chunks.list_chunks_for_ref(todo_id)
+        if conn is None
+        else store.chunks.list_chunks_for_ref(todo_id, conn=conn)
+    )
+    for c in chunks:
+        if c.chunk_kind != _COMMENT_KIND:
+            continue
+        m = _LANDED_RE.match(str(c.text or "").lstrip())
+        if m is None:
+            continue
+        named = m.group(1).lower()
+        if want.startswith(named) or named.startswith(want):
+            return True
+    return False
+
+
+def close_source(
+    store: Store, root_id: int, sha: str, *, conn: Connection | None = None
+) -> bool:
+    """Close the source todo of the chain at ``root_id`` as done because
+    ``sha`` is in the deployed build, and return whether it did.
+
+    One ``done: <sha9> is in prod`` comment naming the chain root, every
+    ``claimed-by:`` lease dropped and ``STATUS:done`` with its
+    ``status:done`` event — what the land notification
+    (``land_slice._close_todo``) and the todo handler's tag path write for
+    a close. Does nothing and returns ``False`` for a root without
+    ``meta.source_todo``, a source that is retired or already terminal,
+    a source with no ``landed:`` comment for ``sha`` — a chain that
+    never landed never marks its source done — and a source that already
+    carries this root's :func:`done_note` (a person reopened it: a chain
+    closes its source at most once). A second call finds the source
+    terminal and writes nothing."""
+    if conn is None:
+        with store.tx() as own:
+            return close_source(store, root_id, sha, conn=own)
+    source_id = source_of_root(store, root_id, conn=conn)
+    if source_id is None:
+        return False
+    # The status check and the close are one critical section.
+    locked = conn.execute(
+        "SELECT 1 FROM refs WHERE ref_id = %s AND kind = 'todo' "
+        "AND retired_at IS NULL FOR UPDATE",
+        (source_id,),
+    ).fetchone()
+    if locked is None:
+        return False
+    tags = store.tags_for(source_id, conn=conn)
+    if any(t.prefix == "STATUS" and t.value in TERMINAL_TODO_STATUSES for t in tags):
+        return False
+    if not has_landed_comment(store, source_id, sha, conn=conn):
+        return False
+    existing = list(store.chunks.list_chunks_for_ref(source_id, conn=conn))
+    note = done_note(sha, root_id)
+    if any(
+        c.chunk_kind == _COMMENT_KIND and str(c.text or "") == note for c in existing
+    ):
+        # This chain already closed the source once; a person reopened it.
+        return False
+    ord_ = max((int(c.ord) for c in existing), default=0)
+    store.chunks.insert_chunks(
+        source_id,
+        [
+            ChunkInsert(
+                ord=ord_ + 1,
+                text=note,
+                meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+            )
+        ],
+        conn=conn,
+    )
+    for t in tags:
+        if t.namespace == "open" and str(t.value).startswith("claimed-by:"):
+            store.remove_tag(source_id, Tag.open(str(t.value)), conn=conn)
+    store.add_tag(
+        source_id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    store.append_event(source_id, source="todo_chain", event="status:done", conn=conn)
+    return True
+
+
+def sweep_landed_sources(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
+    """Close the sources the gate hook missed; returns their ids.
+
+    A chain root with ``meta.source_todo`` whose ``sha-in-prod`` gate is
+    done (the tick turned it done, but its :func:`close_source` call failed
+    or the pass died after it), whose source is still non-terminal,
+    carries a ``landed:`` comment naming the gate's sha and does not carry
+    this chain's ``done:`` comment (a chain closes its source once: a
+    source a person reopened is not closed again by the old chain). At most ``limit``
+    sources per call, lowest root id first; a close that fails is logged
+    and the sweep goes on."""
+    from precis.plans.templates import PENDING_SHA
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT root.ref_id, g.meta->'gate'->'args'->>'sha'
+              FROM refs root
+              JOIN refs g ON g.kind = 'todo' AND g.retired_at IS NULL
+               AND g.meta->'gate'->>'kind' = 'sha-in-prod'
+               AND g.meta->'gate'->'args'->>'sha' <> %s
+              JOIN refs s ON s.kind = 'todo' AND s.retired_at IS NULL
+               AND s.ref_id::text = root.meta->>%s
+             WHERE root.kind = 'todo' AND root.retired_at IS NULL
+               AND root.meta ? %s
+               AND EXISTS (SELECT 1 FROM ref_tags gt JOIN tags t USING (tag_id)
+                            WHERE gt.ref_id = g.ref_id AND t.namespace = 'OPEN'
+                              AND t.value = 'plan:' || root.ref_id)
+               AND EXISTS (SELECT 1 FROM ref_tags gt JOIN tags t USING (tag_id)
+                            WHERE gt.ref_id = g.ref_id AND t.namespace = 'STATUS'
+                              AND t.value = 'done')
+               AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
+                                WHERE st.ref_id = s.ref_id AND t.namespace = 'STATUS'
+                                  AND t.value = ANY(%s))
+               AND EXISTS (SELECT 1 FROM chunks c
+                            WHERE c.ref_id = s.ref_id
+                              AND c.chunk_kind = 'todo_comment'
+                              AND c.retired_at IS NULL
+                              AND lower(c.text) LIKE 'landed: '
+                                  || lower(left(g.meta->'gate'->'args'->>'sha', 9))
+                                  || '%%')
+               AND NOT EXISTS (SELECT 1 FROM chunks d
+                                WHERE d.ref_id = s.ref_id
+                                  AND d.chunk_kind = 'todo_comment'
+                                  AND d.retired_at IS NULL
+                                  AND d.text = %s
+                                      || lower(left(g.meta->'gate'->'args'->>'sha', 9))
+                                      || %s || root.ref_id || %s)
+             ORDER BY root.ref_id
+             LIMIT %s
+            """,
+            (
+                PENDING_SHA,
+                SOURCE_TODO_KEY,
+                SOURCE_TODO_KEY,
+                sorted(TERMINAL_TODO_STATUSES),
+                _DONE_HEAD,
+                _DONE_MID,
+                _DONE_TAIL,
+                max(0, limit),
+            ),
+        ).fetchall()
+    closed: list[int] = []
+    for root_id, sha in rows:
+        try:
+            if close_source(store, int(root_id), str(sha)):
+                source = source_of_root(store, int(root_id))
+                if source is not None:
+                    closed.append(source)
+        except Exception:
+            log.warning(
+                "todo_chain: sweep close of chain td%s failed", root_id, exc_info=True
+            )
+    return closed
+
+
 __all__ = [
     "BRIEF_GRAMMAR",
     "CLIP_MARKER",
@@ -366,10 +581,16 @@ __all__ = [
     "REFUSAL_KEY",
     "REFUSAL_REASONS",
     "SOURCE_TODO_KEY",
+    "SWEEP_LIMIT",
     "Brief",
     "BriefOutcome",
     "Refusal",
+    "close_source",
+    "done_note",
+    "has_landed_comment",
     "parse_brief",
     "post_brief",
     "refuse_source",
+    "source_of_root",
+    "sweep_landed_sources",
 ]

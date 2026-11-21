@@ -18,11 +18,15 @@ from precis.plans.todo_chain import (
     REFUSAL_REASONS,
     Brief,
     Refusal,
+    close_source,
     parse_brief,
     post_brief,
     refuse_source,
+    sweep_landed_sources,
 )
-from precis.store import Store
+from precis.store import Store, Tag
+from precis.store.types import ChunkInsert
+from tests._refs import insert_gripe
 from tests.conftest import id_of
 
 # -- grammar ------------------------------------------------------------------
@@ -313,3 +317,278 @@ def test_meta_shape_is_what_the_ask_guard_accepts(
     assert ref is not None
     meta: dict[str, Any] = dict(ref.meta)
     assert check_ask_meta(meta, question=ref.title) is None  # blocks: nothing
+
+
+# -- the source todo's completion marks (td-dispatch U4) ---------------------
+
+SHA = "abc1234def5678" + "0" * 26
+
+
+def _landed(
+    store: Store,
+    source: int,
+    mint: T.PlanMint,
+    *,
+    sha: str = SHA,
+    comment: bool = True,
+    gate_done: bool = False,
+) -> None:
+    """What the land leaves: the gate holds ``sha``, the source carries the
+    ``landed:`` comment; optionally the tick has turned the gate done."""
+    gate = mint.ids["gate"]
+    store.stamp_ref_meta(gate, {"gate": {"kind": "sha-in-prod", "args": {"sha": sha}}})
+    if comment:
+        ords = [int(c.ord) for c in store.chunks.list_chunks_for_ref(source)]
+        store.chunks.insert_chunks(
+            source,
+            [
+                ChunkInsert(
+                    ord=max(ords, default=0) + 1,
+                    text=f"landed: {sha[:9]} — fix the leak (built by td{mint.ids['build']})",
+                    meta={"chunk_kind": "todo_comment"},
+                )
+            ],
+        )
+    if gate_done:
+        store.add_tag(
+            gate, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
+
+
+def _done_notes(store: Store, source: int) -> list[str]:
+    return [c for c in _comments(store, source) if c.startswith("done:")]
+
+
+def test_close_source_closes_a_landed_source(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _chain(handler, store)
+    store.add_tag(source, Tag.open("claimed-by:lane-x"), set_by="system")
+    _landed(store, source, mint)
+    assert close_source(store, mint.root_id, SHA) is True
+    assert _status(store, source) == "done"
+    assert _done_notes(store, source) == [
+        f"done: {SHA[:9]} is in prod (chain td{mint.root_id})"
+    ]
+    # The close the todo handler's tag path writes: lease dropped, event.
+    assert not any(t.startswith("claimed-by:") for t in _open_tags(store, source))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+            "AND event = 'status:done'",
+            (source,),
+        ).fetchone()
+    assert row is not None and row[0] == 1
+    # The landed comment stays the record of the land.
+    assert any(c.startswith("landed:") for c in _comments(store, source))
+
+
+def test_close_source_is_idempotent(handler: TodoHandler, store: Store) -> None:
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint)
+    assert close_source(store, mint.root_id, SHA) is True
+    assert close_source(store, mint.root_id, SHA) is False
+    assert len(_done_notes(store, source)) == 1
+
+
+def test_close_source_accepts_an_abbreviated_sha_either_way(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint)
+    assert close_source(store, mint.root_id, SHA[:12]) is True
+
+
+def test_close_source_without_a_source_key_does_nothing(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A root that carries no ``meta.source_todo`` (here a plain todo, and a
+    gripe chain's root) closes nothing."""
+    plain = id_of(handler.put(text="A plain todo.").body)
+    assert close_source(store, plain, SHA) is False
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    gripe_root = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True).root_id
+    assert close_source(store, gripe_root, SHA) is False
+    assert _status(store, plain) == "open"
+
+
+def test_close_source_leaves_a_retired_source_alone(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (source,))
+    assert close_source(store, mint.root_id, SHA) is False
+    assert _done_notes(store, source) == []
+
+
+@pytest.mark.parametrize("terminal", ["done", "won't-do"])
+def test_close_source_leaves_a_terminal_source_alone(
+    handler: TodoHandler, store: Store, terminal: str
+) -> None:
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint)
+    store.add_tag(
+        source, Tag.closed("STATUS", terminal), set_by="system", replace_prefix=True
+    )
+    assert close_source(store, mint.root_id, SHA) is False
+    assert _status(store, source) == terminal
+    assert _done_notes(store, source) == []
+
+
+def test_close_source_without_a_landed_comment_does_nothing(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A chain that never landed never marks its source done."""
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint, comment=False)
+    assert close_source(store, mint.root_id, SHA) is False
+    assert _status(store, source) == "open" and _done_notes(store, source) == []
+
+
+def test_close_source_for_another_sha_does_nothing(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint)
+    assert close_source(store, mint.root_id, "d" * 40) is False
+    # A ``landed: nothing`` note names no sha either.
+    assert close_source(store, mint.root_id, "nothing") is False
+    assert _status(store, source) == "open"
+
+
+def test_sweep_closes_the_source_the_gate_hook_missed(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint, gate_done=True)
+    assert sweep_landed_sources(store) == [source]
+    assert _status(store, source) == "done"
+    assert len(_done_notes(store, source)) == 1
+    assert sweep_landed_sources(store) == []
+
+
+def test_sweep_skips_what_is_not_landed_and_in_prod(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A gate still open (sha not in prod), a chain with no landed comment,
+    a gate on another sha than the comment's, a refused chain and a gripe
+    chain's done gate: none of their sources move."""
+    open_gate, open_mint = _chain(handler, store)
+    _landed(store, open_gate, open_mint)  # gate not done
+    unlanded, unlanded_mint = _chain(handler, store)
+    _landed(store, unlanded, unlanded_mint, comment=False, gate_done=True)
+    other, other_mint = _chain(handler, store)
+    _landed(store, other, other_mint, gate_done=True)
+    store.stamp_ref_meta(
+        other_mint.ids["gate"],
+        {"gate": {"kind": "sha-in-prod", "args": {"sha": "e" * 40}}},
+    )
+    refused, refused_mint = _chain(handler, store)
+    refuse_source(store, refused_mint.root_id, refused, "rewrite", "unclear")
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    gripe_mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    store.add_tag(
+        gripe_mint.ids["gate"],
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert sweep_landed_sources(store) == []
+    for todo in (open_gate, unlanded, other, refused):
+        assert _status(store, todo) == "open", todo
+        assert _done_notes(store, todo) == []
+
+
+def test_sweep_is_bounded_per_call(handler: TodoHandler, store: Store) -> None:
+    sources = []
+    for _ in range(3):
+        source, mint = _chain(handler, store)
+        _landed(store, source, mint, gate_done=True)
+        sources.append(source)
+    assert sweep_landed_sources(store, limit=2) == sources[:2]
+    assert sweep_landed_sources(store, limit=2) == sources[2:]
+    assert sweep_landed_sources(store, limit=0) == []
+
+
+def test_sweep_goes_on_past_a_failing_close(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans import todo_chain
+
+    first, first_mint = _chain(handler, store)
+    second, second_mint = _chain(handler, store)
+    for src, mint in ((first, first_mint), (second, second_mint)):
+        _landed(store, src, mint, gate_done=True)
+    real = todo_chain.close_source
+
+    def flaky(store_: Store, root_id: int, sha: str, **kw: Any) -> bool:
+        if root_id == first_mint.root_id:
+            raise RuntimeError("db hiccup")
+        return real(store_, root_id, sha, **kw)
+
+    monkeypatch.setattr(todo_chain, "close_source", flaky)
+    assert sweep_landed_sources(store) == [second]
+    assert _status(store, first) == "open"
+
+
+def _reopen(store: Store, todo: int) -> None:
+    store.add_tag(
+        todo, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
+    )
+
+
+def test_reopened_source_is_not_closed_again(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A chain closes its source once: a person reopening it does not let the
+    old chain (done gate, old ``landed:`` comment) close it again, neither
+    through ``close_source`` nor through the sweep."""
+    source, mint = _chain(handler, store)
+    _landed(store, source, mint, gate_done=True)
+    assert sweep_landed_sources(store) == [source]
+    _reopen(store, source)
+    assert close_source(store, mint.root_id, SHA) is False
+    assert sweep_landed_sources(store) == []
+    assert _status(store, source) == "open"
+    assert len(_done_notes(store, source)) == 1
+
+
+def test_reopened_source_does_not_fill_the_sweep_window(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The reopened source is excluded in SQL: with a limit of 1 the next
+    chain's source is still reached."""
+    first, first_mint = _chain(handler, store)
+    _landed(store, first, first_mint, gate_done=True)
+    assert close_source(store, first_mint.root_id, SHA) is True
+    _reopen(store, first)
+    second, second_mint = _chain(handler, store)
+    _landed(store, second, second_mint, gate_done=True)
+    assert sweep_landed_sources(store, limit=1) == [second]
+
+
+def test_second_chain_closes_reopened_source(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, first = _chain(handler, store)
+    _landed(store, source, first, gate_done=True)
+    assert close_source(store, first.root_id, SHA) is True
+    # The first chain has ended; the source is reopened and offered again.
+    store.add_tag(
+        first.root_id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    _reopen(store, source)
+    second = T.mint_todo_build(store, None, todo_id=source)
+    other = "b" * 40
+    _landed(store, source, second, sha=other, gate_done=True)
+    assert sweep_landed_sources(store) == [source]
+    assert _status(store, source) == "done"
+    assert _done_notes(store, source) == [
+        f"done: {SHA[:9]} is in prod (chain td{first.root_id})",
+        f"done: {other[:9]} is in prod (chain td{second.root_id})",
+    ]

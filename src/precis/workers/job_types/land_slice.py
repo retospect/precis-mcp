@@ -166,7 +166,13 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   The land that fills a
   ``gripe-fix`` plan's gate also moves the plan's gripe to the verify rung
   (``resolved: <sha>`` + ``STATUS:verify``, :func:`_notify_gripe`;
-  gr561932), so ``gripe_validate`` closes it once the sha is on prod. Then
+  gr561932), so ``gripe_validate`` closes it once the sha is on prod. The
+  land that fills a ``todo-build`` plan's gate (a root with
+  ``meta.source_todo``) puts a ``landed: <sha>`` comment on that source
+  todo and leaves it open (:func:`_note_source_landed`): the subject's
+  handles skip it (:func:`_deferred_notify`, with ship's land_notify held,
+  :func:`_holds_notify`) and the tick closes it once the sha is in prod
+  (``plans.todo_chain.close_source``). Then
   cleanup (:func:`_cleanup`): the land's clone is dropped
   (:func:`_slice_ws.drop`: its ``precis-test-slice-*`` compose project
   down with ``-v`` — it used to stay warm forever, gr570133, and the
@@ -416,6 +422,7 @@ from precis.plans.templates import (
     PRELAND_HELD_KEY,
     SLICE_REF_NS,
 )
+from precis.plans.todo_chain import has_landed_comment, source_of_root
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import admission
@@ -1955,6 +1962,30 @@ def _notify_gripe(
     return f"gripe gr{gripe_id}: {', '.join(did)} written"
 
 
+def _plan_source_todo(store: Any, plan_tag: str) -> int | None:
+    """The source todo of a ``todo-build`` plan (its root's
+    ``meta.source_todo``), or ``None`` for any other plan."""
+    return source_of_root(store, int(plan_tag[5:]))
+
+
+def _note_source_landed(
+    store: Any, source_id: int, sha: str, subject: str, todo_id: int
+) -> str:
+    """The ``landed: <sha9> — <subject> (built by td<id>)`` comment on the
+    source todo of a todo-build plan. Comment only: the source stays open
+    until its sha is in prod (``plans.todo_chain.close_source``).
+    Idempotent per sha, so a retried land tail writes no second one.
+    Returns the summary line."""
+    if has_landed_comment(store, source_id, sha):
+        return f"source td{source_id}: landed note already posted"
+    _rs._append_comment(
+        store,
+        source_id,
+        f"landed: {sha[:9]} — {subject.strip()} (built by td{todo_id})",
+    )
+    return f"source td{source_id}: landed comment written, left open"
+
+
 #: land_notify's ``_ITEM_RE`` — one ``(refs )?(gr|td)N`` item; group 1
 #: marks the ``refs grN`` partial form.
 _ITEM_PARSE_RE = re.compile(r"(refs\s+)?(gr|td)(\d+)")
@@ -2071,9 +2102,40 @@ def _deferred_notify(
             ],
         )
         notes.append(f"gripe gr{gid}: landed note")
+    source: int | None = None
+    unknown = False
+    try:
+        plan_tag = _plan_tag(store, todo_id)
+        if plan_tag is not None:
+            source = _plan_source_todo(store, plan_tag)
+    except Exception:
+        # The source may be among the handles: none of them can be told
+        # from it, so no todo handle is closed (gripe handles are not
+        # todos and go on as ever).
+        unknown = True
+        log.warning(
+            "land_slice: reading td%d's source todo failed; todo handles "
+            "in the subject are left open",
+            todo_id,
+        )
     for kind, n, partial in _subject_handles(subject):
         if kind == "todo":
             if n == todo_id:
+                continue
+            if unknown:
+                notes.append(f"todo td{n}: left open (plan source unreadable)")
+                continue
+            if n == source:
+                # The source of a todo-build plan is marked ``landed:`` by
+                # :func:`_note_source_landed` and closed once the sha is in
+                # prod, never at the land.
+                log.info(
+                    "land_slice: td%d's subject names its source td%d; "
+                    "not closed at the land",
+                    todo_id,
+                    n,
+                )
+                notes.append(f"todo td{n}: left open (the plan's source todo)")
                 continue
             elsewhere = _landed_elsewhere(store, n)
             if elsewhere is not None:
@@ -4755,11 +4817,13 @@ def _launch_ship(
         # system/global config) because the mirror and the checkout are
         # adversary-writable (review finding 2).
         ship_env = {**land_env(), **_host_state_env(tree)}
-        if _carries_pin(ctx.store, todo_id):
+        if _carries_pin(ctx.store, todo_id) or _holds_notify(ctx.store, todo_id):
             # td659522 F7: ship's land_notify would close a pin-bump node
             # on the land; it stays open for the gate image wait, so the
             # notify marks are held as for a mirrored land and the lander
             # writes them itself (``notify_deferred``, ``_record_land``).
+            # The same for a todo-build plan, whose source todo must not
+            # close at the land.
             ship_env["PRECIS_LAND_NOTIFY"] = "0"
             ship_env["PRECIS_GRIPE_NOTE"] = "0"
         token = _factory_git.factory_git_token()
@@ -6708,7 +6772,9 @@ def poll(ctx: Any, handle: Any) -> bool:
         exit_code=exit_code,
         status=status,
         # A pin-bump land ran ship with land_notify held (td659522 F7).
-        notify_deferred=mirror_in_play or _carries_pin(ctx.store, todo_id),
+        notify_deferred=mirror_in_play
+        or _carries_pin(ctx.store, todo_id)
+        or _holds_notify(ctx.store, todo_id),
     )
 
 
@@ -6721,6 +6787,22 @@ def _carries_pin(store: Any, todo_id: int) -> bool:
         return _pin_record(store.get_ref(kind="todo", id=todo_id)) is not None
     except Exception:
         log.warning("land_slice: reading td%d's pin record failed", todo_id)
+        return True
+
+
+def _holds_notify(store: Any, todo_id: int) -> bool:
+    """Whether ``todo_id`` builds a todo-build plan: ship's land_notify
+    would close a source todo its subject names, so the notify marks are
+    held as for a pin-bump node and :func:`_deferred_notify` writes them
+    with the source skipped. Fails closed like :func:`_carries_pin` —
+    ``True`` when the store cannot say, so launch and poll agree and ship's
+    notifier never closes a source because of a read error; holding the
+    notify for a plain slice only moves its marks to the deferred write."""
+    try:
+        plan_tag = _plan_tag(store, todo_id)
+        return plan_tag is not None and _plan_source_todo(store, plan_tag) is not None
+    except Exception:
+        log.warning("land_slice: reading td%d's plan source failed", todo_id)
         return True
 
 
@@ -6965,6 +7047,18 @@ def _landed_finish(
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gripe notify for td%d failed", todo_id, exc_info=True)
         summary.append(f"gripe: notify FAILED ({exc})")
+    try:
+        # A todo-build plan's source todo gets the same fact as a comment
+        # and stays open: it goes done when the sha is in prod.
+        if gate_id is not None and gate_sha is not None and plan_tag is not None:
+            source_id = _plan_source_todo(store, plan_tag)
+            if source_id is not None:
+                summary.append(
+                    _note_source_landed(store, source_id, gate_sha, subject, todo_id)
+                )
+    except Exception as exc:  # pragma: no cover — reported, the land stands
+        log.warning("land_slice: source notify for td%d failed", todo_id, exc_info=True)
+        summary.append(f"source: notify FAILED ({exc})")
     try:
         if plan_tag is not None:
             # gr548800: a landed slice is a quest-logbook milestone.

@@ -9384,3 +9384,188 @@ def test_no_head_and_a_finished_tip_lands_the_tip(seams: dict[str, Any]) -> None
     [cut] = _ws_args(seams, "cut")
     assert cut["start"].sha == SNAPSHOT
     assert ctx.meta_set[land_slice.LAND_START_KEY]["head"] == SNAPSHOT
+
+
+# -- todo-build plan: the source todo (td-dispatch U4) ----------------------
+
+
+def _source_plan(store: _Store, *, source: int | None = 50) -> None:
+    """Root td40 (``meta.source_todo`` = ``source``, none for a gripe plan),
+    the build td42 and its pending ``sha-in-prod`` gate td44."""
+    meta = {} if source is None else {"source_todo": source}
+    store.add_todo(40, status="open", tags=("plan:40",), meta=meta)
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
+    store.add_todo(
+        44,
+        status="open",
+        tags=("plan:40",),
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+    )
+    if source is not None:
+        store.add_todo(source, status="open")
+
+
+def _poll_green(store: _Store, seams: dict[str, Any]) -> tuple[_Ctx, str]:
+    seams["gates"] = [(44, True)]
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    return pctx, summary
+
+
+def test_source_gets_landed_comment_stays_open(seams: dict[str, Any]) -> None:
+    """The land that fills a todo-build plan's gate leaves ONE ``landed:``
+    comment on the source todo, naming the commit, its subject and the build
+    node, and leaves its STATUS alone. If this fails the source is closed at
+    the land (before the deploy) or never told it landed."""
+    store = _Store()
+    _source_plan(store)
+    _pctx, summary = _poll_green(store, seams)
+    assert store.comments(50) == [f"landed: {FULL_SHA[:9]} — {SUBJECT} (built by td42)"]
+    assert store.tag_strings(50) == {"STATUS:open"}
+    assert "source td50: landed comment written, left open" in summary
+    # The build node itself closes as ever, and the gate holds the sha.
+    assert "STATUS:done" in store.tag_strings(42)
+    assert store.refs[44].meta["gate"]["args"]["sha"] == FULL_SHA
+
+
+def test_subject_naming_source_does_not_close_it(seams: dict[str, Any]) -> None:
+    """A subject that names the source todo next to the build node must not
+    close it at the land, with or without a factory token: ship's land_notify
+    is held (it would close the handle) and the lander's own handle walk skips
+    the source. Other handles behave as ever. If this fails the source is
+    done before its commit is in prod."""
+    store = _Store()
+    _source_plan(store)
+    store.add_todo(43)
+    seams["subjects"] = ["feat(x): widget (td42, td50, td43)"]
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["PRECIS_LAND_NOTIFY"] == "0"
+    assert kw["env"]["PRECIS_GRIPE_NOTE"] == "0"
+    _finish(handle, 0, GREEN_LOG)
+    seams["gates"] = [(44, True)]
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert store.tag_strings(50) == {"STATUS:open"}
+    [landed] = store.comments(50)
+    assert landed.startswith(f"landed: {FULL_SHA[:9]} — ")
+    assert "STATUS:done" in store.tag_strings(43)
+    assert store.comments(43)[-1].startswith(f"landed: {FULL_SHA[:9]}")
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "todo td50: left open (the plan's source todo)" in summary
+
+
+def test_landed_comment_once_per_sha() -> None:
+    """A retried land tail (or a second land on the plan under the same sha)
+    writes no second ``landed:`` comment on the source; a different sha is a
+    different fact."""
+    store = _Store()
+    _source_plan(store)
+    sha = FULL_SHA
+    first = land_slice._note_source_landed(store, 50, sha, SUBJECT, 42)
+    again = land_slice._note_source_landed(store, 50, sha, SUBJECT, 42)
+    assert "written" in first and "already posted" in again
+    assert len(store.comments(50)) == 1
+    other = "d" * 40
+    land_slice._note_source_landed(store, 50, other, SUBJECT, 42)
+    assert [c[:17] for c in store.comments(50)] == [
+        f"landed: {sha[:9]}",
+        f"landed: {other[:9]}",
+    ]
+
+
+def test_land_without_a_gate_leaves_the_source_alone(seams: dict[str, Any]) -> None:
+    """A land that fills no gate (none blocked-by the node) writes nothing on
+    the source."""
+    store = _Store()
+    _source_plan(store)
+    seams["gates"] = []
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert store.comments(50) == []
+
+
+def test_gripe_notify_unchanged(seams: dict[str, Any]) -> None:
+    """A plan whose root carries no ``meta.source_todo`` lands exactly as
+    before (the reference is ``test_poll_green_moves_the_plans_gripe_to_verify``,
+    unedited): ship's land_notify is not held, the summary has no source
+    line, and a subject handle still closes its todo."""
+    store = _Store()
+    _source_plan(store, source=None)
+    store.refs[7] = _Ref(7, "gripe 7", {})
+    store.tags[7] = [Tag.closed("STATUS", "triaged")]
+    store.chunks.rows[7] = []
+    seams["gripe"] = 7
+    store.add_todo(55)
+    _pctx, summary = _poll_green(store, seams)
+    [(_argv, kw)] = seams["launch"]
+    assert "PRECIS_LAND_NOTIFY" not in kw["env"]
+    assert "source" not in summary
+    assert "gripe gr7: resolved comment, STATUS:verify written" in summary
+    assert land_slice._holds_notify(store, 42) is False
+    assert land_slice._plan_source_todo(store, "plan:40") is None
+    notes = land_slice._deferred_notify(
+        store, "fix (td42, td55)", "c" * 40, 42, seams["tree"]
+    )
+    assert "STATUS:done" in store.tag_strings(55)
+    assert notes == ["todo td55: landed comment, STATUS:done written"]
+
+
+def test_source_checks_never_fail_the_land(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store that cannot name the plan's source fails closed: ship's
+    notifier is held (launch and poll agree), no todo handle of the subject
+    is closed (the source could be one), and the land still completes — the
+    source note's failure is reported, not raised."""
+    store = _Store()
+    _source_plan(store)
+    store.add_todo(43)
+
+    def boom(_store: Any, _plan_tag: str) -> int | None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(land_slice, "_plan_source_todo", boom)
+    assert land_slice._holds_notify(store, 42) is True
+    seams["subjects"] = ["feat(x): widget (td42, td50, td43)"]
+    _pctx, summary = _poll_green(store, seams)
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["PRECIS_LAND_NOTIFY"] == "0"
+    assert "source: notify FAILED (db down)" in summary
+    assert "todo td50: left open (plan source unreadable)" in summary
+    assert "todo td43: left open (plan source unreadable)" in summary
+    assert store.comments(50) == [] and store.comments(43) == []
+    assert store.tag_strings(50) == {"STATUS:open"}
+    assert "STATUS:done" not in store.tag_strings(43)
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_unreadable_source_leaves_todo_handles_but_not_gripes(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the source unreadable, only todo handles wait; a gripe handle
+    still gets its resolved comment as today."""
+    store = _Store()
+    _source_plan(store)
+    store.add_todo(55)
+    store.add_todo(7, status="open")
+
+    def boom(_store: Any, _plan_tag: str) -> int | None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(land_slice, "_plan_source_todo", boom)
+    notes = land_slice._deferred_notify(
+        store, "fix (td42, td55, gr7)", "c" * 40, 42, seams["tree"]
+    )
+    assert "todo td55: left open (plan source unreadable)" in notes
+    assert store.comments(55) == [] and "STATUS:done" not in store.tag_strings(55)
+    assert any("gripe gr7:" in n and "auto_verify" in n for n in notes)

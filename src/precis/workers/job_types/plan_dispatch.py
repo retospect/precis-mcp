@@ -21,7 +21,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    offered to :func:`precis.plans.release.auto_answer_approval` — the
    ``release.auto_deploy`` standing approval answers ``deploy r<N>``
    itself once CI is recorded green on the cut's exact sha and
-   ``release.round`` names an open round on it (td573809, me573231).
+   ``release.round`` names an open round on it (td573809, me573231). A
+   ``sha-in-prod`` gate that opens under a root with ``meta.source_todo``
+   also closes the chain's source todo
+   (:func:`precis.plans.todo_chain.close_source`, :func:`_close_chain_source`):
+   a failure is noted and logged, never fails the gate.
 2. **loops** — once every current child of a loop is closed: ``until`` open
    or ``meta.loop.count`` (default 0) at ``max`` closes the loop; otherwise
    the body is re-minted under it (:func:`precis.plans.templates.mint_body`)
@@ -581,6 +585,7 @@ from precis.plans.todo_chain import (
     SOURCE_TODO_KEY,
     Brief,
     Refusal,
+    close_source,
     parse_brief,
     post_brief,
     refuse_source,
@@ -1874,8 +1879,40 @@ def _step_gates(
             w.set_status(n, "done")
             res.gates_opened += 1
             res.notes.append(f"gate td{n.id} open: {verdict.why}")
+            _close_chain_source(store, plan, w, res, n)
         else:
             res.gates_closed += 1
+
+
+def _close_chain_source(
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, gate: _Node
+) -> None:
+    """A ``sha-in-prod`` gate just turned done under a root carrying
+    ``meta.source_todo``: the chain's source todo goes done too
+    (:func:`precis.plans.todo_chain.close_source`). Never fails the pass
+    or the gate; the gate is already done, so a failed close is left to
+    :func:`precis.plans.todo_chain.sweep_landed_sources`."""
+    spec = gate.meta.get("gate") or {}
+    if w.dry_run or spec.get("kind") != "sha-in-prod":
+        return
+    root = next(
+        (a for a in plan.ancestors(gate) if SOURCE_TODO_KEY in a.meta),
+        None,
+    )
+    sha = (spec.get("args") or {}).get("sha")
+    if root is None or not isinstance(sha, str):
+        return
+    try:
+        if close_source(store, root.id, sha):
+            res.notes.append(
+                f"td{root.id}: source todo td{root.meta[SOURCE_TODO_KEY]} "
+                f"closed ({sha[:9]} is in prod)"
+            )
+    except Exception as exc:
+        log.warning(
+            "plan_dispatch: closing the source of td%d failed", root.id, exc_info=True
+        )
+        res.notes.append(f"td{root.id}: source todo close FAILED ({exc})")
 
 
 # ── (2) loops ──────────────────────────────────────────────────────
