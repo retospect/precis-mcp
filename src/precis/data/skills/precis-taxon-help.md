@@ -71,6 +71,22 @@ whole handle, name or alias in a `meta.excludes` entry. For example,
 training-set accuracy. A named boundary in either node's `includes` or
 `excludes` clears the near match. Exact identity checks still apply.
 
+For a repo-dev vocabulary term, set `meta.pointer` to the start-here file
+or code anchor, with the relevant skill if there is one. Link to the matching
+topic hub so the term is found under the repo-dev vocabulary root `tn559460`.
+
+```python
+put(kind="taxon",
+    text="<term> — <gloss>",
+    meta={"pointer": "src/path/file.py::Symbol · skill <name>",
+          "aliases": ["<legacy name>"]},
+    link="taxon:<parent tn>", rel="specialises")
+```
+
+Replace `<parent tn>` with the topic hub's handle and use an empty alias list
+if the term has no synonyms. You can also supply the name and definition as
+`title="<name>", body="<definition>"` in place of `text=`.
+
 ## meta keys
 
 Only these are accepted; any other key is refused and the allowed set is listed.

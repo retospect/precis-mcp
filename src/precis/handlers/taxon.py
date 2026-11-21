@@ -369,6 +369,9 @@ class TaxonHandler(NumericRefHandler):
     def put(
         self,
         *,
+        # Declare both prose spellings so dispatch leaves body for the title.
+        title: str | None = None,
+        body: str | None = None,
         text: str | None = None,
         dedup: bool | None = None,
         auto_refresh_days: int | None = None,
@@ -386,6 +389,25 @@ class TaxonHandler(NumericRefHandler):
         :meth:`_mint_checks`); candidates whose dimension explicitly differs
         are never offered (see :func:`_dimension_clash`)."""
         idem_key = _kw.pop("idem_key", None)
+        if title is not None:
+            if text is not None:
+                raise BadInput(
+                    "put(kind='taxon') got both text= and title= — ambiguous",
+                    next="use text='<name> — <definition>' or title= with body=, not both",
+                )
+            text = title if body is None else f"{title} — {body}"
+            if not split_name_def(text)[1]:
+                raise BadInput(
+                    f"title={title!r} has no definition — a taxon needs one",
+                    next="text='<name> — <definition>'",
+                )
+        elif body is not None:
+            if text is not None:
+                raise BadInput(
+                    "put(kind='taxon') got both text= and body= — ambiguous",
+                    next="use text='<name> — <definition>' or title= with body=, not both",
+                )
+            text = body  # Preserve the dispatch alias for a lone body.
         base_put = super().put  # zero-arg super() can't see self inside create()
 
         def create() -> Response:
