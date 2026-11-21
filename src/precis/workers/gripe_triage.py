@@ -97,8 +97,9 @@ blanket "keep the leases" re-bills the same batch forever on a slow
 rung):
 
 * **real unavailability** (``paused`` without ``timed_out`` — breaker
-  trip, 429/5xx, connection loss): keep the leases, charge nothing;
-  the rows re-claim when the lease ages out.
+  trip, 429/5xx, connection loss, a host-capacity ``admission.hold``
+  refusal): keep the leases, charge nothing; the rows re-claim when
+  the lease ages out.
 * **truncated call** (``timed_out``, or ``interrupted`` — a culled
   CLI re-bills every 30 min if kept, N3): release this tick's leases
   and bump a consecutive counter in ``app_state``; each one halves the

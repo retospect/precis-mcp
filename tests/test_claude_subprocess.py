@@ -305,6 +305,64 @@ def test_run_claude_missing_binary_sets_binary_missing_flag(tmp_path: Path) -> N
     assert "claude binary not found" in str(exc.value)
 
 
+def test_run_claude_host_capacity_refusal_sets_flag(monkeypatch) -> None:
+    """gr746113: an ``admission.hold`` refusal wraps as a structural
+    ``host_at_capacity`` flag (like ``timed_out``/``binary_missing``) —
+    the router reads it into ``paused`` + the ``rate`` horizon, a
+    window-scoped wait, never a semantic error."""
+    import contextlib
+
+    from precis.workers import admission
+
+    @contextlib.contextmanager
+    def _refusing_hold(*_a: object, **_k: object):
+        raise admission.Refused(
+            "maple cannot fit ['cpu_milli', 'mem_mb'] for maple:94997 right now"
+        )
+        yield
+
+    monkeypatch.setattr(admission, "hold", _refusing_hold)
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            ["claude"],
+            binary="claude",
+            label="claude -p (agent)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={},
+            bootstrap_oauth=False,
+        )
+    assert exc.value.host_at_capacity is True
+    assert exc.value.timed_out is False
+    assert "host at capacity" in str(exc.value)
+
+
+def test_run_claude_async_host_capacity_refusal_sets_flag(monkeypatch) -> None:
+    """Same structural flag on the async runner — the two must not drift."""
+    import contextlib
+
+    from precis.workers import admission
+
+    @contextlib.contextmanager
+    def _refusing_hold(*_a: object, **_k: object):
+        raise admission.Refused("maple cannot fit ['mem_mb'] for maple:1 right now")
+        yield
+
+    monkeypatch.setattr(admission, "hold", _refusing_hold)
+    with pytest.raises(ClaudeProcessError) as exc:
+        asyncio.run(
+            run_claude_async(
+                ["claude"],
+                binary="claude",
+                label="claude -p (agent)",
+                timeout_s=10.0,
+                error_cls=ClaudeProcessError,
+                env={},
+            )
+        )
+    assert exc.value.host_at_capacity is True
+
+
 def test_run_claude_async_missing_binary_sets_binary_missing_flag(
     tmp_path: Path, monkeypatch
 ) -> None:

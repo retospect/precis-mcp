@@ -16,8 +16,10 @@ Classes (:data:`FailureClass`):
   (:mod:`precis.utils.llm.quota` wording). Horizon: the reset instant.
 * ``budget`` — a spend cap: the dollar breaker, a provider credit/spend
   limit, HTTP 402. Horizon: two hours (the next window or a top-up).
-* ``rate`` — a bare 429 / overloaded / 529. Horizon: fifteen minutes;
-  the SMALL lane retries these in-process first.
+* ``rate`` — a bare 429 / overloaded / 529, or a footprint
+  ``admission.hold`` host-capacity refusal (the host's wait, not the
+  task's — gr746113). Horizon: fifteen minutes; the SMALL lane retries
+  these in-process first.
 * ``transport`` — the wire, not the model: timeouts, connection failures,
   5xx. Horizon: thirty minutes.
 * ``content`` — the model ran and refused or was filtered. No horizon:
@@ -115,7 +117,18 @@ DEFAULT_HORIZON: dict[str, timedelta] = {
 #: horizon, so ``rate`` precedes ``budget``; ``content`` comes last so a
 #: refusal wording embedded in a transport error does not mask it.
 _PATTERNS: tuple[tuple[FailureClass, re.Pattern[str]], ...] = (
-    ("rate", re.compile(r"rate.?limit|\b429\b|overloaded|\b529\b", re.IGNORECASE)),
+    (
+        "rate",
+        re.compile(
+            r"rate.?limit|\b429\b|overloaded|\b529\b"
+            # A footprint ``admission.hold`` refusal
+            # (``_claude_subprocess``: "deferred, host at capacity") —
+            # the host's wait, not the task's fault; re-run on the short
+            # rate horizon like a busy local slot (gr746113).
+            r"|host at capacity",
+            re.IGNORECASE,
+        ),
+    ),
     (
         "budget",
         re.compile(
@@ -176,6 +189,11 @@ def _from_exception(exc: BaseException) -> FailureClass | None:
     """Structural classification off a caught transport exception, or
     ``None`` when the exception type alone does not decide (a 4xx other
     than 402/429, a ``RuntimeError`` carrying a response body)."""
+    if getattr(exc, "host_at_capacity", False):
+        # A ``_claude_subprocess``/``codex_exec`` wrapper carrying an
+        # ``admission.hold`` refusal structurally — the host's wait,
+        # not the task's fault (gr746113).
+        return "rate"
     if isinstance(exc, HTTPError):
         if exc.code == 429:
             return "rate"

@@ -1118,6 +1118,26 @@ class TestRunExceptionMapping:
         assert outcome.status == "skipped"
         assert "gr179498" in outcome.summary_text
 
+    def test_host_capacity_refusal_maps_to_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """gr746113: an ``admission.hold`` host-capacity refusal is the
+        host's wait — no agent ran, $0 — so the outcome is a clean
+        ``skipped`` no-op (gripe stays open for a re-attempt), never a
+        failure bubble."""
+        from precis.utils.claude_agent import ClaudeAgentError
+
+        def _boom(*_a: object, **_k: object) -> object:
+            raise ClaudeAgentError(
+                "claude-agent: deferred, host at capacity: maple cannot fit "
+                "['cpu_milli', 'mem_mb'] for maple:94997 right now",
+                host_at_capacity=True,
+            )
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _boom)
+        assert outcome.status == "skipped"
+        assert "host at capacity" in outcome.summary_text
+
     def test_value_error_maps_to_failed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

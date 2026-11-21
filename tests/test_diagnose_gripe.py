@@ -81,6 +81,7 @@ class _FakeCtx:
         self.status: str | None = None
         self.failure: str | None = None
         self.meta_sets: dict = {}
+        self.deferred: tuple[object, str] | None = None
 
     def set_status(self, s: str) -> None:
         self.status = s
@@ -96,6 +97,10 @@ class _FakeCtx:
 
     def is_cancel_requested(self) -> bool:
         return False
+
+    def defer(self, wake_at: object, note: str) -> bool:
+        self.deferred = (wake_at, note)
+        return True
 
 
 @pytest.fixture
@@ -243,6 +248,31 @@ def test_dispatch_fails_on_empty_diagnosis(
     # No gripe_comment was appended — only the original body chunk.
     blocks = store.chunks.list_chunks_for_ref(gid)
     assert all(b.chunk_kind != "gripe_comment" for b in blocks)
+
+
+def test_dispatch_defers_on_host_capacity_refusal(
+    store: Store, work_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr746113: an ``admission.hold`` host-capacity refusal is the host's
+    wait — the job defers to the capacity horizon (attempt-free), never a
+    ``record_failure`` bubble."""
+    from precis.utils.claude_agent import ClaudeAgentError
+
+    gid = _open_gripe(store, "capacity refusal")
+
+    def _boom(**_kw: object) -> AgentResult:
+        raise ClaudeAgentError(
+            "claude-agent: deferred, host at capacity: maple cannot fit "
+            "['cpu_milli', 'mem_mb'] for maple:94997 right now",
+            host_at_capacity=True,
+        )
+
+    monkeypatch.setattr(dg, "_spawn_claude", _boom)
+    ctx = _FakeCtx(store, 3, {"gripe_id": gid})
+    dg._dispatch(ctx, dg.SPEC)
+    assert ctx.deferred is not None
+    assert "host at capacity" in ctx.deferred[1]
+    assert ctx.failure is None
 
 
 def test_dispatch_fails_when_clone_fails(

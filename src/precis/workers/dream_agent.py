@@ -166,7 +166,9 @@ def run_dream_pass(store: Store) -> BatchResult:
     * ``claimed`` = 1 if we ran the LLM, 0 if gated / mis-configured
     * ``ok`` = 1 on a clean dispatch (the agent's memory writes
       happen via MCP and aren't double-counted here)
-    * ``failed`` = 1 if the helper raised :class:`ClaudeAgentError`
+    * ``failed`` = 1 if the model call errored — a ``paused`` result
+      (quota window, host-capacity refusal) is a skipped tick, not a
+      failure (gr746113)
     """
     if not _gate_enabled():
         log.info("dream_agent: PRECIS_DREAM_AGENT not set; skipping")
@@ -288,6 +290,13 @@ def run_dream_pass(store: Store) -> BatchResult:
         except Exception:
             log.warning("dream_agent: failed to finalize agentlog", exc_info=True)
 
+    if res.paused and not res.timed_out:
+        # A window-scoped pause (breaker trip, quota window, a host-
+        # capacity ``admission.hold`` refusal — gr746113): the call never
+        # ran, so the tick is a skip, not a failure.
+        log.warning("dream_agent: model call paused (%s) — skipping", res.error)
+        _finalize("paused")
+        return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     if res.error:
         log.error("dream_agent: claude agent failed: %s", res.error)
         _finalize(res.terminal_reason or "error")

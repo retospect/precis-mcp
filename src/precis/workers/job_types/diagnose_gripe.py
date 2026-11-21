@@ -50,6 +50,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -478,6 +479,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             model=model, clone_dir=clone_dir, prompt=prompt, timeout_s=timeout_s
         )
     except (ValueError, ContainerRequiredError, ClaudeAgentError, RuntimeError) as exc:
+        if getattr(exc, "host_at_capacity", False):
+            # ``admission.hold`` refused the launch — the host's wait, not
+            # the gripe's fault: park this job to the capacity horizon
+            # instead of recording a failure bubble (gr746113).
+            from precis.utils.llm import failure as _failure
+
+            if ctx.defer(
+                datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+                f"diagnose_gripe: deferred, host at capacity: {exc}",
+            ):
+                return
         ctx.record_failure(f"diagnose_gripe: agent failed: {exc}")
         return
     finally:

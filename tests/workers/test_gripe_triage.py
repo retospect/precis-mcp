@@ -667,6 +667,37 @@ class TestTick:
         assert r.report_only is True and r.extra.get("misses", 0) == 0
         assert _claimed_at(store, gid) is not None
 
+    def test_host_capacity_pause_keeps_leases_no_batch_failure(
+        self, store: Store
+    ) -> None:
+        """gr746113: an ``admission.hold`` refusal surfaces as
+        ``paused``/``rate`` — keep the leases and charge no batch-failure
+        strike (three strikes halt the pass; the incident stalled the
+        agent lane ~93 min)."""
+        gid = _gripe(store, "host at capacity")
+        _light(store)
+
+        def paused(prompt: str) -> LlmResult:
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model="stub",
+                tier=Tier.BIG,
+                paused=True,
+                reason_class="rate",
+                error=(
+                    "claude -p (agent): deferred, host at capacity: maple "
+                    "cannot fit ['cpu_milli', 'mem_mb'] for maple:94997 right now"
+                ),
+            )
+
+        r = _run(store, llm=paused)
+        assert r.report_only is True
+        assert r.extra.get("misses", 0) == 0
+        assert r.extra.get("batch_failures", 0) == 0
+        assert _claimed_at(store, gid) is not None
+
     def test_status_change_during_call_skips_write(self, store: Store) -> None:
         """A gripe closed mid-call is never re-opened by the write tx."""
         gid = _gripe(store, "closed mid-call")

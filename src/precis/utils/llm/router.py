@@ -7404,9 +7404,12 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         error=str(exc),
         interrupted=rc is not None and rc >= 128,
         # A wall-clock timeout is a transient unavailability → paused
-        # (retry); a non-timeout ClaudeProcessError (non-zero exit, missing
-        # binary) stays a semantic error.
-        paused=getattr(exc, "timed_out", False),
+        # (retry); so is an ``admission.hold`` host-capacity refusal —
+        # the host's, not the task's (gr746113). Any other
+        # ClaudeProcessError (non-zero exit, missing binary) stays a
+        # semantic error.
+        paused=getattr(exc, "timed_out", False)
+        or getattr(exc, "host_at_capacity", False),
         # Kept unmerged with `paused` so a bounded-budget caller sees *why*
         # it paused.
         timed_out=getattr(exc, "timed_out", False),
@@ -7428,6 +7431,13 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     # unclassified so nothing retries it.
     if result.cli_unavailable or result.mcp_not_ready or result.argv_too_long:
         return result
+    if getattr(exc, "host_at_capacity", False):
+        # A footprint ``admission.hold`` refusal is a window-scoped pause:
+        # the host advertised capacity but cannot fit this call right now.
+        # Same ``rate`` class and 15-minute horizon as a busy local serving
+        # slot (the router's own slot-busy arm) — re-run when running work
+        # drains, never a whole-batch/task failure (gr746113).
+        return _classified(result, reason_class="rate")
     if not isinstance(exc, ClaudePUnparseableError):
         return _classified(result)
     # A bare-constructed error carries no captured ``subtype`` — re-derive it

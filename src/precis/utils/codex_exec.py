@@ -443,7 +443,9 @@ def _run_codex(
         ):
             return _inner()
     except admission.Refused as exc:
-        raise CodexExecError(f"codex exec deferred, host at capacity: {exc}") from exc
+        raise CodexExecError(
+            f"codex exec deferred, host at capacity: {exc}", host_at_capacity=True
+        ) from exc
 
 
 def _reply_from_stream(stdout: str) -> str | None:

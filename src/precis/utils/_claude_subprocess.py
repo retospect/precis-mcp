@@ -97,6 +97,7 @@ class ClaudeProcessError(RuntimeError):
         mcp_not_ready: bool = False,
         mcp_status: dict[str, str] | None = None,
         argv_too_long: bool = False,
+        host_at_capacity: bool = False,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
@@ -141,6 +142,15 @@ class ClaudeProcessError(RuntimeError):
         #: (``failure_kind``) so the coordinator can rest the loop as
         #: ``failure_class="config"`` instead of burning its retry budget.
         self.argv_too_long = argv_too_long
+        #: True when ``admission.hold`` refused the launch — the host
+        #: advertises capacity rows but cannot fit this footprint right
+        #: now (:class:`~precis.workers.admission.Refused`). A window-
+        #: scoped *unavailability* — the host's, not the task's — so the
+        #: router surfaces it as ``paused`` at the short ``rate`` horizon
+        #: (a busy local serving slot's twin), never a semantic failure
+        #: (gr746113: a refusal counted as a whole-batch triage failure
+        #: and halted the pass; every deferred job burned an attempt).
+        self.host_at_capacity = host_at_capacity
 
 
 def to_str(raw: bytes | str | None) -> str:
@@ -567,7 +577,9 @@ def _run_claude_inner(
             return res
 
     except admission.Refused as exc:
-        raise error_cls(f"{label}: deferred, host at capacity: {exc}") from exc
+        raise error_cls(
+            f"{label}: deferred, host at capacity: {exc}", host_at_capacity=True
+        ) from exc
 
 
 #: Statuses ``mcp_status`` reports for a server that will not become
@@ -973,7 +985,9 @@ def _run_claude_gated_inner(
             return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
     except admission.Refused as exc:
-        raise error_cls(f"{label}: deferred, host at capacity: {exc}") from exc
+        raise error_cls(
+            f"{label}: deferred, host at capacity: {exc}", host_at_capacity=True
+        ) from exc
 
 
 async def run_claude_async(
@@ -1193,7 +1207,9 @@ async def _run_claude_async_inner(
             return SimpleNamespace(stdout=stdout, stderr=stderr)
 
     except admission.Refused as exc:
-        raise error_cls(f"{label}: deferred, host at capacity: {exc}") from exc
+        raise error_cls(
+            f"{label}: deferred, host at capacity: {exc}", host_at_capacity=True
+        ) from exc
 
 
 __all__ = [

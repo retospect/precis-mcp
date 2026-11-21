@@ -58,6 +58,15 @@ def _http(code: int, msg: str) -> HTTPError:
             timedelta(hours=1),
         ),
         ("Claude AI usage limit reached|1757203200", "quota", timedelta(hours=2)),
+        # gr746113: an ``admission.hold`` host-capacity refusal — the
+        # host's wait, not the task's — rides the short rate horizon
+        # (a busy local slot's twin).
+        (
+            "claude -p (agent): deferred, host at capacity: maple cannot "
+            "fit ['cpu_milli', 'mem_mb'] for maple:94997 right now",
+            "rate",
+            timedelta(minutes=15),
+        ),
     ],
 )
 def test_classify_text_classes_and_horizons(reason, cls, horizon) -> None:
@@ -131,6 +140,35 @@ def test_error_result_classifies_claude_process_error() -> None:
     timed.timed_out = True
     out = router._error_result(timed, model="m", tier=Tier.BIG)
     assert out.reason_class == "transport" and out.paused
+
+
+def test_error_result_host_capacity_is_paused_not_a_batch_failure() -> None:
+    """gr746113: an ``admission.hold`` refusal is a window-scoped pause
+    (``paused`` + ``rate`` + the short horizon) — gripe_triage's ``paused``
+    arm keeps leases; it must never land as a plain ``error`` (three of
+    those halted the pass)."""
+    exc = ClaudeProcessError(
+        "claude -p (agent): deferred, host at capacity: maple cannot fit "
+        "['cpu_milli', 'mem_mb'] for maple:94997 right now",
+        host_at_capacity=True,
+    )
+    out = router._error_result(exc, model="m", tier=Tier.BIG)
+    assert out.paused is True and out.timed_out is False
+    assert out.error is not None and "host at capacity" in out.error
+    assert out.reason_class == "rate"
+    assert out.retry_at is not None
+    left = (out.retry_at - datetime.now(UTC)).total_seconds()
+    assert 0 < left <= 15 * 60
+
+
+def test_classify_structural_host_capacity_flag() -> None:
+    found = failure.classify(
+        "anything",
+        exc=ClaudeProcessError("refused", host_at_capacity=True),
+        now=NOW,
+    )
+    assert found.reason_class == "rate"
+    assert found.retry_at == NOW + timedelta(minutes=15)
 
 
 def _errored(msg: str, **kw: Any) -> LlmResult:

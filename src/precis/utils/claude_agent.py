@@ -1231,6 +1231,7 @@ def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
                 stderr=exc.stderr,
                 returncode=exc.returncode,
                 argv_too_long=exc.argv_too_long,
+                host_at_capacity=exc.host_at_capacity,
             ) from exc
         raise exc
     log.info(

@@ -736,6 +736,32 @@ def run(
         )
     except ClaudeAgentError as exc:
         wall = time.perf_counter() - t0
+        if exc.host_at_capacity:
+            # The host advertised capacity but could not fit the agent's
+            # footprint — the refusal is the host's, not the gripe's, and
+            # no agent ran ($0). Same disposition as the container-
+            # unavailable skip: a clean no-op that leaves the gripe open
+            # for a re-attempt instead of a failure bubble (gr746113).
+            log.warning(
+                "fix_gripe: gripe:%d deferred — host at capacity: %s",
+                gripe_id,
+                exc,
+            )
+            return RunOutcome(
+                status="skipped",
+                summary_text=(
+                    f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: "
+                    f"host at capacity, the agent never launched: {exc}"
+                ),
+                gripe_comment_text=(
+                    f"[worker:job:{job_id}] fix attempt deferred: host at "
+                    "capacity — the agent never launched and no budget was "
+                    "spent; the gripe stays open for a re-attempt."
+                ),
+                branch=branch,
+                sha=None,
+                wall_seconds=wall,
+            )
         tail = (exc.stderr or exc.stdout or "").splitlines()[-20:]
         return RunOutcome(
             status="failed",
