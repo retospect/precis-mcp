@@ -71,6 +71,9 @@ log = logging.getLogger(__name__)
 #: ``open_tag=``) — synchronously, by the worker that owned the job,
 #: before it marks the job failed — so the same "no live worker can
 #: still be running it" safety argument applies.
+#: ``executors/_common.poison_guard`` stamps the same tag (gr692015) when
+#: the crash-loop cap fails a job: the claim that reached the cap had just
+#: reclaimed the row from a dead or expired holder.
 #: The two ``reaped:dead-node-*`` tags (gr210536) are the sweeper's
 #: dead-node reaps — running-side (expired lease, target node provably
 #: dead: no live executor left to race) and queued-side (never claimed,

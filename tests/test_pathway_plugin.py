@@ -2998,6 +2998,31 @@ def test_seed_submit_records_requested_before_launch_and_executed_only_on_start(
         assert ctx.meta_updates["executed_seeds"] == [7]
 
 
+def test_seed_submit_launch_failure_tags_infra_child_killed(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr692015: a detached launch that raises never started the compute —
+    an infra failure, not a verdict on the task. ``_submit`` passes
+    ``open_tag="infra:child-killed"`` (and ``failure_class="infra"``) so the
+    bubble bounded-retries instead of latching ``child-failed:`` at once."""
+    from precis_pathway import seed_job
+
+    def launch(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("failed to spawn")
+
+    monkeypatch.setattr(runner, "submit_seed_partial_detached", launch)
+    ctx = _FakeCtx(
+        store=pathway_store, params={"config": {}, "seed": 7, "model_index": 0}
+    )
+
+    assert seed_job._submit(ctx, seed_job.SPEC) is None
+
+    assert ctx.status == "failed"
+    assert "submit failed: failed to spawn" in (ctx.failure or "")
+    assert ctx.open_tag == "infra:child-killed"
+    assert ctx.failure_class == "infra"
+
+
 def test_seed_requested_diagnostic_preserves_prior_execution(
     pathway_store: Store,
 ) -> None:

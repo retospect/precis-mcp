@@ -3866,6 +3866,13 @@ def poison_guard(
     ``meta.reclaims`` list fills, even if its new attempt count is low.
     Reclaims an executor marked :data:`RECLAIM_WHY_READOPT` (a restart
     re-adopting a live detached compute) count toward neither.
+
+    **Infra tag (gr692015).** The failed row also carries the open tag
+    ``infra:child-killed``, stamped before the bubble in the same
+    transaction. :func:`~precis.utils.job_bubble.bubble_job_failure`
+    classifies by tag and never reads ``meta.failure_class``; without the
+    tag a crash-loop latched ``child-failed:`` on the parent at once
+    instead of taking the bounded infra retry.
     """
     cap = MAX_ATTEMPTS if max_attempts is None else max_attempts
     attempts = int(meta.get("attempts") or 0)
@@ -3895,6 +3902,7 @@ def poison_guard(
             f"runner: reached {cap} run attempts (crash-loop guard; "
             f"last reclaim: {cause}) — failing"
         )
+    store.add_tag(ref_id, Tag.open("infra:child-killed"), set_by="system", conn=conn)
     append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
     set_meta(conn, ref_id, failure_class="infra", error=_error_meta(reason))
     set_status(store, ref_id, FAILED, conn=conn)

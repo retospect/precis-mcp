@@ -432,7 +432,11 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
         )
     except Exception as exc:  # pragma: no cover - spawn/env dependent
         log.warning("autocatpath_seed: submit failed", exc_info=True)
-        ctx.record_failure(f"autocatpath_seed: submit failed: {exc}")
+        ctx.record_failure(
+            f"autocatpath_seed: submit failed: {exc}",
+            open_tag="infra:child-killed",
+            failure_class="infra",
+        )
         return None
     _record_started_seed(ctx, seed)
     return handle

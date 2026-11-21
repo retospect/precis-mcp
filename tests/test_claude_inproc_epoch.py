@@ -64,6 +64,7 @@ def _mk_running_job(
     lease_boot_id: str | None = None,
     lease_process: str | None = None,
     lease_host: str | None = None,
+    parent_id: int | None = None,
 ) -> int:
     meta: dict[str, Any] = {
         "executor": "claude_inproc",
@@ -78,7 +79,11 @@ def _mk_running_job(
     if lease_host is not None:
         meta["lease_host"] = lease_host
     ref = store.insert_ref(
-        kind="job", slug=None, title="orphaned in-proc job", meta=meta
+        kind="job",
+        slug=None,
+        title="orphaned in-proc job",
+        meta=meta,
+        parent_id=parent_id,
     )
     store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")
     with store.pool.connection() as conn:
@@ -228,6 +233,33 @@ def test_poison_guard_fails_past_max_attempts(
     assert _status(store, rid) == "failed"
     assert dispatched["n"] == 0
     assert _meta(store, rid)["failure_class"] == "infra"
+
+
+def test_poison_guard_tags_infra_child_killed_and_bounded_retries_parent(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr692015: the crash-loop cap is an infra failure, so the poisoned job
+    carries the open tag ``infra:child-killed`` — the tag
+    ``job_bubble._is_infra_failure`` reads; ``meta.failure_class`` alone is
+    invisible to it. The parent todo then gets the bounded
+    ``orphan_retry_count`` retry, not an immediate ``child-failed:`` latch."""
+    from precis.workers.executors._common import MAX_ATTEMPTS
+
+    _succeeds(monkeypatch)
+    parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
+    rid = _mk_running_job(
+        store, lease_offset_s=-60, attempts=MAX_ATTEMPTS, parent_id=int(parent.id)
+    )
+
+    result = claude_inproc.run_claude_inproc_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert _status(store, rid) == "failed"
+    assert "infra:child-killed" in {str(t) for t in store.tags_for(rid)}
+    assert _meta(store, rid)["failure_class"] == "infra"
+    parent_tags = {str(t) for t in store.tags_for(parent.id)}
+    assert f"child-failed:{rid}" not in parent_tags
+    assert _meta(store, int(parent.id))["orphan_retry_count"] == 1
 
 
 def test_epoch_reclaim_at_attempt_cap_fails_before_dispatch(
