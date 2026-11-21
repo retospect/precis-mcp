@@ -21,6 +21,9 @@ import pytest
 
 from precis import agentlog
 from precis.alerts import open_alert_severity
+from precis.dispatch import Hub
+from precis.errors import BadInput
+from precis.handlers.job import JobHandler
 from precis.store import Store
 from precis.utils.llm import router
 from precis.utils.llm.router import LlmResult, Tier
@@ -39,7 +42,7 @@ NOTE = "2026-11-17T04:00:00Z 3 consecutive batch failures: exit 1"
 
 class _Store:
     """``get_setting``/``set_setting`` over a dict (``app_state``) plus the
-    ``app_settings`` rows ``bounded_heal`` keeps, and a no-op ``tx``."""
+    ``app_settings`` rows ``bounded_heal`` keeps, and an in-memory ``atomic`` connection."""
 
     def __init__(self) -> None:
         self.state: dict[str, str] = {}
@@ -53,9 +56,21 @@ class _Store:
     def set_setting(self, key: str, value: str) -> None:
         self.state[key] = value
 
+    def execute(self, sql: str, params: tuple[str]) -> SimpleNamespace:
+        (key,) = params
+        if sql.startswith("INSERT INTO app_state"):
+            self.state.setdefault(key, "")
+        else:
+            assert sql.startswith("SELECT value FROM app_state") and sql.endswith(
+                "FOR UPDATE"
+            )
+        return SimpleNamespace(
+            fetchone=lambda: (self.state[key],) if key in self.state else None
+        )
+
     @contextmanager
-    def tx(self) -> Any:
-        yield object()
+    def atomic(self) -> Any:
+        yield self
 
 
 def _store() -> Any:
@@ -493,6 +508,7 @@ def session(
 ) -> SimpleNamespace:
     store, w = world
     store.state[KEY] = NOTE  # the halt is armed
+    halt_heal.save_last(store, KEY, job=55, outcome="minted")
     seen: list[Any] = []
     box: dict[str, Any] = {"result": _result(CLEAR), "raises": None}
 
@@ -525,6 +541,8 @@ def test_session_request_shape(session: SimpleNamespace) -> None:
     assert req.output_format == "stream-json"
     assert req.mcp_config.endswith("mcp.json")
     assert req.ref_id == 55
+    assert req.openai_tool_allowlist == {"get", "search"}
+    assert req.extra_args == ("--verbose", "--tools", "")
     assert set(_REVIEWER_DISALLOWED_TOOLS) <= set(req.disallowed_tools)
     assert "mcp__precis__put" in req.disallowed_tools  # no write at all
     assert req.env_overlay == {agentlog.ENV_VAR: "4242"}
@@ -810,13 +828,20 @@ def test_gripe_triage_overdue_hook_never_raises(
         raise RuntimeError("db down")
 
     monkeypatch.setattr(halt_heal, "check_overdue", boom)
-    gripe_triage._check_overdue(_store())
+    store = _store()
+    _minted(store)
+    gripe_triage._check_overdue(store, NOTE, WHEN)
 
 
-def test_clear_with_a_human_already_alerted_clears_nothing(
+def test_clear_with_a_human_alerted_during_the_session_clears_nothing(
     session: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session.store.state[f"halt_heal:alerted:{KEY}"] = "2026-11-17T05:00:00+00:00"
+    def alert_during_session(req: Any) -> LlmResult:
+        session.store.state[f"halt_heal:alerted:{KEY}"] = "2026-11-17T05:00:00+00:00"
+        return _result(CLEAR)
+
+    monkeypatch.setattr(router, "route", alert_during_session)
     ctx = _run(session)
     assert session.store.state[KEY] == NOTE  # untouched
     assert ctx.status == "succeeded"
@@ -851,7 +876,9 @@ def test_clear_when_the_halt_is_already_empty_is_not_a_clear(
     monkeypatch.setattr(router, "route", operator_first)
     # The halt armed this episode's one bounded attempt (a job was minted).
     assert halt_heal.request_heal(session.store, KEY, NOTE, when=WHEN) == "minted"
-    ctx = _run(session)
+    ctx = _Ctx(session.store)
+    ctx.ref_id = halt_heal.load_last(session.store, KEY)["job"]
+    _run(session, ctx)
     assert ctx.status == "succeeded"
     last = json.loads(session.store.state[f"halt_heal:last:{KEY}"])
     assert last["outcome"] == "already-clear" and "cleared_at" not in last
@@ -925,3 +952,66 @@ def test_a_halted_tick_pages_a_session_that_never_reported(store: Store) -> None
     assert store.get_setting(f"halt_heal:last:{KEY}") == json.dumps(
         last, sort_keys=True
     )
+
+
+@pytest.mark.parametrize("cause,evidence", [("", "valid evidence"), ("quota", "  ")])
+def test_clear_requires_cause_and_nonblank_evidence(cause: str, evidence: str) -> None:
+    assert (
+        hh_job.parse_verdict(
+            f"heal: CLEAR {cause}\nevidence: {evidence}\nhuman-action: none"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("last_job", [None, 56])
+def test_unreserved_job_cannot_run(
+    session: SimpleNamespace, last_job: int | None
+) -> None:
+    halt_heal.save_last(session.store, KEY, job=last_job, outcome="minted")
+    ctx = _run(session)
+    assert ctx.status == "failed"
+    assert "no reserved supervisor attempt" in (ctx.failure or "")
+    assert session.seen == [] and session.w.raised == []
+
+
+@pytest.mark.db
+def test_halt_heal_cannot_be_submitted_directly(hub: Hub) -> None:
+    with pytest.raises(BadInput, match="reserved for the halted cadence supervisor"):
+        JobHandler(hub=hub).put(job_type="halt_heal", params={"key": KEY})
+
+
+@pytest.mark.db
+def test_idle_probe_adopts_existing_halt_and_later_pages(store: Store) -> None:
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES ('*', 'gripe_triage', 1) "
+            "ON CONFLICT (host, service) DO UPDATE SET prio = EXCLUDED.prio"
+        )
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=7)
+    store.set_setting(KEY, f"{old:%Y-%m-%dT%H:%M:%SZ} old halt")
+    result = gripe_triage.run_gripe_triage_pass(store, now=now, notify=False)
+    assert result.claimed == 0
+    last = halt_heal.load_last(store, KEY)
+    assert last["outcome"] == "minted"
+    gripe_triage.run_gripe_triage_pass(
+        store, now=now + timedelta(hours=2), notify=False
+    )
+    overdue = halt_heal.load_last(store, KEY)
+    assert overdue["job"] == last["job"] and overdue["outcome"] == "overdue"
+    assert open_alert_severity(store, source="halt_heal", fingerprint=KEY) == "critical"
+
+
+@pytest.mark.db
+def test_reserved_clear_commits_both_the_flag_and_outcome(store: Store) -> None:
+    store.set_setting(KEY, NOTE)
+    assert halt_heal.request_heal(store, KEY, NOTE, when=WHEN) == "minted"
+    job = halt_heal.load_last(store, KEY)["job"]
+    assert halt_heal.clear_if_current(
+        store, KEY, NOTE, job=job, cause="quota window reopened"
+    ) == ("cleared", "")
+    assert store.get_setting(KEY) == ""
+    assert halt_heal.load_last(store, KEY)["outcome"] == "cleared"
+    assert halt_heal.check_overdue(store, KEY, when=WHEN + timedelta(hours=3)) is False

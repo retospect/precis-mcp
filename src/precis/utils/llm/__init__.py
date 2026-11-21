@@ -68,10 +68,9 @@ Resolution, per dispatch (in order)
    single primary rung (``select_transport``), or — flag on — the built-in
    OSS→claude failover ladder (claude rung pinned to the compiled tier
    default; ``SMALL`` gets no claude rung). A tool-using call skips rungs
-   whose transport can't carry tools (``Transport.carries_tools`` — only
-   ``CLAUDE_AGENT``/``OPENAI_TOOLS``): unfiltered, an agentic call on a
-   completion wire writes its verb calls as prose and bills in full. An
-   emptied chain falls back to the correct-by-construction default, logged.
+   without tools. ``CLAUDE_AGENT`` and ``OPENAI_TOOLS`` carry tools;
+   the latter enforces ``LlmRequest.openai_tool_allowlist`` at execution.
+   An emptied chain falls back to the default and logs it.
    A rung may also carry ``"bare": true`` — the auth opt-in: that rung runs
    ``claude -p --bare``, dropping the OAuth token and authenticating with a
    vault-resolved ``ANTHROPIC_API_KEY`` (per-token billing, not subscription

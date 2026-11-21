@@ -1606,6 +1606,8 @@ class LlmRequest:
     #: only ``raw_text``'s shape).
     output_format: str = "stream-json"
     disallowed_tools: tuple[str, ...] = field(default_factory=tuple)
+    #: Optional verb allowlist for the in-process OPENAI_TOOLS transport.
+    openai_tool_allowlist: frozenset[str] | None = None
     #: ``(store, ref_id, source)`` for a ``ref_events`` audit row on success
     #: (CAD/structure/follow-up paths). ``store`` is typed loosely to keep
     #: this module free of the DB import chain.
@@ -6977,6 +6979,7 @@ def run_oss_tool_loop(
     max_turns: int = 20,
     timeout_s: float | None = None,
     tool_less: bool = False,
+    tool_allowlist: frozenset[str] | None = None,
     local_url: str | None = None,
     temperature: float | None = None,
     thinking: bool | None = None,
@@ -7083,11 +7086,22 @@ def run_oss_tool_loop(
         # StreamTimeout path, job retries under the next generation.
         abort_check=drain_requested,
     )
+    tools = [] if tool_less else precis_tool_specs()
+    if tool_allowlist is not None:
+        tools = [tool for tool in tools if tool.name in tool_allowlist]
+    advertised = {tool.name for tool in tools}
+    dispatch = runtime_executor()
+
+    def execute(name: str, args: dict[str, Any]) -> str:
+        if name not in advertised:
+            return f"[tool-error] {name!r} is not available for this request"
+        return dispatch(name, args)
+
     return run_tool_loop(
         client,
         prompt=prompt,
-        tools=[] if tool_less else precis_tool_specs(),
-        execute=runtime_executor(),
+        tools=tools,
+        execute=execute,
         system_prompt=_read_system_prompt(system_prompt),
         max_turns=max_turns,
         abort_check=drain_requested,
@@ -7251,6 +7265,7 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                 max_turns=req.max_turns,
                 timeout_s=req.timeout_s,
                 tool_less=req.mcp_config is None,
+                tool_allowlist=req.openai_tool_allowlist,
                 local_url=req.local_url,
                 temperature=req.temperature,
                 thinking=req.thinking,

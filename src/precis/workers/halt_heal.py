@@ -78,6 +78,8 @@ from precis.workers.bounded_heal import HealSpec, run_bounded_heal
 from precis.workers.gripe_triage import _BLOCKED_KEY as _GRIPE_TRIAGE_BLOCKED_KEY
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store import Store
 
 log = logging.getLogger(__name__)
@@ -146,13 +148,65 @@ def clip(text: object, cap: int = _MODEL_TEXT_CAP) -> str:
 def heal_mode(store: Store) -> str:
     """The ``halt_heal:mode`` operator setting, normalised to one of
     :data:`MODES`; an unknown value reads as ``report``."""
-    raw = (store.get_setting(_MODE_KEY) or "").strip().lower()
+    return _normalize_mode(store.get_setting(_MODE_KEY))
+
+
+def _normalize_mode(value: str | None) -> str:
+    raw = (value or "").strip().lower()
     if raw in ("", "heal"):
         return "heal"
     if raw in MODES:
         return raw
     log.warning("halt_heal: unknown %s=%r — treating as 'report'", _MODE_KEY, raw)
     return "report"
+
+
+def _lock_setting(conn: Connection, key: str, *, create: bool = False) -> str:
+    row = conn.execute(
+        "SELECT value FROM app_state WHERE key = %s FOR UPDATE", (key,)
+    ).fetchone()
+    if row is None and create:
+        # Materialize missing mode/marker rows so concurrent upserts contend
+        # with the clear. If a writer inserted one first, lock its value.
+        row = conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, '') "
+            "ON CONFLICT (key) DO UPDATE SET value = app_state.value "
+            "RETURNING value",
+            (key,),
+        ).fetchone()
+    return str(row[0]) if row else ""
+
+
+def clear_if_current(
+    store: Store, key: str, armed: str, *, job: int, cause: str
+) -> tuple[str, str]:
+    """Lock the clear preconditions through the write and its outcome record."""
+    with store.atomic() as conn:
+        if _lock_setting(conn, _ALERTED_PREFIX + key, create=True):
+            return "alerted", armed
+        mode = _normalize_mode(_lock_setting(conn, _MODE_KEY, create=True))
+        if mode != "heal":
+            return "mode", mode
+        current = _lock_setting(conn, key)
+        _lock_setting(conn, _LAST_PREFIX + key)
+        last = load_last(store, key)
+        if last.get("job") != job or last.get("outcome") != "minted":
+            return "superseded", ""
+        if not current:
+            save_last(store, key, job=job, outcome="already-clear", cause=cause)
+            return "already-clear", ""
+        if current != armed:
+            return "re-armed", current
+        store.set_setting(key, "")
+        save_last(
+            store,
+            key,
+            job=job,
+            outcome="cleared",
+            cleared_at=datetime.now(UTC).isoformat(),
+            cause=cause,
+        )
+        return "cleared", ""
 
 
 def since_of(note: str) -> str:
@@ -192,9 +246,12 @@ def escalate(
     human_action: str = "",
     since: str = "",
     job_ref_id: int | None = None,
+    overdue_at: datetime | None = None,
 ) -> bool:
     """Raise the critical alert for a halt a human has to look at and push it
-    to the ops channel when it is new. Returns ``True`` for a new alert.
+    to the ops channel when it is new. Returns ``True`` for a new alert or
+    when an overdue attempt is recorded. The overdue path rechecks the
+    attempt and halt under the same locks used for a clear.
 
     The detail reads: what halted and since when; the halt note; the model
     diagnosis if any (marked as such — it is model output, not fact); what
@@ -216,21 +273,35 @@ def escalate(
     if job_ref_id is not None:
         lines.append(f"Job: jo{job_ref_id}")
     detail = mask_secrets("\n".join(lines))
-    _ref, is_new = raise_alert(
-        store,
-        source=ALERT_SOURCE,
-        fingerprint=spec.key,
-        title=title,
-        detail=detail,
-        severity="critical",
-    )
-    store.set_setting(_ALERTED_PREFIX + spec.key, datetime.now(UTC).isoformat())
+    marker = _ALERTED_PREFIX + spec.key
+    with store.atomic() as conn:
+        if overdue_at is not None:
+            if _lock_setting(conn, marker, create=True) or not _lock_setting(
+                conn, spec.key
+            ):
+                return False
+            _lock_setting(conn, _LAST_PREFIX + spec.key)
+            last = load_last(store, spec.key)
+            if last.get("outcome") != "minted" or last.get("job") != job_ref_id:
+                return False
+            save_last(
+                store, spec.key, outcome="overdue", overdue_at=overdue_at.isoformat()
+            )
+        store.set_setting(marker, datetime.now(UTC).isoformat())
+        _ref, is_new = raise_alert(
+            store,
+            source=ALERT_SOURCE,
+            fingerprint=spec.key,
+            title=title,
+            detail=detail,
+            severity="critical",
+        )
     if is_new:
         try:
             notify_critical_alert(store, title, detail, fingerprint=spec.key)
         except Exception:
             log.warning("halt_heal: ops push for %s failed", spec.key, exc_info=True)
-    return is_new
+    return is_new or overdue_at is not None
 
 
 def is_alerted(store: Store, key: str) -> bool:
@@ -258,10 +329,8 @@ def check_overdue(store: Store, key: str, *, when: datetime | None = None) -> bo
     now = when or datetime.now(UTC)
     if (now - minted).total_seconds() < _OVERDUE_S:
         return False
-    if is_alerted(store, key):
-        return False
     job = f" (jo{last['job']})" if last.get("job") else ""
-    escalate(
+    return escalate(
         store,
         spec,
         note=store.get_setting(key) or "",
@@ -272,9 +341,8 @@ def check_overdue(store: Store, key: str, *, when: datetime | None = None) -> bo
         ),
         since=str(last.get("halted_at") or ""),
         job_ref_id=int(last["job"]) if last.get("job") else None,
+        overdue_at=now,
     )
-    save_last(store, key, outcome="overdue", overdue_at=now.isoformat())
-    return True
 
 
 def note_resumed(store: Store, key: str) -> bool:
@@ -332,8 +400,8 @@ def _mint(store: Store, spec: HaltSpec, note: str, now: datetime) -> bool:
 
     idem = f"halt-heal:{spec.key}:{now:%Y-%m-%d}T{now:%H}"
     halted_at = since_of(note) or now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    with store.tx() as conn:
-        job_id, _reused = mint_job_once(
+    with store.atomic() as conn:
+        job_id, reused = mint_job_once(
             store,
             conn=conn,
             job_type=JOB_TYPE,
@@ -343,15 +411,17 @@ def _mint(store: Store, spec: HaltSpec, note: str, now: datetime) -> bool:
             idem_key=idem,
             prio=5,
         )
-    save_last(
-        store,
-        spec.key,
-        fresh=True,
-        job=job_id,
-        outcome="minted",
-        minted_at=now.isoformat(),
-        halted_at=halted_at,
-    )
+        if reused:
+            return False
+        save_last(
+            store,
+            spec.key,
+            fresh=True,
+            job=job_id,
+            outcome="minted",
+            minted_at=now.isoformat(),
+            halted_at=halted_at,
+        )
     return True
 
 
@@ -420,6 +490,7 @@ __all__ = [
     "MODES",
     "HaltSpec",
     "check_overdue",
+    "clear_if_current",
     "clip",
     "escalate",
     "heal_mode",

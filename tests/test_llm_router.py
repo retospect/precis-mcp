@@ -10797,3 +10797,44 @@ def test_gate_result_logs_the_gated_rungs_account(
     )
     assert records[0].features["account"] == "anthropic-api"
     assert records[0].features["gated"] is True
+
+
+def test_openai_tool_allowlist_restricts_advertising_and_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm import openai_tools, precis_tools
+    from precis.utils.llm.router import _dispatch_openai_tools
+
+    dispatched: list[str] = []
+
+    def dispatch(name: str, args: dict[str, Any]) -> str:
+        dispatched.append(name)
+        return "read result"
+
+    def loop(client: Any, **kwargs: Any) -> openai_tools.AgentLoopResult:
+        assert {tool.name for tool in kwargs["tools"]} == {"get", "search"}
+        assert kwargs["execute"]("put", {"kind": "job"}).startswith("[tool-error]")
+        assert kwargs["execute"]("get", {"kind": "alert"}) == "read result"
+        return openai_tools.AgentLoopResult(
+            final_text="ok",
+            turns_used=1,
+            tool_calls_made=2,
+            total_tokens=None,
+            stop_reason="stop",
+        )
+
+    monkeypatch.setattr(precis_tools, "runtime_executor", lambda: dispatch)
+    monkeypatch.setattr(openai_tools, "run_tool_loop", loop)
+    result = _dispatch_openai_tools(
+        LlmRequest(
+            tier=Tier.FRONTIER,
+            prompt="inspect halt",
+            tools_needed=True,
+            mcp_config="unused.json",
+            local_url="http://127.0.0.1:11444/v1",
+            openai_tool_allowlist=frozenset({"get", "search"}),
+        ),
+        "m",
+    )
+    assert result.text == "ok"
+    assert dispatched == ["get"]

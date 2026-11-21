@@ -57,8 +57,9 @@ failures in a row). Each time the halt is armed or re-armed:
   earlier diagnosis; a repair that recurs is a human's problem. That capped
   call also files one `[bounded-heal]` gripe (the shared heal primitive
   always does; it cannot be switched off per heal).
-- A job that never reports does not wait for the next failed probe: every
-  halted tick checks it, and a session minted over 2 h ago with no report
+- A tick that leaves the halt in place, including an idle probe, requests
+  a supervisor for a halt with no record or checks the existing job. A job
+  with no report after 2 h
   escalates once (`halt_heal:last:<key>` goes to `outcome: overdue`).
 - One page per episode: once a human was alerted (marker
   `halt_heal:alerted:<key>`), further re-arms start no session and write no
