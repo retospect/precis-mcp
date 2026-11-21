@@ -491,6 +491,10 @@ edit(kind="finding", id=42, args={"pick_candidate": "miller23a"})
 edit(kind="finding", id=42, args={"pick_candidate": 42})  # or by ref_id
 ```
 
+Add `dry_run=True` to preview a pick: it names the picked and the
+dropped candidates, the chain frontier swap and the status flip, and
+writes nothing. `'self'` (below) has no preview and rejects `dry_run`.
+
 ## Close a dead chain against its held terminal paper
 
 Read the live status before choosing `pick_candidate='self'`:

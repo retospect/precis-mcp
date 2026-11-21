@@ -139,8 +139,8 @@ All `backlog/<slug>.md`; each unparks when the triage promotes it.
 
 - **taproot-self-plagiarism** · **claim-query-rescan-watermark** ·
   **notation-detector-gaps** · **taproot-reground** · **finding-chase** ·
-  **finding-edit-dry-run-preview** · **classifier-cite-gap-analysis** ·
-  **nightly-fixer-for-drifted-cites** — the remaining claims-cluster items.
+  **classifier-cite-gap-analysis** · **nightly-fixer-for-drifted-cites** —
+  the remaining claims-cluster items.
 - **Auto-Ⓐ abstract verify** — when full text is unobtainable but the held
   abstract is present, a MEDIUM-tier pass sets `abstract` machine-earned
   (`by='verify:abstract'`), gated behind the acquiring-arm give-up; owner

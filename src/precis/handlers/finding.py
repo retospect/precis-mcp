@@ -2214,8 +2214,9 @@ class FindingHandler(AuditedRetirementHandler):
         hub (``meta={'scope': {...}}``). Mutually exclusive kwargs — pass
         exactly one (``testable_by=``/``motivation=`` may be combined with
         each other, ``meta={'scope': …}`` with ``title=``, not with the
-        rest); ``dry_run`` is honoured only by the scope door and rejected
-        by every other op (no faithful preview). See
+        rest); ``dry_run`` previews the body edit, the scope door and a
+        candidate pick, and is rejected by every other op (no faithful
+        preview). See
         :func:`precis.handlers._finding_edit.edit` for the full contract
         (pick_candidate promotes a chase candidate + flips status back to
         tracing — pick_candidate='self' instead closes out a

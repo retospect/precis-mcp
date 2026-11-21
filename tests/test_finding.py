@@ -2449,6 +2449,72 @@ class TestPickCandidate:
         out = h.edit(id=finding_id, pick_candidate="a")
         assert "picked candidate a" in out.body
 
+    def _candidate_state(self, store, ref_id: int) -> list[tuple]:
+        return sorted(
+            (link.id, link.dst_ref_id, (link.meta or {}).get("candidate"))
+            for link in self._outbound_derived_from(store, ref_id)
+        )
+
+    def test_finding_edit_dry_run_previews_pick_and_does_not_write(self, store) -> None:
+        """``dry_run=True`` on a pick names the picked and the dropped
+        candidates and writes nothing: the candidate links, ``meta.chain``
+        and STATUS read the same afterwards (gr690809)."""
+        finding_id, _ = self._seed_multi_candidate(
+            store, candidate_keys=("miller23a", "fischer13", "wang2020state")
+        )
+        links_before = self._candidate_state(store, finding_id)
+        meta_before = store.get_ref(kind="finding", id=finding_id).meta
+        h = _make_handler(store)
+
+        out = h.edit(id=finding_id, pick_candidate="fischer13", dry_run=True)
+
+        assert "dry-run" in out.body and "nothing written" in out.body
+        assert "would pick candidate fischer13" in out.body
+        dropped = next(
+            line for line in out.body.splitlines() if line.startswith("would drop")
+        )
+        assert "miller23a" in dropped and "wang2020state" in dropped
+        assert "fischer13" not in dropped
+        assert "STATUS:multi_candidate -> STATUS:tracing" in out.body
+        assert "## Dependants" in out.body
+
+        assert self._candidate_state(store, finding_id) == links_before
+        assert [flag for _, _, flag in links_before].count(True) == 3
+        assert store.get_ref(kind="finding", id=finding_id).meta == meta_before
+        assert self._status_value(store, finding_id) == "multi_candidate"
+
+    def test_dry_run_runs_the_candidate_validation(self, store) -> None:
+        """The preview refuses what the real pick refuses — an unknown
+        candidate still names the options."""
+        finding_id, _ = self._seed_multi_candidate(
+            store, candidate_keys=("known-a", "known-b")
+        )
+        links_before = self._candidate_state(store, finding_id)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="no candidate matches") as exc:
+            h.edit(id=finding_id, pick_candidate="nosuchcite", dry_run=True)
+        opts = getattr(exc.value, "options", None) or []
+        assert "known-a" in opts and "known-b" in opts
+        assert self._candidate_state(store, finding_id) == links_before
+
+    def test_dry_run_then_real_pick_matches_the_preview(self, store) -> None:
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("a23", "b24")
+        )
+        h = _make_handler(store)
+        preview = h.edit(id=finding_id, pick_candidate=cand_ids[0], dry_run=True)
+        assert "would pick candidate a23" in preview.body
+        assert "would drop 1 other candidate(s): b24" in preview.body
+        assert "chain frontier: source -> a23" in preview.body
+
+        h.edit(id=finding_id, pick_candidate=cand_ids[0])
+
+        dst_ids = {l.dst_ref_id for l in self._outbound_derived_from(store, finding_id)}
+        assert cand_ids[0] in dst_ids and cand_ids[1] not in dst_ids
+        ref = store.get_ref(kind="finding", id=finding_id)
+        assert (ref.meta or {})["chain"][-1]["ref_id"] == cand_ids[0]
+        assert self._status_value(store, finding_id) == "tracing"
+
 
 # ── edit(pick_candidate='self') — dead_chain close-out on a held paper ──
 
@@ -2599,6 +2665,17 @@ class TestPickCandidateSelf:
         with pytest.raises(BadInput, match="must be non-empty"):
             h.edit(id=fid, pick_candidate="self", reason="   ")
 
+    def test_dry_run_rejected(self, store) -> None:
+        """The close-out has no preview (its result comes out of the chain
+        snapshot), so ``dry_run`` refuses rather than applying."""
+        fid, _ = self._seed_dead_chain(store)
+        meta_before = self._meta(store, fid)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="does not support dry_run"):
+            h.edit(id=fid, pick_candidate="self", reason="x", dry_run=True)
+        assert self._status_value(store, fid) == "dead_chain"
+        assert self._meta(store, fid) == meta_before
+
 
 # ── edit(title=...) — retitle a TAPROOT:claim hub ────────────────────
 
@@ -2634,6 +2711,14 @@ class TestRetitleHub:
         ref = store.get_ref(kind="finding", id=hub)
         assert ref.title == new_sentence
         assert self._finding_body(store, hub) == new_sentence
+
+    def test_retitle_dry_run_rejected(self, store) -> None:
+        sentence = "Pd/C catalyzes Suzuki coupling at RT."
+        hub = mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="does not support dry_run"):
+            h.edit(id=hub, title="A reworded claim sentence.", dry_run=True)
+        assert store.get_ref(kind="finding", id=hub).title == sentence
 
     @pytest.mark.parametrize("rescope", [False, True])
     def test_retitle_with_writer_attribution(self, store: Store, rescope: bool) -> None:

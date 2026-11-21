@@ -12,11 +12,13 @@ finding / paper / structure reject it loudly instead of applying it.
 
 Fix (td48769, 2026-08-05): paper / cfp / datasheet now honour dry_run
 too — a real ``field: old → new`` preview, no write — bringing them to
-parity with the file kinds. ``finding`` and ``structure`` still reject:
-finding's ``edit`` surface (pick_candidate / title / unacquirable_note)
-has no faithful preview and was reworked by the trust/retitle ship, so
-its dry_run-preview arm is deferred (see OPEN-ITEMS); structure ops
-mutate the cell/bond graph and may dispatch compute.
+parity with the file kinds. ``structure`` still rejects: its ops mutate
+the cell/bond graph and may dispatch compute.
+
+Fix (gr690809, 2026-11-21): finding's ``pick_candidate`` previews the
+picked and dropped candidates, no write; ``title=``,
+``unacquirable_note=`` and ``pick_candidate='self'`` still reject. Those
+tests live in ``tests/test_finding.py``.
 """
 
 from __future__ import annotations

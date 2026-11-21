@@ -121,6 +121,11 @@ def edit(
     Idempotent — picking the same candidate twice is fine (re-flips to
     tracing, no-op on links).
 
+    ``dry_run=True`` previews the pick and writes nothing (gr690809): it
+    runs the same candidate validation, then names the picked candidate,
+    the candidates the pick would drop, the ``meta.chain`` frontier swap
+    and the status flip (:func:`_preview_pick`).
+
     ``pick_candidate='self'`` is the **dead_chain close-out**, not a
     candidate pick: a ``STATUS:dead_chain`` finding whose frontier paper
     is fetched and held (live body chunks) is resolved against that held
@@ -246,8 +251,10 @@ def edit(
     An unsigned review is reopened atomically because its grounding froze
     the old prose; signed/anchored/published content refuses correction here.
 
-    Only the body edit and the ``meta={'scope': …}`` door support
-    ``dry_run`` (see above); every other op rejects it.
+    ``dry_run`` previews the body edit, the ``meta={'scope': …}`` door and
+    a candidate pick (see above). ``title=``, ``unacquirable_note=``,
+    ``testable_by=``/``motivation=`` and ``pick_candidate='self'`` reject
+    it — none has a faithful preview.
     """
     # Attribution accompanies a title edit; it is not a separate mutation.
     attribution: dict[str, str] = {}
@@ -415,18 +422,27 @@ def edit(
             testable_by=testable_by,
             motivation=motivation,
         )
-    if dry_run:
-        # Neither op has a faithful preview yet: pick_candidate rewrites
-        # links + flips status; unacquirable_note writes an audit-trail
-        # meta patch. Reject loudly rather than silently apply on
-        # dry_run (a data-loss footgun either way).
+    if dry_run and unacquirable_note is not None:
+        # No preview: unacquirable_note writes a server-stamped
+        # audit-trail meta patch. Reject loudly rather than silently
+        # apply on dry_run (a data-loss footgun).
         raise BadInput(
-            "edit(kind='finding') does not support dry_run — it either "
-            "promotes a candidate cite (rewrites links + flips status) or "
-            "records an unacquirable-source override; omit dry_run to apply",
+            "edit(kind='finding', unacquirable_note=…) does not support "
+            "dry_run — the override has no preview; omit dry_run to apply",
+            next="edit(kind='finding', id=<N>, unacquirable_note='<why>')",
+        )
+    if dry_run and is_self_pick:
+        # No preview either: the close-out's result (primary/via cite
+        # keys, caveats, the status flip) comes out of the chase's
+        # chain-snapshot pass, known only by running it. A candidate
+        # pick does preview — see ``_preview_pick`` below.
+        raise BadInput(
+            "edit(kind='finding', pick_candidate='self') does not support "
+            "dry_run — the close-out runs the chase's chain snapshot, "
+            "which has no preview; omit dry_run to apply",
             next=(
-                "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
-                "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
+                "edit(kind='finding', id=<N>, pick_candidate='self', "
+                "reason='<why the held paper settles it>')"
             ),
         )
     if id is None:
@@ -483,6 +499,16 @@ def edit(
     picked_link, other_links = _match_candidate(
         store, candidates, pick_candidate=pick_candidate
     )
+
+    if normalize_dry_run(dry_run) is not None:
+        return _preview_pick(
+            store,
+            kind=kind,
+            finding_ref_id=finding_ref_id,
+            pick_candidate=pick_candidate,
+            picked_link=picked_link,
+            other_links=other_links,
+        )
 
     with store.tx() as conn:
         # Promote the picked link: clear the candidate flag.
@@ -1143,6 +1169,53 @@ def _match_candidate(
         f"no candidate matches pick_candidate={target_slug!r}",
         options=candidate_slugs,
     )
+
+
+def _ref_label(store: Store, ref_id: int) -> str:
+    """A live ref's slug, else ``ref:<id>`` — preview text, never raises."""
+    try:
+        return fetch_ref_any_kind(store, ref_id).slug or f"ref:{ref_id}"
+    except BadInput:
+        return f"ref:{ref_id}"
+
+
+def _preview_pick(
+    store: Store,
+    *,
+    kind: str,
+    finding_ref_id: int,
+    pick_candidate: str | int,
+    picked_link: Any,
+    other_links: list,
+) -> Response:
+    """``edit(kind='finding', pick_candidate=…, dry_run=True)`` — what the
+    pick would write, from the same validated ``(picked, others)`` split
+    the real path uses (gr690809): the promoted link, the candidate links
+    it deletes, the ``meta.chain`` frontier swap and the status flip.
+    Reads only."""
+    picked = _ref_label(store, picked_link.dst_ref_id)
+    dropped = [_ref_label(store, link.dst_ref_id) for link in other_links]
+    ref = store.get_ref(kind=kind, id=finding_ref_id)
+    assert ref is not None
+    chain = list((ref.meta or {}).get("chain") or [])
+    status = next(
+        (t.value for t in store.tags_for(finding_ref_id) if t.prefix == "STATUS"),
+        None,
+    )
+    current = f"STATUS:{status}" if status else "(none)"
+    lines = [
+        f"dry-run: would pick candidate {picked} on finding "
+        f"id={finding_ref_id} (nothing written)",
+        f"would drop {len(dropped)} other candidate(s)"
+        + (f": {', '.join(dropped)}" if dropped else ""),
+        f"chain frontier: {_ref_label(store, int(chain[-1]['ref_id']))} -> {picked}"
+        if chain
+        else "chain: empty — no frontier to replace",
+        f"status: {current} -> STATUS:{_STATUS_TRACING}",
+        f"apply: edit(kind='finding', id={finding_ref_id}, "
+        f"pick_candidate={pick_candidate!r})",
+    ]
+    return Response(body="\n".join(lines))
 
 
 # ── the body edit ──────────────────────────────────────────────────────────
