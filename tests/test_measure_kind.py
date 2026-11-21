@@ -2685,3 +2685,14 @@ def test_search_text_matches_measurand_and_literal_not_just_subject(
     _put(store, w, "bond", "9.9", unit="Å", label="W slab")
     got = store.search_measures(text="9.9")
     assert [r["literal"] for r in got.rows] == ["9.9"]
+
+
+def test_bound_sign_or_more_or_fewer_inclusive() -> None:
+    from precis.handlers._measure_render import bound_sign
+
+    lo = {"value_form": "lower_bound", "literal": "700 or more"}
+    hi = {"value_form": "upper_bound", "literal": "5 or fewer"}
+    assert bound_sign(lo) == "≥ "
+    assert bound_sign(hi) == "≤ "
+    assert bound_sign({**lo, "literal": "more than 700"}) == "> "
+    assert bound_sign({**hi, "literal": "fewer than 5"}) == "< "

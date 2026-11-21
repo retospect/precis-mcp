@@ -212,11 +212,13 @@ _BOUND_STRICT_LOWER_RE: Final[re.Pattern[str]] = re.compile(
 )
 _BOUND_INCLUSIVE_UPPER_RE: Final[re.Pattern[str]] = re.compile(
     r"≤|<=|at most|no more than|not exceed\w*|never exceed\w*|up to|"
-    r"no greater than|\bwithin\b|maximum of|at maximum|\bby\b",
+    r"no greater than|\bwithin\b|maximum of|at maximum|\bby\b|"
+    r"\bor (?:less|fewer)\b",
     re.IGNORECASE,
 )
 _BOUND_INCLUSIVE_LOWER_RE: Final[re.Pattern[str]] = re.compile(
-    r"≥|>=|at least|no less than|no fewer than|minimum of|at minimum",
+    r"≥|>=|at least|no less than|no fewer than|minimum of|at minimum|"
+    r"\bor more\b",
     re.IGNORECASE,
 )
 
