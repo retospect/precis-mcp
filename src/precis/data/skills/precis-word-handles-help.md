@@ -51,19 +51,28 @@ Speak them when a human listens rather than reads: a voice or audio
 interface, or the user saying "use word handles". Say the words and never
 read the number aloud: "gentle beacon", not "674030".
 
-Off by default, so normal agent traffic pays no tokens. Turn it on for
-this session only (nothing persists to other sessions) and off again for
-text:
+Off by default, so normal agent traffic pays no tokens. Turn it on and
+off again for text:
 
 ```python
 put(kind='handle', text='on')
 put(kind='handle', text='off')
 ```
 
+The ack names the scope: "for this session" on a live MCP session, or "for
+this connector credential" on stateless HTTP, where the switch follows the
+authenticated OAuth grant (it survives token refresh and never leaks to other
+credentials). With neither a live session nor a dedicated credential (for
+example the shared installation bearer) the put raises `BadInput`; reconnect
+through OAuth, or convert one-off with `get(kind='handle', id=...)`. An
+explicit switch beats auto-enable.
+
 While on, search and list rows gain a `word` column, so a whole page can
-be spoken without a lookup per id. A deployment may auto-enable declared
-voice clients (`PRECIS_WORD_HANDLE_CLIENTS`): a `word` column in your first
-list means the switch is already on.
+be spoken without a lookup per id. The built-in Claude connector is
+auto-enabled (it cannot tell voice from text), and a deployment may add more
+clients by clientInfo, OAuth client id or User-Agent
+(`PRECIS_WORD_HANDLE_CLIENTS`): a `word` column in your first list means the
+switch is already on.
 
 ## Convert both ways and resolve a clash
 

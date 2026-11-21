@@ -49,15 +49,17 @@ pages with `args={'page': N}`. Case, spaces, hyphens and commas are
 ignored. Words off the lists raise `BadInput`. Use the resulting number
 as `id=` in `get`/`put`/`tag`; those verbs do not take the words.
 
-## Turn word handles on for the session
+## Turn word handles on
 
 ```python
 put(kind="handle", text="on")
 ```
 
-Pins this session's switch: search and list rows gain a `word` column so
-a voice agent can speak each row without a per-id lookup. Voice clients
-may be auto-enabled by the deployment. See [[precis-word-handles-help]]
+Sets the switch for the live session, or on stateless HTTP for the OAuth
+connector credential (the ack names which): search and list rows gain a
+`word` column so a voice agent can speak each row without a per-id lookup.
+With neither, the put raises `BadInput`. The Claude connector is
+auto-enabled; a deployment may add clients. See [[precis-word-handles-help]]
 for when to say the words and how clashes resolve.
 
 ## Recover a reference from a spoken description
@@ -72,6 +74,6 @@ todo and memory. Include the year or topic when several candidates fit.
 
 ## See also
 
-- [[precis-word-handles-help]] — voice conventions, the session switch, clashes
+- [[precis-word-handles-help]] — voice conventions, the switch, clashes
 - [[precis-overview]] — verbs and kinds
 - [[precis-calc-help]] — other local conversions

@@ -163,7 +163,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | Kind | What | Example `q=` | Cost |
 |---|---|---|---|
 | `calc` | Local SymPy: exact arithmetic, calculus (integrals/derivatives/ODEs), solve, linear algebra; trig with explicit angle units (`sin(30 deg)`); **+ local unit conversion** (`3 ft to m`, disambiguates ton/gallon/oz). See `precis-calc-help`. | `2+3*4` · `1 ton to kg` | free |
-| `handle` | Spoken word handle for a numeric id (2 words; 3 on a clash), both directions + multi-id; `put(text='on')` gives search/list rows a `word` column for the session. See `precis-word-handles-help` and `precis-handle-help`. | `648264` · `brave dog` | free |
+| `handle` | Spoken word handle for a numeric id (2 words; 3 on a clash), both directions + multi-id; `put(text='on')` gives search/list rows a `word` column for the session or OAuth connector (Claude auto-on). See `precis-word-handles-help` and `precis-handle-help`. | `648264` · `brave dog` | free |
 | `time` | Local clock: now in UTC + server local + epoch; parse ISO/RFC 2822/epoch/`in 3 hours`/`next monday`; `args={'to': 'Asia/Tokyo'}` converts, `args={'format': ...}` renders. See `precis-time-help`. | `in 3 hours` · `1791556200` | free |
 | `math` | Wolfram Alpha: facts, world data | `population of Ireland` | paid |
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
