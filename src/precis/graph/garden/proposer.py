@@ -81,6 +81,7 @@ PROMPT_VERSION = "garden-propose.v2"
 #: Memory rules evolve independently: existing detectors must not re-ask
 #: unchanged rejections merely because another detector was introduced.
 MEMORY_PROMPT_VERSION = memory_policy_version()
+COMPACT_PROMPT_VERSION = f"{MEMORY_PROMPT_VERSION}.compact.v2"
 MEMORY_ACTIONS = {
     "anchor_rot": ("rewrite",),
     "compact": ("compact",),
@@ -538,6 +539,14 @@ def _prompt_for(
         head = _PROMPT_HEAD
     if uses_memory_policy(candidate.detector, candidate.evidence, candidate.payload):
         head += "\n" + memory_reconciliation_policy()
+    if candidate.detector == "compact":
+        head += (
+            "\nUse only the checklist row matching the target's section tags in "
+            "evidence.section_tags. The section:workflow tag selects the workflow, "
+            "rulings row. If no single row matches, apply only the checks common "
+            "to all types. If an ask is based on a missing checklist element, "
+            "name that element from the applicable row or the common checks.\n"
+        )
     if candidate.detector in {
         "anchor_rot",
         "compact",

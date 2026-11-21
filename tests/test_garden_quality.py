@@ -297,6 +297,38 @@ _WHEELS = ("Front wheel", "Rear wheel", "Spare wheel")
 
 
 class TestRejectionRemembered:
+    def test_compact_prompt_change_reopens_only_compact_rejections(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        candidates = [
+            GardenCandidate(
+                detector=detector,
+                action=action,
+                target_kind="ref",
+                target_id=_ref(store, "memory", detector),
+            )
+            for detector, action in (("compact", "compact"), ("notation", "rewrite"))
+        ]
+        for candidate in candidates:
+            record_rejection(
+                store,
+                candidate,
+                rationale="previous ask",
+                prompt_version=proposer.MEMORY_PROMPT_VERSION,
+            )
+        monkeypatch.setattr(
+            runner,
+            "run_detectors",
+            lambda *_a, **_kw: DetectorRun(candidates=candidates),
+        )
+        judge = _Rejecter()
+        first = run_garden_tick(store, propose=judge)
+        assert (first.rejected, first.skipped_rejected) == (1, 1)
+        assert judge.asked == [candidates[0].key]
+        second = run_garden_tick(store, propose=judge)
+        assert (second.rejected, second.skipped_rejected) == (0, 2)
+        assert judge.asked == [candidates[0].key]
+
     def test_memory_prompt_change_keeps_legacy_rejections(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -198,6 +198,7 @@ def test_compact_detector_history_trigger(store: Store, cold: bool) -> None:
         "One live claim without a date.\n"
     )
     target = _memory(store, body)
+    store.add_tag(target, Tag.open("section:workflow"), set_by="system")
     if cold:
         with store.pool.connection() as conn:
             conn.execute(
@@ -206,6 +207,7 @@ def test_compact_detector_history_trigger(store: Store, cold: bool) -> None:
                 (target,),
             )
     candidate = _compact_candidate(store, target)
+    assert candidate.evidence["section_tags"] == ["section:workflow"]
     if cold:
         assert candidate.evidence["reasons"] == ["cold", "history"]
         assert candidate.evidence["reads"]["last_read_at"] is None

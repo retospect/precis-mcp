@@ -53,6 +53,7 @@ from precis.graph.garden.candidates import (
 )
 from precis.graph.garden.proposals import emit_proposal, key_block, record_rejection
 from precis.graph.garden.proposer import (
+    COMPACT_PROMPT_VERSION,
     MEMORY_PROMPT_VERSION,
     PROMPT_VERSION,
     Verdict,
@@ -516,6 +517,8 @@ def run_garden_tick(
             if uses_memory_policy(cand.detector, cand.evidence, cand.payload)
             else PROMPT_VERSION
         )
+        if cand.detector == "compact":
+            prompt_version = COMPACT_PROMPT_VERSION
         gid = (
             int(cand.payload["gripe"])
             if cand.detector == "griped" and isinstance(cand.payload.get("gripe"), int)

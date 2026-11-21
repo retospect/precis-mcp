@@ -90,7 +90,12 @@ trust acts retain the original model string.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate returns structured ``accept``/rationale. Memory detectors'
    body candidates receive fisheye+1hop and verbatim
-   ``precis-fix-memory-gripe-help`` checklist; one-action JSON answers:
+   ``precis-fix-memory-gripe-help`` checklist. For ``compact``, the target's
+   ``section:`` tag selects the checklist row (``section:workflow`` selects
+   workflow/rulings). An ask about a missing check names the element from
+   that row or a check common to all types. The compact prompt has its
+   own rejection version so corrections reopen unchanged compactions.
+   One-action JSON answers:
    rewrite / qualify / supersede / retire / no-change / ask (gr560762).
    ``source='graph_garden:propose'`` routes through configured ``llm.op.*``
    (``precis.utils.llm.operations``), never a code-pinned host/model.

@@ -2579,6 +2579,9 @@ def compact_candidates(
         sentences, capped = _compact_sentences(row.body)
         evidence["sentences"] = sentences
         evidence["sentences_capped"] = capped
+        evidence["section_tags"] = [
+            f"section:{section}" for section in sorted(row.sections)
+        ]
         evidence["related"] = related[row.ref_id]
         out.append(
             GardenCandidate(
