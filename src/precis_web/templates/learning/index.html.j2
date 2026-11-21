@@ -85,6 +85,7 @@
       <div class="flex items-start gap-2">
         <span class="flex-1 text-sm font-medium text-fg-primary">{{ g.name }}
           <span class="text-xs font-normal text-fg-faint">&mdash; {{ g.state }}{% if g.mastery %} &middot; mastery {{ '%.2f' | format(g.mastery) }}{% endif %}</span>
+        {% if g.memory %}<a href="{{ g.memory.href }}" class="ml-2 text-xs font-normal text-info-emphasis hover:underline">{{ g.memory.label }}</a>{% endif %}
         </span>
         <form method="post" action="/anki/known" hx-post="/anki/known" hx-swap="none">
           <input type="hidden" name="concept" value="{{ g.concept_id }}" />

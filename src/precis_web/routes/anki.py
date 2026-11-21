@@ -123,16 +123,35 @@ def _counts(store: Store, owner: str) -> dict[str, int]:
     return out
 
 
+def _memory_link(match: Any) -> dict[str, Any] | None:
+    """The ``meta.memory_match`` stamp as a template link, from meta alone
+    (gr743229): ``None`` for a miss or an unstamped concept."""
+    if not isinstance(match, dict) or not isinstance(match.get("ref_id"), int):
+        return None
+    kind = "me" if match.get("kind") != "finding" else "fi"
+    return {
+        "href": f"/eye/{kind}{match['ref_id']}",
+        "label": f"{kind}{match['ref_id']} {match.get('title') or ''}".strip(),
+    }
+
+
 def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str, Any]]:
     """Live concept-representing cards, grouped by their ``represents``
     concept — newest card first inside each group, groups ordered by their
-    newest card. ``(concept, mastery, state, [(card_id, cloze_text, boosted), …])``.
+    newest card. ``(concept, mastery, state, memory, [(card_id, cloze_text, boosted), …])``.
 
     ``forge_only=True`` keeps the forge cohort (``meta.authored_by =
     'card_forge'``) for ``/anki``. ``forge_only=False`` — ``/learning``'s
     Current context (gr742681) — lists every card authored in precis:
     forge, agent-put, or hand-made, i.e. anything that is not a read-only
     Anki import (``meta.source != 'anki-foreign'``).
+
+    ``memory`` is the stamped nearest research memory from
+    ``concept.meta.memory_match`` (gr743229) — a link dict or ``None``;
+    it is rendered from meta alone, never searched at page load. A stamped
+    ``{"ref_id": None}`` miss is never revisited: rework only rewrites card
+    refs, so a miss stays a miss until the concept is re-forged; the 0.45
+    similarity bar is unmeasured (see the forge mint) with an env override.
 
     ``boosted`` mirrors ``meta.anki_boost_due``: a queued bring-forward the
     next ``anki_sync`` tick applies, so a list row can show "boost queued"
@@ -144,7 +163,8 @@ def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str
                c.meta->>'state',
                a.ref_id,
                a.meta->'fields'->>'Text',
-               a.meta->>'anki_boost_due'
+               a.meta->>'anki_boost_due',
+               c.meta->'memory_match'
         FROM refs a
         JOIN links l ON (
                  (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
@@ -160,7 +180,16 @@ def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str
     """
     groups: dict[int, dict[str, Any]] = {}
     with store.pool.connection() as conn:
-        for cid, name, mastery, state, card_id, cloze, boost_due in conn.execute(
+        for (
+            cid,
+            name,
+            mastery,
+            state,
+            card_id,
+            cloze,
+            boost_due,
+            match,
+        ) in conn.execute(
             sql, (owner, _FORGE_AUTHOR, forge_only, _FOREIGN_SOURCE)
         ).fetchall():
             g = groups.setdefault(
@@ -170,6 +199,7 @@ def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str
                     "name": name or f"cn{int(cid)}",
                     "mastery": float(mastery) if mastery is not None else 0.0,
                     "state": state or "candidate",
+                    "memory": _memory_link(match),
                     "cards": [],
                 },
             )

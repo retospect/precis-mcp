@@ -55,6 +55,7 @@ from precis.reading.mastery import (
     LEECH_LAPSES,
     _env_float,
 )
+from precis.reading.memory_match import backfill_memory_matches
 from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
@@ -391,6 +392,7 @@ def mint_daily_cards(
             report.minted.append((concept_id, minted))
             # A carded concept is being learned — it leaves the candidate pool.
             store.update_ref(concept_id, meta_patch={"state": STATE_ACTIVE})
+            backfill_memory_matches(store, concept_ids=[concept_id])
         elif skip_reason:
             # The model judged this concept un-cardable (a topic label, stock
             # phrase, or front-matter). Stamp it so the daily pass stops
@@ -711,7 +713,7 @@ def run_card_forge(
         skill_preamble=preamble,
         now=now,
     )
-    return mint_daily_cards(
+    report = mint_daily_cards(
         store,
         client=client,
         per_day=per_day,
@@ -720,6 +722,9 @@ def run_card_forge(
         now=now,
         report=report,
     )
+    # Backfill + retry concepts whose embedding was not ready at mint time.
+    backfill_memory_matches(store)
+    return report
 
 
 __all__ = [

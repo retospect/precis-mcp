@@ -42,6 +42,7 @@
               — {{ g.state }}{% if g.mastery %} · mastery {{ '%.2f' | format(g.mastery) }}{% endif %}
             </span>
           </label>
+          {% if g.memory %}<a href="{{ g.memory.href }}" class="ml-2 text-xs font-normal text-info-emphasis hover:underline">{{ g.memory.label }}</a>{% endif %}
         </div>
         <ul class="ml-6 mt-1 space-y-1">
           {% for card in g.cards %}

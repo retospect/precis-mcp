@@ -176,3 +176,28 @@ def test_overlapping_owners_share_the_original_mastery_snapshot(store: Any) -> N
     assert undo_known(store, second, cid, second_token)
     assert store.get_ref(kind="anki", id=theirs) is not None
     assert store.get_ref(kind="concept", id=cid).meta == before
+
+
+def test_forge_groups_carry_memory_link_from_meta(store: Any) -> None:
+    owner = _user(store)
+    cid = create_concept(store, name=f"mem-{uuid.uuid4().hex[:8]}")
+    _forge_card(store, cid, owner)
+    store.update_ref(
+        cid,
+        meta_patch={"memory_match": {"ref_id": 7, "kind": "memory", "title": "Why X"}},
+    )
+    group = next(
+        g for g in _card_groups(store, owner, forge_only=True) if g["concept_id"] == cid
+    )
+    assert group["memory"] == {"href": "/eye/me7", "label": "me7 Why X"}
+
+
+def test_memory_link_misses_render_nothing() -> None:
+    from precis_web.routes.anki import _memory_link
+
+    assert _memory_link(None) is None
+    assert _memory_link({"ref_id": None}) is None
+    assert _memory_link({"ref_id": 5, "kind": "finding", "title": "T"}) == {
+        "href": "/eye/fi5",
+        "label": "fi5 T",
+    }
