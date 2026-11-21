@@ -11,6 +11,11 @@
   per-registry numbering policy. See :mod:`precis.draft.registry`.
 - Document-class **scaffolding** — genre briefs + section styles + the
   standard section skeleton laid down per ``doc_type`` (paper-writing pipeline rung 4). See :mod:`precis.draft.scaffolds`.
+- Draft-reference policy: a standalone one-to-four-digit bracketed number
+  (``[001]``, ``[12]``) is prose and writes literally; five-plus digits
+  (``[99999]``) still trip the bad-citation check. The cutoff is a lint
+  heuristic, since handle parsing imposes no five-digit minimum. See
+  :func:`precis.draft.lint._classify_chunk_ref_tokens`.
 - Abbreviation hygiene warns about authored definitions of glossary terms:
   export defines first use across chunks, so a later authored definition
   can repeat it. Write hints cover newly introduced definitions; the full

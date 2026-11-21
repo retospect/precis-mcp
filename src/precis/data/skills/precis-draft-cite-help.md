@@ -87,7 +87,9 @@ paper).
 
 **Never fabricate handles.** A `put`/`edit` introducing an unresolved
 handle-shaped ref (e.g. numeric `[45650]` or typo `[dc…]`) is refused with
-`BadInput` and writes nothing. Copy handles from search/get. Deliberate
+`BadInput` and writes nothing. Exception: a standalone one-to-four-digit
+bracketed number (`[001]`, `[110]`, `[12]`) is ordinary prose and writes
+literally; the five-digit cutoff is a lint heuristic, not a handle rule. Copy handles from search/get. Deliberate
 forward refs use `finding #<slug>`; verbatim reads flag them **⚠ unresolved**
 and they never autolink or export. Use `[fi<id>]`, creating the finding first
 with `put(kind='finding', …)` if needed.

@@ -85,8 +85,19 @@ _FINDING_MARKER = re.compile(r"finding\s+#(?P<slug>[A-Za-z][A-Za-z0-9-]+)")
 #: A ``[<token>]`` prose reference that *looks* like a handle attempt — a
 #: pure numeric id (the classic mistake, ``[45650]``) or a known 2-char code
 #: + digits (``[me6184]``). A non-handle ``[see note]`` is not matched, so
-#: prose stays untouched.
+#: prose stays untouched. The numeric leg matches every digit run; the
+#: row-id-length cutoff is the classifier's ``_NUMERIC_REF_MIN_DIGITS``.
 _CHUNK_REF = re.compile(r"\[(?P<h>[a-z]{2}\d+|\d+)\]")
+
+#: Minimum digit count for a standalone ``[<digits>]`` token to read as a
+#: handle attempt. refs/chunks PKs run to five-plus digits, so a shorter
+#: bracketed number is ordinary prose notation — a crystallographic
+#: direction (``[001]``, ``[110]``, ``[0001]``), a numbered citation
+#: (``[12]``), a footnote or bracketed year (``[2024]``) — never a dead
+#: link (gr735831). Letter-fused forms (``[2]rotaxane``,
+#: ``calix[4]arene``) stay skipped at any length via
+#: ``_bracket_number_bound_to_prose`` (gr263760).
+_NUMERIC_REF_MIN_DIGITS = 5
 
 
 def _bracket_number_bound_to_prose(text: str, start: int, end: int) -> bool:
@@ -1284,13 +1295,17 @@ def _classify_chunk_ref_tokens(
     A bare ``[ab12]`` with an unknown code is left as literal prose,
     flagged as neither. Order-preserving, deduped.
 
-    A numeric match lexically bound to surrounding prose is IUPAC
-    supramolecular nomenclature, not a handle attempt: ``[2]rotaxane``
-    (suffix — ``]`` directly followed by a letter) or ``calix[4]arene``
-    (infix — ``[`` directly preceded by a letter). Those are skipped
-    (gr263760); a standalone ``[45650]`` bounded by space/punctuation is
-    still flagged. Non-numeric handles are unaffected — a handle prefix
-    like ``pa``/``dc`` never collides with a chemical name here."""
+    A bracketed number too short to be a row id is ordinary notation, not
+    a handle attempt — a crystallographic direction (``[001]``, ``[110]``,
+    ``[0001]``), a numbered citation (``[12]``), a bracketed year
+    (``[2024]``) — and writes as literal prose (gr735831). A numeric match
+    lexically bound to surrounding prose is likewise skipped at any
+    length — IUPAC supramolecular nomenclature: ``[2]rotaxane`` (suffix —
+    ``]`` directly followed by a letter) or ``calix[4]arene`` (infix —
+    ``[`` directly preceded by a letter) (gr263760). A standalone
+    ``[45650]`` bounded by space/punctuation is still flagged. Non-numeric
+    handles are unaffected — a handle prefix like ``pa``/``dc`` never
+    collides with a chemical name here."""
     seen: list[str] = []
     dangling: list[str] = []
     tombstones: list[tuple[str, int]] = []
@@ -1299,15 +1314,18 @@ def _classify_chunk_ref_tokens(
         if h in seen:
             continue
         seen.append(h)
-        # Only nag on a real handle attempt: a pure numeric, or a known
-        # type-code prefix. A bare ``[ab12]`` (unknown code) is left as
-        # literal prose, not flagged.
+        # Only nag on a real handle attempt: a row-id-length pure numeric,
+        # or a known type-code prefix. A bare ``[ab12]`` (unknown code) is
+        # left as literal prose, not flagged — and so is a short bracketed
+        # number, which is notation, never a handle (gr735831).
         if not h.isdigit():
             try:
                 handle_registry.kind_for_code(h[:2])
             except KeyError:
                 continue
-        elif _bracket_number_bound_to_prose(text, m.start(), m.end()):
+        elif len(h) < _NUMERIC_REF_MIN_DIGITS or _bracket_number_bound_to_prose(
+            text, m.start(), m.end()
+        ):
             continue
         try:
             if store.resolve_handle(h) is not None:

@@ -2966,8 +2966,9 @@ def test_bracket_number_chemical_nomenclature_not_flagged(
     """gr263760: IUPAC supramolecular nomenclature uses a bracketed number
     lexically fused to prose — suffix (``[2]rotaxane``) or infix
     (``calix[4]arene``) — and must NOT be mistaken for a dangling handle
-    attempt. A standalone bracketed number (space/punctuation on both
-    sides) still is — covered by ``test_numeric_chunk_ref_flagged``."""
+    attempt. The synthetic ``[99999]rotaxane`` case exercises the lexical
+    exemption at the five-digit threshold. ``test_numeric_chunk_ref_flagged``
+    covers a standalone five-digit number."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].dc
@@ -2976,13 +2977,52 @@ def test_bracket_number_chemical_nomenclature_not_flagged(
         chunk_kind="paragraph",
         text=(
             "The [2]rotaxane and [24]crown-8 host bind within calix[4]arene, "
-            "pillar[5]arene, and [60]fullerene cages."
+            "pillar[5]arene, and [60]fullerene cages. Compare [99999]rotaxane."
         ),
         at={"after": title_h},
     )
     para_h = _order(hub, "nt")[1].dc
     out = draft.get(id=para_h).body
     assert "unresolved reference" not in out
+
+
+def test_bracket_crystallographic_direction_not_flagged(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr735831: a crystallographic direction is ordinary prose — ``[001]``,
+    ``[110]``, ``[111]`` (and the four-index ``[0001]``), like a numbered
+    citation ``[12]``, writes as-is: no ``BadInput`` on ``put``, no
+    unresolved-reference hint on read. A standalone number at row-id
+    length is still a flagged handle attempt — ``test_numeric_chunk_
+    ref_flagged`` and the put-refusal in ``test_edit_introducing_dangling_
+    ref_raises_before_write`` pin ``[45650]``; this test pins the boundary
+    from the prose side."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].dc
+    text = (
+        "Dislocation hops run along [001], [110], and [111], the c-axis "
+        "texture is [0001], indexed per [12] and [2024]."
+    )
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=text,
+        at={"after": title_h},
+    )
+    para_h = _order(hub, "nt")[1].dc
+    assert _chunk_text(hub, para_h) == text
+    out = draft.get(id=para_h).body
+    assert "unresolved reference" not in out
+
+    # a row-id-length standalone numeric is still refused as a handle attempt
+    with pytest.raises(BadInput, match=r"99999"):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text="Still a handle attempt [99999].",
+            at={"after": title_h},
+        )
 
 
 def test_valid_chunk_ref_not_flagged(draft: DraftHandler, hub: Hub) -> None:
