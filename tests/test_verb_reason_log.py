@@ -191,9 +191,10 @@ def test_paper_tag_batch(
         kind="paper", slug="batch-second", title="Second", provider="manual"
     )
     for ref in (first, second):
-        runtime_with_store.dispatch(
+        seed = runtime_with_store.dispatch(
             "tag", {"kind": "paper", "id": ref.id, "add": ["old-reading-list"]}
         )
+        assert f"updated paper {ref.slug}: +1 tag" in seed, seed
     ids: list[str | int] = [f"pa{first.id}", f"pa{second.id}"]
     kind = {"kind": "paper"} if explicit_kind else {}
     if explicit_kind:
@@ -210,9 +211,10 @@ def test_paper_tag_batch(
             "reason": "  conference reading list  ",
         },
     )
-    assert "tagged 2 paper refs in one transaction" in out
-    assert out.count("batch-first") == 1
-    assert out.count("batch-second") == 1
+    assert "tagged 2 paper refs in one transaction" in out, out
+    lines = out.splitlines()
+    assert lines.count("updated paper batch-first: +1 tag, -1 tag") == 1, out
+    assert lines.count("updated paper batch-second: +1 tag, -1 tag") == 1, out
     for ref in (first, second):
         tags = {tag.value for tag in store.tags_for(ref.id)}
         assert "aixmat-2026" in tags
