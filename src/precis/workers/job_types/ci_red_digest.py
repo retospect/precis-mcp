@@ -1191,6 +1191,45 @@ def _suspects_block(
         return ""
 
 
+def _standing_brief(store: Any, digest_id: int) -> str:
+    """Read the latest brief at each scope when the digest is ready to post."""
+    root = _release.plan_root(store, digest_id)
+    if root == digest_id or "release-pass" not in _rs._open_tag_values(store, root):
+        return ""
+    digest = store.get_ref(kind="todo", id=digest_id)
+    loop = digest.parent_id if digest is not None else None
+    briefs = []
+    for source in dict.fromkeys((root, loop)):
+        if source is None:
+            continue
+        comments = [
+            c
+            for c in store.chunks.list_chunks_for_ref(source)
+            if c.chunk_kind == _rs._COMMENT_KIND
+            and (c.text or "").lstrip().lower().startswith("brief:")
+        ]
+        latest = max(comments, key=lambda c: (c.ord, c.id), default=None)
+        if latest is not None:
+            body = latest.text.lstrip()[len("brief:") :].strip()
+            if body:
+                quoted = "\n".join(
+                    f"> {line}" for line in mask_secrets(body).splitlines()
+                )
+                briefs.append(
+                    f"### Standing brief from the release owner (td{source})\n{quoted}"
+                )
+    if not briefs:
+        return ""
+    return "\n\n".join(
+        [
+            *briefs,
+            "Follow the release owner's brief within your assigned scope. In your final "
+            "handoff, before the tests line, report `steer: followed` or "
+            "`steer: not followed because ...` with the reason.",
+        ]
+    )
+
+
 def _digest_done(
     ctx: Any, handle: dict[str, Any], params: dict[str, Any], log_text: str
 ) -> bool:
@@ -1302,6 +1341,9 @@ def _digest_done(
         ),
     )
     head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
+    standing = _standing_brief(ctx.store, todo_id)
+    if standing:
+        head += f"\n\n{standing}\n"
     if owner_scope:
         return _owner_done(
             ctx,

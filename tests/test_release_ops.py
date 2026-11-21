@@ -3496,12 +3496,16 @@ def test_red_cut_fixed_on_the_release_branch_deploys_its_restamped_head(
     )
 
 
+@pytest.mark.parametrize("mode", ["clusters", "owner"])
 def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
-    store: Store, monkeypatch: pytest.MonkeyPatch, checkout: dict[str, Any]
+    store: Store, monkeypatch: pytest.MonkeyPatch, checkout: dict[str, Any], mode: str
 ) -> None:
     """The head the fixes produced goes red too: iteration 2's digest reads
-    the head's run 41, never the cut's run 31 again."""
+    the head's run 41 and copies the standing brief into every fixer."""
     mint, it = _red_iteration(store)
+    rs._append_comment(store, mint.root_id, "brief: Carry the corrective from main.")
+    rs._append_comment(store, mint.ids["loop"], "brief: Obsolete guidance.")
+    rs._append_comment(store, mint.ids["loop"], "brief: Apply it only in your scope.")
     _two_fixes_land_and_restamp(store, mint, it, monkeypatch)
     job, _ = _only_job(store, it["poll"])
     R.record_ci_verdict(store, SHA3, RNG3, "red", "41")
@@ -3514,9 +3518,49 @@ def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
     }
     script = _ci_failed_script(checkout)
     ctx = Ctx(store, {"todo_id": it2["digest"]})
-    crd.submit(ctx, None)
+    handle = crd.submit(ctx, None)
     assert ctx.failures == []
     assert checkout["argv"][-1] == [str(script), "41"]
+    psettings.set_setting("release.fix_mode", mode, store=store)
+    _exit(checkout, 0, _THREE_CLUSTER_RED)
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    fixers = set(_fixes(store, mint)) - {it["fix"]}
+    active = [fix for fix in fixers if _status(store, fix) != "done"]
+    assert len(active) == (3 if mode == "clusters" else 1)
+    for fix in active:
+        brief = _todo_comments(store, fix)[0]
+        assert brief.startswith("brief: release r7")
+        assert "Obsolete guidance" not in brief
+        assert "steer: followed" in brief
+        assert (
+            brief.index("Standing brief from the release owner")
+            < brief.index("Carry the corrective from main.")
+            < brief.index("Apply it only in your scope.")
+            < brief.index("== test-linux")
+        )
+
+
+def test_restamp_reports_current_fixer_steer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, it = _red_iteration(store)
+    fix = it["fix"]
+    rs._append_comment(store, fix, "handoff: steer: followed")
+    rs._append_comment(store, fix, "brief: release owner guidance\nsteer: followed")
+    rs._append_comment(
+        store,
+        fix,
+        "handoff: no-op: already fixed\nsteer: not followed because main lacks the fix",
+    )
+    _close(store, fix)
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA)
+    ctx = Ctx(store, {"restamp": True, "todo_id": it["restamp"]})
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert [line for _, line in ctx.chunks if line.startswith(f"td{fix} steer:")] == [
+        f"td{fix} steer: not followed because main lacks the fix"
+    ]
 
 
 # ── gr741486: the release head moves after the loop closed ───────────

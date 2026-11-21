@@ -35,6 +35,10 @@ vendor. Availability drives fallback so a held or saturated lane cannot
 keep a pre-land review and its build's file-overlap hold waiting when
 another lane can run the review.
 
+Release fixers receive the pass and fix-loop briefs when the digest posts,
+so the owner can steer future iterations before their fix todos exist.
+Restamp reports the fixers' handoff decisions alongside its head check.
+
 Build folders are disposable (gr741695, ``_slice_ws``): every ``run_slice``
 and ``land_slice`` job cuts its own clone of the host's hub (a bare
 repository, one ref ``refs/factory/build/<todo>/<job>`` per attempt) and no

@@ -372,6 +372,42 @@ def _comment_outcome(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _fix_comments(store: Any, fix_id: int) -> list[str]:
+    """The fix todo's comments in newest-first order."""
+    comments = sorted(
+        (
+            c
+            for c in store.chunks.list_chunks_for_ref(fix_id)
+            if c.chunk_kind == _COMMENT_KIND and c.text
+        ),
+        key=lambda c: (int(c.ord), int(getattr(c, "id", 0))),
+        reverse=True,
+    )
+    return [str(c.text).strip() for c in comments]
+
+
+_STEER_RE = re.compile(
+    r"steer:\s*(followed|not followed because\s+\S.*)", re.IGNORECASE
+)
+
+
+def _fix_steer(comments: list[str]) -> str | None:
+    """Read the latest builder handoff before reaching an older brief."""
+    from precis.workers.job_types import run_slice as _rs
+
+    for body in comments:
+        lowered = body.lower()
+        if lowered.startswith("brief:") or body == _rs._HANDOFF_WITHHELD:
+            break
+        if lowered.startswith("handoff:") and not _rs._outranks_brief(body):
+            handoff = body[len("handoff:") :]
+            for line in handoff.splitlines():
+                if hit := _STEER_RE.fullmatch(line.strip()):
+                    return hit.group(1)
+            break
+    return None
+
+
 def _fix_owed(store: Any, fix_id: int) -> str | None:
     """Why a todo blocking the restamp may still owe ``release/r<N>`` a
     push, else ``None``: a held land (``meta.pending_land``) or a
@@ -405,18 +441,8 @@ def _fix_owed(store: Any, fix_id: int) -> str | None:
         return None
     if status != "done":
         return f"td{fix_id} is still {status}"
-    comments = sorted(
-        (
-            c
-            for c in store.chunks.list_chunks_for_ref(fix_id)
-            if c.chunk_kind == _COMMENT_KIND and c.text
-        ),
-        key=lambda c: (int(c.ord), int(getattr(c, "id", 0))),
-        reverse=True,
-    )
     boundary_seen = False
-    for c in comments:
-        body = str(c.text).strip()
+    for body in _fix_comments(store, fix_id):
         lowered = body.lower()
         if (
             lowered.startswith("handoff:")
@@ -458,6 +484,16 @@ def _restamp_owed(store: Any, restamp_id: int) -> list[str]:
     return owed
 
 
+def _record_steer(ctx: Any, restamp_id: int) -> None:
+    """Surface the fixers' reported decisions in the restamp job summary."""
+    try:
+        for fix_id in _restamp_blockers(ctx.store, restamp_id):
+            if steer := _fix_steer(_fix_comments(ctx.store, fix_id)):
+                ctx.append_chunk("job_summary", f"td{fix_id} steer: {steer}")
+    except Exception:
+        log.warning("%s: fixer steer handoffs unreadable", NAME, exc_info=True)
+
+
 def _restamp(ctx: Any, params: dict[str, Any]) -> None:
     """The restamp node (release-train T1, :data:`PARAMS_SCHEMA`
     ``restamp``): the fix round's lands moved ``origin/release/r<N>``,
@@ -486,8 +522,10 @@ def _restamp(ctx: Any, params: dict[str, Any]) -> None:
             return
         ctx.record_failure(note)
         return
+    todo_id = params.get("todo_id")
+    if type(todo_id) is int and ctx.store is not None:
+        _record_steer(ctx, todo_id)
     if head.startswith(target["sha"]) or target["sha"].startswith(head):
-        todo_id = params.get("todo_id")
         owed: list[str]
         if (
             isinstance(todo_id, int)
