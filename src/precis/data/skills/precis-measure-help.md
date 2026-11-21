@@ -186,7 +186,7 @@ assumption). Only `context` rows satisfy a measurand's required conditions.
 | `literal` | the exact printed string, always kept (`9.6 ± 1.7`, `<1`, `550–575`, `Cordierite`) |
 | `value_num` / `value_low` / `value_high` / `value_err` / `value_text` / `value_bool` | the parsed reading. **Stored** in the measurand's canonical (SI) unit; **on a write** you give them in the REPORTED unit, the same unit as `reported_unit` and the `literal`, and put converts them (literal `500`, `reported_unit` `mV`, optional `value_num` 500 stores 0.5 V; `value_num` 0.5 with `mV` would store 0.0005 V) |
 | `value_form` | `point`, `approximate_point`, `upper_bound`, `lower_bound`, `interval`, `categorical`, `boolean`, `not_established` |
-| `reported_unit` | the unit as printed — a table's `10⁻⁵/°C` scale spelling included — stored verbatim; required for a number on a measurand with a canonical unit (a table-recipe row names the canonical unit); NULL only for a unitless measurand and for older rows |
+| `reported_unit` | the unit as printed — a table's `10⁻⁵/°C` scale spelling included — stored verbatim; required for a number on a measurand with a canonical unit (a table-recipe row names the canonical unit), except a dimensionless measurand shown in its canonical `1` (a Pearson coefficient printed `0.80`) where a bare number is already canonical; NULL only for a unitless measurand, such a dimensionless one, and for older rows |
 | `reference` | the reference state (RHE, SHE, Ag/AgCl, ...), never folded into the unit |
 | `normalization` | the basis (per catalyst mass, per geometric area, per ECSA); never compare across different bases |
 | `subject` / `subject_group` | the paper-local sample label ("Cu NWA") and its group (the claim handle) |
@@ -213,7 +213,9 @@ converted to the measurand's canonical unit.
 - A number with **no** reported unit on a measurand that has a canonical unit is
   **refused**, naming the canonical and the display unit: `95` is 95 % or 0.95,
   `5` is 5 mm or 5 m, and neither is guessed. Give the unit it is printed in, or
-  the canonical unit when it already is in it.
+  the canonical unit when it already is in it. The refusal spares a dimensionless
+  measurand shown in its canonical `1` (a Pearson coefficient printed `0.80`):
+  with no scaled display unit in play the bare number is already canonical.
 - A mass rate against an amount-rate measurand (`µg h⁻¹ cm⁻²` against
   `mol s⁻¹ m⁻²`) converts through the molar mass of the run's `product` input
   row (its formula, e.g. `NH3`). No formula: the row is stored with no parsed

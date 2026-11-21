@@ -997,6 +997,62 @@ class TestUnitlessWriteRefused:
             MeasureSpec(eff, "0.95", paper, reported_unit="1"), actor="reader"
         )
 
+    def test_a_dimensionless_taxon_shown_in_one_accepts_a_bare_number(
+        self, store: Store
+    ) -> None:
+        # gr735600: a Pearson coefficient printed as '0.80' has no unit to
+        # state — canonical and display are both the dimensionless '1', so
+        # the bare number is already canonical.
+        paper = seed_ref(store, title="p", kind="paper")
+        pearson = store.insert_ref(
+            kind="taxon",
+            slug=None,
+            title="Pearson correlation coefficient",
+            meta={
+                "name": "Pearson correlation coefficient",
+                "slug": "pearson-correlation-coefficient",
+                "canonical_unit": "1",
+                "display_unit": "1",
+            },
+        ).id
+        run = store.insert_measure(MeasureSpec(pearson, "0.80", paper), actor="reader")
+        (row,) = store.measures_for(paper)
+        assert row["id"] == run.output_id
+        assert row["value_num"] == pytest.approx(0.80)
+        assert row["reported_unit"] is None
+        # no display unit at all reads the same
+        r2 = store.insert_ref(
+            kind="taxon",
+            slug=None,
+            title="R squared",
+            meta={
+                "name": "R squared",
+                "slug": "r-squared",
+                "canonical_unit": "1",
+            },
+        ).id
+        store.insert_measure(MeasureSpec(r2, "0.65", paper), actor="reader")
+
+    def test_a_dimensionless_taxon_with_a_scaling_display_still_refuses(
+        self, store: Store
+    ) -> None:
+        # display '%' against canonical '1' keeps the ambiguity: "95" could
+        # be 95 % or 0.95, so the unit is still demanded.
+        paper = seed_ref(store, title="p", kind="paper")
+        eff = store.insert_ref(
+            kind="taxon",
+            slug=None,
+            title="Yield",
+            meta={
+                "name": "Yield",
+                "slug": "yield-fraction",
+                "canonical_unit": "1",
+                "display_unit": "%",
+            },
+        ).id
+        with pytest.raises(BadInput, match="not guessed"):
+            store.insert_measure(MeasureSpec(eff, "95", paper), actor="reader")
+
     def test_caller_supplied_values_are_in_the_reported_unit_and_converted(
         self, store: Store
     ) -> None:

@@ -72,7 +72,10 @@ number with a ``reported_unit`` on a taxon that has no ``canonical_unit``
 Store SI) **a number with no ``reported_unit`` on a taxon that has a
 ``canonical_unit``**, naming the canonical and the display unit: "95" is
 ambiguous between 95 % and 0.95, and a legacy "5" between 5 mm and 5 m, so
-neither is guessed. A caller whose number really is in the canonical unit
+neither is guessed. The refusal spares a dimensionless taxon shown in its
+canonical ``1`` (gr735600 — a Pearson coefficient filed as "0.80"): with no
+scaled display unit in play the bare number is already canonical. A caller
+whose number really is in the canonical unit
 (a table-recipe row) passes that unit as ``reported_unit``. Unitless numeric
 rows are accepted only on a unit-less taxon.
 
@@ -249,7 +252,9 @@ class MeasureSpec:
     ``500``, ``reported_unit='mV'``, ``value_num=500`` stores 0.5 V).
     ``reported_unit`` is the unit the number is printed in; it is
     required for a number on a taxon with a ``canonical_unit`` (a number
-    already in the canonical unit says so by passing it).
+    already in the canonical unit says so by passing it) — except on a
+    dimensionless taxon shown in its canonical ``1``, where a bare number
+    is already canonical (gr735600).
     ``molar_bridge`` opts the write in to the Avogadro bridge — an
     ``<energy>/mol`` reported unit against an ``eV``/``meV`` canonical —
     the one conversion ``make_converter`` keeps off by default
@@ -1455,10 +1460,21 @@ class MeasuresMixin:
                     "a price year belongs to a currency figure",
                     next="report the unit as a currency ('EUR2015/t'), or drop price_year=",
                 )
-        if canonical and has_numbers and not (reported_unit and reported_unit.strip()):
+        # A dimensionless taxon shown in its canonical '1' (or with no display
+        # unit) stores a bare number as printed: no other scale exists, so
+        # there is nothing to guess (gr735600 — a Pearson coefficient filed
+        # as '0.80'). A display unit that scales ('%') keeps the refusal
+        # below: "95" there is ambiguous between 95 % and 0.95.
+        shown = taxon.get("display_unit")
+        dimensionless = canonical == "1" and (not shown or shown == "1")
+        if (
+            canonical
+            and not dimensionless
+            and has_numbers
+            and not (reported_unit and reported_unit.strip())
+        ):
             # Store SI: the number's unit is never guessed (a silent factor of
             # 1000, or of 100 for a fraction, is the failure this guards)
-            shown = taxon.get("display_unit")
             name = taxon.get("name") or "this measurand"
             if shown and shown != canonical:
                 message = (
