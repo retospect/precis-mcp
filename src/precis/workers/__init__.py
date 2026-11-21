@@ -172,11 +172,11 @@ Notable pass mechanics
   Its heal arm is :mod:`.bounded_heal` (attempts + exponential cooldown +
   cap + terminal latch + one cap-escalation gripe); the one whitelisted
   action is restart-once (``cap=1``), dark until
-  ``PRECIS_RESTART_ONCE_ENABLED=1``. Pass-dead/pass-wedged and the heal
-  arm exclude units freshly observed inactive AND disabled by Linux
-  heartbeats (systemd state supplies process intent without rewriting
-  ``service_config``). Missing/stale observations and crashed enabled
-  units remain expected; other platforms keep log expectations.
+  ``PRECIS_RESTART_ONCE_ENABLED=1``. Fresh Linux heartbeats exclude inactive,
+  disabled units from pass-dead, pass-wedged and heals. Crashed enabled units
+  and missing or stale observations retain log expectations.
+  Pass-dead uses registry and axis identities because run-control rows can
+  outlive retired passes.
 * ``doctor_tick`` (spine Layer 3, :mod:`.job_types.doctor_tick`) — own
   docstring for the judgment-layer design. ``health_digest``'s
   degraded/daily push swaps in the doctor's body when a report is fresh

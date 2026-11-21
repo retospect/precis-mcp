@@ -102,11 +102,10 @@ def _seed_pass_logs(
     """n rows over the past 7 days for (host, proc, handler), the newest
     ``last_age_s`` old — the every-cycle BatchResult log shape.
 
-    ``registered`` (default) plants a ``service_config`` row so the
-    handler resolves as a live pass — ``_probe_pass_dead`` ignores names
-    nothing registers (gr501991). Pass ``registered=False`` to seed a
-    ghost name. ``replace`` (default) first drops the handler's rows on
-    the host; ``replace=False`` adds a second process's history."""
+    ``registered`` (default) plants a ``service_config`` row, which makes
+    dynamic axis names eligible for the probe. ``replace`` (default) first
+    drops the handler's rows on the host; ``replace=False`` adds a second
+    process's history."""
     with store.pool.connection() as conn:
         if replace:
             conn.execute(
@@ -191,7 +190,7 @@ def _set_rest_reason(store: Store, job_id: int, reason: str) -> None:
 def test_pass_dead_fires_for_silent_handler_on_live_host(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    handler = _uniq("classifyish")
+    handler = _uniq("axis:classifyish")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_heartbeat(store)
@@ -205,7 +204,7 @@ def test_pass_dead_fires_for_silent_handler_on_live_host(
 def test_pass_dead_quiet_when_handler_recent(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    handler = _uniq("livepass")
+    handler = _uniq("axis:livepass")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_heartbeat(store)
@@ -218,7 +217,7 @@ def test_pass_dead_slow_tier_fires_after_outage_past_7d_window(
 ) -> None:
     """gr500868: a low-traffic pass (under the 150-rows/7d floor) silent for
     9 days has an EMPTY 7d history; the 30d slow tier still sees it."""
-    handler = _uniq("slowdead")
+    handler = _uniq("axis:slowdead")
     monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
     _seed_heartbeat(store)
     _seed_pass_logs(store, handler, n=60, last_age_s=9 * 86400.0)
@@ -231,7 +230,7 @@ def test_pass_dead_slow_tier_quiet_within_slow_budget(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Silence under the 12h slow budget is an ordinary quiet stretch."""
-    handler = _uniq("slowquiet")
+    handler = _uniq("axis:slowquiet")
     monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
     _seed_heartbeat(store)
     _seed_pass_logs(store, handler, n=60, last_age_s=6 * 3600.0)
@@ -241,9 +240,8 @@ def test_pass_dead_slow_tier_quiet_within_slow_budget(
 def test_pass_dead_slow_tier_stops_after_max_silence(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A handler removed from code stops alerting after the max-silence cap,
-    not for the whole 30d lookback."""
-    handler = _uniq("slowgone")
+    """The slow tier ignores even configured handlers beyond its silence cap."""
+    handler = _uniq("axis:slowgone")
     monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
     _seed_heartbeat(store)
     _seed_pass_logs(store, handler, n=60, last_age_s=20 * 86400.0)
@@ -253,7 +251,7 @@ def test_pass_dead_slow_tier_stops_after_max_silence(
 def test_pass_dead_slow_tier_ignores_rare_handlers(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    handler = _uniq("rare")
+    handler = _uniq("axis:rare")
     monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
     _seed_heartbeat(store)
     _seed_pass_logs(store, handler, n=5, last_age_s=9 * 86400.0)
@@ -294,10 +292,16 @@ def test_pass_dead_ignores_a_shadowed_service_token(
     assert [f for f in found if f.key.endswith("/fetch_oa")]
 
 
-def _service_config_services(store: Store) -> set[str]:
-    with store.pool.connection() as conn:
-        rows = conn.execute("SELECT DISTINCT service FROM service_config").fetchall()
-    return {str(r[0]) for r in rows}
+@pytest.mark.parametrize("handler", ["context_sentence", "topic:test"])
+def test_pass_dead_ignores_non_emitters_with_saved_config(
+    store: Store, monkeypatch: pytest.MonkeyPatch, handler: str
+) -> None:
+    """A saved priority cannot register a retired pass or a topic toggle."""
+    monkeypatch.delenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", raising=False)
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=60, last_age_s=26.4 * 3600)
+    assert handler not in _liveness_handler_names(store)
+    assert not any(f.key.endswith(f"/{handler}") for f in _probe_pass_dead(store))
 
 
 def test_every_liveness_watched_name_resolves_to_a_real_pass(
@@ -305,16 +309,16 @@ def test_every_liveness_watched_name_resolves_to_a_real_pass(
 ) -> None:
     """Every ``payload.handler`` the pass-dead probe can still watch
     resolves to a real pass — a registry ``ServiceSpec`` (``name`` or
-    ``log_handler``) or a live ``service_config`` service (dynamic
-    ``axis:*``/``topic:*``). A ghost name resolves to neither."""
+    ``log_handler``) or a configured dynamic ``axis:*`` service."""
     from precis.workers.registry import SERVICES, SERVICES_BY_NAME
 
     names = _liveness_handler_names(store)
-    cfg = _service_config_services(store)
     for spec in SERVICES:
         assert spec.name in names and spec.log_handler in names
     for name in names:
-        assert _handler_service(name) in SERVICES_BY_NAME or name in cfg, name
+        assert _handler_service(name) in SERVICES_BY_NAME or name.startswith("axis:"), (
+            name
+        )
     assert "orcid_enrich" in names and "_orcid_enrich_pass" not in names
 
 
@@ -323,7 +327,7 @@ def test_pass_dead_quiet_when_host_dark(
 ) -> None:
     """A dead HOST is the nursery's host-dark business — this per-pass row
     must not pile on."""
-    handler = _uniq("darkhost")
+    handler = _uniq("axis:darkhost")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     with store.pool.connection() as conn:
@@ -337,7 +341,7 @@ def test_pass_dead_respects_service_config_off(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """prio=0 (live off switch) means silence is deliberate, not a death."""
-    handler = _uniq("switchedoff")
+    handler = _uniq("axis:switchedoff")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_heartbeat(store)
@@ -379,8 +383,8 @@ def _unit_snapshot(
 def test_pass_dead_parking_clears_next_probe_and_reenable_restores(
     store: Store, monkeypatch: pytest.MonkeyPatch, process: str
 ) -> None:
-    handler = _uniq("parked")
-    other_handler = _uniq("other-process")
+    handler = _uniq("axis:parked")
+    other_handler = _uniq("axis:other-process")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_heartbeat(store)
@@ -415,7 +419,7 @@ def test_pass_dead_parking_clears_next_probe_and_reenable_restores(
 def test_pass_dead_still_expects_crashed_or_unparked_unit(
     store: Store, monkeypatch: pytest.MonkeyPatch, active: str, enabled: str
 ) -> None:
-    handler = _uniq("crashed")
+    handler = _uniq("axis:crashed")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600)
@@ -430,7 +434,7 @@ def test_pass_dead_reports_retired_lane_when_unit_is_not_installed(
 ) -> None:
     """gr495419: a lane retired by host-lanes has no unit file; the finding
     says so (no restart heal) instead of calling the handler dead."""
-    handler = _uniq("retired")
+    handler = _uniq("axis:retired")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     lane = "precis-worker-compute"
@@ -466,7 +470,7 @@ def test_pass_dead_excuses_a_handler_that_moved_lanes_on_the_host(
     base lane on purpose; both kept logging under their own lane on the
     same host, yet the base lane's silence read as a dead handler with a
     restart-worker heal for a lane that had nothing to heal."""
-    handler = _uniq("moved")
+    handler = _uniq("axis:moved")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_heartbeat(store)
@@ -521,7 +525,7 @@ def test_pass_dead_excuses_a_handler_that_moved_lanes_on_the_host(
 def test_pass_dead_unknown_or_stale_unit_evidence_does_not_suppress(
     store: Store, monkeypatch: pytest.MonkeyPatch, snapshot: object
 ) -> None:
-    handler = _uniq("unknown-state")
+    handler = _uniq("axis:unknown-state")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
     monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
     _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600)

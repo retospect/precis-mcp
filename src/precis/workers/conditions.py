@@ -249,8 +249,9 @@ def _handler_service(handler: str) -> str:
 def _liveness_handler_names(store: Store) -> set[str]:
     """The ``worker_logs`` ``payload.handler`` values a live pass can still
     emit: every :class:`ServiceSpec` ``name`` and ``log_handler``, plus the
-    dynamic services registered in ``service_config`` (``axis:*`` /
-    ``topic:*`` — wired per-boot, never in the static registry).
+    dynamic ``axis:*`` services configured in ``service_config``. Other
+    configuration rows cannot register a pass: retired static services
+    can leave rows behind, and per-topic rows control ``classify_topics``.
 
     Silence on a name outside this set is leftover history from a renamed
     or removed pass — not a dead handler. gr501991: ``_orcid_enrich_pass``
@@ -265,7 +266,9 @@ def _liveness_handler_names(store: Store) -> set[str]:
 
     names = {s.name for s in SERVICES} | {s.log_handler for s in SERVICES}
     with store.pool.connection() as conn:
-        rows = conn.execute("SELECT DISTINCT service FROM service_config").fetchall()
+        rows = conn.execute(
+            "SELECT DISTINCT service FROM service_config WHERE service LIKE 'axis:%'"
+        ).fetchall()
     names.update(str(r[0]) for r in rows)
     return names
 
