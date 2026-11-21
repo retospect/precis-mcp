@@ -3729,6 +3729,58 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (Jsonb(updates), ref_id))
 
+    def stamp_ref_meta_entries(
+        self,
+        ref_id: int,
+        updates: dict[str, Any],
+        *,
+        map_key: str,
+        set_entries: dict[str, Any],
+        drop_entries: tuple[str, ...] = (),
+        conn: Connection | None = None,
+    ) -> None:
+        """Shallow-merge ``updates`` AND entry-merge a nested ``meta`` map,
+        under a row lock, in one transaction.
+
+        The :meth:`trust_stamp_correct` pattern: reads the row ``FOR
+        UPDATE``, applies ``updates`` top-level plus ``set_entries`` /
+        ``drop_entries`` to the nested map ``meta[map_key]``, and writes
+        the merged ``meta`` back in the SAME transaction. A plain
+        :meth:`stamp_ref_meta` of the whole nested map from a pre-read
+        snapshot can lose entries a concurrent writer committed between
+        the read and the write — a harvest re-stamping another measure's
+        basis while ``quest.environment_stamps`` merges its env entries
+        retained the new value but reverted the new basis (review
+        td659951). A map that ends up empty is stored as JSON null when
+        (and only when) a map was stored before — never created empty.
+        """
+        sql_lock = "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE"
+        sql_update = "UPDATE refs SET meta = %s, updated_at = now() WHERE ref_id = %s"
+
+        def _apply(c: Connection) -> None:
+            row = c.execute(sql_lock, (ref_id,)).fetchone()
+            if row is None:
+                raise NotFound(f"ref id={ref_id} not found")
+            meta = dict(row[0] or {})
+            for k, v in updates.items():
+                meta[k] = v
+            prior = meta.get(map_key)
+            merged = dict(prior) if isinstance(prior, dict) else {}
+            for k in drop_entries:
+                merged.pop(k, None)
+            merged.update(set_entries)
+            if merged:
+                meta[map_key] = merged
+            elif prior is not None:
+                meta[map_key] = None
+            c.execute(sql_update, (Jsonb(meta), ref_id))
+
+        if conn is not None:
+            _apply(conn)
+        else:
+            with self.pool.connection() as c:
+                _apply(c)
+
     def trust_stamp_correct(
         self,
         ref_id: int,

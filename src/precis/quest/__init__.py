@@ -44,6 +44,11 @@ Package-level invariants (detail lives on the named module):
   -infinity, unknown masks/terms stay unavailable with reasons. The
   log-rate term is unavailable for zero TOF, but its raw zero still fails
   a positive rate floor, so M=0 and J=-infinity.
+  The pathway plugin's ``optimum`` read supplies staircase/map/bulk evidence.
+  ``environment_stamps`` writes them (finite only,
+  ``computed``/``interpolated`` footing);
+  ``environment_space.declares_environment_space`` opts a quest into
+  env_best ranking with a labelled run-point fallback.
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
   fabricates a dispatch or picks chemistry (``tick``).

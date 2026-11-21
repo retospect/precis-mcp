@@ -42,3 +42,16 @@ def effective_environment_space(meta: dict[str, Any] | None) -> dict[str, Any]:
     axes.update(declared.pop("axes", {}))
     space.update(declared)
     return space
+
+
+def declares_environment_space(meta: dict[str, Any] | None) -> bool:
+    """True only for a non-empty ``meta.environment_space``.
+
+    The opt-in signal for the env_best ranking rule
+    (:func:`precis.quest.frontier.quest_frontier`).
+    :func:`effective_environment_space` always returns defaults, so it
+    cannot tell whether a quest declared the space — only the raw meta
+    can. An ``{}`` block is no declaration.
+    """
+    space = (meta or {}).get("environment_space")
+    return isinstance(space, dict) and bool(space)

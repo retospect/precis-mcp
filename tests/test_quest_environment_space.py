@@ -242,3 +242,24 @@ def test_tick_cannot_set_or_replace_environment_space(
     else:
         assert meta["environment_space"] == original
     assert meta["operating_conditions"] == conditions
+
+
+# ── declares_environment_space (td568641) ─────────────────────────────
+
+
+def test_declares_environment_space_opt_in() -> None:
+    """The opt-in test for env_best ranking: true only for a non-empty
+    declared ``meta.environment_space``. The resolver always supplies
+    defaults, so it cannot serve — this is the honest signal."""
+    from precis.quest.environment_space import declares_environment_space
+
+    assert not declares_environment_space(None)
+    assert not declares_environment_space({})
+    assert not declares_environment_space({"environment_space": {}})
+    assert not declares_environment_space({"environment_space": "yes"})
+    assert not declares_environment_space({"environment_space": []})
+    assert not declares_environment_space({"environment_space": None})
+    assert declares_environment_space({"environment_space": _space()})
+    assert declares_environment_space(
+        {"environment_space": {"axes": {"T": [350, 900]}}}
+    )

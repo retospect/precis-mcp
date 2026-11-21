@@ -107,6 +107,12 @@ _COLUMNS: tuple[str, ...] = (
     "worst_problem",
 )
 
+#: The environment-space columns — the limiting term and the footing of
+#: the value each row ranked on (``"computed"``/``"interpolated"`` on an
+#: env_best row, ``"run-point"`` on a fallback row), plus the reason for
+#: falling back when the frontier contains an env-ranked cohort.
+ENV_RESULT_COLUMNS: tuple[str, ...] = ("env_limiting", "env_footing", "rank_reason")
+
 #: Free-text columns clipped (with an ellipsis) so one verbose value can't
 #: blow the whole table's width out.
 _COL_MAX_WIDTH: dict[str, int] = {
@@ -392,13 +398,30 @@ def display_cell(row: Mapping[str, Any], col: str) -> Any:
     return _measure_cell(v, approx)
 
 
-def results_columns(objectives: Sequence[tuple[str, str]]) -> tuple[str, ...]:
+def results_columns(
+    objectives: Sequence[tuple[str, str]],
+    *,
+    run_point_objectives: Sequence[tuple[str, str]] = (),
+    env: bool = False,
+) -> tuple[str, ...]:
     """The render column order for a quest's results table: the fixed
     :data:`_COLUMNS` plus the quest's declared objective keys not already
     among them, in declared order (gr567692 — the default ``energy``
     objective must be visible or a completed relax result reads as an
-    empty row)."""
-    return tuple(dict.fromkeys([*_COLUMNS, *(k for k, _ in objectives)]))
+    empty row).
+
+    For an environment-space quest ``objectives`` is the env pair
+    (:data:`precis.quest.frontier.ENV_OBJECTIVES`) — pass
+    ``run_point_objectives`` (:attr:`FrontierResult.run_point_objectives`)
+    so the run-point fallback rows keep their own objective columns too.
+    ``env`` (or a non-empty ``run_point_objectives``, which is the same
+    signal) appends :data:`ENV_RESULT_COLUMNS`.
+    """
+    keys = [k for k, _ in objectives] + [k for k, _ in run_point_objectives]
+    cols = [*_COLUMNS, *keys]
+    if env or run_point_objectives:
+        cols += list(ENV_RESULT_COLUMNS)
+    return tuple(dict.fromkeys(cols))
 
 
 def build_results_rows(
@@ -440,7 +463,11 @@ def build_results_rows(
     (gr592637 review). Renderers that want the appended columns pass
     :func:`results_columns`.
     """
-    from precis.quest.frontier import quest_frontier
+    from precis.quest.frontier import (
+        _env_footing_text,
+        _env_limiting_text,
+        quest_frontier,
+    )
 
     if fr is None:
         fr = quest_frontier(store, quest_id)
@@ -497,11 +524,19 @@ def build_results_rows(
         }
         # The quest's declared objective keys not already fixed columns
         # (e.g. log_tof for a kinetics quest) — the value the quest
-        # actually ranks on, or None when unmeasured (gr567692).
-        for key, _sense in fr.objectives:
+        # actually ranks on, or None when unmeasured (gr567692). An
+        # environment-space quest also keeps its run-point objectives
+        # (``fr.run_point_objectives``): the fallback rows rank on them.
+        for key in dict.fromkeys(
+            k for k, _ in (*fr.objectives, *fr.run_point_objectives)
+        ):
             if key not in _COLUMNS:
                 row[key] = _raw(measures, key)
                 row["_objectives"].append(key)
+        if fr.run_point_objectives or candidate.flags.get("rank_basis"):
+            row["env_limiting"] = _env_limiting_text(candidate) or "-"
+            row["env_footing"] = _env_footing_text(candidate) or "-"
+            row["rank_reason"] = candidate.flags.get("run_point_reason") or "-"
         sort_key = (dopant, n_dopant, h_count, o_count, candidate.ref_id)
         mval = measures.get(sort[0]) if sort is not None else None
         built.append((sort_key, mval if isinstance(mval, (int, float)) else None, row))
@@ -777,6 +812,7 @@ def render_series(
 
 
 __all__ = [
+    "ENV_RESULT_COLUMNS",
     "RESULTS_COLUMNS",
     "SERIES_COLUMNS",
     "build_results_rows",
