@@ -13,12 +13,15 @@ from precis.plans import governs as _governs
 from precis.plans import route as _route
 from precis.plans import templates as T
 from precis.plans.todo_chain import (
+    CLOSED_BUILT_TAG,
     FACTORY_BUILD_TAG,
     NEEDS_SPEC_TAG,
     REFUSAL_KEY,
     SKIP_TAG,
+    SPLIT_PARENT_TAG,
     Split,
     SplitPart,
+    close_built,
     done_note,
     refuse_source,
     split_source,
@@ -1093,6 +1096,57 @@ def test_a_dropped_part_leaves_the_source_open(store: Store) -> None:
     _on(store)
     assert _run(store).extra["split_closed"] == []
     assert _status(store, src) == "open"
+
+
+def test_pass_closes_a_parent_tagged_split_by_hand(store: Store) -> None:
+    parent = _todo(store, "Do two things", tags=(SPLIT_PARENT_TAG,))
+    first = _todo(store, "one", tags=(), parent_id=parent, status="done")
+    second = _todo(store, "two", tags=(), parent_id=parent)
+    _on(store)
+    assert _run(store).extra["split_closed"] == []
+    assert _status(store, parent) == "open"
+    _close(store, second, "done")
+    res = _run(store)
+    assert res.extra["split_closed"] == [parent]
+    assert _status(store, parent) == "done"
+    assert _comments(store, parent)[-1] == (
+        f"done: every part is done (td{first}, td{second})"
+    )
+    assert _run(store).extra["split_closed"] == []
+
+
+def test_a_wont_do_child_leaves_a_tagged_parent_open(store: Store) -> None:
+    parent = _todo(store, "Do two things", tags=(SPLIT_PARENT_TAG,))
+    _todo(store, "one", tags=(), parent_id=parent, status="done")
+    _todo(store, "two", tags=(), parent_id=parent, status="won't-do")
+    _on(store)
+    assert _run(store).extra["split_closed"] == []
+    assert _status(store, parent) == "open"
+
+
+# -- the source a built refusal closed ----------------------------------------
+
+
+def test_ended_sweep_leaves_a_source_closed_as_built_alone(store: Store) -> None:
+    """``close_built`` closes the root ``won't-do`` and the source ``done``:
+    the ended-chain sweep must not comment on, retag or stamp either."""
+    src = _todo(store)
+    mint = T.mint_todo_build(store, todo_id=src)
+    assert close_built(store, mint.root_id, src, mint.ids["brief"], "td9 built it")
+    assert _status(store, mint.root_id) == "won't-do"
+    comments, tags = _comments(store, src), _tags(store, src)
+    assert td.sweep_ended(store) == []
+    assert _comments(store, src) == comments
+    assert _tags(store, src) == tags and CLOSED_BUILT_TAG in tags
+    assert _status(store, src) == "done"
+    root = store.get_ref(kind="todo", id=mint.root_id)
+    assert root is not None and td._RELEASED_KEY not in root.meta
+    # a whole pass leaves it alone too and offers it again to no one
+    _on(store)
+    res = _run(store)
+    assert res.extra["released"] == [] and res.extra["minted"] == []
+    assert _comments(store, src) == comments
+    assert td.survey(store) == ([], [])
 
 
 # -- failures -----------------------------------------------------------------

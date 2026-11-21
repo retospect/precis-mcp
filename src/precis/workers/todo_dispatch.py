@@ -14,7 +14,9 @@ reads nothing and writes nothing). Switched on, one fire does, in order:
   backstop (:func:`~precis.plans.todo_chain.sweep_landed_sources`) closes
   the sources the gate hook missed. :func:`~precis.plans.todo_chain.sweep_splits`
   closes a source the brief step split once every one of its parts is done
-  (a refused or dropped part leaves it open). Each sweep fails on its own.
+  (a refused or dropped part leaves it open), and a parent tagged
+  ``factory:split`` once every one of its child todos is done. Each sweep
+  fails on its own.
 * **Survey.** :func:`survey` lists the tagged todos that are eligible — open,
   not a plan node or an ask, no open child, no open blocker, no hold tag
   (the gripe dispatcher's, ``needs-spec``, ``factory:skip``), no live chain

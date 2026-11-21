@@ -11,9 +11,11 @@ inventory (``workers.gripe_dispatch``) and the source holds
 
 The brief step's three outcomes live here too: :func:`parse_brief` reads the
 session's final message, :func:`post_brief` copies a brief onto the build
-node, :func:`refuse_source` acts on a refusal and :func:`split_source` on a
-split into two to four sequenced part todos (:func:`sweep_splits` closes the
-source when every part is done). The plan tick
+node, :func:`refuse_source` acts on a refusal (:func:`close_built` on one
+that proves the todo already built, closing the source with no ask) and
+:func:`split_source` on a split into two to four sequenced part todos
+(:func:`sweep_splits` closes the source when every part is done, and a
+parent tagged ``factory:split`` when every child todo is). The plan tick
 (``plan_dispatch._step_todo_briefs``) is their only caller.
 
 The source todo carries the chain's two completion marks. The land
@@ -61,6 +63,13 @@ NEEDS_SPEC_TAG = "needs-spec"
 #: Open tag the intake session puts on a todo for another lane or a fenced
 #: path: it wins over :data:`FACTORY_BUILD_TAG` and holds the source.
 SKIP_TAG = "factory:skip"
+#: Open tag on a source the brief step closed as already built: the same one
+#: the triage session uses, so one search lists every such close and
+#: removing it with a reopen undoes one.
+CLOSED_BUILT_TAG = "triage:closed-built"
+#: Open tag a session or person puts on a parent todo they split by hand:
+#: :func:`sweep_splits` closes it when every child todo is done.
+SPLIT_PARENT_TAG = "factory:split"
 
 #: The reasons a brief session may refuse a source todo: it does not say
 #: what should change (``rewrite``), it is more than one reviewable change
@@ -81,7 +90,13 @@ BRIEF_GRAMMAR = (
     "`brief: td<build id>` as the FIRST line of the final message, the brief "
     "text on the following lines; or "
     f"`refuse: <{'|'.join(REFUSAL_REASONS)}> — <what is missing, or the "
-    "evidence>` as the FIRST line; or `split: <n>` as the FIRST line, then "
+    "evidence>` as the FIRST line (`built` needs evidence you read yourself, "
+    "written in the refusal's text: a done todo or closed gripe that built "
+    "the same thing, by handle, plus the file holding the code; or the "
+    "todo's `Done when:` observation already holding, with what you ran or "
+    "read; or a commit that names the change, by sha — `superseded` and "
+    "`no longer wanted` are `decide`; a `built` text naming no handle, sha "
+    "or file goes to the owner as an ask); or `split: <n>` as the FIRST line, then "
     "for each part, in build order, a line `part <k>: <title>` followed by "
     "its three lines `Change:`, `Where:` and `Done when:` (a title is cut at "
     f"{_PART_TITLE_CAP} characters, each line at {_PART_FIELD_CAP}) — use it "
@@ -314,6 +329,11 @@ def _fence(text: str) -> str:
     return f"{fence}\n{text}\n{fence}"
 
 
+def _quote_why(why: str) -> str:
+    """The session's words as one capped line without NULs, ready to fence."""
+    return " ".join(why.replace("\x00", "").split())[:_WHY_CAP]
+
+
 def _refusal_options(reason: str) -> list[str]:
     if reason == "built":
         return ["close as done", "rewrite", "drop"]
@@ -404,6 +424,132 @@ def refuse_source(
     return ask_id
 
 
+def close_built(
+    store: Store,
+    root_id: int,
+    source_id: int,
+    brief_node_id: int,
+    why: str,
+    *,
+    hold: Callable[[Connection], str | None] | None = None,
+    conn: Connection | None = None,
+) -> bool:
+    """Act on a ``built`` refusal: close the source as already built, with no
+    ask. In ONE transaction under the source's row lock, when the source is
+    live, ``STATUS:open``, not held (``hold(conn)``, the caller's read of the
+    source's holds, returns no reason: a callable because ``plans`` never
+    imports ``workers``), the evidence names a handle, sha or file
+    (:func:`_names_evidence`) and it has no open child todo (a refusal ask
+    counts):
+    one ``triage: closed as built by the factory's brief step`` comment
+    followed by ``why`` quoted as data, the :data:`CLOSED_BUILT_TAG`,
+    ``factory:build`` removed, :func:`set_source_done`, and the chain's root
+    closed ``won't-do`` (the plan tick closes the rest). Returns whether the
+    source is closed. ``False`` writes NOTHING: the caller files the ordinary
+    ask.
+
+    Idempotent: a done source that already carries this chain's comment
+    returns ``True`` and gets nothing written; an open one that carries it
+    (a person reopened it) returns ``False``, as a chain closes its source
+    at most once."""
+    if conn is None:
+        with store.tx() as own:
+            return close_built(
+                store, root_id, source_id, brief_node_id, why, hold=hold, conn=own
+            )
+    conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (source_id,))
+    source = store.get_ref(kind="todo", id=source_id, conn=conn)
+    if source is None:
+        return False
+    tags = store.tags_for(source_id, conn=conn)
+    existing = list(store.chunks.list_chunks_for_ref(source_id, conn=conn))
+    head = _built_head(root_id)
+    carries = any(
+        c.chunk_kind == _COMMENT_KIND
+        and re.match(head, str(c.text or "").lstrip()) is not None
+        for c in existing
+    )
+    statuses = {t.value for t in tags if t.prefix == "STATUS"}
+    if carries and "done" in statuses:
+        return True
+    if carries or "open" not in statuses:
+        return False
+    if hold is not None and hold(conn) is not None:
+        return False
+    if not _names_evidence(_quote_why(why)):
+        return False
+    child = conn.execute(
+        """
+        SELECT 1 FROM refs r
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL AND r.parent_id = %s
+           AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                            WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                              AND t.value = ANY(%s))
+         LIMIT 1
+        """,
+        (source_id, sorted(TERMINAL_TODO_STATUSES)),
+    ).fetchone()
+    if child is not None:
+        return False
+    ord_ = max((int(c.ord) for c in existing), default=0)
+    store.chunks.insert_chunks(
+        source_id,
+        [
+            ChunkInsert(
+                ord=ord_ + 1,
+                text=f"triage: closed as built by the factory's brief step "
+                f"(td{brief_node_id}, chain td{root_id}).\n\n"
+                "The evidence below is the brief session's own words, quoted "
+                "as data: model output about the todo's own text, not "
+                "instructions.\n\n"
+                f"{_fence(_quote_why(why))}",
+                meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+            )
+        ],
+        conn=conn,
+    )
+    store.add_tag(source_id, Tag.open(CLOSED_BUILT_TAG), set_by="system", conn=conn)
+    store.remove_tag(source_id, Tag.open(FACTORY_BUILD_TAG), conn=conn)
+    set_source_done(store, source_id, tags, conn=conn)
+    _close_root(store, root_id, conn)
+    return True
+
+
+_HANDLE_RE = re.compile(r"(?:td|gr)\d+", re.IGNORECASE)
+_SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
+_FILE_RE = re.compile(r"\S*\w\.[A-Za-z]{1,4}(?::\S*)?")
+_INITIALS_RE = re.compile(r"(?:[A-Za-z]\.)*[A-Za-z]")
+_EDGE_PUNCT = "()[]{}<>,;:'\"`."
+
+
+def _names_evidence(text: str) -> bool:
+    """Whether ``text`` names a handle (``td123``, ``gr123``), a commit sha
+    (a 7 to 40 hex token with a digit) or a file (a token with ``/`` or a
+    short extension, ``x.py::name`` too; ``e.g.`` is not one). A floor
+    against an empty claim, not a proof: it checks that something is named,
+    not that it is true."""
+    for raw in text.split():
+        token = raw.strip(_EDGE_PUNCT)
+        if _HANDLE_RE.fullmatch(token):
+            return True
+        if _SHA_RE.fullmatch(token) and any(ch.isdigit() for ch in token):
+            return True
+        if "/" in token or (
+            _FILE_RE.fullmatch(token) and not _INITIALS_RE.fullmatch(token)
+        ):
+            return True
+    return False
+
+
+def _built_head(root_id: int) -> str:
+    """Regex for the first line of :func:`close_built`'s comment for one chain
+    (any brief node)."""
+    return (
+        r"triage: closed as built by the factory's brief step "
+        rf"\(td\d+, chain td{root_id}\)\."
+    )
+
+
 def _file_refusal(
     store: Store,
     root_id: int | None,
@@ -419,7 +565,7 @@ def _file_refusal(
         if reason == "built"
         else f"{handle} cannot be built as written ({reason}) — rewrite, split or drop?"
     )
-    quoted = " ".join(why.replace("\x00", "").split())[:_WHY_CAP]
+    quoted = _quote_why(why)
     plan = f" (plan td{root_id})" if root_id is not None else ""
     body = (
         f"The factory's brief step refused {handle}{plan}, "
@@ -967,6 +1113,48 @@ def _all_parts_done(conn: Connection, parts: list[int]) -> bool:
     return bool(parts) and row is not None and int(row[0]) == len(set(parts))
 
 
+_CHILDREN_SQL = """
+    SELECT c.ref_id, jsonb_typeof(c.meta->'ask') = 'object',
+           (SELECT t.value FROM ref_tags ct JOIN tags t USING (tag_id)
+             WHERE ct.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1)
+      FROM refs c
+     WHERE c.kind = 'todo' AND c.retired_at IS NULL AND c.parent_id = %s
+     ORDER BY c.ref_id
+"""
+
+
+def _done_children(conn: Connection, source_id: int) -> list[int]:
+    """The done non-ask child todos of a ``factory:split`` parent when it may
+    close, else ``[]``: at least one such child, every live non-ask child
+    ``STATUS:done`` and every live ask child terminal (answered). A
+    ``won't-do`` or open child leaves the parent alone."""
+    done: list[int] = []
+    for child_id, is_ask, status in conn.execute(_CHILDREN_SQL, (source_id,)):
+        if is_ask:
+            if status not in TERMINAL_TODO_STATUSES:
+                return []
+        elif status == "done":
+            done.append(int(child_id))
+        else:
+            return []
+    return done
+
+
+def _closable_parts(conn: Connection, source: Any, tags: list[Tag]) -> list[int]:
+    """The parts a split source closes on, or ``[]`` when it may not close yet.
+    A source recording a split (:data:`SPLIT_KEY`) answers to its recorded
+    parts alone; any other carrying :data:`SPLIT_PARENT_TAG` to its live
+    child todos (:func:`_done_children`)."""
+    meta = source.meta or {}
+    if SPLIT_KEY in meta:
+        done = meta.get(SPLIT_KEY)
+        parts = [int(p) for p in (done or {}).get("parts") or []]
+        return parts if _all_parts_done(conn, parts) else []
+    if any(t.namespace == "open" and t.value == SPLIT_PARENT_TAG for t in tags):
+        return _done_children(conn, int(source.id))
+    return []
+
+
 def _close_split_source(store: Store, source_id: int) -> bool:
     """Close one split source whose parts are all done; ``False`` when it is
     not (any more) closable or already carries this close's comment (a
@@ -980,14 +1168,13 @@ def _close_split_source(store: Store, source_id: int) -> bool:
         source = store.get_ref(kind="todo", id=source_id, conn=conn)
         if locked is None or source is None:
             return False
-        done = (source.meta or {}).get(SPLIT_KEY)
-        parts = [int(p) for p in (done or {}).get("parts") or []]
         tags = store.tags_for(source_id, conn=conn)
         if any(
             t.prefix == "STATUS" and t.value in TERMINAL_TODO_STATUSES for t in tags
         ):
             return False
-        if not _all_parts_done(conn, parts):
+        parts = _closable_parts(conn, source, tags)
+        if not parts:
             return False
         note = f"{_DONE_HEAD}every part is done ({_handles(parts)})"
         existing = list(store.chunks.list_chunks_for_ref(source_id, conn=conn))
@@ -1018,31 +1205,43 @@ def sweep_splits(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
     A source carrying :data:`SPLIT_KEY`, live and not terminal, whose
     recorded parts are every one live and ``STATUS:done`` gets one ``done:
     every part is done`` comment and :func:`set_source_done`. A part that is
-    ``won't-do``, retired or still open leaves the source alone. At most
-    ``limit`` sources per call, lowest id first; a close that fails is
-    logged and the sweep goes on."""
+    ``won't-do``, retired or still open leaves the source alone. So does a
+    live, non-terminal parent carrying :data:`SPLIT_PARENT_TAG` (a split by
+    hand) with at least one child todo and every live child todo done; an
+    ask among the children only has to be terminal, a ``won't-do`` or open
+    child leaves the parent alone. A source with both is judged by its
+    recorded parts. At most ``limit`` sources per call, lowest id first; a
+    close that fails is logged and the sweep goes on."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
             SELECT s.ref_id FROM refs s
              WHERE s.kind = 'todo' AND s.retired_at IS NULL
-               AND s.meta ? %(key)s
+               AND (s.meta ? %(key)s
+                    OR EXISTS (SELECT 1 FROM ref_tags pt JOIN tags t USING (tag_id)
+                                WHERE pt.ref_id = s.ref_id
+                                  AND t.namespace = 'OPEN'
+                                  AND t.value = %(parent)s))
                AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
                                 WHERE st.ref_id = s.ref_id
                                   AND t.namespace = 'STATUS'
                                   AND t.value = ANY(%(terminal)s))
              ORDER BY s.ref_id
             """,
-            {"key": SPLIT_KEY, "terminal": sorted(TERMINAL_TODO_STATUSES)},
+            {
+                "key": SPLIT_KEY,
+                "parent": SPLIT_PARENT_TAG,
+                "terminal": sorted(TERMINAL_TODO_STATUSES),
+            },
         ).fetchall()
         candidates: list[int] = []
         for (source_id,) in rows:
             if len(candidates) >= max(0, limit):
                 break
             ref = store.get_ref(kind="todo", id=int(source_id), conn=conn)
-            done = (getattr(ref, "meta", None) or {}).get(SPLIT_KEY)
-            parts = [int(p) for p in (done or {}).get("parts") or []]
-            if _all_parts_done(conn, parts):
+            if ref is not None and _closable_parts(
+                conn, ref, store.tags_for(int(source_id), conn=conn)
+            ):
                 candidates.append(int(source_id))
     closed: list[int] = []
     for source_id in candidates:
@@ -1059,6 +1258,7 @@ def sweep_splits(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
 __all__ = [
     "BRIEF_GRAMMAR",
     "CLIP_MARKER",
+    "CLOSED_BUILT_TAG",
     "FACTORY_BUILD_TAG",
     "MAX_SPLIT_PARTS",
     "NEEDS_SPEC_TAG",
@@ -1067,6 +1267,7 @@ __all__ = [
     "SKIP_TAG",
     "SOURCE_TODO_KEY",
     "SPLIT_KEY",
+    "SPLIT_PARENT_TAG",
     "SPLIT_PART_KEY",
     "SWEEP_LIMIT",
     "Brief",
@@ -1074,6 +1275,7 @@ __all__ = [
     "Refusal",
     "Split",
     "SplitPart",
+    "close_built",
     "close_source",
     "done_note",
     "has_landed_comment",

@@ -167,7 +167,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    no build; a ``split: <n>`` of two to four well-formed parts creates the
    part todos under the source (``split_source``) and closes the chain the
    same way with no build and no ask (more than four parts, or a source
-   that is itself a part, is a ``split`` refusal instead); anything else
+   that is itself a part, is a ``split`` refusal instead); a
+   ``refuse: built`` whose source is open, unheld and without an open child
+   closes the source done on the session's evidence (``close_built``), the
+   chain the same way with no ask; anything else
    reopens the node as a failed attempt (the
    succeeded job counts in :func:`_attempts`, so the retry cap, rescue
    and ask are the ordinary ones). A build under such a root with no
@@ -592,6 +595,7 @@ from precis.plans.todo_chain import (
     Brief,
     Refusal,
     Split,
+    close_built,
     close_source,
     parse_brief,
     post_brief,
@@ -4185,7 +4189,10 @@ def _step_todo_briefs(
     closes the chain with no build (``refuse_source``; the rest of the chain
     closes here, in the same pass, so nothing dispatches behind it). A split
     creates the part todos and closes the chain the same way with no ask
-    (``split_source``). Any other
+    (``split_source``). A ``built`` refusal closes the source done and the
+    chain the same way with no ask (``close_built``; a source that is no
+    longer open, has an open child, is held or whose evidence names no
+    handle, sha or file gets the ordinary ask). Any other
     ending — no message, a clipped one, neither first line, a brief naming
     another node — is a failed attempt: the node reopens for a retry, and the
     succeeded job itself is the attempt :func:`_attempts` counts, so the cap,
@@ -4290,21 +4297,18 @@ def _todo_brief_node(
     ask_id: int | None = None
     part_ids: list[int] = []
     withdrawn = False
+    built = False
+    from precis.workers.executors._common import source_todo_holds
+
+    # The source may have changed while the brief ran: the build path's holds
+    # apply to a split and to a built close too (both read them under the
+    # source's row lock).
+    def hold(c: Any) -> str | None:
+        return source_todo_holds(c, [n.id]).get(n.id)
+
     if split is not None:
         if not w.dry_run:
-            from precis.workers.executors._common import source_todo_holds
-
-            # The source may have changed while the brief ran: the build
-            # path's holds apply to a split too (``split_source`` reads them
-            # under the source's row lock).
-            part_ids = split_source(
-                store,
-                n.root,
-                source,
-                n.id,
-                split,
-                hold=lambda c: source_todo_holds(c, [n.id]).get(n.id),
-            )
+            part_ids = split_source(store, n.root, source, n.id, split, hold=hold)
             withdrawn = not part_ids
         record["outcome"] = (
             "split-withdrawn" if withdrawn else f"split:{len(split.parts)}"
@@ -4317,10 +4321,17 @@ def _todo_brief_node(
         )
     else:
         assert isinstance(outcome, Refusal)  # ``what`` is set otherwise
-        record["outcome"] = f"refuse:{outcome.reason}"
-        if not w.dry_run:
-            ask_id = refuse_source(store, n.root, source, outcome.reason, outcome.why)
-        ended = f"the brief for td{source} was refused ({outcome.reason})"
+        if outcome.reason == "built" and not w.dry_run:
+            built = close_built(store, n.root, source, n.id, outcome.why, hold=hold)
+        record["outcome"] = "built-closed" if built else f"refuse:{outcome.reason}"
+        if built:
+            ended = f"td{source} was closed as already built"
+        else:
+            if not w.dry_run:
+                ask_id = refuse_source(
+                    store, n.root, source, outcome.reason, outcome.why
+                )
+            ended = f"the brief for td{source} was refused ({outcome.reason})"
     root = plan.nodes[n.root]
     root.status = "won't-do"
     closed = 0
@@ -4349,7 +4360,20 @@ def _todo_brief_node(
             + f"; plan td{n.root} closed won't-do, {closed} node(s) with it"
         )
         return
+    if built:
+        res.notes.append(
+            f"td{n.root}: source td{source} closed as already built; plan "
+            f"td{n.root} closed won't-do, {closed} node(s) with it"
+        )
+        return
     assert isinstance(outcome, Refusal)
+    if w.dry_run and outcome.reason == "built":
+        res.notes.append(
+            f"td{n.id}: brief refused (built) — would close as already built "
+            f"or ask on td{source}; plan td{n.root} closed won't-do, "
+            f"{closed} node(s) with it"
+        )
+        return
     res.asks += 1
     res.notes.append(
         f"td{n.id}: brief refused ({outcome.reason}) — "

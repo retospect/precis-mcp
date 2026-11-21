@@ -2372,8 +2372,12 @@ def _brief_close(todo_id: int, mcp: bool = True) -> list[str]:
         "`Where:`, `Done when:`. When one is missing and you cannot derive it "
         "from the code with confidence, refuse with `rewrite` and name the "
         "missing line. Read the code before you decide: when it already does "
-        "what the todo asks, refuse with `built` and cite the commit or "
-        "`file:line`.",
+        "what the todo asks, refuse with `built` and state the evidence you read "
+        "yourself in the refusal's text, of one of the three kinds named in the "
+        "endings below. Code closes the todo as done on a `built` refusal "
+        "without a person looking at it, so a todo you think is superseded or "
+        "no longer wanted is `decide`, never `built`; a `built` text that names "
+        "no handle, sha or file goes to the owner as an ask.",
         "",
         f"Your final message has exactly three possible endings: {BRIEF_GRAMMAR}. "
         f"The refusal reasons are {reasons}: the todo does not say what "

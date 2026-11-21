@@ -14041,6 +14041,159 @@ def test_refusal_one_ask_tag_no_build_job(store: Store, hub: Any) -> None:
     assert res.dispatched == 0
 
 
+def test_built_refusal_closes_source_without_ask(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    jobs_before = _all_jobs(store)
+    evidence = "td4242 is done and src/precis/widget.py holds the fix"
+    _brief_session(store, mint, f"refuse: built — {evidence}")
+    res = pd.run_pass(store)
+    # The source is done, tagged, with one triage comment quoting the evidence.
+    assert _status(store, source) == "done"
+    tags = _open_tags(store, source)
+    assert "triage:closed-built" in tags and "factory:build" not in tags
+    assert "needs-spec" not in tags
+    (note,) = [c for c in _todo_comments(store, source) if c.startswith("triage:")]
+    assert note.startswith(
+        f"triage: closed as built by the factory's brief step (td{brief}, "
+        f"chain td{mint.root_id})."
+    )
+    assert evidence in note
+    # No ask, no blocker, no build job; the whole chain closed in the pass.
+    assert _asks_on(store, source) == [] and _children(store, source) == []
+    assert _blocked_by_ids(store, source) == []
+    assert _jobs_under(store, build) == []
+    assert _all_jobs(store) == jobs_before + 1  # the brief's own job
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _status(store, brief) == "done"
+    for key in ("build", "review", "gate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+        assert any(
+            "closed as already built" in c for c in _todo_comments(store, mint.ids[key])
+        ), key
+    assert _meta(store, brief)["brief_read"]["outcome"] == "built-closed"
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert any(
+        f"td{mint.root_id}: source td{source} closed as already built; plan "
+        f"td{mint.root_id} closed won't-do" in n
+        for n in res.notes
+    )
+    # Idempotent over later passes.
+    pd.run_pass(store)
+    assert (
+        len([c for c in _todo_comments(store, source) if c.startswith("triage:")]) == 1
+    )
+    assert _all_jobs(store) == jobs_before + 1
+
+
+def test_built_refusal_with_open_child_files_ask(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    child = store.insert_ref(
+        kind="todo", slug=None, title="open part", meta={}, parent_id=source
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", "open"), set_by="system")
+    _brief_session(store, mint, "refuse: built — td4242 is done and widget.py has it")
+    res = pd.run_pass(store)
+    # The ordinary refusal: one ask, needs-spec, source untouched otherwise.
+    (ask,) = _asks_on(store, source)
+    assert _meta(store, ask)["todo_refusal"]["reason"] == "built"
+    assert _status(store, source) == "open"
+    tags = _open_tags(store, source)
+    assert "needs-spec" in tags and "triage:closed-built" not in tags
+    assert "factory:build" in tags
+    assert not [c for c in _todo_comments(store, source) if c.startswith("triage:")]
+    assert _jobs_under(store, build) == []
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _status(store, brief) == "done"
+    assert _meta(store, brief)["brief_read"]["outcome"] == "refuse:built"
+    assert (res.asks, res.dispatched) == (1, 0)
+
+
+def test_built_refusal_on_a_source_no_longer_open_files_ask(
+    store: Store, hub: Any
+) -> None:
+    source, mint = _todo_chain(store, hub)
+    store.add_tag(
+        source, Tag.closed("STATUS", "paused"), set_by="system", replace_prefix=True
+    )
+    _brief_session(store, mint, "refuse: built — a1b2c3d4 names the change")
+    res = pd.run_pass(store)
+    assert len(_asks_on(store, source)) == 1
+    assert _status(store, source) == "paused"
+    assert "triage:closed-built" not in _open_tags(store, source)
+    assert res.asks == 1
+
+
+def test_built_refusal_dry_run_writes_nothing(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    _brief_session(store, mint, "refuse: built — a1b2c3d4 names the change")
+    res = pd.run_pass(store, dry_run=True)
+    assert _status(store, source) == "open"
+    assert "triage:closed-built" not in _open_tags(store, source)
+    assert _asks_on(store, source) == []
+    assert res.asks == 0
+    assert any(
+        "would close as already built or ask on" in n and f"td{source}" in n
+        for n in res.notes
+    )
+
+
+def test_built_refusal_with_withdrawn_tag_files_ask(store: Store, hub: Any) -> None:
+    """The owner took ``factory:build`` off while the brief ran: an automatic
+    close does not overrule that."""
+    source, mint = _todo_chain(store, hub)
+    store.remove_tag(source, Tag.open("factory:build"))
+    _brief_session(store, mint, "refuse: built — td4242 is done and widget.py has it")
+    res = pd.run_pass(store)
+    (ask,) = _asks_on(store, source)
+    assert _meta(store, ask)["todo_refusal"]["reason"] == "built"
+    assert _status(store, source) == "open"
+    tags = _open_tags(store, source)
+    assert "needs-spec" in tags and "triage:closed-built" not in tags
+    assert not [c for c in _todo_comments(store, source) if c.startswith("triage:")]
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _meta(store, mint.ids["brief"])["brief_read"]["outcome"] == "refuse:built"
+    assert (res.asks, res.dispatched) == (1, 0)
+
+
+def test_built_refusal_without_evidence_files_ask(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    _brief_session(store, mint, "refuse: built — it is already there")
+    res = pd.run_pass(store)
+    assert len(_asks_on(store, source)) == 1
+    assert _status(store, source) == "open"
+    assert "triage:closed-built" not in _open_tags(store, source)
+    assert res.asks == 1
+
+
+def test_built_close_resumes_after_a_crash_between_the_steps(
+    store: Store, hub: Any
+) -> None:
+    """The source close and the root close are one transaction; the other
+    nodes close after it. A crash in between leaves a done source and a closed
+    root over open nodes: the next pass closes them all (the brief node too, as
+    after a refusal), files no ask and writes no second comment."""
+    from precis.plans.todo_chain import close_built
+
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    why = "td4242 is done and widget.py has it"
+    _brief_session(store, mint, f"refuse: built — {why}")
+    jobs_before = _all_jobs(store)
+    assert close_built(store, mint.root_id, source, brief, why)
+    assert _status(store, brief) == "doing" and _status(store, build) == "open"
+    res = pd.run_pass(store)
+    for key in ("brief", "build", "review", "gate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _asks_on(store, source) == []
+    assert (res.dispatched, res.asks, _all_jobs(store)) == (0, 0, jobs_before)
+    assert (
+        len([c for c in _todo_comments(store, source) if c.startswith("triage:")]) == 1
+    )
+    assert _status(store, source) == "done"
+
+
 @pytest.mark.parametrize(
     ("handoff", "what"),
     [

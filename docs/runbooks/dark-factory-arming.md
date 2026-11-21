@@ -719,10 +719,12 @@ Stop conditions:
 - **Refused by the brief session.** One big-model session writes the
   builder's brief or refuses (`rewrite`, `split`, `decide`, `built`,
   `not-code`): one ask to the owner on the source todo, `needs-spec` on
-  it, the chain closed `won't-do`. The owner answers in the ask with
-  exactly one of `rewrite` (drops `needs-spec`; offered again once
-  settled), `split` or `drop` (drop `needs-spec` and `factory:build`),
-  `close as done` (also closes the todo). Read 2 minutes after the ask
+  it, the chain closed `won't-do`. `built` files an ask only when the todo
+  has an open child, is no longer open, is held, or the session named no
+  handle, sha or file; otherwise the todo is closed (next bullet). The
+  owner answers in the ask with exactly one of `rewrite` (drops
+  `needs-spec`; offered again once settled), `split` or `drop` (drop
+  `needs-spec` and `factory:build`), `close as done` (also closes the todo). Read 2 minutes after the ask
   closes; none or several named: nothing changes, one comment says so.
 - **Split by the brief session.** A todo that is two to four reviewable
   changes with no decision between them is split instead of refused: code
@@ -737,6 +739,20 @@ Stop conditions:
   brief session that would split one refuses with `split`), and more than
   four parts is a `split` refusal too. A malformed `split:` message is a
   failed attempt like any other.
+- **Already built.** A brief session that ends `refuse: built` with its
+  evidence in the refusal (a done todo or closed gripe plus the file, the
+  `Done when:` observation already holding, or a commit sha) gets no ask
+  when the text names a handle, sha or file and the source is still open,
+  not held (no `factory:skip`, `needs-spec`, hold tag or open blocker, and
+  `factory:build` still on it) and has no open child todo: code comments the
+  evidence, tags the source `triage:closed-built`, closes it `done` and
+  closes the chain. Search for the tag to audit these closes; reopen the
+  todo and remove the tag to undo one. Any other `built` refusal gets the
+  ordinary ask.
+- **Split by hand.** A parent todo tagged `factory:split` is closed `done`
+  by the same sweep (`split_closed`) once it has a child todo and every
+  child todo is done; an ask among the children only has to be answered. A
+  `won't-do` or open child leaves it open.
 - **Chain ended without a land** (dropped, or closed with no commit): the
   source loses `factory:build` with one comment; tag it again to offer it
   again. A brief session that ends as neither brief nor refusal is a
