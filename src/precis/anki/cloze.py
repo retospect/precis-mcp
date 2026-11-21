@@ -23,14 +23,16 @@ from __future__ import annotations
 import re
 
 _OPEN_RE = re.compile(r"\{\{c\d+::")
+_HINT_WORD_RE = re.compile(r"[^\W\d_]+")
 
 
-def _walk(text: str, start: int) -> tuple[str, str, int, int] | None:
+def _walk(text: str, start: int) -> tuple[str, str, int, int, str] | None:
     """Scan the cloze opening at ``text[start]``.
 
-    Returns ``(normalised, stripped, end, spaced)``: the cloze with spacing
+    Returns ``(normalised, stripped, end, spaced, hint)``: the cloze with spacing
     applied (markup kept), its answer-only form, the index just past its
-    closing ``}}``, and how many spaces were inserted. ``None`` if unterminated.
+    closing ``}}``, how many spaces were inserted, and the optional hint.
+    ``None`` if unterminated.
     """
     m = _OPEN_RE.match(text, start)
     assert m is not None
@@ -67,10 +69,12 @@ def _walk(text: str, start: int) -> tuple[str, str, int, int] | None:
                 continue
             if text.startswith("}}", i):
                 answer = "".join(strip)
+                hint = ""
                 if split_at is not None:
+                    hint = answer[split_at + 2 :]
                     answer = answer[:split_at]
                 head = m.group(0)
-                return head + "".join(norm) + "}}", answer, i + 2, spaced
+                return head + "".join(norm) + "}}", answer, i + 2, spaced, hint
         elif c == ":" and text.startswith("::", i):
             if split_at is None:
                 split_at = sum(len(s) for s in strip)
@@ -85,8 +89,8 @@ def _walk(text: str, start: int) -> tuple[str, str, int, int] | None:
     end = text.find("}}", m.end())
     if end < 0:
         return None
-    raw = text[m.end() : end]
-    return text[start : end + 2], raw.split("::", 1)[0], end + 2, 0
+    answer, _, hint = text[m.end() : end].partition("::")
+    return text[start : end + 2], answer, end + 2, 0, hint
 
 
 def _rewrite(text: str, *, strip: bool) -> tuple[str, int]:
@@ -118,6 +122,23 @@ def has_cloze(text: str) -> bool:
             return True
         i = m.end()
     return False
+
+
+def acronym_hint_leaks(text: str) -> list[str]:
+    """Return the cloze indices whose hint's word initials spell its answer."""
+    leaks: list[str] = []
+    for opening in _OPEN_RE.finditer(text):
+        result = _walk(text, opening.start())
+        if result is None:
+            continue
+        _, answer, _, _, hint = result
+        words = _HINT_WORD_RE.findall(hint)
+        initials = "".join(word[0] for word in words)
+        if len(words) > 1 and initials.casefold() == answer.strip().casefold():
+            index = opening[0][2:-2]
+            if index not in leaks:
+                leaks.append(index)
+    return leaks
 
 
 def strip_cloze(text: str) -> str:

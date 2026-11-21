@@ -258,10 +258,13 @@ class TestMint:
         report = mint_daily_cards(store, client=client, per_day=50, cohort=co)
         assert cid not in [c for c, _ in report.minted]
 
-    def test_invalid_model_output_is_skipped(self, store: Any) -> None:
+    @pytest.mark.parametrize(
+        "text", ["no cloze markup", "{{c1::RMSD::root-mean-square deviation}}"]
+    )
+    def test_invalid_model_output_is_skipped(self, store: Any, text: str) -> None:
         co = f"mint-{uuid.uuid4().hex[:8]}"
         _concept(store, cohort=co)
-        client = _FakeClient({"cards": [{"text": "no cloze markup"}]})
+        client = _FakeClient({"cards": [{"text": text}]})
         report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
         assert report.minted == [] and report.skipped == 1
 
@@ -331,6 +334,16 @@ class TestRework:
         new = store.get_ref(kind="anki", id=d.new_card_id)
         assert new.meta["rework_of"] == card_id
         assert store.get_ref(kind="concept", id=cid).meta["remunge_streak"] == 1
+
+    def test_rewrite_with_acronym_hint_preserves_the_old_card(self, store: Any) -> None:
+        cid = _concept(store)
+        card_id = self._stale_leech(store, cid)
+        client = _FakeClient({"text": "{{c1::RMSD::root-mean-square deviation}}"})
+        report = rework_stale_cards(store, client=client, act=True)
+        decision = next(d for d in report.decisions if d.card_id == card_id)
+        assert decision.action == "rewrite" and not decision.applied
+        assert store.get_ref(kind="anki", id=card_id) is not None
+        assert store.get_ref(kind="concept", id=cid).meta.get("remunge_streak") is None
 
     def test_mastered_concept_retires_the_leech(self, store: Any) -> None:
         cid = _concept(store, state="mastered")

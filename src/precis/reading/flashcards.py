@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Any
 
-from precis.anki.cloze import has_cloze, space_adjacent_braces
+from precis.anki.cloze import acronym_hint_leaks, has_cloze, space_adjacent_braces
 from precis.handlers.anki import _split_extra, _strip_cloze
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
@@ -61,6 +61,13 @@ DEFAULT_CARDS_PER_DAY = 5  # concepts carded per morning, not cards
 DEFAULT_STREAK_CAP = 3  # rewrites per concept before escalating to the human
 _MAX_CARDS_PER_CONCEPT = 3
 _AUTHORED_BY = "card_forge"
+
+_HINT_RULE = (
+    "Use a one-word category hint that never gives away the answer. For an "
+    "acronym or abbreviation, show the short form and cloze its expansion or "
+    "meaning, e.g. RMSD ({{c1::root-mean-square deviation::expansion}}). "
+    "Never hide the short form with its expansion as the hint. "
+)
 
 _MINT_SYS = (
     "You author Anki cloze cards from a concept (name, definition, related "
@@ -90,7 +97,8 @@ _MINT_SYS = (
     "phrase ('improved properties', 'various applications'), and never cloze "
     "one arbitrary member of a large open set (do not hide 'Machu Picchu' as "
     "'an example of a World Heritage Site' — a thousand others fit). "
-    "Optionally add a terse Back Extra (source, mnemonic, gotcha) or omit it. "
+    + _HINT_RULE
+    + "Optionally add a terse Back Extra (source, mnemonic, gotcha) or omit it. "
     "Reply with ONLY JSON: "
     '{"cards":[{"text":"<cloze>","back_extra":"<terse or empty>"}],'
     '"skip_reason":"<empty, or why you refused>"}'
@@ -106,7 +114,7 @@ _REWORK_SYS = (
     "phrase or one arbitrary member of a large open set. If the underlying "
     "concept is not actually a learnable fact (a topic label, stock phrase, or "
     "front-matter), do not manufacture another card — reply with an empty "
-    "text. Reply with ONLY JSON: "
+    "text. " + _HINT_RULE + "Reply with ONLY JSON: "
     '{"text":"<cloze sentence or empty>","back_extra":"<terse or empty>"}'
 )
 
@@ -177,10 +185,13 @@ def author_card(
 ) -> int:
     """Write one authored cloze card the way `AnkiHandler._create` does — ref +
     stripped `card_combined` + the concept `represents` link — plus the pass's
-    provenance meta. Raises ``ValueError`` on a body with no cloze deletion."""
+    provenance meta. Raises ``ValueError`` for missing deletions or acronym
+    hints that give the answer away."""
     cloze_text, extra = _split_extra(text)
     if not has_cloze(cloze_text):
         raise ValueError("card body has no {{cN::…}} cloze deletion")
+    if leaks := acronym_hint_leaks(cloze_text):
+        raise ValueError(f"hint initials spell the answer for {', '.join(leaks)}")
     cloze_text, _spaced = space_adjacent_braces(cloze_text)
     fields: dict[str, str] = {"Text": cloze_text}
     if extra:
@@ -342,8 +353,8 @@ def mint_daily_cards(
                 minted.append(
                     author_card(store, text=text, concept_id=concept_id, deck=deck)
                 )
-            except ValueError:
-                log.info("cards: dropped non-cloze card for concept %s", concept_id)
+            except ValueError as exc:
+                log.info("cards: dropped card for concept %s: %s", concept_id, exc)
         if minted:
             report.minted.append((concept_id, minted))
             # A carded concept is being learned — it leaves the candidate pool.

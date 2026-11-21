@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
 
-from precis.anki.cloze import has_cloze, space_adjacent_braces, strip_cloze
+from precis.anki.cloze import (
+    acronym_hint_leaks,
+    has_cloze,
+    space_adjacent_braces,
+    strip_cloze,
+)
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.anki import AnkiHandler
@@ -60,6 +66,25 @@ def test_hint_still_dropped() -> None:
 
 def test_hint_splits_at_first_separator_like_anki() -> None:
     assert strip_cloze("{{c1::a::b::c}}") == "a"
+
+
+def test_acronym_hint_initials_split_on_hyphens_and_ignore_case() -> None:
+    assert acronym_hint_leaks(
+        "{{c1::RMSD::root-mean-square deviation}} and "
+        "{{c2::rmsf::Root-Mean-Square Fluctuation}}"
+    ) == ["c1", "c2"]
+    assert not acronym_hint_leaks(
+        "RMSD ({{c1::root-mean-square deviation::expansion}}) "
+        r"and {{c2::\sqrt{x^{2}}::latex}}"
+    )
+
+
+def test_put_warns_about_acronym_hint_without_rewriting_card(store: Any) -> None:
+    raw = "{{c1::RMSD::root-mean-square deviation}} measures structural change."
+    body, text, _ = _put(store, raw + "\n---\n{{c2::ATP::adenosine tri phosphate}}")
+    assert "Warning (c1): the hint's initials spell the answer" in body
+    assert "Warning (c2)" not in body
+    assert text == raw
 
 
 def test_unbalanced_brace_answer_closes_at_first_pair() -> None:

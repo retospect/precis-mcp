@@ -29,6 +29,9 @@ Sync honors that intent until a completed push confirms the note is back.
   `anki_logins()`, the roster the sync fans out over.
 - `notes` — pure, anki-free helpers (guid/deck/tag conventions, ref→card spec,
   stats aggregation). Safe to import anywhere.
+- `cloze` — brace-aware scanning and acronym hint checks. Manual puts warn
+  so the author can review the wording. Automated reading-card writes reject
+  detected leaks before creating a note.
 - `sync` — the engine (lazy-imports `anki`): upsert our authored notes, the
   guarded sync (bootstrap-download / incremental / abort-on-lossy-upload), and
   the stats read-back.

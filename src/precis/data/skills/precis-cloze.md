@@ -120,6 +120,11 @@ but not a guess: `::meaning`, `::pronunciation`, `::domain`, `::number`,
 `::date`, `::mechanism`, `::example`, `::term`, `::image`, `::latex`. Terse,
 one word.
 
+For an acronym or abbreviation, show the short form and cloze the expansion
+or meaning. Never hide the short form with its expansion as the hint.
+`RMSD ({{c1::root-mean-square deviation::expansion}})` tests recall of what
+RMSD stands for. A put warning flags hints whose initials spell the answer.
+
 **But a hint can't rescue an answer that isn't specific.** Only cloze a span
 that is load-bearing and has *one* right value the rest of the sentence points
 to — a term, number, name, mechanism. Never cloze:
@@ -172,7 +177,7 @@ auto-creates it); no tag → the base `Precis` deck. Keep authored cards under t
 ```python
 put(
     kind="anki",
-    text="{{c1::Mitochondrion::term}} makes {{c2::ATP::molecule}}.",
+    text="{{c1::Mitochondrion::term}} makes ATP ({{c2::adenosine triphosphate::expansion}}).",
     tags=["deck-cell-biology"],
 )  # → deck Precis::cell-biology
 ```
@@ -203,7 +208,7 @@ its pronunciation at the same cN index** so they hide/reveal together
   ```
 - **Tone card** (Mandarin — isolate the tone):
   ```
-  {{c1::2::tone number}} — {{c2::rising::tone shape}}
+  Tone {{c1::2::number}} — {{c2::rising::shape}}
   ```
 - **Concept cards** (etymology, philosophical/cultural meaning, compounds) — test
   the concept at low indices, pair char+pronunciation at the highest shared

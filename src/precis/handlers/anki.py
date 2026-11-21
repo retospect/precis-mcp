@@ -35,7 +35,12 @@ import re
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from precis.anki.cloze import has_cloze, space_adjacent_braces, strip_cloze
+from precis.anki.cloze import (
+    acronym_hint_leaks,
+    has_cloze,
+    space_adjacent_braces,
+    strip_cloze,
+)
 from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
@@ -227,18 +232,23 @@ class AnkiHandler(NumericRefHandler):
         # Reject a non-cloze body up front (before the insert tx) so a bad
         # card writes nothing — mirrors the atomic-create contract.
         spaced = 0
+        leaks: list[str] = []
         if text is not None and text.strip():
-            self._validate_cloze(text)
+            leaks = acronym_hint_leaks(self._validate_cloze(text))
             text, spaced = _space_cloze_braces(text)
         ack = super()._create(text=text, **kw)
-        if not spaced:
-            return ack
-        return dataclasses.replace(
-            ack,
-            body=ack.body
-            + f"\nspaced {spaced} `}}}}` inside cloze answers so Anki does not "
-            "cut the answer.",
-        )
+        body = ack.body
+        if spaced:
+            body += (
+                f"\nspaced {spaced} `}}}}` inside cloze answers so Anki does not "
+                "cut the answer."
+            )
+        if leaks:
+            body += (
+                f"\nWarning ({', '.join(leaks)}): the hint's initials spell the "
+                "answer. Show the short form and cloze its expansion or meaning."
+            )
+        return dataclasses.replace(ack, body=body) if body != ack.body else ack
 
     # ── list views ─────────────────────────────────────────────────────
 
