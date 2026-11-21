@@ -59,18 +59,17 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 `page_size` ≤ 100 bounds the top-N set (`k=`/`limit=` read as it). Omit
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
 'lexical' / 'semantic' / 'verbatim'.
-`scope=` searches inside one ref (handle or slug) — the find-in-ref
-read; only implementing kinds accept scope= — a refusal names the
-rest. `status=` filters by
-`STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
+`scope=` searches within a ref (handle or slug) on supported kinds.
+`status=` filters by `STATUS:` tag where supported. Rows: `id`, `summary`,
 `remaining_words`, `links`, `tags` — the legend is in the skill.
 In voice chat, describe the ref first. Speak its `word` handle, never its number.
 See get(kind='skill', id='precis-word-handles-help').
 `queries=` (paper + `answers=`; skill: fused sections) and
 `batch=` (memory) are verb params; other kinds refuse `not on <kind>
 yet`. `NotFound … routes
-through host(s)` = a host-gated kind. Pass kind fields in `args={...}`. Unknown keys raise `[error:BadInput]`
-with accepted keys.
+through host(s)` = a host-gated kind. Kind-specific fields go in
+`args={...}`; an unknown key fails the call with `[error:BadInput]`
+listing the kind's accepted keys.
 
 Full docs: get(kind='skill', id='precis-search-help').
 """
