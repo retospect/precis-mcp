@@ -340,17 +340,27 @@ class Unreachable:
     pin: int
     owners: tuple[int, ...]
     pins: tuple[int, ...] = ()
-    #: The component's any-layer region meets the main component's —
-    #: some path exists, but none the layered search could take (no
-    #: plantable hop). G2g names it instead of routing it any-layer.
+    #: The component's any-layer region meets the main component's on
+    #: the net's own masks (pads, zones, board) — a path exists if
+    #: layers and the other nets' copper are ignored. G2g names it
+    #: instead of routing it any-layer. It does NOT say why the layered
+    #: search failed: a missing via site and a closure by another net's
+    #: copper or via barrel both read True (gr700073) — ``cause`` tells
+    #: them apart on a shove withdrawal.
     layered: bool = False
     #: The earlier net the negotiation tried before giving up (G2h);
     #: for a chord-blocked failure (S1) every crossing partner,
     #: most-crossed first.
     blocked_by: tuple[int, ...] = ()
     #: Why the shove withdrew the whole net (``_Shove._strip`` only):
-    #: 'guard', 'crossing', 'no-via-site', 'cut' or 'wall'. Empty for a
-    #: genuinely stranded component.
+    #: 'guard', 'crossing', 'closure-walled', 'no-via-site', 'cut' or
+    #: 'wall'. Empty for a genuinely stranded component. The two
+    #: ``layered`` causes (:func:`_closure_walled`, gr700073):
+    #: 'closure-walled' — the bare board links the component, the other
+    #: nets' standing copper or via barrels close every such link, so
+    #: the blocker is that copper, not the planter; 'no-via-site' — the
+    #: closures are not what cuts it, the layer change it needs has no
+    #: legal via point.
     cause: str = ""
 
 
@@ -2106,6 +2116,109 @@ def _flood_states(
                         seen.add((t, m))
                         stack.append((t, m))
     return seen
+
+
+def _layered_link(
+    ctx: _Ctx,
+    mesh: TopoMesh,
+    src: Sequence[int],
+    src_lay: Sequence[int],
+    dst: Sequence[int],
+    dst_lay: Sequence[int],
+    open_v: np.ndarray,
+    fit: np.ndarray,
+    cand_list: Sequence[int],
+) -> bool:
+    """Whether :func:`_net_tree`'s own moves link a ``src`` pin to a
+    ``dst`` pin under ``open_v`` — its seed, step, hop and goal rules
+    with the planter always willing and the chords dropped: a pin
+    leaves across an edge open on a layer it carries, a step keeps its
+    layer, a hop changes it on the edge just crossed where ``fit``
+    holds and the new layer is open there, a pin is reached on a layer
+    it carries or by a hop on the last edge. Stricter than
+    :func:`_flood_states`, whose hop needs no crossed edge. False
+    means no via site could have linked them (gr700073)."""
+    goal: dict[int, int] = {}
+    for pin, pl in zip(dst, dst_lay, strict=True):
+        for t in ctx.v2t[int(mesh.pin_vertex[pin])]:
+            goal[t] = goal.get(t, 0) | pl
+    seen: set[tuple[int, int, int]] = set()
+    stack: list[tuple[int, int, int]] = []
+
+    def push(e: int, t: int, ly: int) -> None:
+        t2 = int(mesh.edge_tris[e, 0])
+        t2 = int(mesh.edge_tris[e, 1]) if t2 == t else t2
+        if t2 >= 0 and (e, t2, ly) not in seen:
+            seen.add((e, t2, ly))
+            stack.append((e, t2, ly))
+
+    for pin, pl in zip(src, src_lay, strict=True):
+        for t0 in ctx.v2t[int(mesh.pin_vertex[pin])]:
+            if goal.get(t0, 0) & pl:
+                return True
+            for e in (int(x) for x in mesh.tri_edges[t0]):
+                for ly in cand_list:
+                    if pl >> ly & 1 and open_v[e] >> ly & 1:
+                        push(e, t0, ly)
+    while stack:
+        e, t, ly = stack.pop()
+        om = int(open_v[e])
+        want = goal.get(t, 0)
+        if want >> ly & 1 or (fit[e] and want & om):
+            return True
+        if fit[e]:
+            for m in cand_list:
+                if m != ly and om >> m & 1 and (e, t, m) not in seen:
+                    seen.add((e, t, m))
+                    stack.append((e, t, m))
+        for e2 in (int(x) for x in mesh.tri_edges[t]):
+            if e2 != e and open_v[e2] >> ly & 1:
+                push(e2, t, ly)
+    return False
+
+
+def _closure_walled(
+    ctx: _Ctx,
+    mesh: TopoMesh,
+    d: TopoDesign,
+    k: int,
+    n_layers: int,
+    masks: _NetMasks,
+    closed: np.ndarray,
+    comps: Sequence[Sequence[int]],
+) -> bool:
+    """Whether the other nets' copper is what strands one of ``comps``
+    (pin ids) from the rest of net ``k`` (gr700073): the bare board
+    links it under the layered search's own moves
+    (:func:`_layered_link`, either direction) and ``closed`` — a
+    view's :attr:`_OccView.closed`, slots used up or a via barrel's
+    reach — cuts every such link. A comp the bare board cannot link
+    either lacks a plantable hop, not room; one still linked under
+    ``closed`` was refused by the planter (or a chord), not walled."""
+    if not (masks.open & closed).any():
+        return False
+    cand_mask = _cand_mask(_net_layers(d, k, n_layers), n_layers)
+    cand_list = [ly for ly in range(n_layers) if cand_mask >> ly & 1]
+    stranded = {int(p) for comp in comps for p in comp}
+    main = [int(p) for p in d.net_pins[k] if int(p) not in stranded]
+    if not main:
+        return False
+
+    def lay(pins: Sequence[int]) -> list[int]:
+        return [_pin_layers(d, int(p), n_layers, cand_mask) for p in pins]
+
+    main_lay = lay(main)
+
+    def linked(comp: Sequence[int], open_e: np.ndarray) -> bool:
+        comp_lay = lay(comp)
+        return _layered_link(
+            ctx, mesh, comp, comp_lay, main, main_lay, open_e, masks.fit, cand_list
+        ) or _layered_link(
+            ctx, mesh, main, main_lay, comp, comp_lay, open_e, masks.fit, cand_list
+        )
+
+    open_v = masks.open & ~closed
+    return any(not linked(comp, open_v) and linked(comp, masks.open) for comp in comps)
 
 
 def _wall_owners(
@@ -6365,9 +6478,10 @@ def _unreachable_rows(
                 pin=pins_l[comp[0]],
                 owners=owners,
                 pins=tuple(pins_l[j] for j in comp),
-                # the any-layer flood meets the main component: a path
-                # exists, only the layered search — no plantable hop —
-                # could not take it (G2g)
+                # the any-layer flood over the net's own masks meets the
+                # main component: a path exists once layers and the
+                # other nets' copper are ignored (G2g) — why the layered
+                # search missed it is ``_Shove._strip``'s cause
                 layered=bool(regions[ci] & main_region),
                 blocked_by=blocked_by,
             )
@@ -6808,12 +6922,36 @@ class _Shove:
         old_rows = [u for u in st.unreachable if u.net == k]
         pins = tuple(int(p) for p in self.d.net_pins[k])
         partners_k = tuple(st.partners.get(k, ()))
+        occ2 = st.occupancy.rebuild(kept)
         if self.last_refusal.get(k) == "guard":
             cause = "guard"
         elif partners_k or st.keys[k][1]:
             cause = "crossing"
         elif any(u.layered for u in old_rows):
-            cause = "no-via-site"
+            # ``layered`` alone says only that a path exists with the
+            # other nets' copper ignored: judged against the board the
+            # net leaves behind, a comp that copper closes off names
+            # the closure, never the planter (gr700073)
+            rule = self.rules[k]
+            walled = _closure_walled(
+                self.ctx,
+                self.mesh,
+                self.d,
+                k,
+                self.n_layers,
+                _net_masks(
+                    self.ctx,
+                    self.d,
+                    k,
+                    self.n_layers,
+                    rule[0],
+                    rule[1],
+                    rule[2] if len(rule) > 2 else _DEFAULT_VIA_MM,
+                ),
+                occ2.view(k).closed,
+                [u.pins or (u.pin,) for u in old_rows],
+            )
+            cause = "closure-walled" if walled else "no-via-site"
         elif old_rows:
             cause = "cut"
         else:
@@ -6828,7 +6966,6 @@ class _Shove:
             or tuple(dict.fromkeys(p for u in old_rows for p in u.blocked_by)),
             cause=cause,
         )
-        occ2 = st.occupancy.rebuild(kept)
         keys = dict(st.keys)
         partners = dict(st.partners)
         for n in sorted(_affected_nets(st.occupancy, occ2, {k}) - {k}):

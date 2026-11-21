@@ -52,6 +52,7 @@ from precis.pcb.topoplace.realise import (
 from precis.pcb.topoplace.shove import directness_pushes, shove_pose
 from precis.pcb.topoplace.wires import WirePath, Wires, build_wires
 from tests.fixtures.pcb.topo_example_a import example_a
+from tests.test_pcb_topoplace_walls import _board, _rect
 
 
 def _sanity_board() -> pcb.Board:
@@ -3587,3 +3588,155 @@ def test_sketch_rows_names_shove_withdrawal_cause() -> None:
     walled = rows["N1"]["fail"]["problems"][0]
     assert walled["reason"] == "unrouted"
     assert walled["message"].startswith("pins walled off")
+
+
+_SLOT_VIA_RULE = (0.15, 0.15, 0.6)
+
+
+def _slot_board(stub_side: int = 0) -> TopoDesign:
+    """Net 0: two top pads in the open plus pad 2 at the closed end of a
+    dead-end slot — keepout walls on every layer, a 1 mm mouth at
+    y = 22; net 1: two pads far from both."""
+    walls = tuple(
+        TopoZone("keepout", _rect(*xywh))
+        for xywh in (
+            (29.1, 18.1, 0.4, 3.9),
+            (30.5, 18.1, 0.4, 3.9),
+            (29.5, 18.1, 1.0, 0.4),
+        )
+    )
+    return _board(
+        [
+            {"x": 6.0, "y": 30.0, "net": 0},
+            {"x": 14.0, "y": 30.0, "net": 0},
+            {"x": 30.0, "y": 19.5, "net": 0, "side": stub_side},
+            {"x": 6.0, "y": 6.0, "net": 1},
+            {"x": 34.0, "y": 6.0, "net": 1},
+        ],
+        n_nets=2,
+        zones=walls,
+    )
+
+
+def _withdrawal_message(d: TopoDesign, rows: Sequence[wires_mod.Unreachable]) -> str:
+    """Net 0's ``unrouted`` problem line as :func:`sketch_rows` writes it."""
+    ir = SimpleNamespace(
+        n_pins=len(d.pin_net),
+        n_nets=len(d.net_pins),
+        pin_net=d.pin_net,
+        pin_instance=d.pin_part,
+        pin_label=d.pin_label,
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(len(d.net_pins), dtype=np.uint16),
+    )
+    plan = RoutePlan(pieces=(), vias=(), layers=(), stranded=tuple(rows))
+    sketch = sketch_rows(plan, d, ir, ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"])
+    return str(sketch["N0"]["fail"]["problems"][0]["message"])
+
+
+def test_shove_withdrawal_names_a_foreign_via_barrel_closure_walled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr700073: another net's via barrel in the slot mouth closes every
+    layer of pad 2's only way out. Pad 2 needs no via at all — the bare
+    board routes it on its own face — so the withdrawal must not say
+    'no-via-site': the closure is the wall."""
+    d = _slot_board()
+    captured: list[tuple[wires_mod._Shove, wires_mod._ShoveState]] = []
+
+    def capture(
+        shove: wires_mod._Shove, st: wires_mod._ShoveState
+    ) -> wires_mod._ShoveState:
+        captured.append((shove, st))
+        return st
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wires_mod._Shove, "run", capture)
+        build_wires(build_mesh(d, d.pose0), d, 4, (_SLOT_VIA_RULE,) * 2, pose=d.pose0)
+    ((shove, st),) = captured
+    assert not st.unreachable, "the bare board routes pad 2 out of the mouth"
+    assert not any(b.branch.vias for b in st.builts[0]), "and without a via"
+
+    # Net 1's barrel, hand-planted in the mouth: a via crosses no edge,
+    # so it carries no wire and names no crossing partner.
+    (wire1,) = st.builts[1]
+    via = wires_mod.PlantedVia(
+        i=0, k=0, x=30.0, y=22.0, dia_mm=0.6, drill_mm=0.0, r_site_mm=0.3
+    )
+    barrel = wires_mod._Built(
+        dataclasses.replace(
+            wire1.branch, points=(), tris=(), edges=(), t=(), layers=(), vias=(via,)
+        ),
+        (),
+    )
+    kept = [(1, wire1), (1, barrel)]
+    # the real search against that occupancy strands pad 2
+    att = shove._grow(0, st.occupancy.rebuild(kept), [wire1.branch], shove.budget)
+    assert att is not None
+    assert [len(comp) for comp in att.comps] == [2, 1]
+    rows = wires_mod._unreachable_rows(
+        shove.ctx,
+        shove.mesh,
+        d,
+        0,
+        4,
+        att.comps,
+        att.masks,
+        _SLOT_VIA_RULE[0] / 2.0 + _SLOT_VIA_RULE[1] + FAB_QUANTUM_MM,
+    )
+    assert [u.layered for u in rows] == [True]
+    failing = dataclasses.replace(
+        st,
+        builts={0: att.built, 1: [wire1, barrel]},
+        occupancy=st.occupancy.rebuild([*kept, *((0, b) for b in att.built)]),
+        keys={**st.keys, 0: (2, 0)},
+        unreachable=rows,
+        partners={},
+    )
+    # the emit guard is not under test, and the bare barrel has no wire
+    # for the planner to shape
+    monkeypatch.setattr(shove, "_preserves_guard", lambda *_a: True)
+    after = shove._strip(failing, 0)
+    (row,) = after.unreachable
+    assert row.net == 0 and row.pins == (0, 1, 2)
+    assert row.cause == "closure-walled"
+    assert (
+        _withdrawal_message(d, after.unreachable)
+        == "withdrawn by shove (closure-walled)"
+    )
+    # the same barrel beside pad 1 closes edges too, but none
+    # that cut pad 2 off: closures that are not the wall name nothing
+    away = dataclasses.replace(
+        barrel.branch, vias=(dataclasses.replace(via, x=14.6, y=30.0),)
+    )
+    elsewhere = (
+        st.occupancy.rebuild([(1, wire1), (1, wires_mod._Built(away, ()))])
+        .view(0)
+        .closed
+    )
+    assert (att.masks.open & elsewhere).any()
+    assert not wires_mod._closure_walled(
+        shove.ctx, shove.mesh, d, 0, 4, att.masks, elsewhere, [(2,)]
+    )
+
+
+def test_shove_withdrawal_keeps_no_via_site_where_no_via_plants() -> None:
+    """The twin of the closure case: pad 2 sits on the bottom face, so it
+    needs one layer change, and a 50 mm via plants nowhere. No other
+    net's copper is near — the planter has no legal point, and the
+    withdrawal keeps 'no-via-site'."""
+    d = _slot_board(stub_side=1)
+    rule = (_SLOT_VIA_RULE[0], _SLOT_VIA_RULE[1], 50.0)
+    mesh = build_mesh(d, d.pose0)
+    w = build_wires(mesh, d, 4, (rule,) * 2, pose=d.pose0)
+    (row,) = w.unreachable
+    assert row.net == 0 and row.pins == (0, 1, 2) and row.layered
+    assert row.cause == "no-via-site"
+    assert _withdrawal_message(d, w.unreachable) == "withdrawn by shove (no-via-site)"
+    # and it stays the planter's failure whatever other copper closes:
+    # the bare board cannot link pad 2 either
+    ctx = wires_mod._make_ctx(mesh, d, 4)
+    masks = wires_mod._net_masks(ctx, d, 0, 4, *rule)
+    every = np.full(len(masks.open), 0b1111, dtype=np.int64)
+    assert not wires_mod._closure_walled(ctx, mesh, d, 0, 4, masks, every, [(2,)])
