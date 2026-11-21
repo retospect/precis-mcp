@@ -67,8 +67,8 @@ bypass.
 ## The lifecycle, end to end
 
 Private study activity is a non-ref exception to the corpus model:
-`precis.learning` stores owner-keyed settings and append-only self-report
-events in dedicated tables, outside chunks, embeddings and public graph
+`precis.learning` stores owner-keyed settings, append-only self-reports,
+study answers and synced Anki review timestamps in dedicated tables, outside chunks, embeddings and public graph
 search. `user_context` binds stable authenticated account IDs; `mcp_identity`
 stores revocable per-user bearer digests. The `learning` handler and web page
 share that store. `runtime.private` routes the kinds in the `private_kinds`

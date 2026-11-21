@@ -10,6 +10,7 @@ installs it only on the sync runner).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -25,6 +26,7 @@ from precis.anki.notes import (
     ref_id_from_guid,
     spec_from_ref,
 )
+from precis.store import Store
 
 
 @pytest.mark.parametrize("full_download", [False, True])
@@ -36,6 +38,7 @@ def test_remote_deletion_is_not_recreated(
     from precis.anki import sync
 
     col = MagicMock()
+    col.db.list.return_value = [1_793_748_600_000]
     # Ref 7 was synced and then deleted remotely. Ref 8 is a new explicit
     # add of the same text; ref 9 still exists and remains editable.
     col.db.all.side_effect = [
@@ -72,6 +75,8 @@ def test_remote_deletion_is_not_recreated(
         mirror_path="unused", user="user", password="pw", specs=specs
     )
     assert result.deleted_ref_ids == [7]
+    assert result.review_ids == [1_793_748_600_000]
+    assert "ease > 0" in col.db.list.call_args.args[0]
     assert upsert.call_args.args[1] == specs[1:]
     assert result.bootstrapped == full_download
     col.close.assert_called_once()
@@ -821,11 +826,6 @@ class TestRunAnkiSyncFanOut:
         _add_user(store, "alice", "al")
         _configure_creds(monkeypatch, "reto", "reto@example.com")
         _configure_creds(monkeypatch, "alice", "alice@example.com")
-        # Each user needs a card: with nothing to push and nothing to retire the
-        # no-op shortcut skips the AnkiWeb round-trip, so a card-less fan-out
-        # would never reach sync_tick at all.
-        store.insert_ref(kind="anki", slug=None, title="{{c1::x}}", owner_login="reto")
-        store.insert_ref(kind="anki", slug=None, title="{{c1::y}}", owner_login="alice")
 
         def _fake_sync_tick(*, mirror_path, **kw):
             if "/alice/" in mirror_path:
@@ -969,25 +969,32 @@ class TestDeckRetagReceipt:
         assert spec is not None and spec.pending_deck_revision == "retag-2"
 
 
-class TestNoOpShortcut:
-    """Nothing to push and nothing to retire ⇒ no AnkiWeb round-trip at all."""
-
-    def test_card_less_user_skips_the_ankiweb_roundtrip(
-        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+class TestReviewSync:
+    def test_card_less_user_imports_reviews_without_double_counting(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from precis.anki import sync as sync_mod
+        from precis.learning import LearningStore
+        from precis.user_context import user_scope
         from precis.workers.anki_sync import run_anki_sync
 
         _add_user(store, "reto", "rs")
         _configure_creds(monkeypatch, "reto", "reto@example.com")
-
-        def _boom(**kw):
-            raise AssertionError("sync_tick must not be reached with nothing to sync")
-
-        monkeypatch.setattr(sync_mod, "sync_tick", _boom)
-        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
-        assert "nothing to sync" in summary
-        assert "skipped the AnkiWeb round-trip" in summary
+        account = store.get_web_user("reto")
+        assert account is not None
+        now = datetime.now(UTC)
+        review_id = int(now.timestamp() * 1000)
+        monkeypatch.setattr(
+            sync_mod,
+            "sync_tick",
+            lambda **kw: (sync_mod.SyncResult(review_ids=[review_id]), {}),
+        )
+        cfg = _cfg(mirror_dir=str(tmp_path))
+        run_anki_sync(store, cfg)
+        run_anki_sync(store, cfg)
+        with user_scope(account.id):
+            activity = LearningStore(store).activity(days=1, now=now)
+        assert activity["days"][0]["anki_reviews"] == 1
 
     def test_one_card_is_enough_to_sync(
         self, store, monkeypatch: pytest.MonkeyPatch, tmp_path

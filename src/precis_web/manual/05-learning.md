@@ -1,10 +1,11 @@
 # Tracking your study
 
 Open **Learning** from the navigation or your account page. Its calendar is
-your private record of study activity. A blank day means **No study recorded**,
-including days when you may have studied outside précis.
+a compact private record of study activity. Each date shows how many study
+answers you submitted and how many Anki reviews arrived through Anki sync.
+A blank day has no recorded activity.
 
-## Check in
+## Optional check-in
 
 Choose a date and mark **Studied** or **Rest**. Minutes and a short note are
 optional when recording study. A short session counts; an unsuccessful
@@ -17,12 +18,13 @@ A rest entry does not require or record study minutes.
 
 ## Current context
 
-Below the calendar, **Current context** lists the cards you are learning right
+**Current context** leads the page and lists the cards you are learning right
 now — every live card authored in précis (by the card forge, an agent, or by
 hand) that represents a concept, grouped by concept. Read-only imports from
 Anki do not appear. Every cloze gap is
 masked; hover it (or tab to it) to reveal the answer, so the list works as a
-self-quiz.
+self-quiz. Enter an answer and select **Check answer** to reveal the card and
+count the attempt. Your answer text is discarded.
 
 - **boost** queues a card to come up *today*: the next Anki sync brings its
   due date forward. Your review history is never rewritten — only the due
@@ -51,6 +53,7 @@ listening.
 
 Your configured timezone determines what **today** means. An explicitly
 reported local date remains the date you chose when you later change zones.
+Study answers and Anki reviews are grouped in your current timezone.
 
 ## Connect an assistant
 
@@ -65,6 +68,5 @@ handled as passwords; do not paste them into notes, URLs or chat transcripts.
 
 ## What the calendar measures
 
-This version records manual study and rest check-ins. It does not yet import
-your Anki reviews, measure retention, recommend the next paper or infer that
-you listened to a podcast. Those learning features need separate evidence.
+The calendar measures recorded activity. It does not grade answers, measure
+retention or infer that you listened to a podcast.

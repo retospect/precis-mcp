@@ -64,6 +64,7 @@ class SyncResult:
     updated: int = 0
     removed: int = 0
     stats_written: int = 0
+    review_ids: list[int] = field(default_factory=list)
     fix_requested: int = 0
     fix_applied: int = 0
     all_cards: list[ForeignCard] | None = None  # populated when project=True
@@ -380,6 +381,13 @@ def sync_tick(
             )
             return result, {}
 
+        # Include the whole collection, even cards with no précis ref. Manual
+        # schedule changes have ease 0. Keep the 90-day activity window plus
+        # two days for local-date boundaries.
+        cutoff_ms = (int(time.time()) - 92 * 86_400) * 1000
+        result.review_ids = col.db.list(
+            "SELECT id FROM revlog WHERE id >= ? AND ease > 0", cutoff_ms
+        )
         stats = read_precis_stats(col)
         result.stats_written = len(stats)
         if project:

@@ -99,6 +99,13 @@ PLUGIN_TABLE_PREFIXES: tuple[str, ...] = ("se_",)
 #: keep/promote/index judgment is docs/backlog/jsonb-column-review.md.
 JSONB_COLUMNS: frozenset[str] = frozenset(
     {
+        # 0344: one undo receipt per concept dismissal — the pre-dismissal
+        # mastery meta keys (restored verbatim on undo) and the {ref_id:
+        # retired_at} bag of cards it retired, keyed by dynamic ref ids and
+        # read whole into the undo predicate; the row is written, looked up
+        # by (user_id, concept_id) and deleted whole, never updated per key.
+        "anki_known_undo.prior_mastery",
+        "anki_known_undo.card_retirements",
         # 0296: bounded, ten-minute SDK AuthorizationParams snapshot, validated
         # again on load and never queried by JSON key. Durable grant identity,
         # scopes, resource and token lifecycle fields use typed columns.

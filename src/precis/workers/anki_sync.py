@@ -30,7 +30,10 @@ from typing import TYPE_CHECKING, Any
 
 from precis.anki.notes import ANKI_SYNC_LOCK
 from precis.anki.sync import AnkiSyncError
+from precis.errors import PrecisError
+from precis.learning import LearningStore
 from precis.store.advisory import try_xact_advisory_lock
+from precis.user_context import user_scope
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -112,21 +115,9 @@ def _sync_one_user(
         specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
         retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
 
-        # No-op shortcut: nothing to push and nothing to retire means this tick
-        # cannot change either side, so skip the AnkiWeb round-trip entirely — no
-        # ``sync_login``, no ``sync_collection``. Previously a user with zero cards
-        # still cost a full password authentication plus two sync calls per fire.
-        #
-        # Deliberately NOT widened to "specs unchanged since the last sync":
-        # reviews happen on AnkiWeb, so the remote side moves even when local
-        # content doesn't, and skipping on a local-only fingerprint would freeze
-        # ``meta.anki_stats`` for anyone who reviews without authoring new cards.
-        if not specs and not retire_ids:
-            return (
-                f"{prefix}: nothing to sync (0 cards, 0 retired ref(s)) — "
-                f"skipped the AnkiWeb round-trip.{claim_note}"
-            )
-
+        account = store.get_web_user(login)
+        if account is None or not account.enabled:
+            return f"{prefix}: account is no longer active; skipping."
         creds = get_user_credentials(store, login)
         if creds is None:  # pragma: no cover - anki_logins() already filtered these out
             raise AnkiSyncMisconfigured(
@@ -197,6 +188,14 @@ def _sync_one_user(
         summary = "\n".join(lines)
         if result.aborted:
             raise AnkiSyncError(f"sync aborted for {login}: {summary}")
+        if result.review_ids:
+            try:
+                with user_scope(account.id):
+                    LearningStore(store).record_anki_reviews(result.review_ids)
+            except PrecisError as exc:
+                raise AnkiSyncError(
+                    f"could not record learning activity for {login}"
+                ) from exc
         return summary
 
 

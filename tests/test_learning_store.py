@@ -79,6 +79,8 @@ def test_two_users_have_separate_defaults_settings_activity_and_events(
                 "minutes": None,
                 "source": "self_report",
                 "event_id": second.id,
+                "study_answers": 0,
+                "anki_reviews": 0,
             }
         ]
     with user_scope(alice):
@@ -618,3 +620,28 @@ def test_forced_rls_hides_other_owners_and_refuses_unbound_or_foreign_writes(
             "SELECT current_setting('precis.learning_user_id', true)"
         ).fetchone()
         assert cleared is not None and cleared[0] in (None, "")
+
+
+def test_reviews_use_owner_local_day_and_survive_rest(
+    store: Store, owners: tuple[int, int]
+) -> None:
+    learning = LearningStore(store)
+    alice, bob = owners
+    review = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+    with user_scope(alice):
+        learning.record_anki_reviews([review, review, review + 1])
+        learning.record_anki_reviews([review])
+        activity = learning.activity(days=2, now=NOW)
+        assert [day["anki_reviews"] for day in activity["days"]] == [2, 0]
+        learning.set_settings(
+            timezone="Pacific/Kiritimati", typical_session_minutes=None
+        )
+        learning.checkin(status="rest", idempotency_key="rest", now=NOW)
+        activity = learning.activity(days=1, now=NOW)
+        assert activity["days"][0]["status"] == "rest"
+        assert activity["days"][0]["anki_reviews"] == 2
+        assert activity["last_studied"] == TODAY.isoformat()
+    with user_scope(bob):
+        activity = learning.activity(days=2, now=NOW)
+        assert all(day["anki_reviews"] == 0 for day in activity["days"])
+        assert activity["last_studied"] is None

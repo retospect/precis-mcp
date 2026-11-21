@@ -1,4 +1,4 @@
-"""Private manual study check-ins and their contribution calendar.
+"""Private study activity, current-context cards and optional check-ins.
 
 The authenticated web account supplies the stable owner inside ``user_scope``;
 form and query values never select an owner. The learning store revalidates
@@ -23,13 +23,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from precis.anki.cloze import has_cloze
 from precis.errors import BadInput, Conflict, Denied, NotFound
 from precis.eye_visits import WALK_LIMIT, EyeVisitStore
 from precis.learning import LearningStore, timezone_choices
@@ -138,6 +139,7 @@ def _render(
     # carry no private learning data, and the panel's per-row writes go
     # to the /anki routes.
     groups = _card_groups(get_store(request), user.login, forge_only=False)
+    answered = request.query_params.get("answered", "")
     selected = None
     if event:
         try:
@@ -157,6 +159,8 @@ def _render(
             "activity": activity,
             "groups": groups,
             "walk": _walk_rows(request),
+            "answered": answered,
+            "attempt": uuid4(),
             "undo_entries": known_undo_entries(get_store(request), user),
             "return_to": "learning",
             "selected": selected,
@@ -258,6 +262,41 @@ def _save(request: Request, user: WebUser, form: Any, *, settings: bool) -> Resp
     saved = "settings" if settings else "checkin"
     return RedirectResponse(
         f"/learning?saved={saved}", status_code=303, headers=_NO_STORE
+    )
+
+
+@router.post("/answer/{card_id}", response_class=HTMLResponse)
+def answer(
+    request: Request, card_id: int, attempt: UUID = Form(...), response: str = Form(...)
+) -> Response:
+    """Record a submitted recall attempt, discarding the response text."""
+    user = current_user(request)
+    if user is None:
+        return _refusal(request, "Sign in before answering study cards.", 503)
+    if not response.strip() or len(response) > 2000:
+        return _refusal(request, "Enter a study answer of 1 to 2000 characters.", 400)
+    store = get_store(request)
+    ref = store.get_ref(kind="anki", id=card_id)
+    if ref is None or ref.owner_login != user.login:
+        return _refusal(request, "Study card not found.", 404)
+    meta = ref.meta or {}
+    fields = meta.get("fields")
+    text = fields.get("Text") if isinstance(fields, dict) else None
+    if (
+        meta.get("source") == "anki-foreign"
+        or not isinstance(text, str)
+        or not has_cloze(text)
+    ):
+        return _refusal(request, "Study card not found.", 404)
+    with user_scope(user.id):
+        try:
+            LearningStore(store).record_study_answer(card_id, attempt)
+        except Denied as exc:
+            return _refusal(request, str(exc), _error_status(exc))
+    return RedirectResponse(
+        f"/learning?answered={card_id}#study-card-{card_id}",
+        status_code=303,
+        headers=_NO_STORE,
     )
 
 

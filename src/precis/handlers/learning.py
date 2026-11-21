@@ -1,6 +1,6 @@
-"""Owner-only manual study activity, backed by dedicated learning tables.
+"""Owner-only study activity, backed by dedicated learning tables.
 
-These are self-reports of engagement, not successful recall or concept mastery.
+Check-ins, study answers and Anki reviews record engagement.
 No refs, chunks, embeddings, public graph handles or generated content are
 created. The private runtime route avoids shared audit payloads/continuations.
 """
@@ -34,7 +34,7 @@ class LearningHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="learning",
         title="Personal learning",
-        description="Private self-reported study activity and personal pacing settings.",
+        description="Private study activity, self-reports and personal pacing settings.",
         supports_get=True,
         supports_put=True,
         supports_edit=True,
@@ -65,7 +65,7 @@ class LearningHandler(Handler):
                 f"timezone: {activity['timezone']}",
                 f"today: {activity['today']}",
                 f"last recorded study: {activity['last_studied'] or 'none'}",
-                "source: self-reported; activity is not a mastery estimate",
+                "status and minutes are self-reported; answer and review counts are automatic",
             ]
             lines.append(
                 render_agent_table(
@@ -74,10 +74,12 @@ class LearningHandler(Handler):
                             "date": day["date"],
                             "status": day["status"],
                             "minutes": day["minutes"],
+                            "answers": day["study_answers"],
+                            "anki_reviews": day["anki_reviews"],
                         }
                         for day in activity["days"]
                     ],
-                    schema=("date", "status", "minutes"),
+                    schema=("date", "status", "minutes", "answers", "anki_reviews"),
                 )
             )
             return Response(body="\n".join(lines))

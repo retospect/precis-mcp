@@ -65,6 +65,7 @@ def _make_jinja_env() -> jinja2.Environment:
     # Inline ``kind:ref`` → hover-preview anchor + click-through.
     # Applied via ``{{ value | linkify_refs }}`` on prose surfaces
     # (dashboard rows, ref detail pages, asks list, console output).
+    from precis.anki.cloze import has_cloze
     from precis_web.linkify import (
         linkify_refs,
         linkify_toon,
@@ -85,6 +86,7 @@ def _make_jinja_env() -> jinja2.Environment:
     env.filters["linkify_refs"] = linkify_refs
     # Anki cloze bodies ({{c1::answer::hint}}) render as highlighted
     # deletions instead of raw markup on the ref detail page.
+    env.filters["has_cloze"] = has_cloze
     env.filters["render_cloze"] = render_cloze
     # The masked variant (gr664414): every gap hidden until hover — the
     # /learning current-context list quizzes instead of displaying answers.

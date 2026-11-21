@@ -1,7 +1,7 @@
-"""Private, append-only self-reported learning engagement.
+"""Private learning engagement from check-ins, study answers and Anki reviews.
 
 ``LearningStore`` shares the existing Store pool, but never creates refs,
-chunks, embeddings, reviews or mastery claims. A studied check-in records
+chunks, embeddings or mastery claims. A studied check-in records
 engagement even when its duration is short or unknown; suggested minutes
 are removable guidance, never a completion threshold.
 
@@ -16,9 +16,13 @@ An omitted retry date keeps the original resolved date across midnight, and
 an accepted explicit date remains retryable after timezone or clock changes.
 
 Calendar dates are reported local dates, retained across timezone changes.
-The activity grid reduces the latest unsuperseded check-in for each date;
-``last_studied`` considers all current past dates, beyond the displayed grid.
-No aggregate from another source is treated as dated learning evidence.
+The activity grid combines the latest unsuperseded check-in with counts of
+study answers and Anki reviews. Automatic events retain their actual instants,
+so changing the timezone re-buckets them without moving reported dates.
+Anki revlog timestamps are unique within the mirror and make replays
+idempotent. Study submissions retain an attempt key and timestamp, so retries
+count once and answer text stays out of storage.
+``last_studied`` considers activity beyond the displayed grid.
 
 The settings form renders ``timezone_choices`` as its dropdown; every choice
 is a name ``_zone`` accepts, and the saved value is always listed even when
@@ -30,9 +34,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from functools import cache
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 import psycopg
@@ -365,6 +370,31 @@ class LearningStore:
             )
         return _event(row)
 
+    def record_anki_reviews(self, review_ids: Sequence[int]) -> None:
+        """Import graded Anki revlog IDs, which are Unix milliseconds."""
+        owner = require_user(self._store)
+        if not review_ids:
+            return
+        with self._tx(owner) as conn:
+            conn.execute(
+                "INSERT INTO learning_activity (user_id, source, occurred_at, event_key) "
+                "SELECT %s, 'anki_review', to_timestamp(review_id / 1000.0), review_id::text "
+                "FROM unnest(%s::bigint[]) AS reviews(review_id) "
+                "ON CONFLICT DO NOTHING",
+                (owner, list(review_ids)),
+            )
+
+    def record_study_answer(self, card_id: int, attempt: UUID) -> None:
+        """Record an answer submitted for a verified current-context card."""
+        owner = require_user(self._store)
+        with self._tx(owner) as conn:
+            conn.execute(
+                "INSERT INTO learning_activity (user_id, source, occurred_at, event_key) "
+                "VALUES (%s, 'study_answer', clock_timestamp(), %s) "
+                "ON CONFLICT DO NOTHING",
+                (owner, f"{card_id}:{attempt}"),
+            )
+
     def activity(self, days: int = 84, now: datetime | None = None) -> dict[str, Any]:
         """Return a bounded local-date grid, including days without a report."""
         owner = require_user(self._store)
@@ -376,7 +406,8 @@ class LearningStore:
         instant = _now(now)
         with self._tx(owner) as conn:
             settings = self._settings(conn, owner)
-            today = instant.astimezone(_zone(settings.timezone)).date()
+            zone = _zone(settings.timezone)
+            today = instant.astimezone(zone).date()
             first = today - timedelta(days=days - 1)
             rows = conn.execute(
                 "SELECT e.study_date, e.status, e.minutes, e.source, e.event_id "
@@ -394,11 +425,37 @@ class LearningStore:
                 "WHERE successor.user_id = %s AND successor.supersedes_id = e.event_id)",
                 (owner, today, owner),
             ).fetchone()
+            counts = conn.execute(
+                "SELECT (occurred_at AT TIME ZONE %s)::date AS local_day, "
+                "count(*) FILTER (WHERE source = 'study_answer'), "
+                "count(*) FILTER (WHERE source = 'anki_review') "
+                "FROM learning_activity WHERE user_id = %s "
+                "AND occurred_at >= %s AND occurred_at <= %s "
+                "GROUP BY local_day",
+                (
+                    zone.key,
+                    owner,
+                    datetime.combine(first - timedelta(days=1), time.min, UTC),
+                    instant,
+                ),
+            ).fetchall()
+            latest = conn.execute(
+                "SELECT max(occurred_at) FROM learning_activity "
+                "WHERE user_id = %s AND occurred_at <= %s",
+                (owner, instant),
+            ).fetchone()
+        last_studied = last[0] if last else None
+        if latest and latest[0]:
+            automatic_day = latest[0].astimezone(zone).date()
+            if last_studied is None or automatic_day > last_studied:
+                last_studied = automatic_day
+        by_count = {day: (answers, reviews) for day, answers, reviews in counts}
         by_date = {row[0]: row for row in rows}
         grid = []
         for offset in range(days):
             day = first + timedelta(days=offset)
             event = by_date.get(day)
+            answers, reviews = by_count.get(day, (0, 0))
             grid.append(
                 {
                     "date": day.isoformat(),
@@ -406,11 +463,13 @@ class LearningStore:
                     "minutes": event[2] if event else None,
                     "source": event[3] if event else None,
                     "event_id": event[4] if event else None,
+                    "study_answers": answers,
+                    "anki_reviews": reviews,
                 }
             )
         return {
             "timezone": settings.timezone,
             "today": today.isoformat(),
-            "last_studied": last[0].isoformat() if last and last[0] else None,
+            "last_studied": last_studied.isoformat() if last_studied else None,
             "days": grid,
         }

@@ -12,7 +12,9 @@ survives); the guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, so
 precis can never clobber an account. Media never syncs (cards are text).
 Soft-deleted refs retire their notes on the next tick, scoped to their
 owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. Decay
-stats read back into ``meta.anki_stats``; a ``deck-<topic>`` tag maps to a
+stats read back into ``meta.anki_stats``. Recent graded revlog entries feed
+the private learning calendar even for users with no précis-authored cards;
+their timestamps, instead of cumulative card stats, preserve the review day. A ``deck-<topic>`` tag maps to a
 ``Precis::<topic>`` sub-deck. An effective deck retag stamps a revision
 atomically with the desired deck. The sync worker acknowledges that exact
 revision after a completed push, so full-sync interruptions and overlapping
@@ -34,7 +36,7 @@ Sync honors that intent until a completed push confirms the note is back.
   detected leaks before creating a note.
 - `sync` — the engine (lazy-imports `anki`): upsert our authored notes, the
   guarded sync (bootstrap-download / incremental / abort-on-lossy-upload), and
-  the stats read-back.
+  the card stats and dated review read-back.
 - `fix` — the `precis anki-sync --fix` flow: a card tagged ``precis-fix`` in
   Anki + a comment → LLM rewrite → written back (per-card opt-in widening of
   own-notes-only).

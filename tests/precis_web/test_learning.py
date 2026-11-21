@@ -123,7 +123,7 @@ def test_empty_calendar_and_independent_forms(store: Any, learning_users: Any) -
     assert response.headers["cache-control"] == "no-store"
     assert response.text.count('role="listitem"') == 84
     assert "No study recorded yet" in response.text
-    assert "engagement, not mastery" in response.text
+    assert "Optional check-in" in response.text
     assert "/anki/known" not in response.text
     studied, rest = _forms(response.text)
     assert studied["status"] == "studied" and rest["status"] == "rest"
@@ -275,6 +275,26 @@ def test_current_context_lists_live_forge_cards_masked(
     assert 'hx-post="/anki/drop"' in page.text
     assert 'hx-post="/anki/boost"' in page.text
     assert 'hx-post="/anki/known"' in page.text
+    assert page.text.index("Current context") < page.text.index("Study activity")
+    form = next(
+        form
+        for form in _Forms(page.text).forms
+        if form["action"] == f"/learning/answer/{mine}"
+    )
+    submission = {"attempt": form["attempt"], "response": "my private attempt"}
+    denied = client.post(f"/learning/answer/{theirs}", data=submission, headers=_auth())
+    assert denied.status_code == 404
+    answered = client.post(
+        f"/learning/answer/{mine}",
+        data=submission,
+        headers=_auth(),
+    )
+    assert answered.status_code == 200
+    assert "Card answer revealed." in answered.text
+    assert "1 study answer, 0 Anki reviews" in answered.text
+    retried = client.post(f"/learning/answer/{mine}", data=submission, headers=_auth())
+    assert "1 study answer, 0 Anki reviews" in retried.text
+    assert "my private attempt" not in answered.text
     # Not boosted yet: the queued chip is absent.
     assert "boost queued" not in page.text
 
@@ -299,7 +319,7 @@ def test_current_context_lists_live_forge_cards_masked(
     assert marked.status_code == 200
     assert 'action="/anki/undo-known"' in marked.text
     assert f'"card": "{mine}"' not in marked.text
-    assert "Current context" not in marked.text
+    assert "No active study cards." in marked.text
     [(_, _, token)] = known_undo_entries(store, first)
     assert f'value="{token}"' in marked.text
 
@@ -322,7 +342,7 @@ def test_current_context_lists_live_forge_cards_masked(
     assert dropped.status_code == 303
     page = client.get("/learning", headers=_auth())
     assert f'"card": "{mine}"' not in page.text
-    assert "Current context" not in page.text  # no live cards left for me
+    assert "No active study cards." in page.text
 
 
 @pytest.mark.db

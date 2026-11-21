@@ -2,7 +2,7 @@
 id: precis-learning-help
 family: memory
 title: precis — private study activity and pacing settings
-summary: owner-only manual study check-ins, contribution calendar and optional session guidance; authenticated personal MCP identity required
+summary: private study activity from card answers, Anki reviews and optional check-ins, with personal pacing settings
 answers:
   - how do I record that I studied today?
   - how do I see my study activity calendar?
@@ -45,12 +45,16 @@ get(kind="learning", id="/settings")
 get(kind="learning", id="le123")  # an event handle returned by your check-in
 ```
 
-The calendar shows studied, rest and no study recorded. Minutes can be unknown.
-These are **self-reports of engagement**, not successful recall or mastery.
+The calendar counts answers submitted from **Current context** on the Learning
+page and reviews imported by Anki sync. It groups both by day in your configured
+timezone. On the Learning page, select **Check answer** to reveal a cloze answer
+and count the attempt. Precis discards your submitted text. Counts measure
+engagement. Studied (S) and rest (R) are optional self-reports and can appear
+alongside automatic counts. Minutes can be unknown.
 Foreign and missing event handles return the same refusal. Private learning
 records have no general refs/chunks, tags, graph links or search index.
 
-## Record study or rest
+## Optionally record study or rest
 
 ```python
 put(kind="learning", id="/checkin", args={
@@ -67,9 +71,9 @@ characters. Every action needs a new opaque idempotency_key (1–128 characters)
 Retrying the exact same action with its key returns the original event;
 reusing the key with different content refuses.
 
-A new check-in for the same day supersedes its earlier self-report without
-erasing history. This corrects the activity status; it does not create evidence
-that you answered a question correctly. A rest check-in omits minutes:
+A new check-in for the same day replaces the displayed self-report and keeps
+the earlier entry in your history. Automatic counts stay with the day. Omit
+minutes for a rest check-in.
 
 ```python
 put(kind="learning", id="/checkin", args={
@@ -97,9 +101,7 @@ check-in form and the same settings.
 
 ## Current boundary
 
-This first slice records manual activity. It does not import Anki history,
-score answers, estimate forgetting, rank a paper queue or personalize audio.
-Those features must consume owner-scoped evidence and keep performance
-separate from a study check-in. Shared agents cannot bypass identity by
-naming another owner. Private results are bounded and are not placed into
-shared continuation caches or tool-log payloads.
+Learning records engagement. Answer submissions and Anki review counts
+carry no scores or mastery judgments. Shared agents cannot bypass identity
+by naming another owner. Private results are bounded and stay out of shared
+continuation caches and tool-log payloads.
