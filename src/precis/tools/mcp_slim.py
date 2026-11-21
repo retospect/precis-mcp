@@ -59,9 +59,8 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 `page_size` ≤ 100 bounds the top-N set (`k=`/`limit=` read as it). Omit
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
 'lexical' / 'semantic' / 'verbatim'.
-`scope=` searches within a ref (handle or slug) on supported kinds.
-`status=` filters by `STATUS:` tag where supported. Rows: `id`, `summary`,
-`remaining_words`, `links`, `tags` — the legend is in the skill.
+`scope=` is find-in-ref (handle or slug) on supported kinds. A refusal lists them.
+`status=` filters `STATUS:` tags where supported. See the skill for row fields.
 In voice chat, describe the ref first. Speak its `word` handle, never its number.
 See get(kind='skill', id='precis-word-handles-help').
 `queries=` (paper + `answers=`; skill: fused sections) and
