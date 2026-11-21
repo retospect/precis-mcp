@@ -389,6 +389,199 @@ def test_changing_the_password_adopts_the_deployment_pepper(
     assert verify_password(NEW, store.record, pepper="the-pepper")
 
 
+# ── the current-password check is throttled (gr735107) ───────────────
+#
+# The form re-verifies a password the presented session never had to
+# produce — a stolen cookie was an uncounted guessing oracle. The misses
+# now feed the gate's own (login, address) lockout buckets.
+
+
+def _guess_current(client: TestClient, current: str = "nope"):
+    """POST the change form with no Authorization header — the cookie
+    alone carries the session, so the Basic clear-on-success can't hide
+    the counting."""
+    return client.post(
+        "/account/password",
+        data={
+            "current_password": current,
+            "new_password": NEW,
+            "confirm_password": NEW,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_wrong_current_password_guesses_lock_the_form() -> None:
+    """gr735107: a stolen session cookie used to get unlimited guesses at
+    the current password — one scrypt per POST, nothing counted. Each
+    miss now counts against the same buckets a failed Basic sign-in does,
+    and at the pair limit the form answers 429 before any scrypt."""
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeStore()
+    client = _client(store)
+    assert client.get("/account", headers=_auth()).status_code == 200  # mint
+    for _ in range(_LOCKOUT_FAILURES):
+        r = _guess_current(client)
+        assert r.status_code == 200
+        assert "Current password is not correct" in r.text
+    locked = _guess_current(client, GOOD)  # even the right one is refused
+    assert locked.status_code == 429
+    assert int(locked.headers["retry-after"]) >= 1
+    assert store.password_writes == 0
+    # The same buckets lock the gate itself: drop the cookie fallback and
+    # the sign-in is refused too.
+    client.cookies.clear()
+    assert client.get("/account", headers=_auth()).status_code == 429
+
+
+def test_a_proven_current_password_clears_the_forms_own_misses() -> None:
+    """Same rule as a Basic success: fumbles followed by a proven
+    password must not leave the pair window one short of a lock."""
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeStore()
+    client = _client(store)
+    assert client.get("/account", headers=_auth()).status_code == 200
+    for _ in range(_LOCKOUT_FAILURES - 1):
+        assert _guess_current(client).status_code == 200
+    # Right password, botched confirm: proven → pair cleared, nothing
+    # written (and the cookie stays valid — the hash never changed).
+    proven = client.post(
+        "/account/password",
+        data={
+            "current_password": GOOD,
+            "new_password": NEW,
+            "confirm_password": "battery-staple-8",
+        },
+    )
+    assert proven.status_code == 200 and "match" in proven.text
+    assert store.password_writes == 0
+    # A full window of misses is now tolerated — the clear zeroed the
+    # pair — and only the one past it is refused.
+    for _ in range(_LOCKOUT_FAILURES):
+        assert _guess_current(client).status_code == 200
+    assert _guess_current(client).status_code == 429
+
+
+def test_wrong_current_guesses_with_cached_basic_still_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A browser attaches its cached Basic header to the form POST too, so
+    the throttle has to work with the credential present, not only on a
+    stolen cookie. The request's own Basic proof clears the *pair* window
+    before the miss is recorded (same rule as a sign-in success), so the
+    misses land on the ``addr``/``login`` buckets instead — and at the
+    address limit the form answers 429."""
+    from precis_web import auth as auth_mod
+    from precis_web.auth import _LOCKOUT_ADDR_FAILURES
+    from precis_web.routes import account as account_mod
+
+    monkeypatch.setattr(auth_mod, "verify_password", lambda p, r, *, pepper: p == GOOD)
+    monkeypatch.setattr(
+        account_mod, "verify_password", lambda p, r, *, pepper: p == GOOD
+    )
+    store = FakeStore()
+    client = _client(store)
+    data = {
+        "current_password": "nope",
+        "new_password": NEW,
+        "confirm_password": NEW,
+    }
+    for _ in range(_LOCKOUT_ADDR_FAILURES):
+        # Still 200 past the *pair* limit: the Basic header on the same
+        # request proved the password, so only the wide buckets fill.
+        r = client.post(
+            "/account/password", data=data, headers=_auth(), follow_redirects=False
+        )
+        assert r.status_code == 200
+        assert "Current password is not correct" in r.text
+    locked = client.post(
+        "/account/password",
+        data={**data, "current_password": GOOD},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert locked.status_code == 429
+    assert int(locked.headers["retry-after"]) >= 1
+    assert store.password_writes == 0
+
+
+def test_the_forms_login_ceiling_lifts_for_a_trusted_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate lifts the global ``login:`` ceiling only for a
+    (login, address) that proved the password recently — the form must
+    apply the same rule, or a distributed run filling ``login:`` locks
+    the real owner out of rotating the very credential under attack."""
+    from precis_web import auth as auth_mod
+    from precis_web.auth import _LOCKOUT_LOGIN_FAILURES, SESSION_COOKIE
+    from precis_web.routes import account as account_mod
+
+    monkeypatch.setattr(auth_mod, "verify_password", lambda p, r, *, pepper: p == GOOD)
+    monkeypatch.setattr(
+        account_mod, "verify_password", lambda p, r, *, pepper: p == GOOD
+    )
+    store = FakeStore()
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+
+    def proxy() -> TestClient:
+        """A client whose peer is the loopback proxy, like production."""
+        return TestClient(app, client=("127.0.0.1", 50000))
+
+    def via(addr: str, **headers: str) -> dict[str, str]:
+        return {"X-Forwarded-For": addr, **headers}
+
+    _A, _C = "192.0.2.10", "192.0.2.30"  # RFC 5737 TEST-NET-1
+    owner = proxy()
+    assert owner.get(
+        "/", headers=via(_A, **_auth()), follow_redirects=False
+    ).status_code in (302, 303, 307)
+    # (reto, A) proved the password: trusted; the jar holds a cookie.
+
+    # A distributed run: every guess from a fresh address, so only the
+    # login ceiling fills.
+    attacker = proxy()
+    for i in range(_LOCKOUT_LOGIN_FAILURES):
+        assert (
+            attacker.get(
+                "/", headers=via(f"198.51.100.{i + 1}", **_auth("nope"))
+            ).status_code
+            == 401
+        )
+
+    data = {
+        "current_password": GOOD,
+        "new_password": NEW,
+        "confirm_password": NEW,
+    }
+    # Cookie-only from a never-seen address is untrusted: the ceiling
+    # applies to the form exactly as it does to sign-in.
+    roaming = proxy()
+    cookie = owner.cookies.get(SESSION_COOKIE)
+    assert cookie
+    roaming.cookies.set(SESSION_COOKIE, cookie)
+    assert (
+        roaming.post(
+            "/account/password", data=data, headers=via(_C), follow_redirects=False
+        ).status_code
+        == 429
+    )
+    # The trusted owner is not refused: on the cookie alone from A the
+    # change goes through. (No redirect-follow — the stale cookie 401s on
+    # the next request, which is the designed re-challenge.)
+    assert (
+        owner.post(
+            "/account/password", data=data, headers=via(_A), follow_redirects=False
+        ).status_code
+        == 303
+    )
+    assert store.password_writes == 1
+
+
 # ── profile ──────────────────────────────────────────────────────────
 
 

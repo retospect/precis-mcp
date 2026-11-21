@@ -90,10 +90,23 @@ cookie session: no password is verified, so nobody gains a guess from it,
 and nothing is recorded, cleared, remembered or re-minted. A Basic attempt
 that is not locked is judged as usual ("Basic wins": a wrong password
 beside a valid cookie is a 401). A cookie-only request is never refused by
-any bucket, and its 401s are logged but not counted: counting them would
-let a stale cookie, replayed, lock its own owner out. The address bucket
+the Basic gate's buckets — the one carve-out is ``POST /account/password``,
+below — and its 401s are logged but not counted: counting them would let
+a stale cookie, replayed, lock its own owner out. The address bucket
 is the resolved remote address, with IPv6 folded to its /64 (one
 subscriber, 2**64 addresses) and IPv4-mapped IPv6 to the IPv4.
+
+**``POST /account/password`` feeds the same buckets.** The change form
+re-verifies the current password — a check the presented session, cookie
+or already-accepted Basic, did not perform for this request — so a stolen
+cookie or a hijacked browser session would otherwise be an uncounted
+guessing oracle at one scrypt per POST (gr735107). The gate parks a
+:class:`PasswordCheckGuard` on the request and the route runs the check
+under it: misses count against the same ``pair``/``addr``/``login`` keys,
+a locked bucket answers 429, and a proven password clears the pair and
+marks the address known — the same bookkeeping a Basic success performs,
+for the same reasons. This is the one place a cookie-only request's
+failures are counted and can be refused.
 
 **Residual.** A signed-in owner is not affected by someone else filling
 their bucket. A fresh browser with no (valid) cookie in a locked bucket
@@ -765,6 +778,82 @@ class _AttemptKeys:
         self._failures.record(*self._record_keys)
 
 
+class PasswordCheckGuard:
+    """The sign-in lockout applied to ``POST /account/password``.
+
+    The change form re-verifies the current password — a check the
+    presented session never performed — so without this a stolen cookie
+    or cached Basic header is an uncounted guessing oracle at one scrypt
+    per POST. The gate parks one of these on
+    ``scope["state"]["password_guard"]`` and the route drives it:
+
+    - ``refusal()`` before the row read — a locked bucket is the 429,
+      ahead of any scrypt;
+    - ``failed()`` after a rejected guess — counted against the same
+      ``pair``/``addr``/``login`` keys a failed Basic attempt is;
+    - ``succeeded()`` after a proven password — the ``basic_verified``
+      bookkeeping (clear the pair, mark the address known).
+
+    Trust is the gate's rule: the global ``login:`` ceiling does not
+    refuse a (login, address) that proved the password recently, so a
+    distributed run holding ``login:`` at its cap cannot lock the real
+    owner out of rotating the credential under attack. A cookie alone is
+    not trust — same as sign-in.
+
+    The route's refusal → verify → record sequence contains no ``await``,
+    so on the single event loop it is atomic: a burst of concurrent
+    wrong guesses cannot all slip past ``refusal()`` before the first
+    miss is counted — the invariant the gate's in-slot ``check()``
+    provides for Basic attempts. If the handler ever grows an await or
+    moves to the threadpool, this needs the slot treatment too.
+    """
+
+    def __init__(
+        self,
+        failures: FailureTracker,
+        known: KnownAddresses,
+        *,
+        login: str,
+        remote: str,
+        bucket: str | None,
+    ) -> None:
+        self._failures = failures
+        self._known = known
+        self._login = login
+        self._bucket = bucket
+        pair: tuple[str, ...] = ()
+        if bucket is not None:
+            pair = (f"pair:{login}|{bucket}", f"addr:{bucket}")
+        check = pair if (login, bucket) in known else (*pair, f"login:{login}")
+        self._keys = _AttemptKeys(
+            failures,
+            check_keys=check,
+            record_keys=(*pair, f"login:{login}"),
+            login=login,
+            remote=remote,
+        )
+
+    def refusal(self) -> AuthError | None:
+        """The 429 when the check's buckets are locked now, else ``None``."""
+        return self._keys.refusal()
+
+    def failed(self) -> None:
+        """Record a rejected current-password guess."""
+        self._keys.failed()
+
+    def succeeded(self) -> None:
+        """The password proved current: the Basic-success bookkeeping.
+
+        Clear the pair window (the owner's own typos must not lock them)
+        and mark the (login, address) trusted — it just proved the
+        password, which is all :class:`KnownAddresses` ever records. The
+        ``addr`` and ``login`` windows keep their history, as at sign-in.
+        """
+        if self._bucket is not None:
+            self._failures.clear(f"pair:{self._login}|{self._bucket}")
+        self._known.add(self._login, self._bucket)
+
+
 def parse_basic_header(value: str | None) -> tuple[str, str] | None:
     """``Authorization: Basic <b64>`` → ``(login, password)``.
 
@@ -1216,6 +1305,15 @@ class BasicAuthMiddleware:
 
         scope.setdefault("state", {})
         scope["state"]["web_user"] = user
+        # /account/password re-verifies a password the session did not
+        # have to present; run that check under the same lockout.
+        scope["state"]["password_guard"] = PasswordCheckGuard(
+            self.failures,
+            self.known,
+            login=user.login,
+            remote=remote,
+            bucket=bucket,
+        )
         # The signed-in login is the profile viewer for every store read
         # this request makes (gr490266): web reads carry no revision
         # context, so without it listing filters see an unidentified caller.
@@ -1276,6 +1374,18 @@ def current_user(request: Any) -> WebUser | None:
     return user if isinstance(user, WebUser) else None
 
 
+def password_check_guard(request: Any) -> PasswordCheckGuard | None:
+    """The :class:`PasswordCheckGuard` the gate parked, or ``None``.
+
+    ``None`` means the gate never ran (``PRECIS_WEB_AUTH`` off) — the
+    same contract as :func:`current_user`. ``POST /account/password``
+    is the only route that consults it.
+    """
+    state = request.scope.get("state") or {}
+    guard = state.get("password_guard")
+    return guard if isinstance(guard, PasswordCheckGuard) else None
+
+
 async def _send_error(send: Send, exc: AuthError, *, websocket: bool = False) -> None:
     if websocket:
         # An HTTP response frame on a websocket scope is a protocol
@@ -1309,6 +1419,7 @@ __all__ = [
     "CredentialCache",
     "FailureTracker",
     "KnownAddresses",
+    "PasswordCheckGuard",
     "SessionClaim",
     "SessionTokens",
     "authenticate",
@@ -1317,6 +1428,7 @@ __all__ = [
     "check_same_origin",
     "current_user",
     "parse_basic_header",
+    "password_check_guard",
     "password_tag",
     "require_roster",
 ]

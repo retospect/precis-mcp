@@ -14,8 +14,31 @@ No auth in cut 1 — bind loopback and reach it over Tailscale.
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import sys
+from typing import Any
+
+
+def _log_config() -> dict[str, Any]:
+    """uvicorn's logging config with a leading UTC timestamp per line.
+
+    Stock uvicorn writes bare ``INFO:``/access lines — ``precis-web.log``
+    carried no timestamps, which made the 2026-11-19 security audit's
+    log review depend on file order (gr735107). Deepcopy the stock
+    dictConfig and prepend ``%(asctime)sZ`` to each formatter rather than
+    hand-writing one, so a uvicorn upgrade keeps its own handler and
+    logger structure. The ``precis`` entry point already pins
+    ``logging.Formatter.converter`` to UTC
+    (:func:`precis.utils.utc_logging.force_utc_timestamps`), so the stamp
+    renders in the fleet's zone — the ``Z`` says so on the line.
+    """
+    from uvicorn.config import LOGGING_CONFIG
+
+    config = copy.deepcopy(LOGGING_CONFIG)
+    for formatter in config["formatters"].values():
+        formatter["fmt"] = f"%(asctime)sZ {formatter['fmt']}"
+    return config
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -78,4 +101,4 @@ def run(args: argparse.Namespace) -> None:
 
     app = create_app(web_config=cfg)
     print(f"precis web: serving on http://{host}:{port}", file=sys.stderr)
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, log_config=_log_config())

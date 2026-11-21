@@ -211,3 +211,32 @@ def test_real_uvicorn_access_records_redacted(
             protocol.connection_lost(None)
 
     asyncio.run(exercise_request())
+
+
+def test_served_log_lines_carry_a_timestamp() -> None:
+    """gr735107: bare uvicorn lines left ``precis-web.log`` with no
+    timestamps, so the 2026-11-19 audit's log review depended on file
+    order. The web entry point serves uvicorn's own dictConfig with
+    ``%(asctime)s`` prepended — deepcopied, so the stock config is not
+    mutated for other consumers."""
+    from precis.cli.web import _log_config
+
+    config = _log_config()
+    for name, formatter in config["formatters"].items():
+        assert formatter["fmt"].startswith("%(asctime)s"), name
+    from uvicorn.config import LOGGING_CONFIG
+
+    assert all(
+        "%(asctime)s" not in f["fmt"] for f in LOGGING_CONFIG["formatters"].values()
+    )
+    record = _record(
+        '%s - "%s %s HTTP/%s" %d',
+        ("client", "GET", "/drive", "1.1", 200),
+    )
+    rendered = AccessFormatter(
+        fmt=config["formatters"]["access"]["fmt"], use_colors=False
+    ).format(record)
+    assert rendered[:4].isdigit()  # the year opens the line
+    # The trailing Z labels the stamp: the CLI pins the zone to UTC.
+    assert rendered.split(" ")[1].endswith("Z")
+    assert "GET /drive HTTP/1.1" in rendered

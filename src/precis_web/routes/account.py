@@ -134,7 +134,12 @@ from precis.users import (
     validate_password,
     verify_password,
 )
-from precis_web.auth import REALM, SESSION_COOKIE, current_user
+from precis_web.auth import (
+    REALM,
+    SESSION_COOKIE,
+    current_user,
+    password_check_guard,
+)
 from precis_web.deps import get_store, get_web_config, templates
 
 log = logging.getLogger(__name__)
@@ -426,10 +431,24 @@ async def change_password(
     Verification goes through :func:`precis.users.verify_password`
     directly rather than :func:`precis_web.auth.authenticate` — the
     latter would re-populate the credential cache with the password we
-    are about to retire.
+    are about to retire. The check runs under the gate's
+    :class:`precis_web.auth.PasswordCheckGuard`: a wrong guess counts
+    against the same lockout buckets a failed Basic sign-in does, and a
+    locked bucket answers 429 before any scrypt (gr735107 — the check
+    used to be an uncounted guessing oracle for a stolen session).
     """
     user = _require_self(request)
     store = get_store(request)
+
+    guard = password_check_guard(request)
+    if guard is not None and (locked := guard.refusal()) is not None:
+        raise HTTPException(
+            status_code=locked.status,
+            detail=locked.detail,
+            headers={
+                "Retry-After": str(max(1, int((locked.retry_after or 0.0) + 0.999)))
+            },
+        )
 
     found = store.get_web_user_credentials(user.login)
     if found is None:  # pragma: no cover - row deleted mid-session
@@ -442,7 +461,11 @@ async def change_password(
         log.error("account: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not ok:
+        if guard is not None:
+            guard.failed()
         return _render(request, user=user, error="Current password is not correct.")
+    if guard is not None:
+        guard.succeeded()
     if new_password != confirm_password:
         return _render(request, user=user, error="The new passwords don't match.")
     try:
