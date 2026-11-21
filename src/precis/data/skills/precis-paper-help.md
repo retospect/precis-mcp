@@ -73,8 +73,8 @@ queue at all for a DOI whose paper was deleted, on a read-only serve,
 or behind a `view=` (a view is a read: an unheld DOI answers not found,
 single or batch, with or without `confirm_bulk`). To acquire, use a
 plain `get` or an explicit `put`.
-Past the daily bound the `get` answers the plain `not ingested` text —
-resubmit the same `get` with `args={"queue": "explicit"}` to queue the
+Past the daily bound the `get` answers `not ingested; daily get-queue cap
+reached` — resubmit the same `get` with `args={"queue": "explicit"}` to queue the
 ingest anyway (a deliberate ask rides the unbounded-explicit lane, like
 `put`), or `put(kind="paper", doi=…)` to mint the stub directly. The
 flag lifts the daily cap only. Without `q=`, a batch over the per-call
