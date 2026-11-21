@@ -24,6 +24,8 @@ endpoints, OPS search response XML for the search endpoint. Parsing
 lives in ``_patent_xml.py``.
 
 Errors:
+    OpsClientMissing — ``epo_ops`` cannot be imported; its own class so
+                     callers tell it apart by type, not message text.
     OpsAuthError   — bad/expired credentials.
     OpsHttpError   — any other non-2xx, with status + body preview.
     OpsQuotaError  — fair-use quota exceeded (X-Throttling-Control).
@@ -50,6 +52,10 @@ from typing import Any, Protocol
 
 class OpsError(Exception):
     """Base class for OPS-shim errors."""
+
+
+class OpsClientMissing(OpsError):
+    """``python-epo-ops-client`` cannot be imported (broken venv)."""
 
 
 class OpsAuthError(OpsError):
@@ -147,7 +153,7 @@ class OpsClient:
         try:
             import epo_ops
         except ImportError as e:
-            raise OpsError(
+            raise OpsClientMissing(
                 "python-epo-ops-client is not installed (core dep — broken "
                 "venv?); reinstall with `pip install --force-reinstall "
                 "precis-mcp`"
@@ -227,7 +233,7 @@ class OpsClient:
         try:
             import epo_ops.models
         except ImportError as e:
-            raise OpsError(
+            raise OpsClientMissing(
                 "python-epo-ops-client missing (core dep — broken venv?); "
                 "reinstall with `pip install --force-reinstall precis-mcp`"
             ) from e
@@ -363,6 +369,7 @@ __all__ = [
     "FakeOpsClient",
     "OpsAuthError",
     "OpsClient",
+    "OpsClientMissing",
     "OpsClientProto",
     "OpsError",
     "OpsHttpError",

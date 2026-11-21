@@ -8,6 +8,7 @@ constructed directly here (registry-level env-gating tests live in
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,9 @@ from precis.handlers.patent import PatentHandler
 from precis.patent.ops import (
     FakeOpsClient,
     OpsAuthError,
+    OpsClientMissing,
     OpsError,
+    OpsHttpError,
     OpsQuotaError,
 )
 from precis.store import Store, Tag
@@ -558,6 +561,105 @@ class TestSearchReachKwarg:
         r = bad_handler.search(q="photocatalytic", reach="both")
         assert "remote OPS leg failed" in r.body
         assert "OpsError" in r.body
+
+    # -- gr746659: the marker named only the class, so a missing
+    # client, an auth failure and an upstream outage all read as a
+    # bare "(OpsError)". The footer adds a fixed cause phrase picked
+    # from the exception type — never the message, which quotes the
+    # upstream body (host, query string). ----------------------------
+
+    @staticmethod
+    def _failed_leg_footer(
+        hub: Hub, raw_root: Path, exc: OpsError, *, q: str = "photocatalytic"
+    ) -> str:
+        cql = f'(ti="{q}" OR ab="{q}")'
+        bad_ops = FakeOpsClient(raises={("search", cql): exc})
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+        body = bad_handler.search(q=q, reach="both").body
+        footers = [
+            ln for ln in body.splitlines() if ln.startswith("_remote OPS leg failed")
+        ]
+        assert len(footers) == 1, body
+        return footers[0]
+
+    @pytest.mark.parametrize(
+        ("exc", "label"),
+        [
+            (
+                OpsError("OPS error: upstream returned an unparseable body"),
+                "OpsError: upstream error",
+            ),
+            (
+                OpsClientMissing("python-epo-ops-client is not installed"),
+                "OpsClientMissing: client not installed",
+            ),
+            (
+                OpsAuthError("OPS auth failed: 401 Client Error: Unauthorized"),
+                "OpsAuthError: auth",
+            ),
+            (
+                OpsQuotaError("OPS quota exceeded: 403 Client Error: Forbidden"),
+                "OpsQuotaError: rate limit/quota",
+            ),
+            (
+                OpsHttpError(503, "Service Unavailable: backend down"),
+                "OpsHttpError: upstream 5xx",
+            ),
+            (
+                OpsHttpError(403, "Forbidden: developer inactive"),
+                "OpsHttpError: upstream HTTP 403",
+            ),
+        ],
+        ids=["unclassified", "missing-client", "auth", "quota", "http-503", "http-403"],
+    )
+    def test_reach_both_remote_failure_footer_carries_cause(
+        self,
+        hub: Hub,
+        raw_root: Path,
+        exc: OpsError,
+        label: str,
+    ) -> None:
+        footer = self._failed_leg_footer(hub, raw_root, exc)
+        assert footer == (
+            f"_remote OPS leg failed ({label}) - "
+            "local hits only; retry shortly or check EPO OPS status_"
+        )
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            OpsError,
+            OpsClientMissing,
+            OpsAuthError,
+            OpsQuotaError,
+            lambda body: OpsHttpError(503, body),
+            lambda body: OpsHttpError(403, body),
+        ],
+        ids=["unclassified", "missing-client", "auth", "quota", "http-503", "http-403"],
+    )
+    def test_reach_both_remote_failure_footer_never_quotes_message(
+        self,
+        hub: Hub,
+        raw_root: Path,
+        make: Callable[[str], OpsError],
+    ) -> None:
+        # A ``requests`` error names the upstream URL; the shim's
+        # messages carry it on. None of it may reach the footer.
+        exc = make(
+            "503 Server Error: Service Unavailable "
+            "for url: https://example.invalid/x?q=secret"
+        )
+        footer = self._failed_leg_footer(hub, raw_root, exc)
+        assert "example.invalid" not in footer
+        assert "q=" not in footer
+        assert "secret" not in footer
+        assert "for url" not in footer
+
+    def test_reach_both_remote_failure_footer_without_message(
+        self, hub: Hub, raw_root: Path
+    ) -> None:
+        footer = self._failed_leg_footer(hub, raw_root, OpsError())
+        assert "(OpsError: upstream error)" in footer
 
 
 # ---------------------------------------------------------------------------

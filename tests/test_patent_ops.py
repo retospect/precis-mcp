@@ -13,6 +13,7 @@ No network: a stub inner client stands in for ``epo_ops.Client``.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +23,7 @@ import requests
 from precis.patent.ops import (
     OpsAuthError,
     OpsClient,
+    OpsClientMissing,
     OpsError,
     OpsHttpError,
     OpsNotFound,
@@ -116,3 +118,22 @@ class TestWrapExc:
 
     def test_untyped_exception_is_ops_error(self) -> None:
         assert isinstance(OpsClient._wrap_exc(Exception("boom")), OpsError)
+
+
+class TestClientMissing:
+    """An unimportable ``epo_ops`` raises its own class (gr746659), so
+    callers tell it from an unclassified upstream error by type."""
+
+    @pytest.fixture(autouse=True)
+    def _no_epo_ops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``None`` in ``sys.modules`` makes the import raise ImportError.
+        monkeypatch.setitem(sys.modules, "epo_ops", None)
+        monkeypatch.setitem(sys.modules, "epo_ops.models", None)
+
+    def test_search_raises_client_missing(self) -> None:
+        with pytest.raises(OpsClientMissing):
+            OpsClient(key="k", secret="s").search("ti=test")
+
+    def test_document_endpoint_raises_client_missing(self) -> None:
+        with pytest.raises(OpsClientMissing):
+            OpsClient(key="k", secret="s").biblio("ep1234567b1")

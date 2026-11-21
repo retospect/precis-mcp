@@ -36,7 +36,14 @@ from precis.patent.ingest import (
     FULLTEXT_UNAVAILABLE_TAG,
     ingest_patent,
 )
-from precis.patent.ops import OpsClientProto, OpsError, OpsHttpError
+from precis.patent.ops import (
+    OpsAuthError,
+    OpsClientMissing,
+    OpsClientProto,
+    OpsError,
+    OpsHttpError,
+    OpsQuotaError,
+)
 from precis.patent.slug import looks_like_docdb, parse_docdb_id
 from precis.patent.xml import OpsHit, parse_search_response
 from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
@@ -85,6 +92,33 @@ _LIST_PAGE_LIMIT = 50
 
 # Default page size for the OPS remote leg.
 _DEFAULT_REMOTE_PAGE = 20
+
+
+def _remote_error_label(exc: OpsError) -> str:
+    """``<class>: <cause>`` for the failed-remote-leg footer and log.
+
+    The class alone hid the cause (gr746659), so a fixed phrase names
+    it. The phrase is picked from the exception *type*, never from
+    ``str(exc)``: the shim's messages quote the upstream body, and a
+    ``requests`` error there reads ``… for url: https://<host>/…?q=…``,
+    which would put the upstream host, the query string and the
+    response body into an agent-facing footer.
+    """
+    if isinstance(exc, OpsClientMissing):
+        cause = "client not installed"
+    elif isinstance(exc, OpsAuthError):
+        cause = "auth"
+    elif isinstance(exc, OpsQuotaError):
+        cause = "rate limit/quota"
+    elif isinstance(exc, OpsHttpError):
+        cause = (
+            "upstream 5xx"
+            if 500 <= exc.status <= 599
+            else f"upstream HTTP {exc.status}"
+        )
+    else:
+        cause = "upstream error"
+    return f"{type(exc).__name__}: {cause}"
 
 
 class PatentHandler(Handler):
@@ -399,7 +433,7 @@ class PatentHandler(Handler):
                             f"HTTP {e.status}): {e}",
                             next="retry shortly, or check EPO OPS status",
                         ) from e
-                    remote_error = f"{type(e).__name__}, HTTP {e.status}"
+                    remote_error = _remote_error_label(e)
                     remote_hits = []
                 except OpsError as e:
                     # Network/auth/quota — best-effort when there's a
@@ -418,7 +452,7 @@ class PatentHandler(Handler):
                             f"remote OPS search failed ({type(e).__name__}): {e}",
                             next=("retry shortly, or check EPO OPS credentials/quota"),
                         ) from e
-                    remote_error = type(e).__name__
+                    remote_error = _remote_error_label(e)
                     remote_hits = []
                 if remote_error is not None:
                     log.warning(
