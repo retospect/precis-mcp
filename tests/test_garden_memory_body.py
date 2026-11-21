@@ -249,8 +249,53 @@ def test_propose_carries_the_nodes_fisheye(
     assert tail in prompt
 
 
+def test_memory_prompt_separates_candidate_summary_from_node_title(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr748553: the compact detector's generated summary ("meNNN owes a
+    compaction plan (history)") rode the prompt under the bare key
+    "title", so the judge quoted it as the node's title and asked a human
+    to rewrite a title that already satisfied the shape rule. The summary
+    must be labelled candidate_title, beside the node's real node_title."""
+    rid = _memory(store, "Factory bringup follows the runbook")
+    summary = f"me{rid} owes a compaction plan (history)"
+    candidate = replace(
+        _candidate(rid, detector="compact"),
+        title=summary,
+        evidence={"reasons": ["history"], "history_density": 0.5},
+        payload={"base_sha": "abc123"},
+    )
+    captured: list[str] = []
+
+    def capture(req: Any) -> LlmResult:
+        captured.append(req.prompt)
+        return _result(json.dumps({"action": "no-change", "reason": "stands"}))
+
+    monkeypatch.setattr(router, "route", capture)
+    verdict = proposer.propose_llm(store, candidate)
+    assert verdict.accept is False
+    (prompt,) = captured
+    candidate_json = prompt.split("\nCandidate:\n")[1]
+    assert f'"candidate_title": "{summary}"' in candidate_json
+    assert '"node_title": "Factory bringup follows the runbook"' in candidate_json
+    # The bare key is gone from the candidate JSON — the generated summary
+    # is no longer quotable as the node's title.
+    assert '"title":' not in candidate_json
+
+
+def test_structural_prompt_keeps_the_legacy_title_key() -> None:
+    """The gr748553 relabel is memory-body mode only: structural candidates
+    keep the byte-legacy "title" key their pinned prompt head assumes."""
+    candidate = cand.GardenCandidate(
+        detector="dup_pair", action="merge", target_kind="ref", target_id=1, title="t"
+    )
+    candidate_json = _prompt_for(candidate).split("\nCandidate:\n")[1]
+    assert '"title": "t"' in candidate_json
+    assert "candidate_title" not in candidate_json
+
+
 def test_memory_prompt_version_covers_the_checklist() -> None:
-    assert MEMORY_PROMPT_VERSION == "garden-propose.memory.v5"
+    assert MEMORY_PROMPT_VERSION == "garden-propose.memory.v6"
     assert MEMORY_PROMPT_VERSION != PROMPT_VERSION
 
 

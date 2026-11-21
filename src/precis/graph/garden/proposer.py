@@ -30,7 +30,12 @@ the same sections the hand repair path reads. The reply is the one-action
 JSON: rewrite / qualify / supersede / retire / no-change / ask. Code
 holds only that output contract and the evidence semantics; the
 judgment criteria live in the skill. ``ask`` comes back as
-``Verdict.ask`` and the runner files it as a memory-review todo.
+``Verdict.ask`` and the runner files it as a memory-review todo. The
+candidate JSON never presents the detector's generated summary under
+the bare key "title" — that string is the finding's label, not the
+node's title, and quoting it as the title produced a nonsensical
+title-shape ask (gr748553); the summary rides as "candidate_title"
+next to the node's real "node_title".
 """
 
 from __future__ import annotations
@@ -192,6 +197,13 @@ def _memory_contract(detector: str) -> str:
 
 
 _MEMORY_RULES = """
+In the Candidate JSON, "candidate_title" is the detector's auto-generated
+summary of the finding, never the node's title; the node's real title is
+"node_title" and heads the fisheye render. Judge title shape only against
+that real title — an "ask" about title shape is valid only when node_title
+itself breaks the checklist's shape rule, never because candidate_title
+reads like a label (it is one, by design) (gr748553).
+
 source_drift and entity_claim_stale are proposal-only change signals, not
 proof that a memory is false. Compare the quoted claim/context with the new
 section/entity excerpt and recorded old/new SHA, role or STATUS evidence.
@@ -477,11 +489,27 @@ def _memory_eye(store: Store, candidate: GardenCandidate) -> str | None:
     return rendered
 
 
+def _node_title(store: Store, candidate: GardenCandidate) -> str | None:
+    """The target ref's own title for memory-body candidates. The
+    candidate's ``title`` is the detector's generated summary ("meNNN owes
+    a compaction plan (history)"), not the node's title — the prompt must
+    name the real title itself or the judge quotes the summary as the
+    node's title (gr748553)."""
+    if candidate.detector not in MEMORY_ACTIONS or candidate.target_kind != "ref":
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (candidate.target_id,)
+        ).fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
 def _prompt_for(
     candidate: GardenCandidate,
     excerpts: dict[str, str] | None = None,
     *,
     eye: str | None = None,
+    node_title: str | None = None,
 ) -> str:
     body: dict[str, Any] = {
         "detector": candidate.detector,
@@ -492,6 +520,14 @@ def _prompt_for(
         "evidence": candidate.evidence,
         "payload": candidate.payload,
     }
+    if candidate.detector in MEMORY_ACTIONS:
+        # gr748553: the candidate's generated summary must not sit in the
+        # prompt under the bare key "title" — the judge quoted it as the
+        # node's title and asked a human to rewrite a title that already
+        # satisfied the shape rule.
+        body["candidate_title"] = body.pop("title")
+        if node_title is not None:
+            body["node_title"] = node_title
     if eye:
         body["fisheye"] = eye
     if excerpts:
@@ -624,6 +660,7 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
                 candidate,
                 ref_excerpts(store, _excerpt_ids(candidate)),
                 eye=_memory_eye(store, candidate),
+                node_title=_node_title(store, candidate),
             ),
             source=OP_SOURCE,
             ref_id=candidate.target_id if candidate.target_kind == "ref" else None,

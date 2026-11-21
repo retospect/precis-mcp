@@ -35,7 +35,11 @@ _SECTION = "memory-reconciliation-policy"
 #: changes — never a digest of the prose, so wording-only edits to the
 #: skill sections leave decided questions closed (gr732279). Tests pin the
 #: prose digest and fail when it drifts without this constant moving.
-MEMORY_POLICY_VERSION = "garden-propose.memory.v5"
+#: v6 (gr748553): the candidate JSON's generated summary moved from the
+#: bare key "title" to "candidate_title" and the node's real title rides
+#: along as "node_title" — the judge's evidence changed, so decided
+#: questions re-ask once.
+MEMORY_POLICY_VERSION = "garden-propose.memory.v6"
 
 #: The checklist skill and the H2 sections the evaluator pins verbatim
 #: (gr560762): the per-type checks, the disagreement shapes, the standard
