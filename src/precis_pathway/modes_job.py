@@ -20,6 +20,11 @@ Reads the pathway's succeeded ``autocatpath_seed`` jobs and, per seed and state:
 
 Detached child like the seed job, with a gpu slot (``requires={"gpu": 1}`` at
 the mint). Minted by ``put(kind='pathway', mode='measure_modes')``.
+
+A gpu slot counts jobs, not memory, so the device can be full when this job
+gets one. A CUDA out-of-memory is retried once on cpu (gr592970): the
+measurement is small enough for one, and a failed job leaves the pathway
+refusing every other T.
 """
 
 from __future__ import annotations
@@ -56,6 +61,9 @@ _WALL_S = 3600.0
 
 #: Re-measured g this far from the stored one (eV) counts as a disagreement.
 G_TOLERANCE_EV = 0.005
+
+#: The device a CUDA out-of-memory falls back to.
+_CPU = "cpu"
 
 
 def seed_jobs(store: Any, pathway_ref_id: int) -> list[tuple[int, dict[str, Any]]]:
@@ -99,24 +107,75 @@ def _unit(job_id: int, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _remeasure_on_cpu(
+    unit: dict[str, Any],
+    calcs: dict[str, Any],
+    vib: dict[str, Any],
+    failed: dict[str, str],
+) -> str | None:
+    """Measure again on cpu the states of ``unit`` that ran out of GPU memory,
+    folding the outcome into ``vib`` and ``failed``. Returns the job-event text,
+    None when no state did."""
+    from precis_pathway import runner
+
+    states = sorted(s for s, why in failed.items() if runner.is_cuda_oom(why))
+    if not states:
+        return None
+    try:
+        calc, cfg = runner.modes_calculator(unit, calcs, device=_CPU)
+    except Exception as exc:
+        return (
+            f"no cpu calculator for {', '.join(states)} ({type(exc).__name__}: {exc})"
+        )
+    again, still = runner.measure_unit_modes(
+        {**unit, "structures": {s: unit["structures"][s] for s in states}}, calc, cfg
+    )
+    vib.update(again)
+    for state in again:
+        del failed[state]
+    failed.update(still)
+    return (
+        f"CUDA out of memory measuring {', '.join(states)}; "
+        f"measured {', '.join(again) or 'none'} on cpu"
+    )
+
+
 def run_compute(units: list[dict[str, Any]]) -> dict[str, Any]:
     """Child entrypoint (``runner._subprocess_main`` mode ``modes_job``):
     ``{"units": [{"job_id", "vib": {state: <measurement>}, "failed": {state:
     reason}}], "notes": [...]}``. One calculator per model; a state that fails
-    is recorded and the others still run."""
+    is recorded and the others still run.
+
+    A CUDA out-of-memory is retried once on cpu. Loading the calculator: the
+    rest of the job loads on cpu too, the GPU is not asked again. In one
+    state's measurement: that state alone is measured again. Any other error,
+    and an error on cpu, stands as before."""
     from precis_pathway import runner
 
     calcs: dict[str, Any] = {}
     out: list[dict[str, Any]] = []
     notes: list[str] = []
+    device: str | None = None
     for unit in units:
-        calc, cfg = runner.modes_calculator(unit, calcs)
+        label = f"autocatpath_modes: seed {unit.get('seed')} ({unit.get('model')})"
+        try:
+            calc, cfg = runner.modes_calculator(unit, calcs, device=device)
+        except Exception as exc:
+            if device or not runner.is_cuda_oom(exc):
+                raise
+            device = _CPU
+            notes.append(
+                f"{label}: CUDA out of memory loading the calculator; "
+                f"this job measures on {device}"
+            )
+            calc, cfg = runner.modes_calculator(unit, calcs, device=device)
         vib, failed = runner.measure_unit_modes(unit, calc, cfg)
+        if cfg.mlip.device != _CPU:
+            retried = _remeasure_on_cpu(unit, calcs, vib, failed)
+            if retried:
+                notes.append(f"{label}: {retried}")
         out.append({"job_id": unit["job_id"], "vib": vib, "failed": failed})
-        notes.append(
-            f"autocatpath_modes: seed {unit.get('seed')} ({unit.get('model')}): "
-            f"{len(vib)} states measured, {len(failed)} failed"
-        )
+        notes.append(f"{label}: {len(vib)} states measured, {len(failed)} failed")
     return {"units": out, "notes": notes}
 
 

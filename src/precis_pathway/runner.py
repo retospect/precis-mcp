@@ -1539,16 +1539,31 @@ def submit_modes_job_detached(
     )
 
 
-def modes_calculator(unit: dict[str, Any], calcs: dict[str, Any]) -> tuple[Any, Any]:
+def is_cuda_oom(error: BaseException | str) -> bool:
+    """Whether ``error`` (an exception, or the ``Type: message`` text
+    :func:`measure_unit_modes` keeps of one) is torch out of GPU memory. Read
+    from the message: an allocation raises ``OutOfMemoryError`` ("CUDA out of
+    memory"), the driver raises ``AcceleratorError`` ("CUDA error: out of
+    memory"), and that second type carries every other CUDA error too."""
+    text = str(error).lower()
+    return "cuda" in text and "out of memory" in text
+
+
+def modes_calculator(
+    unit: dict[str, Any], calcs: dict[str, Any], *, device: str | None = None
+) -> tuple[Any, Any]:
     """``(calculator, config)`` for one seed unit of the modes job: the model
-    that seed ran, one loaded calculator per model across the job."""
+    that seed ran, one loaded calculator per model and device across the job.
+    ``device`` replaces the config's ``mlip.device``."""
     from autocatpath.calculators import make_calculator, resolve_backend
 
     cfg = _prep(unit["config"], unit.get("force_backend"))
     backend, model = cfg.mlip.specs()[int(unit.get("model_index") or 0)]
     backend = resolve_backend(backend)
-    tag = f"{backend}:{model}" if model else backend
     cfg.mlip.backend, cfg.mlip.model, cfg.mlip.models = backend, model, []
+    if device:
+        cfg.mlip.device = device
+    tag = f"{backend}:{model}@{cfg.mlip.device}"
     if tag not in calcs:
         calcs[tag] = make_calculator(cfg.mlip)
     return calcs[tag], cfg

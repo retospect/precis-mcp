@@ -5,6 +5,8 @@ half is in ``test_pathway_kinetics_sweep.py``."""
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -259,3 +261,179 @@ def test_measure_modes_says_so_when_nothing_is_missing(store) -> None:
     )
     resp = _handler(store).put(id=done.id, mode="measure_modes")
     assert "already has modes" in resp.body
+
+
+#: torch's two CUDA out-of-memory texts: from the driver while the model is
+#: moved onto the device (the failure on gr592970), and from an allocation.
+_OOM_AT_LOAD = (
+    "CUDA error: out of memory\n"
+    "For more detailed error information, run with CUDA_LOG_FILE=stderr"
+)
+_OOM_AT_MEASURE = "CUDA out of memory. Tried to allocate 2.00 GiB."
+
+
+def _compute_unit(job_id: int) -> dict[str, Any]:
+    """One seed unit as ``_unit`` hands it to the child: a bare slab and the
+    slab with one adsorbed atom, on a config that asks for the GPU."""
+    from ase import Atoms
+
+    from precis_pathway import runner
+
+    structures = {}
+    for name, n_ads in (("*", 0), ("H", 1)):
+        atoms = Atoms(
+            "Cu" + "H" * n_ads,
+            positions=[(0.0, 0.0, 1.5 * i) for i in range(1 + n_ads)],
+            cell=[5.0, 5.0, 5.0],
+            pbc=True,
+        )
+        atoms.info["n_slab"] = 1
+        structures[name] = runner._atoms_to_extxyz(atoms)
+    return {
+        "job_id": job_id,
+        "seed": job_id,
+        "model": "mace:medium",
+        "model_index": 0,
+        "config": {"mlip": {"device": "cuda"}},
+        "force_backend": None,
+        "structures": structures,
+    }
+
+
+def _engine(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    load: Callable[[str], None] = lambda device: None,
+    measure: Callable[[str, str], None] = lambda state, device: None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Stand-in engine under the real ``run_compute``: a calculator is the
+    device it was loaded on. ``load(device)`` and ``measure(state, device)``
+    raise to fail that step. Returns the devices loaded and the
+    ``(state, device)`` pairs measured, in order."""
+    from precis_pathway import runner
+
+    loads: list[str] = []
+    measured: list[tuple[str, str]] = []
+
+    def _prep(config: dict[str, Any], force_backend: str | None) -> Any:
+        mlip = SimpleNamespace(
+            backend="mace", model="medium", models=[], device=config["mlip"]["device"]
+        )
+        mlip.specs = lambda: [(mlip.backend, mlip.model)]
+        return SimpleNamespace(
+            mlip=mlip,
+            conditions=SimpleNamespace(temperature=298.15),
+            thermo=SimpleNamespace(freq_floor=12.0),
+        )
+
+    def make_calculator(mlip: Any) -> str:
+        loads.append(mlip.device)
+        load(mlip.device)
+        return str(mlip.device)
+
+    def vib_correction(
+        atoms: Any, calc: str, n_slab: int, temperature: float, freq_floor: float
+    ) -> dict[str, Any]:
+        state = "H" if len(atoms) > n_slab else "*"
+        measure(state, calc)
+        measured.append((state, calc))
+        return _rec(0.16, [0.1] * 3 * (len(atoms) - n_slab))
+
+    calc_mod: Any = ModuleType("autocatpath.calculators")
+    calc_mod.make_calculator = make_calculator
+    calc_mod.resolve_backend = lambda backend: backend
+    thermo_mod: Any = ModuleType("autocatpath.thermo")
+    thermo_mod.vib_correction = vib_correction
+    if "autocatpath" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "autocatpath", ModuleType("autocatpath"))
+    monkeypatch.setitem(sys.modules, "autocatpath.calculators", calc_mod)
+    monkeypatch.setitem(sys.modules, "autocatpath.thermo", thermo_mod)
+    monkeypatch.setattr(runner, "_prep", _prep)
+    return loads, measured
+
+
+def test_run_compute_loads_on_cpu_after_the_gpu_runs_out_of_memory(monkeypatch) -> None:
+    """gr592970: the model did not fit on the GPU, so the whole job failed. The
+    modes are small: the job loads the model once on cpu and measures there."""
+
+    def load(device: str) -> None:
+        if device != "cpu":
+            raise RuntimeError(_OOM_AT_LOAD)
+
+    loads, measured = _engine(monkeypatch, load=load)
+
+    out = modes_job.run_compute([_compute_unit(7), _compute_unit(8)])
+
+    assert [(u["job_id"], set(u["vib"]), u["failed"]) for u in out["units"]] == [
+        (7, {"*", "H"}, {}),
+        (8, {"*", "H"}, {}),
+    ]
+    assert loads == ["cuda", "cpu"]
+    assert {device for _, device in measured} == {"cpu"}
+    assert any("out of memory" in n and "on cpu" in n for n in out["notes"])
+
+
+def test_run_compute_remeasures_on_cpu_a_state_that_ran_out_of_gpu_memory(
+    monkeypatch,
+) -> None:
+    def measure(state: str, device: str) -> None:
+        if state == "H" and device != "cpu":
+            raise RuntimeError(_OOM_AT_MEASURE)
+
+    _, measured = _engine(monkeypatch, measure=measure)
+
+    out = modes_job.run_compute([_compute_unit(7)])
+
+    assert set(out["units"][0]["vib"]) == {"*", "H"}
+    assert out["units"][0]["failed"] == {}
+    assert measured == [("*", "cuda"), ("H", "cpu")]
+    assert any("out of memory" in n and "H on cpu" in n for n in out["notes"])
+
+
+def test_run_compute_fails_on_a_second_oom_and_on_any_other_load_error(
+    monkeypatch,
+) -> None:
+    def full(device: str) -> None:
+        raise RuntimeError(_OOM_AT_LOAD)
+
+    loads, _ = _engine(monkeypatch, load=full)
+    with pytest.raises(RuntimeError, match="out of memory"):
+        modes_job.run_compute([_compute_unit(7)])
+    assert loads == ["cuda", "cpu"]
+
+    def missing(device: str) -> None:
+        raise RuntimeError("backend 'mace' is not installed")
+
+    loads, _ = _engine(monkeypatch, load=missing)
+    with pytest.raises(RuntimeError, match="not installed"):
+        modes_job.run_compute([_compute_unit(7)])
+    assert loads == ["cuda"]
+
+
+def test_run_compute_keeps_a_state_failed_when_cpu_does_not_measure_it(
+    monkeypatch,
+) -> None:
+    def full(state: str, device: str) -> None:
+        if state == "H":
+            raise RuntimeError(_OOM_AT_MEASURE)
+
+    def no_cpu(device: str) -> None:
+        if device == "cpu":
+            raise MemoryError("no room")
+
+    def broken(state: str, device: str) -> None:
+        if state == "H":
+            raise ValueError("bad geometry")
+
+    # out of memory on cpu too; no cpu calculator; not a memory error at all
+    for load, measure, reason, loaded in (
+        (lambda device: None, full, "out of memory", ["cuda", "cpu"]),
+        (no_cpu, full, "out of memory", ["cuda", "cpu"]),
+        (lambda device: None, broken, "ValueError: bad geometry", ["cuda"]),
+    ):
+        loads, measured = _engine(monkeypatch, load=load, measure=measure)
+
+        unit = modes_job.run_compute([_compute_unit(7)])["units"][0]
+
+        assert set(unit["vib"]) == {"*"} and reason in unit["failed"]["H"]
+        assert measured == [("*", "cuda")] and loads == loaded
