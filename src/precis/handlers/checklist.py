@@ -35,7 +35,14 @@ instead of restarting on every re-check.
   unassigned target renders "no checklist assigned", never empty-clean;
   a target whose kind is in the checklist's ``default_for`` counts as
   assigned. ``get(target=<kind:id>)`` alone lists what applies to it.
+  ``get(id=<name>, view='links')`` pages the definition's link graph
+  (``args={'rel'|'of_kind'|'limit'|'cursor'}`` narrow it).
 * ``search(q=...)`` matches checklist names.
+* ``link(id=<name>, target=<handle>, rel='derived-from')`` records the
+  definition's provenance. A lazily allocated graph ref (a ``ck``
+  handle — registry names never consume global cite keys) carries the
+  edges, so they render on the source paper/memory reads too;
+  ``mode='remove'`` detaches.
 
 Shipped checklists (``src/precis/data/checklists/*.yaml``, first instance
 ``pcb-tapeout``) arrive via :mod:`precis.jobs.checklist_sync`; the
@@ -58,8 +65,18 @@ from precis.errors import (
     nearest_option,
 )
 from precis.format import render_agent_table
+from precis.handlers._links_render import render_links_section, render_links_view
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store import Ref
+from precis.utils.link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    merge_link_reason,
+    require_link_target,
+    validate_link_mode,
+)
+from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.notes import (
     NOTE_KINDS,
@@ -69,6 +86,7 @@ from precis.utils.notes import (
     open_questions,
     validate_about,
 )
+from precis.utils.relations import validate_relation
 
 _SEVERITIES: tuple[str, ...] = ("blocking", "advisory")
 _DECIDABILITY: tuple[str, ...] = ("tool", "judgment")
@@ -83,7 +101,7 @@ _EDIT_OPS: tuple[str, ...] = (
     "assign",
     "unassign",
 )
-_VIEWS: tuple[str, ...] = ("page",)
+_VIEWS: tuple[str, ...] = ("page", "links")
 
 
 @dataclass(frozen=True)
@@ -130,13 +148,15 @@ class ChecklistHandler(Handler):
             "result / verdict per item, then the argument threads — an "
             "unassigned target says so, never empty-clean); "
             "get(target=...) lists the checklists that apply. "
-            "search(q=...) matches checklist names. See "
+            "search(q=...) matches checklist names. link(id=<name>, "
+            "target=<handle>, rel='derived-from') records definition provenance. See "
             "precis-checklist-help."
         ),
         supports_get=True,
         supports_put=True,
         supports_edit=True,
         supports_search=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         placement="artifact",
@@ -158,6 +178,51 @@ class ChecklistHandler(Handler):
         if hub.store is None:
             raise InitError("checklist: store required")
         self.store = hub.store
+        self.hub = hub
+
+    def link(
+        self,
+        *,
+        id: str | int | None = None,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        meta: dict[str, Any] | None = None,
+        reason: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        target = require_link_target("checklist", target)
+        validate_link_mode(mode)
+        meta = merge_link_reason(meta, reason, mode=mode)
+        checklist = self._get_definition(str(id).strip() if id is not None else "")
+        ref_id = self.store.checklist_graph_ref_id(checklist["id"])
+        if mode == "add" and ref_id is None:
+            ref_id = self.store.checklist_ensure_graph_ref(checklist["id"])
+        added, removed = (0, 0)
+        if ref_id is not None:
+            added, removed = apply_link_ops(
+                self.store,
+                ref_id,
+                link=target if mode == "add" else None,
+                unlink=target if mode == "remove" else None,
+                rel=rel,
+                meta=meta,
+                merge_meta=meta is not None,
+                hub=self.hub,
+            )
+        else:
+            validate_relation(rel, store=self.store)
+            parse_link_target(target, store=self.store, include_retired=True)
+        return Response(
+            body=format_link_tag_ack(
+                kind="checklist",
+                ref_label=checklist["name"],
+                n_links_added=added,
+                n_links_removed=removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     # ── put ──────────────────────────────────────────────────────────────
 
@@ -751,37 +816,73 @@ class ChecklistHandler(Handler):
         target: str | int | None = None,
         fingerprint: str | None = None,
         view: str | None = None,
+        rel: str | None = None,
+        of_kind: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         v = (view or "").strip().lower()
-        if v and v != "page":
-            # gr613469: 'page' is the only view — lead with the
-            # caller's own get (target=/fingerprint= preserved, review
-            # td680653) re-spelled with it, else "omit view=" stands.
-            near = nearest_option(v, ("page",))
+        if v and v not in _VIEWS:
+            near = nearest_option(v, _VIEWS)
             corrected = (
-                retry_call("get", kind="checklist", id=id, view="page")
-                if near
-                else None
+                retry_call("get", kind="checklist", id=id, view=near) if near else None
             )
             nexts = [corrected] if corrected else []
             nexts.append("omit view=")
             raise BadInput(f"unknown checklist view {view!r}", next=nexts)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
+            if v == "links":
+                raise BadInput(
+                    "checklist links view requires a checklist name",
+                    next="get(kind='checklist', id=<name>, view='links')",
+                )
             if target is not None:
                 return self._render_for_target(self._resolve_target(target))
             return self._render_list()
-        name = str(id).strip()
+        checklist = self._get_definition(str(id).strip())
+        if v == "links":
+            if target is not None:
+                raise BadInput(
+                    "checklist links belong to the definition",
+                    next="get(kind='checklist', id=<name>, view='links')",
+                )
+            ref = self._graph_ref(checklist)
+            if ref is None:
+                return Response(
+                    body=(
+                        f"# checklist {checklist['name']} - links\n\n(no links)\n\n"
+                        f"add one with: link(kind='checklist', "
+                        f"id={checklist['name']!r}, target='kind:identifier', "
+                        "rel='related-to')"
+                    )
+                )
+            if rel is not None:
+                rel = validate_relation(str(rel), store=self.store)
+            return render_links_view(
+                self.store, ref, rel=rel, of_kind=of_kind, limit=limit, cursor=cursor
+            )
+        if target is None:
+            return self._render_definition(checklist)
+        ref_target = self._resolve_target(target)
+        return self._render_status(checklist, ref_target, fingerprint=fingerprint)
+
+    def _get_definition(self, name: str) -> dict[str, Any]:
         checklist = self.store.checklist_get(name)
         if checklist is None:
             raise NotFound(
                 f"checklist {name!r} not found",
                 next="get(kind='checklist') lists all names",
             )
-        if target is None:
-            return self._render_definition(checklist)
-        ref = self._resolve_target(target)
-        return self._render_status(checklist, ref, fingerprint=fingerprint)
+        return checklist
+
+    def _graph_ref(self, checklist: dict[str, Any]) -> Ref | None:
+        ref_id = self.store.checklist_graph_ref_id(checklist["id"])
+        return (
+            self.store.get_ref(kind="checklist", id=ref_id)
+            if ref_id is not None
+            else None
+        )
 
     def _render_list(self) -> Response:
         rows = self.store.checklist_list(limit=50)
@@ -830,9 +931,13 @@ class ChecklistHandler(Handler):
         head = f"# checklist {checklist['name']} ({checklist['origin']})"
         if checklist["default_for"]:
             head += f" — default for {', '.join(checklist['default_for'])}"
+        ref = self._graph_ref(checklist)
+        links = (
+            render_links_section(self.store, ref, limit=20) if ref is not None else ""
+        )
         if not items:
             return Response(
-                body=f"{head}\n\n(no items yet)\n\nNext: edit(kind='checklist', "
+                body=f"{head}\n\n(no items yet){links}\n\nNext: edit(kind='checklist', "
                 f"id={checklist['name']!r}, op='add_item', item=..., "
                 "prevents=...)"
             )
@@ -862,6 +967,7 @@ class ChecklistHandler(Handler):
                     "prevents",
                 ],
             )
+            + links
         )
 
     def _render_status(

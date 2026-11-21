@@ -406,6 +406,21 @@ def _via_suffix(ref: Ref, chunk_id: int | None, ord_: int | None) -> str:
 _LINKS_VIEW_PAGE = 100
 
 
+def _addressable_id(ref: Ref) -> str | int:
+    """The ``id=`` value that resolves back to ``ref`` on its own kind.
+
+    A bare ref_id resolves on every ``view='links'`` kind except
+    checklist, whose graph endpoint is name-addressed (the ref exists
+    only to hang edges on, so ``get``/``link`` with the digits find no
+    checklist) — there the ``ck`` handle is the resolvable spelling:
+    ``resolve_handle`` maps it back to the registry name. Headers and
+    recovery hints print this, never the raw pk.
+    """
+    if ref.kind == "checklist":
+        return handle_registry.format_handle(ref.kind, ref.id)
+    return ref.id
+
+
 def render_links_view(
     store: Store,
     ref: Ref,
@@ -437,6 +452,7 @@ def render_links_view(
     page: a partial response never implies full coverage.
     """
     noun = sense or ref.kind
+    self_id = _addressable_id(ref)
     filt = ""
     if rel is not None:
         filt += f" rel={rel!r}"
@@ -454,16 +470,16 @@ def render_links_view(
             # "(no links)" reads as an empty graph.
             return Response(
                 body=(
-                    f"# {noun} {ref.id} - links{filt}\n\n"
+                    f"# {noun} {self_id} - links{filt}\n\n"
                     f"(no links matching{filt})\n\n"
-                    f"drop the filter: get(kind={ref.kind!r}, id={ref.id}, "
+                    f"drop the filter: get(kind={ref.kind!r}, id={self_id!r}, "
                     "view='links')"
                 )
             )
         return Response(
             body=(
-                f"# {noun} {ref.id} - links\n\n(no links)\n\n"
-                f"add one with: link(kind={ref.kind!r}, id={ref.id}, "
+                f"# {noun} {self_id} - links\n\n(no links)\n\n"
+                f"add one with: link(kind={ref.kind!r}, id={self_id!r}, "
                 "target='kind:identifier', rel='related-to')"
             )
         )
@@ -500,7 +516,7 @@ def render_links_view(
         table_head = (
             "Links:" if start == 0 and end == total else f"Links ({shown} of {total}):"
         )
-        out = f"# {noun} {ref.id} - links{filt}\n\n{table_head}\n"
+        out = f"# {noun} {self_id} - links{filt}\n\n{table_head}\n"
         out += render_agent_table(
             rows[:shown],
             schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
@@ -591,7 +607,7 @@ def _links_page_size(limit: Any, ref: Ref) -> int:
     if n < 1:
         raise BadInput(
             f"links view limit must be a positive integer, got {limit!r}",
-            next=f"get(kind={ref.kind!r}, id={ref.id}, view='links')",
+            next=f"get(kind={ref.kind!r}, id={_addressable_id(ref)!r}, view='links')",
         )
     return n
 
@@ -617,7 +633,7 @@ def _links_page_start(
         raise BadInput(
             "links cursor must be '<bucket>:<link_id>' with bucket 'out' "
             f"or 'in', got {cursor!r}",
-            next=f"get(kind={ref.kind!r}, id={ref.id}, view='links')",
+            next=f"get(kind={ref.kind!r}, id={_addressable_id(ref)!r}, view='links')",
         )
     mark = (bucket != "out", link_id)
     for i, (lnk, d) in enumerate(ordered):
@@ -715,6 +731,8 @@ def _get_call_for(
     """
     if ref is None:
         return f"get(id={fallback_id})"
+    if ref.kind == "checklist":
+        return f"get(id={handle_registry.format_handle(ref.kind, ref.id)!r})"
     ident = ref.slug if ref.slug is not None else ref.id
     if chunk_id is not None:
         if ref.kind in _CHUNK_HANDLE_GET_KINDS:

@@ -128,6 +128,40 @@ class ChecklistMixin:
             ).fetchone()
         return None if row is None else _row_to_checklist(row)
 
+    def checklist_graph_ref_id(
+        self, checklist_id: int, *, conn: Connection | None = None
+    ) -> int | None:
+        sql = "SELECT ref_id FROM checklist_graph_refs WHERE checklist_id = %s"
+        if conn is not None:
+            row = conn.execute(sql, (checklist_id,)).fetchone()
+        else:
+            with self.pool.connection() as c:
+                row = c.execute(sql, (checklist_id,)).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def checklist_ensure_graph_ref(self, checklist_id: int) -> int:
+        """Allocate one graph endpoint without claiming a global cite key."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT name FROM checklists WHERE id = %s FOR UPDATE",
+                (checklist_id,),
+            ).fetchone()
+            assert row is not None
+            ref_id = self.checklist_graph_ref_id(checklist_id, conn=conn)
+            if ref_id is None:
+                ref = conn.execute(
+                    "INSERT INTO refs (kind, title) VALUES ('checklist', %s) "
+                    "RETURNING ref_id",
+                    (row[0],),
+                ).fetchone()
+                assert ref is not None
+                ref_id = ref[0]
+                conn.execute(
+                    "INSERT INTO checklist_graph_refs (checklist_id, ref_id) VALUES (%s, %s)",
+                    (checklist_id, ref_id),
+                )
+            return int(ref_id)
+
     def checklist_create(
         self,
         *,

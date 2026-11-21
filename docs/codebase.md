@@ -223,6 +223,10 @@ for both paper-read activation and worker admission.
 
 ## Subsystems (where the code lives)
 
+Checklist definitions retain their registry names and allocate a graph ref
+on first link. Provenance edges use the shared link graph, so paper and
+memory reads expose backlinks to the checklist definition.
+
 | Box | Code | One-line |
 |---|---|---|
 | **Ingest** | `src/precis/ingest/` | input → refs + chunks |

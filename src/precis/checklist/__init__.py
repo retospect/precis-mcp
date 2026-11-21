@@ -7,6 +7,10 @@ holds the one piece two callers need identically — **how a target's
 per-item status is derived** — plus the per-kind code that turns a
 checklist from a generic ledger into a gate on a real design.
 
+Definition links use a lazily allocated graph ref so paper and memory
+readers see the same typed edges. The endpoint has no global cite key,
+which lets checklist names coexist with paper cite keys.
+
 Kind defaults share :func:`precis.checklist.status.default_applies` across
 assignment listing, status, review and checklist_clean. ``pcb-mech-env`` is
 the conditional pcb default: authored flex/fab/environment declarations turn

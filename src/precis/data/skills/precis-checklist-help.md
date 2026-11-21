@@ -9,7 +9,8 @@ answers:
   - how do I waive a checklist item or argue that it does not apply?
   - how do I add my own checklist items for one board?
   - how do I make a todo wait until a checklist is clean?
-applies-to: get/put/edit/search (kind='checklist'); put (kind='todo' with auto_check checklist_clean)
+  - how do I link a checklist to the papers or memory it came from?
+applies-to: get/put/edit/search/link (kind='checklist'); put (kind='todo' with auto_check checklist_clean)
 status: active
 tags: [workflow, design]
 kinds: [checklist, pcb, memory, todo]
@@ -194,6 +195,25 @@ deploy's sync supersedes your local rev by name — nothing waits on a
 deploy to be usable. `op='retire_item'` retires a local item;
 `op='unassign'` removes an explicit assignment (kind defaults cannot be
 unassigned — record `n/a` verdicts instead).
+
+## Link a checklist to its sources
+
+```python
+link(kind='checklist', id='automated-loop-design', target='me711200',
+     rel='derived-from')
+link(kind='checklist', id='automated-loop-design', target='pa710294',
+     rel='derived-from')
+```
+
+The edge hangs on the **definition**, not on a target — it records
+where the checklist's rules came from so the rule is traceable from
+both ends: the definition's `get` shows a `Links:` section,
+`get(kind='checklist', id=<name>, view='links')` pages the whole graph
+(`args={'rel': …}` and `args={'of_kind': …}` narrow it), and the source
+paper or memory lists the checklist among its inbound links. The first
+`link` call mints the definition's `ck` handle, which resolves anywhere
+a handle is accepted. `mode='remove'` with the same `target=` (add
+`rel=` to pick one edge) detaches. Relations: [[precis-link-help]].
 
 ## Gate a todo on a checklist
 

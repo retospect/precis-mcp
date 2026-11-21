@@ -848,6 +848,18 @@ class RefsMixin:
                     cite_public_id=_si_cite_slug(c, pk, row_kind, row[2]),
                     redirected_from=old_handle,
                 )
+            if kind == "checklist":
+                # Graph endpoints have no global cite key. The checklist
+                # handler still addresses definitions by registry name.
+                checklist = c.execute(
+                    "SELECT cl.name FROM checklist_graph_refs cg "
+                    "JOIN checklists cl ON cl.id = cg.checklist_id "
+                    "WHERE cg.ref_id = %s AND cl.retired_at IS NULL",
+                    (pk,),
+                ).fetchone()
+                if checklist is None:
+                    return None
+                slug = checklist[0]
             public_id = slug if slug is not None else str(pk)
             return ResolvedHandle(
                 ref_id=pk,

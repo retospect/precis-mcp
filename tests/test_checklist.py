@@ -17,7 +17,9 @@ import pytest
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.handlers.checklist import ChecklistHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.utils.handle_registry import format_handle
 
 
 def _handler(store: Any) -> ChecklistHandler:
@@ -44,6 +46,79 @@ class TestInit:
     def test_missing_store_raises_init_error(self) -> None:
         with pytest.raises(InitError):
             ChecklistHandler(hub=Hub(store=None))
+
+
+def test_checklist_definition_provenance(
+    store: Store, runtime_with_store: PrecisRuntime
+) -> None:
+    h = _handler(store)
+    name = "automated-loop-design"
+    # Checklist names have their own namespace, including names that are
+    # already paper cite keys.
+    paper = store.insert_ref(kind="paper", slug=name, title="Batch design")
+    memory = store.insert_ref(kind="memory", slug=None, title="Batch selection rule")
+    h.put(id=name, items=[_ITEM])
+    checklist = store.checklist_get(name)
+    assert checklist is not None
+    assert store.checklist_graph_ref_id(checklist["id"]) is None
+    dispatch = runtime_with_store.dispatch
+    # No graph ref yet: the links view still renders the recovery recipe,
+    # addressed by registry name (the resolvable id).
+    empty = dispatch("get", {"kind": "checklist", "id": name, "view": "links"})
+    assert "(no links)" in empty
+    assert f"link(kind='checklist', id={name!r}" in empty
+    args = {"kind": "checklist", "id": name, "rel": "derived-from"}
+    for source in (paper, memory, paper):
+        target = format_handle(source.kind, source.id)
+        assert "[error:" not in dispatch("link", {**args, "target": target})
+
+    graph_ref = store.checklist_graph_ref_id(checklist["id"])
+    assert graph_ref is not None
+    handle = format_handle("checklist", graph_ref)
+    definition = dispatch("get", {"id": handle})
+    assert _ITEM["name"] in definition
+    assert len(store.links_for(graph_ref)) == 2
+    for source in (paper, memory):
+        target = format_handle(source.kind, source.id)
+        assert f"derived-from {target}" in definition
+        assert handle in dispatch("get", {"id": target, "view": "links"})
+
+    assert "[error:" not in dispatch(
+        "link",
+        {
+            **args,
+            "id": handle,
+            "target": format_handle("paper", paper.id),
+            "mode": "remove",
+        },
+    )
+    assert store.links_for(paper.id) == []
+    assert len(store.links_for(memory.id)) == 1
+
+    # A graph ref whose edges are all filtered out, or all gone: the
+    # headers and recovery hints name the ck handle — a bare ref_id
+    # resolves nowhere on this name-addressed kind.
+    filtered = dispatch(
+        "get", {"id": handle, "view": "links", "__extras__": {"rel": "cites"}}
+    )
+    assert "(no links matching" in filtered
+    assert f"drop the filter: get(kind='checklist', id={handle!r}" in filtered
+    assert "[error:BadInput]" in dispatch(
+        "get", {"id": handle, "view": "links", "__extras__": {"rel": "tuchd"}}
+    )
+    assert "[error:" not in dispatch(
+        "link",
+        {
+            **args,
+            "id": handle,
+            "target": format_handle("memory", memory.id),
+            "mode": "remove",
+        },
+    )
+    empty = dispatch("get", {"id": handle, "view": "links"})
+    assert f"# checklist {handle} - links" in empty
+    assert "(no links)" in empty
+    assert f"link(kind='checklist', id={handle!r}" in empty
 
 
 # ── put ──────────────────────────────────────────────────────────────
