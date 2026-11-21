@@ -490,3 +490,34 @@ def test_coordinator_registration_can_be_seeded_without_worker_record(fleet: Fle
     result = fleet.run("send", "coordinator", "--message", "review requested")
     assert result.returncode == 0, result.stderr
     assert fleet.calls("codex")[-1][0] == "queue"
+
+
+def test_send_to_unregistered_coordinator_writes_one_inbox_file(fleet: Fleet):
+    assert fleet.run("up", "graph-memory").returncode == 0
+    fleet.registration()
+    message = "Slice ready; $(no-shell) `no-shell` 'quotes'\nsecond line"
+    inbox = fleet.state / "inbox"
+    dry = fleet.run("--dry-run", "send", "coordinator", "--message", message)
+    assert dry.returncode == 0, dry.stderr
+    assert json.loads(dry.stdout)["status"] == "would-write"
+    assert not inbox.exists()
+    result = fleet.run(
+        "send", "coordinator", "--message", message, cwd=fleet.tree("graph-memory")
+    )
+    assert result.returncode == 0, result.stderr
+    (delivered,) = inbox.iterdir()
+    assert json.loads(result.stdout)["path"] == str(delivered)
+    record = json.loads(delivered.read_text(encoding="utf-8"))
+    assert record["message"] == message
+    assert record["worktree"] == str(fleet.tree("graph-memory").resolve())
+    assert all(args[0] != "queue" for args in fleet.calls("codex"))
+    result = fleet.run("send", "graph-memory", "--message", message)
+    assert result.returncode == 0, result.stderr
+    assert fleet.calls("codex")[-1] == [
+        "queue",
+        "--thread",
+        THREAD,
+        "--message",
+        message,
+    ]
+    assert len(list(inbox.iterdir())) == 1

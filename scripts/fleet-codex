@@ -5,6 +5,10 @@ The roster owns names/indices; persisted pane IDs establish ownership, so a
 same-named unrelated window cannot be adopted. Worktree reuse preserves dirty
 changes and requires the expected branch. File locking serializes launcher and
 registration writes; atomic replacement leaves readers complete JSON records.
+
+Seat 0 without a registration has no Codex thread to queue to (a Claude
+coordinator): `send` leaves one JSON file per message in STATE/inbox, which
+every worker already holds through --add-dir, and the coordinator watches it.
 """
 
 from __future__ import annotations
@@ -433,6 +437,27 @@ class Fleet:
 
     def send(self, name: str, message: str) -> None:
         row = select(self.rows, [name])[0]
+        if not row["index"] and not read_json(
+            self.state / "registrations" / f"{name}.json"
+        ):
+            now = datetime.now(UTC)
+            path = (
+                self.state
+                / "inbox"
+                / f"{now:%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}.json"
+            )
+            record = {
+                "schema_version": 1,
+                "name": name,
+                "message": message,
+                "worktree": str(Path.cwd().resolve()),
+                "sent_at": now.isoformat(),
+            }
+            if not self.args.dry_run:
+                write_json(path, record)
+            status = "would-write" if self.args.dry_run else "written"
+            print(json.dumps({"name": name, "status": status, "path": str(path)}))
+            return
         registration = self.registration(row, self.windows())
         command = [
             "codex",

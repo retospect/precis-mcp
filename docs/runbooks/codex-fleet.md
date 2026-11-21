@@ -31,7 +31,7 @@ Prompts live at `STATE/prompts/NAME.txt`; the launcher preserves window 0.
 | `up [NAME ...]` | Create missing worker branches/worktrees and windows; omitted names select the roster. |
 | `status [NAME ...]` | Print JSON lines with live pane/registration availability. |
 | `register NAME [--thread UUID]` | Bind the calling worker's pane/worktree to `CODEX_THREAD_ID` (or the explicit UUID). |
-| `send NAME --message TEXT` | Deliver through `codex queue` to a unique, live registered thread. |
+| `send NAME --message TEXT` | Deliver through `codex queue` to a unique, live registered thread; an unregistered window 0 gets a file in `STATE/inbox/`. |
 | `--dry-run COMMAND ...` | Validate and print without filesystem, Git, tmux or queue mutations. |
 
 Bootstrap uses `work/NAME/bootstrap` at `.claude/worktrees/codex-NAME`, based
@@ -67,6 +67,14 @@ the coordinator may seed its own registration when tool workdir differs from
 the TUI directory. Native queue delivery checks the pane again on every send.
 Missing, stale or duplicate registrations require explicit recovery; the
 launcher never types into a terminal or dismisses an approval dialog.
+
+A Claude session in window 0 has no Codex thread and does not register. While
+`STATE/registrations/coordinator.json` is absent, `send coordinator` writes
+one `STATE/inbox/<UTC time>-<id>.json` per message (schema version 1, name,
+message, sender worktree, `sent_at`) and prints its path; names sort by send
+time. The coordinator watches `STATE/inbox/*.json` (only that suffix: a write
+in progress is a temporary file without it) and moves or deletes what it has
+read. A registered window 0 keeps native queue delivery and its refusals.
 
 `STATE/workers/NAME.json` records schema version 1, roster fields, role, session,
 window/pane IDs, branch and worktree. `STATE/registrations/NAME.json` records
