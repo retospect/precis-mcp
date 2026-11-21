@@ -96,7 +96,12 @@ is one call: `put(kind='todo', id=122, text='done — pr merged',
 tags=['STATUS:done'])`; drop tags atomically with `untags=`, e.g.
 `put(kind='todo', id=122, text='answered', tags=['STATUS:done'],
 untags=['waiting-for:reto'])`. Tag-only changes use
-`tag(add=[...]/remove=[...])`. A bare `get`
+`tag(add=[...]/remove=[...])`. A list of asks takes ONE answer in one
+call — `put(kind='todo', id=[122, 124, 131], text='answer: <the one
+answer>', tags=['STATUS:done'], untags=['ask-user'])` appends the same
+comment to every ask; each ask is checked on its own and a refusal (a
+lane-breaker / `release-review-wait:` / `approval` ask from a worker
+source) is named while the rest go through. A bare `get`
 shows the newest 3, older ones as one-liners — each newest comment longer
 than ~2500 characters is cut mid-text (head + tail, 2000-char budget) with
 a marker naming `args={'comment': K}` for the whole one; `spec:` / `brief:`

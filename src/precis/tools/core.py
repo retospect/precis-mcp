@@ -1899,11 +1899,13 @@ def put(
     stages: list[str] | None = None,
     action: str | None = None,
     wait_s: float | None = None,
-    id: str | int | None = None,
+    id: str | int | list[str | int] | None = None,
     # str is the documented contract every handler parses against; dict/
     # list is ALSO accepted because some MCP client bridges auto-parse a
     # JSON-shaped string value before this schema ever sees it — see
-    # ``_coerce_text_body`` (gr330034/gr261385).
+    # ``_coerce_text_body`` (gr330034/gr261385). A LIST of ids is the todo
+    # batch-answer shape: put(kind='todo', id=[...], text='answer: …')
+    # appends the one answer to every ask (gr735227).
     text: str | dict[str, Any] | list[Any] | None = None,
     tags: list[str] | None = None,
     untags: list[str] | None = None,
@@ -2321,7 +2323,9 @@ def put(
     Omit `id=` to mint a numeric ref. `mode=` and required fields vary by
     kind. Use `tags=` or `link=` to annotate on create.
     For gripe or todo, `id=` with `text=` appends a comment and can update
-    tags in the same call. Gripe comments can also update links.
+    tags in the same call; todo also takes `id=[...]` there — one answer
+    comment lands on every ask in the list (gr735227). Gripe comments can
+    also update links.
     `text={'$ref': '<handle>'}` reuses the body after a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-put-help').

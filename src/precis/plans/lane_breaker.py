@@ -31,6 +31,11 @@ rescue pass, ``run_slice``'s submit) already skips a backed-off lane — and
 ``gripe_dispatch`` drops their cap from the capacity it mints against.
 Every other lane and host keeps dispatching. Closing the ask resets the
 breaker: only jobs newer than the trip's last job count again.
+
+**Read surface.** The ask's card and its ``search`` listing row carry
+what it holds (:func:`hold_summary`) and what closing it releases
+(:func:`release_note`) — gr735227: the lanes and host had to be read out
+of ``meta.breaker`` by SQL to see which lane a breaker ask held.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from precis import settings as psettings
@@ -100,6 +106,53 @@ class Trip:
     jobs: tuple[int, ...]
     todos: tuple[int, ...]
     lanes: tuple[str, ...]
+
+
+def _since(then: datetime | None) -> str:
+    """``11-19 03:12Z`` — the trip's filing time; ``?`` when unknown."""
+    if then is None:
+        return "?"
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return then.strftime("%m-%d %H:%MZ")
+
+
+def hold_summary(breaker: dict[str, Any], since: datetime | None) -> str:
+    """One line naming what the ask holds out of dispatch, and since when:
+    ``lane codex · since 11-19 03:12Z`` or
+    ``host sick-host (lanes codex, devin) · since 11-19 03:12Z`` (gr735227).
+
+    Rendered on the ask's card and as its ``holds`` cell in a ``search``
+    hit table, so a reader sees the held lane(s) and host without a SQL
+    read of ``meta.breaker``.
+    """
+    scope = str(breaker.get("scope") or "")
+    lanes = [str(l) for l in breaker.get("lanes") or () if str(l)]
+    if scope == "host":
+        where = "host " + str(breaker.get("name") or "?")
+        if lanes:
+            where += f" (lanes {', '.join(lanes)})"
+    elif len(lanes) > 1:
+        where = f"lanes {', '.join(lanes)}"
+    elif lanes:
+        where = f"lane {lanes[0]}"
+    else:
+        where = f"{scope} {breaker.get('name') or '?'}".strip()
+    return f"{where} · since {_since(since)}"
+
+
+def release_note(breaker: dict[str, Any]) -> str:
+    """What closing the ask releases (the ask-card line, gr735227):
+    ``dispatch resumes on lane codex; only builds newer than jo632100
+    count toward a new trip``."""
+    lanes = [str(l) for l in breaker.get("lanes") or () if str(l)]
+    noun = "lane" if len(lanes) == 1 else "lanes"
+    where = ", ".join(lanes) if lanes else str(breaker.get("name") or "there")
+    note = f"dispatch resumes on {noun} {where}"
+    last = breaker.get("last_job")
+    if isinstance(last, bool) or not isinstance(last, (int, float)):
+        return note
+    return note + f"; only builds newer than jo{int(last)} count toward a new trip"
 
 
 def _open_breaker_asks(store: Any) -> list[tuple[int, dict[str, Any]]]:

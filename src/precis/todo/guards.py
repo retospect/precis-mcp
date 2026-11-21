@@ -660,6 +660,47 @@ def has_ask_user_tag(tags: list[str] | None) -> bool:
     return any(t == "ask-user" or t.startswith("ask-user:") for t in tags or [])
 
 
+#: meta key under which a lane-breaker ask carries its trip record
+#: (:data:`precis.plans.lane_breaker.BREAKER_KEY` — restated as a literal:
+#: that module imports ``precis.todo``, so a guards → lane_breaker import
+#: would cycle; a rename must touch both).
+BREAKER_META_KEY = "breaker"
+#: Open-tag prefix of a release review-wait ask
+#: (:data:`precis.todo.release_view._WAIT_TAG` — restated for the same reason).
+REVIEW_WAIT_PREFIX = "release-review-wait:"
+
+
+def ask_answer_refusal(
+    tags: list[str] | tuple[str, ...], meta: dict[str, Any] | None
+) -> str | None:
+    """Why THIS source may not answer the ask in a batch put, else ``None``
+    (gr735227).
+
+    Owner sources answer anything. A worker source gets the Reto-reserved
+    asks refused in the batch and named — a lane-breaker ask (closing it
+    resets the breaker and resumes dispatch on the lanes it names), a
+    ``release-review-wait:`` ask, or an ``approval`` ask (the release
+    view's ``_who`` names the same two) — while the rest of the list goes
+    through: the batch is a convenience, never a new permission. The
+    per-ask guards the one-at-a-time ``put(id=N, text=...)`` runs (claim
+    CAS, ``STATUS:done`` artifact evidence) still fire on each answered
+    ask inside the batch.
+    """
+    if is_owner():
+        return None
+    if isinstance((meta or {}).get(BREAKER_META_KEY), dict):
+        return (
+            "a lane-breaker ask — reserved for the owner; closing it resets "
+            "the breaker and resumes dispatch on the lanes it names"
+        )
+    if any(str(t).startswith(REVIEW_WAIT_PREFIX) for t in tags):
+        return "a release-review-wait ask — the owner's answer"
+    ask = (meta or {}).get("ask")
+    if isinstance(ask, dict) and ask.get("kind") == "approval":
+        return "an approval ask — reserved for the owner"
+    return None
+
+
 # ── parent / cycle / depth ─────────────────────────────────────────
 
 
@@ -1625,14 +1666,17 @@ def release_claims(conn: Any, ref_id: int) -> None:
 
 
 __all__ = [
+    "BREAKER_META_KEY",
     "CLAIM_PREFIX",
     "CLAIM_TTL_HOURS",
     "MAX_DEPTH",
     "META_ROTATION_ROOT",
     "META_WORKER_MINTABLE",
     "PROPOSED_TACTICAL",
+    "REVIEW_WAIT_PREFIX",
     "TAG_META_ALLOWED_KEYS",
     "TIER_TO_FACETS",
+    "ask_answer_refusal",
     "check_budget_usd_meta",
     "check_claim_takeover",
     "check_deliver_in_meta",

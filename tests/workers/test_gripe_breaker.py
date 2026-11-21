@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 
 from precis import settings as psettings
+from precis.dispatch import Hub
+from precis.handlers.todo import TodoHandler
 from precis.plans import lane_breaker as lb
 from precis.plans import lanes
 from precis.plans.lanes import Lane
@@ -246,3 +248,88 @@ def test_a_lane_trip_is_not_reported_again_as_its_host(
     assert [(t["scope"], t["name"]) for t in res.extra["breaker"]] == [
         ("lane", "codex")
     ]
+
+
+def test_breaker_ask_card_names_holds_and_release(
+    store: Store, hub: Hub, three_lanes: Any
+) -> None:
+    """gr735227: the ask card says what it holds and what closing it
+    releases — no SQL read of ``meta.breaker``."""
+    _light(store)
+    _fail_streak(store, "codex", 5)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    [trip] = res.extra["breaker"]
+    body = TodoHandler(hub=hub).get(id=trip["ask"]).body
+    assert "breaker: holds lane codex · since" in body
+    last = max(trip["jobs"])
+    assert (
+        "closing it releases: dispatch resumes on lane codex; "
+        f"only builds newer than jo{last} count toward a new trip"
+    ) in body
+
+
+def test_breaker_ask_search_row_carries_holds_cell(
+    store: Store, hub: Hub, three_lanes: Any
+) -> None:
+    """gr735227: the ``search(tags=['ask-user'])`` row names the held
+    lane(s)/host and since when; a page without a breaker ask drops the
+    column."""
+    _light(store)
+    _fail_streak(store, "codex", 5)
+    gd.run_gripe_dispatch_pass(store, host="h1")
+    out = TodoHandler(hub=hub).search(tags=["ask-user"]).body
+    assert "lane codex · since" in out
+
+    # and the host scope names the lanes under the host
+    h = TodoHandler(hub=hub)
+    h.put(
+        text="host sick-host: builds died",
+        tags=["ask-user"],
+        meta={
+            "ask": {"kind": "ruling", "blocks": "nothing"},
+            "breaker": {
+                "scope": "host",
+                "name": "sick-host",
+                "cause": "http-401",
+                "jobs": [1, 2, 3],
+                "lanes": ["codex", "devin"],
+                "last_job": 3,
+                "k": 5,
+            },
+        },
+    )
+    out = h.search(tags=["ask-user"]).body
+    assert "host sick-host (lanes codex, devin) · since" in out
+
+
+def test_plain_ask_page_drops_the_holds_column(store: Store, hub: Hub) -> None:
+    h = TodoHandler(hub=hub)
+    h.put(
+        text="plain ruling?",
+        tags=["ask-user"],
+        meta={"ask": {"kind": "ruling", "blocks": "nothing"}},
+    )
+    assert "holds" not in h.search(tags=["ask-user"]).body
+
+
+@pytest.mark.parametrize("status", ["done", "won't-do", "auto-timeout"])
+def test_terminal_breaker_does_not_display_active_hold(
+    store: Store, hub: Hub, three_lanes: Any, status: str
+) -> None:
+    _light(store)
+    _fail_streak(store, "codex", 5)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    [trip] = res.extra["breaker"]
+    store.add_tag(
+        trip["ask"],
+        Tag.closed("STATUS", status),
+        set_by="system",
+        replace_prefix=True,
+    )
+    h = TodoHandler(hub=hub)
+    body = h.get(id=trip["ask"]).body
+    assert "breaker: holds" not in body
+    assert "closing it releases" not in body
+    out = h.search(tags=["ask-user", f"STATUS:{status}"]).body
+    assert "lane codex · since" not in out
+    assert "holds" not in out

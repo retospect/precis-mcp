@@ -178,7 +178,14 @@ tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
 ``context``; validated on put and edit, ``blocks='td<id>'`` writes a
 blocked-by link from that slice and makes the row a showstopper); answer
 it with a comment ``answer: …`` and ``tag`` ``STATUS:done`` + remove
-``ask-user``.
+``ask-user``. A list of asks takes one answer in one call —
+``put(id=[...], text='answer: …', tags=['STATUS:done'],
+untags=['ask-user'])`` (:meth:`_put_answer_batch`, gr735227): each ask is
+checked on its own, an ask the caller may not answer (a worker source
+answering a lane-breaker / ``release-review-wait:`` / ``approval`` ask) is
+refused in the batch and named, the rest go through. A lane-breaker ask's
+card and search row carry what it holds and what closing it releases
+(:func:`precis.plans.lane_breaker.hold_summary`).
 
 ``view='release'`` (gr735230) is a release pass on one screen — header,
 CI verdict, one line per pass node with its newest job, the stored hold
@@ -206,7 +213,9 @@ import dataclasses
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from precis.corrected_call import retry_call
@@ -214,6 +223,7 @@ from precis.errors import (
     BadInput,
     Gone,
     NotFound,
+    PrecisError,
     Unsupported,
     nearest_option,
 )
@@ -221,7 +231,7 @@ from precis.handlers import _comment_timeline as tl
 from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
-from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
+from precis.handlers._numeric_ref import _BASE_VIEWS, BATCH_ID_CAP, NumericRefHandler
 from precis.handlers._prio_tag import (
     prio_display,
     prio_tag_int,
@@ -234,6 +244,8 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.plans import logbook as plan_log
 from precis.plans import nodes as plan_nodes
 from precis.plans import templates as plan_templates
+from precis.plans.lane_breaker import hold_summary as _breaker_hold_summary
+from precis.plans.lane_breaker import release_note as _breaker_release_note
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
@@ -696,9 +708,15 @@ class TodoHandler(NumericRefHandler):
         "search": ArgsSpec({"under", "ids"}),
         "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
-    #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
-    #: points at it, gr478557).
+    #: ``put(id=N, text=...)`` appends a comment; ``put(id=[...], text=...)``
+    #: answers a list of asks with the one comment (gr735227) — the
+    #: unknown-args= refusal points at both (gr478557).
     supports_comment: ClassVar[bool] = True
+
+    #: The ``holds`` column (a lane-breaker ask's held lanes/host) renders
+    #: only when a row on the page has one — every other row is empty
+    #: (gr735227).
+    list_drop_constant_cols: ClassVar[tuple[str, ...]] = ("holds",)
 
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
@@ -1284,7 +1302,7 @@ class TodoHandler(NumericRefHandler):
     def put(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         text: str | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
@@ -1346,6 +1364,43 @@ class TodoHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
+        # ``id=[...] + text=`` answers a list of asks with one comment —
+        # the batch form of the comment-then-close put below (gr735227).
+        if isinstance(id, list):
+            return self._put_answer_batch(
+                id,
+                text=text,
+                tags=tags,
+                untags=untags,
+                idem_key=idem_key,
+                refused={
+                    "mode": mode,
+                    "link": link,
+                    "unlink": unlink,
+                    "rel": rel,
+                    "auto_refresh_days": auto_refresh_days,
+                    "parent_id": parent_id,
+                    "prio": prio,
+                    "meta": meta,
+                    "body": body,
+                    "executor": executor,
+                    "job_type": job_type,
+                    "params": params,
+                    "manual": manual,
+                    "template": template,
+                    "gripe_id": gripe_id,
+                    "section": section,
+                    "board": board,
+                    "lane": lane,
+                    "iterations": iterations,
+                    "after": after,
+                    "context": context,
+                    "repo": repo,
+                    "slices": slices,
+                    "glue": glue,
+                    "bump": bump,
+                },
+            )
         # ``put`` creates, or (id=N + text=) appends a comment. ``id``
         # isn't forwarded to ``super().put()`` below (it's consumed here for
         # the parent/tier bookkeeping), so the base's own id-rejection never
@@ -1717,6 +1772,131 @@ class TodoHandler(NumericRefHandler):
                 f"ask td{resp.ref_id} raised — {plan_log.first_line(text)}",
             )
         return resp
+
+    def _append_answer_comment(
+        self, ref: Ref, answer: str, idem_key: str | None
+    ) -> Response:
+        """The batch's append step: the one answer comment on ``ref`` —
+        a method (not a loop lambda) so ``ref`` binds per ask, cleanly."""
+        return tl.append_comment(
+            self.store,
+            ref,
+            kind=self.kind,
+            comment_kind=_COMMENT_KIND,
+            text=answer,
+            idem_key=idem_key,
+        )
+
+    def _put_answer_batch(
+        self,
+        ids: list[str | int],
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        idem_key: str | None,
+        refused: dict[str, Any],
+    ) -> Response:
+        """``put(id=[...], text='answer: …')`` — answer a list of asks with
+        one answer in one call (gr735227).
+
+        The coordinator resolved ~25 rescue and breaker asks with one put
+        each, the same answer on most. Only targets carrying an ask-user
+        marker (including legacy ask-user:* tags) qualify; malformed ids
+        and ordinary todos are named refusals, so valid asks still run.
+        The batch appends the same comment
+        to every answerable ask, ``tags=``/``untags=`` riding along
+        (:meth:`_append_then_link`, so the per-ask guards the
+        one-at-a-time put runs — claim CAS, ``STATUS:done`` artifact
+        evidence, tag validation — fire on each answered ask, one
+        transaction per ask). An ask this source may not answer — from a
+        worker source, a lane-breaker ask, a ``release-review-wait:`` ask
+        or an ``approval`` ask (:func:`guards.ask_answer_refusal`) — is
+        refused in the batch and named; the rest go through. The batch is
+        a convenience, never a new permission: it grants nothing the
+        single-id ``put(id=N, text=…)`` doesn't.
+        """
+        given = sorted(k for k, v in refused.items() if v is not None)
+        if given:
+            raise BadInput(
+                f"put on existing {self._sense()} ids is not supported "
+                f"({given} are not accepted); text= appends the one answer "
+                "to every id, tags=/untags= ride along",
+                next=(
+                    f"put(kind={self.kind!r}, id=[<ids>], text='answer: …', "
+                    "tags=[...], untags=[...])"
+                ),
+            )
+        if text is None or not text.strip():
+            raise BadInput(
+                "put(id=[...]) answers a list of asks with one comment — "
+                "text= (the answer) is required",
+                next=(
+                    f"put(kind={self.kind!r}, id=[<ids>], text='answer: …', "
+                    "tags=['STATUS:done'], untags=['ask-user'])"
+                ),
+            )
+        if not ids or len(ids) > BATCH_ID_CAP:
+            self._coerce_ids(ids)  # Keep the shared batch size contract.
+        assert text is not None
+        answer = text
+        answered: list[tuple[int, str]] = []
+        refusals: list[tuple[str, str]] = []
+        seen: set[int] = set()
+        for raw in ids:
+            label = str(raw)
+            try:
+                [ref_id] = self._coerce_ids([raw])
+                label = f"td{ref_id}"
+                if ref_id in seen:
+                    continue
+                seen.add(ref_id)
+                ref = self._resolve_live_ref(ref_id)
+                ask_tags = [str(t) for t in self.store.tags_for(ref.id)]
+                if not guards.has_ask_user_tag(ask_tags):
+                    refusals.append((label, "not an ask: missing ask-user tag"))
+                    continue
+                why = guards.ask_answer_refusal(ask_tags, ref.meta)
+                if why is not None:
+                    refusals.append((label, why))
+                    continue
+                resp = self._append_then_link(
+                    partial(self._append_answer_comment, ref, answer, idem_key),
+                    id=ref.id,
+                    link=None,
+                    unlink=None,
+                    rel=None,
+                    tags=tags,
+                    untags=untags,
+                    what=f"{self._sense()} comment",
+                )
+            except PrecisError as exc:
+                # A per-ask refusal (dead id, refused tag, a guard): name
+                # the ask and let the rest of the batch go through — each
+                # ask is checked on its own (gr735227). A non-PrecisError
+                # (a real bug) propagates; the ask's own transaction has
+                # already rolled its partial write back.
+                refusals.append((label, exc.cause))
+                continue
+            answered.append((ref.id, resp.body))
+        if not answered:
+            named = "; ".join(f"{label}: {why}" for label, why in refusals)
+            raise BadInput(
+                f"no ask in id=[...] may be answered by this source: {named}",
+                next="an owner source (web:owner / cli) answers those",
+            )
+        handles = ", ".join(f"td{i}" for i, _ in answered)
+        body = f"answered {len(answered)} asks ({handles}) with one comment" + "".join(
+            f"\n- {part}" for _, part in answered
+        )
+        if refusals:
+            named = "; ".join(f"{label}: {why}" for label, why in refusals)
+            body += (
+                f"\n\nrefused (named, not answered): {named}.\n"
+                "The batch is a convenience, never a new permission — "
+                "answer the refused ones from an owner source."
+            )
+        return Response(body=body, ref_id=answered[0][0])
 
     def _put_plan(
         self,
@@ -3320,7 +3500,38 @@ class TodoHandler(NumericRefHandler):
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))
+        breaker = (ref.meta or {}).get("breaker")
+        if isinstance(breaker, dict) and not any(
+            t.prefix == "STATUS" and t.value in TERMINAL_TODO_STATUSES for t in tags
+        ):
+            # gr735227: the ask card says what closing it releases — the
+            # held lanes/host and the breaker reset — without a SQL read
+            # of meta.breaker.
+            out.append("")
+            out.append(
+                f"breaker: holds {_breaker_hold_summary(breaker, ref.created_at)}"
+            )
+            out.append(f"closing it releases: {_breaker_release_note(breaker)}")
         return out
+
+    def _list_row_time_cells(self, ref: Ref, now: datetime) -> dict[str, str]:
+        """Adds the ``holds`` cell to every todo search row: the lane(s)
+        and host a lane-breaker ask holds out of dispatch, and since when
+        (gr735227). Empty for every other row, and the table drops an
+        all-empty column — the column appears only when a breaker ask is
+        on the page."""
+        cells = super()._list_row_time_cells(ref, now)
+        breaker = (ref.meta or {}).get("breaker")
+        cells["holds"] = (
+            _breaker_hold_summary(breaker, ref.created_at)
+            if isinstance(breaker, dict)
+            and not any(
+                t.prefix == "STATUS" and t.value in TERMINAL_TODO_STATUSES
+                for t in self.store.tags_for(ref.id)
+            )
+            else ""
+        )
+        return cells
 
     def _body_text(self, ref: Ref) -> str | None:
         """The todo's optional details body from its ``todo_body`` chunk,
