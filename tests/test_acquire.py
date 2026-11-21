@@ -7,6 +7,9 @@ test stays offline; the identifier parser is unit-tested standalone.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from precis.dispatch import Hub
@@ -20,6 +23,31 @@ from precis.handlers.paper import (
 from precis.store import Store
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from tests.conftest import record_handle
+
+
+def test_doi_alias_check_without_pdf_extras() -> None:
+    """Exercise the DOI registry check in a fresh process without RapidFuzz."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from unittest.mock import patch
+
+sys.modules["rapidfuzz"] = None
+
+from precis.handlers import paper
+
+doi = "10.1039/c7cp06180c"
+registry = {"title": "Graphene heterostructures"}
+s2 = {"title": "Unrelated mining research", "s2_id": "other-work"}
+with patch.object(paper, "_lookup_doi_registry", return_value=registry):
+    assert paper._poisoned_s2_cluster_registry(s2, doi) == registry
+""",
+        ],
+        check=True,
+    )
 
 
 @pytest.fixture

@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from rapidfuzz import fuzz
-
 from precis.ingest.literature import surname_from_name
 from precis.ingest.pdf_sidecar import doi_in_related_context
 from precis.utils.title_merge import _STOPWORDS, content_tokens
@@ -108,6 +106,8 @@ def _normalize(text: str) -> str:
 
 def _title_score(title: str, text: str) -> float:
     """Best partial_ratio of title against text, trying subtitle variants."""
+    from rapidfuzz import fuzz
+
     score = fuzz.partial_ratio(title, text)
     # If full title didn't match well, try the main title (before : or —)
     for sep in (":", " - ", " — ", " – "):
@@ -231,6 +231,8 @@ def verify_metadata(
 
     authors = header.get("authors", [])
     if authors:
+        from rapidfuzz import fuzz
+
         author_pass = 0
         author_checked = 0
         author_warnings: list[str] = []

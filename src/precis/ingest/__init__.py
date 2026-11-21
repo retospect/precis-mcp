@@ -33,6 +33,8 @@ outright). Otherwise an ordinary DOI survives an inconclusive registry check
 title/author disagreement drops it. A ``doi:`` put whose S2 cluster would add
 arXiv/S2 aliases is registry-checked too, and a clear mismatch discards the
 cluster.
+Title-token overlap is available on core installs for these checks.
+Only fuzzy PDF verification loads the optional RapidFuzz dependency.
 
 The legacy ``.acatome`` bundle parser that this package re-exported
 through B6 was deleted in B7. Callers that still need bundle
