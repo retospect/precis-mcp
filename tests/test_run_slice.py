@@ -715,6 +715,16 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         lambda: calls["devin"]["prices"],
         raising=False,
     )
+    calls["remote_diversity_lanes"] = frozenset()
+    monkeypatch.setattr(
+        run_slice,
+        "_remote_diversity_lanes",
+        lambda ctx, lanes: (
+            frozenset()
+            if ctx.meta["params"].get("target_node")
+            else calls["remote_diversity_lanes"]
+        ),
+    )
     # Lane binary presence (gr676054): the pick's host-adapter filter
     # and the pinned-lane guard — every adapter's bin resolves by
     # default; a test names the absent ones in ``calls["bins_absent"]``.
@@ -12241,6 +12251,214 @@ def test_submit_validate_refuses_on_the_unnamed_session_adapter(
     assert ctx.failure is not None and "refusing the launch" in ctx.failure
     assert "codex_exec" in ctx.failure
     assert seams["launch"] == []
+
+
+def test_submit_validate_parks_for_a_satisfier_beyond_this_host(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr739375 (td732638's shape): the pick's refusal binds only the
+    lanes THIS host can exec — a lane in the table that satisfies the
+    MUST somewhere else parks the job for a host that can run it; the
+    coordinator ask is for a refusal no lane anywhere could answer."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(monkeypatch, *SEED_LANES)
+    # Only codex's adapter is ready on this host: devin and claude-sub
+    # are exec gaps, kimi stays disabled — the pick's candidate set is
+    # the codex lane alone.
+    seams["bins_absent"] = {"devin_tree", "claude_p", "kimi_tree"}
+    seams["remote_diversity_lanes"] = frozenset({"devin", "claude-sub"})
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (
+            frozenset({"kimi-for-coding", "swe-2-high"}),
+            frozenset(),
+            None,
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx = _Ctx(store, {"todo_id": 42})
+    parks: list[str] = []
+
+    def _park(_wake: Any, why: str) -> bool:
+        parks.append(why)
+        return True
+
+    ctx.defer = _park
+    handle = run_slice.submit(ctx, None)
+    assert handle is None and ctx.failure is None
+    assert parks and "different model" in parks[0]
+    # The waiter names the lanes whose slot or host frees it.
+    assert ctx.meta_set["lane_wait"] == ["devin", "claude-sub"]
+    # A pick-local refusal never stamps the ladder-cap mark.
+    assert run_slice.MODEL_RULE_KEY not in ctx.meta_set
+    assert seams["launch"] == []
+
+
+def test_submit_validate_parks_a_pick_on_the_unknown_adapter(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr739375 (td732114's shape): the code session's model was never
+    recorded — every lane but codex's proves the difference by ADAPTER,
+    but this host execs only codex — the pick-local refusal parks for
+    the host where the provable lanes live."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(monkeypatch, *SEED_LANES)
+    seams["bins_absent"] = {"devin_tree", "claude_p", "kimi_tree"}
+    seams["remote_diversity_lanes"] = frozenset({"devin", "claude-sub"})
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), frozenset({"codex_exec"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx = _Ctx(store, {"todo_id": 42})
+    parks: list[str] = []
+
+    def _park(_wake: Any, why: str) -> bool:
+        parks.append(why)
+        return True
+
+    ctx.defer = _park
+    handle = run_slice.submit(ctx, None)
+    assert handle is None and ctx.failure is None
+    assert parks and "different model" in parks[0]
+    assert ctx.meta_set["lane_wait"] == ["devin", "claude-sub"]
+    assert run_slice.MODEL_RULE_KEY not in ctx.meta_set
+    assert seams["launch"] == []
+
+
+def test_submit_validate_rung_refusal_climbs_without_the_stamp(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr739375 (td700783's shape): a ladder rung's lane pin is the
+    contract — a rung that cannot satisfy the MUST while OTHER lanes
+    could fails unstamped, an ordinary failure the climb spends past
+    toward the rung whose lane offers one."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(monkeypatch, *SEED_LANES)
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (
+            frozenset({"claude-sonnet-5-5", "gpt-6.1-solo"}),
+            frozenset(),
+            None,
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    # The rung pins codex: a lane with no models and an unnameable
+    # account default cannot prove a difference — but devin and
+    # claude-sub could, so the refusal is this rung's, not the fleet's.
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is None
+    assert ctx.failure is not None and "different model" in ctx.failure
+    # Unstamped: plan_dispatch's instant-cap read finds no mark and the
+    # ladder climbs to the next rung instead of filing the ask.
+    assert run_slice.MODEL_RULE_KEY not in ctx.meta_set
+    assert ctx.meta_set["diversity_retry"] == {"lane": "codex", "model": None}
+    assert "wait_parks" not in ctx.meta_set
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert seams["launch"] == []
+
+
+@pytest.mark.parametrize(
+    "op_params, job_params",
+    [
+        ({}, {"target_node": "maple"}),
+        ({"lane": "codex"}, {"lane": "codex"}),
+        ({"model": "gpt-6.1-solo"}, {"lane": "codex", "model": "gpt-6.1-solo"}),
+    ],
+)
+def test_submit_validate_stamps_when_pins_exclude_alternatives(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    op_params: dict[str, str],
+    job_params: dict[str, str],
+) -> None:
+    codex = replace(
+        next(ln for ln in SEED_LANES if ln.name == "codex"),
+        models=("gpt-6.1-solo",),
+        default_model="gpt-6.1-solo",
+    )
+    use_lanes(monkeypatch, codex, *(ln for ln in SEED_LANES if ln.name != "codex"))
+    seams["bins_absent"] = {"devin_tree", "claude_p", "kimi_tree"}
+    seams["remote_diversity_lanes"] = frozenset({"devin", "claude-sub"})
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset({"gpt-6.1-solo"}), frozenset(), None),
+    )
+    store = _Store()
+    store.add_todo(
+        42,
+        "Validate the fix",
+        meta={"task_class": "validate", "op": {"params": op_params}},
+    )
+    ctx, handle = _submit(store, seams, **job_params)
+    assert handle is None and ctx.failure
+    assert run_slice.MODEL_RULE_KEY in ctx.meta_set
+    assert "lane_wait" not in ctx.meta_set
+    assert seams["launch"] == []
+
+
+def test_remote_diversity_lanes_respects_claim_placement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.workers.executors import _common
+
+    monkeypatch.setenv("PRECIS_NODE", "maple")
+    monkeypatch.setattr(
+        _common,
+        "advertised_by_host",
+        lambda _conn: {
+            "maple": {"claude_bin", "repo_checkout", "git"},
+            "birch": {"codex_bin", "repo_checkout", "git"},
+            "cedar": {"devin_bin", "git"},
+        },
+    )
+    store = _Store()
+    monkeypatch.setattr(
+        store,
+        "pool",
+        types.SimpleNamespace(connection=contextlib.nullcontext),
+        raising=False,
+    )
+    unpinned = _Ctx(store, {"todo_id": 42})
+    assert run_slice._remote_diversity_lanes(unpinned, SEED_LANES) == {"codex"}
+    pinned = _Ctx(store, {"todo_id": 42, "target_node": "maple"})
+    assert not run_slice._remote_diversity_lanes(pinned, SEED_LANES)
+
+
+def test_submit_validate_waits_for_remote_codex_default(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex = next(ln for ln in SEED_LANES if ln.name == "codex")
+    use_lanes(monkeypatch, codex)
+    seams["account_default"]["codex_exec"] = "gpt-6.1-solo"
+    seams["remote_diversity_lanes"] = frozenset({"codex"})
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset({"gpt-6.1-solo"}), frozenset(), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx = _Ctx(store, {"todo_id": 42})
+    ctx.defer = lambda _wake, _why: True
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.meta_set["lane_wait"] == ["codex"]
+    assert run_slice.MODEL_RULE_KEY not in ctx.meta_set
+    assert seams["launch"] == []
+
+    # The other claiming host checks its own config before launching.
+    seams["account_default"]["codex_exec"] = "gpt-6.2-sol"
+    remote_ctx, handle = _submit(store, seams)
+    assert handle is not None
+    assert remote_ctx.meta_set["model"] == "gpt-6.2-sol"
 
 
 def test_poll_stamps_the_cli_reported_model_when_the_launch_was_unnamed(

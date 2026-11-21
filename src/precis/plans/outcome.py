@@ -48,6 +48,16 @@ equal another vendor's, so a test pick on a different adapter is a
 proven difference, while a pick on the same adapter as the unnamed
 session — like a session with neither model nor adapter — still
 refuses (:func:`code_session_models`).
+
+The refusal the pick returns is a CANDIDATE verdict — "nothing in the
+set it was offered satisfies" — not a fleet one (gr739375): the
+candidate table is this host's exec-filtered slice, and a pinned rung
+offers a single lane. Before the caller stamps it for the instant
+ladder cap, :func:`diverse_satisfiers` re-reads the WHOLE lane table;
+a satisfier anywhere else parks an unpinned job for the host that can
+run it and lets a pinned rung fail unstamped into the climb — only an
+empty scan is the fleet-deterministic verdict the coordinator ask is
+for.
 """
 
 from __future__ import annotations
@@ -705,6 +715,48 @@ ALLOWLIST_MODEL_ADAPTERS: frozenset[str] = frozenset({"devin_tree"})
 DIVERSE_BUSY_PREFIX = "run_slice: the different-model lane is busy"
 
 
+def _pinnable(ln: Any, candidate: str) -> bool:
+    """``True`` when the lane's adapter can launch ``candidate`` as
+    a pin — an allowlist adapter (:data:`ALLOWLIST_MODEL_ADAPTERS`)
+    takes only ids in ``models`` and raises ``ValueError`` on
+    anything else; the rest carry any id."""
+    return candidate in ln.models or ln.adapter not in ALLOWLIST_MODEL_ADAPTERS
+
+
+def _outside_model(
+    ln: Any, avoid: frozenset[str], *, read_account: bool = True
+) -> str | None:
+    """One model ``ln`` can launch outside ``avoid`` — ``None`` when it
+    offers none: its first declared model outside the set; else — on a
+    lane declaring none — the account default where this host's vendor
+    config names it and the adapter can launch the pin; else a prefix
+    lane's known fallback (gr660610 — ``claude -p`` runs every
+    ``model_prefix`` id whether or not ``models`` lists it, so a known
+    one outside ``avoid`` is pinnable rather than calling the lane
+    unfit)."""
+    declared = next((m for m in ln.models if m not in avoid), None)
+    if declared is not None:
+        return declared
+    # An unpinned lane runs the account default; where the vendor
+    # config names it, that named id may be the different model —
+    # but only where the adapter can launch the pin.
+    if read_account and not ln.models:
+        named = account_default_model(ln.adapter)
+        if named is not None and named not in avoid and _pinnable(ln, named):
+            return named
+    return next(
+        (
+            m
+            for m in PREFIX_LANE_FALLBACK_MODELS
+            if m not in avoid
+            and ln.model_prefix
+            and ln.accepts_model(m)
+            and _pinnable(ln, m)
+        ),
+        None,
+    )
+
+
 def diverse_model_pick(
     store: Any,
     *,
@@ -753,6 +805,9 @@ def diverse_model_pick(
     move — can carry it, and with no such lane the pick refuses.
     When ``avoid`` is empty, that hop may use an unnamed account
     default: the adapter difference supplies all the required evidence.
+
+    The refusal binds the supplied candidates. The caller checks host and
+    retry reachability before turning a refusal into a coordinator ask.
     """
     from precis.plans import lanes as _lanes
 
@@ -762,39 +817,6 @@ def diverse_model_pick(
     if not avoid and not same_unknown:
         return lane, model, None
 
-    def _pinnable(ln: Any, candidate: str) -> bool:
-        """``True`` when the lane's adapter can launch ``candidate`` as
-        a pin — an allowlist adapter (:data:`ALLOWLIST_MODEL_ADAPTERS`)
-        takes only ids in ``models`` and raises ``ValueError`` on
-        anything else; the rest carry any id."""
-        return candidate in ln.models or ln.adapter not in ALLOWLIST_MODEL_ADAPTERS
-
-    def _alt(ln: Any) -> str | None:
-        declared = next((m for m in ln.models if m not in avoid), None)
-        if declared is not None:
-            return declared
-        # An unpinned lane runs the account default; where the vendor
-        # config names it, that named id may be the different model —
-        # but only where the adapter can launch the pin.
-        if not ln.models:
-            named = account_default_model(ln.adapter)
-            if named is not None and named not in avoid and _pinnable(ln, named):
-                return named
-        # A prefix lane (``claude -p``) runs every ``model_prefix`` id
-        # whether or not ``models`` lists it (gr660610): pin a known
-        # one outside ``avoid`` rather than call the lane unfit.
-        return next(
-            (
-                m
-                for m in PREFIX_LANE_FALLBACK_MODELS
-                if m not in avoid
-                and ln.model_prefix
-                and ln.accepts_model(m)
-                and _pinnable(ln, m)
-            ),
-            None,
-        )
-
     # A resolved model that already differs needs nothing — unless the
     # lane runs a vendor whose code session's model is unknown: the
     # unrecorded default could BE this very id (gr702143).
@@ -802,7 +824,7 @@ def diverse_model_pick(
         return lane, model, None
 
     if not same_unknown:
-        alt = _alt(lane)
+        alt = _outside_model(lane, avoid)
         if alt is not None:
             return (
                 lane,
@@ -853,7 +875,7 @@ def diverse_model_pick(
         and ln.name not in backed
         and ln.adapter not in unknown_adapters
         and live.get(ln.name, 0) < ln.cap
-        and (not avoid or _alt(ln) is not None)
+        and (not avoid or _outside_model(ln, avoid) is not None)
     ]
     if not paid_ok and any(ln.cost_class != _lanes.COST_METERED for ln in fit):
         fit = [ln for ln in fit if ln.cost_class != _lanes.COST_METERED]
@@ -867,7 +889,7 @@ def diverse_model_pick(
             and ln.fits(task_class)
             and ln.adapter not in unknown_adapters
             and (ln.name in backed or live.get(ln.name, 0) >= ln.cap)
-            and (not avoid or _alt(ln) is not None)
+            and (not avoid or _outside_model(ln, avoid) is not None)
         )
         if busy:
             outside = sorted(avoid) or sorted(unknown_adapters)
@@ -889,11 +911,48 @@ def diverse_model_pick(
     )
     return (
         best,
-        _alt(best),
+        _outside_model(best, avoid),
         f"run_slice: test session must differ from the run's code "
         f"model(s) {sorted(avoid)}; re-picked lane {best.name!r} "
-        f"on {_alt(best)!r} (was {lane.name!r} "
+        f"on {_outside_model(best, avoid)!r} (was {lane.name!r} "
         f"{model or model_pin or 'the account default'})",
+    )
+
+
+def diverse_satisfiers(
+    lanes: Any,
+    *,
+    task_class: str,
+    avoid: frozenset[str],
+    unknown_adapters: frozenset[str] = frozenset(),
+    remote_lanes: frozenset[str] = frozenset(),
+) -> tuple[Any, ...]:
+    """Find potential satisfiers among the caller's reachable lanes.
+
+    Enabled lanes in a health park can recover. An unnamed code model
+    rules out its adapter. A reachable remote Codex account can name a
+    different default in its own config, so only its worker can prove
+    that model at launch. Local lanes use the local account config.
+    """
+    return tuple(
+        ln
+        for ln in lanes
+        if ln.enabled
+        and ln.fits(task_class)
+        and ln.adapter not in unknown_adapters
+        and (
+            not avoid
+            or (
+                ln.name in remote_lanes and ln.adapter == "codex_exec" and not ln.models
+            )
+            or _outside_model(
+                ln,
+                avoid,
+                read_account=ln.name not in remote_lanes
+                or ln.adapter in {"claude_p", "kimi_tree"},
+            )
+            is not None
+        )
     )
 
 
@@ -1013,6 +1072,7 @@ __all__ = [
     "classify",
     "code_session_models",
     "diverse_model_pick",
+    "diverse_satisfiers",
     "gate_lied_rate",
     "gate_pass",
     "hard_gates",

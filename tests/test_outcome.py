@@ -1011,6 +1011,63 @@ def test_unknown_model_hops_to_unnamed_different_adapter(
         assert note.startswith(outcome.DIVERSE_BUSY_PREFIX)
 
 
+def test_diverse_satisfiers_checks_eligible_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enabled lanes can qualify during a health park. A known code
+    model needs a provably different pick, and an unknown code model
+    rules out its adapter. The caller supplies the reachable lanes.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))  # no vendor config leaks in
+    codex = replace(_lane("codex"), adapter="codex_exec")  # models=()
+    devin = replace(
+        _lane("devin", models=("swe-2-medium",), default_model="swe-2-medium"),
+        adapter="devin_tree",
+    )
+    claude = _lane(
+        "claude-sub",
+        models=("claude-haiku-5-5",),
+        default_model="claude-haiku-5-5",
+    )
+    healing = replace(
+        _lane("healing", models=("m8",), default_model="m8"),
+        parked_reason="probe:auth",
+    )
+    off = replace(_lane("off", models=("m9",), default_model="m9"), enabled=False)
+    table = (codex, devin, claude, healing, off)
+    # The run named its code models: a lane must offer one outside the
+    # set — the model-less codex lane cannot name its default locally.
+    # The disabled lane never counts; a health-parked
+    # lane self-heals and counts.
+    sat = outcome.diverse_satisfiers(
+        table,
+        task_class="validate",
+        avoid=frozenset({"kimi-for-coding", "swe-2-high"}),
+    )
+    assert [ln.name for ln in sat] == ["devin", "claude-sub", "healing"]
+    # The code model was never recorded — only its adapter: a lane on
+    # the same adapter proves nothing, every lane off it does (the
+    # adapter difference IS the proof, unnamed default and all).
+    sat = outcome.diverse_satisfiers(
+        table,
+        task_class="validate",
+        avoid=frozenset(),
+        unknown_adapters=frozenset({"codex_exec"}),
+    )
+    assert [ln.name for ln in sat] == ["devin", "claude-sub", "healing"]
+    # Nothing satisfies — the disabled lane and the same-adapter lane
+    # are the ask's answer, not a waiter's.
+    assert (
+        outcome.diverse_satisfiers(
+            (codex, off),
+            task_class="validate",
+            avoid=frozenset(),
+            unknown_adapters=frozenset({"codex_exec"}),
+        )
+        == ()
+    )
+
+
 def test_diverse_pick_never_pins_a_default_the_adapter_cannot_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

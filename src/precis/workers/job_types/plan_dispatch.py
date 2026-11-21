@@ -832,12 +832,9 @@ MOOT_VERIFIED_KEY = "moot_verified"
 #: coordinator's call, not another lane retry's.
 COORDINATOR_ASK_KEY = "coordinator_ask"
 
-#: ``run_slice.MODEL_RULE_KEY``, restated — the same one-way rule (a
-#: test pins the two spellings equal). The failed job carries the
-#: different-model refusal's reason (gr657521): the verdict is
-#: deterministic — no ladder rung changes it — so the tick asks the
-#: coordinator at once instead of spending the retry budget on
-#: identical refusals.
+#: The launch cannot prove diversity on a reachable host or retry rung,
+#: or lacks prior-session evidence. The tick asks the coordinator without
+#: spending the retry budget. Mirrors ``run_slice.MODEL_RULE_KEY``.
 MODEL_RULE_KEY = "model_rule_refusal"
 
 #: Consecutive ``_notify_gripe`` raises on a verified task moot —
@@ -6291,13 +6288,10 @@ def _climb_start(
         for j in plan.jobs(n)
         if j.status in _JOB_ENDED and not _no_attempt(j) and not _is_conflict_job(j)
     ]
-    prev = (
-        _lanes.rung_index(
-            rungs, ended[-1].meta.get("lane"), ended[-1].meta.get("model")
-        )
-        if ended
-        else None
-    )
+    pick = ended[-1].meta if ended else {}
+    # A validator can decline a rung before stamping a launched session.
+    rung = _dict_of(pick.get("diversity_retry")) or pick
+    prev = _lanes.rung_index(rungs, rung.get("lane"), rung.get("model"))
     return min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
 
 
@@ -6522,9 +6516,8 @@ def _capped(
     # no rung and no rescue can fix the failure (td584381 S1a).
     if _human_hit(plan, n):
         return True
-    # A different-model refusal caps at once: it is a routing verdict,
-    # not a lane failure — the next rung hits the same refusal
-    # (gr657521).
+    # A stamped refusal caps immediately. Submit checked the reachable
+    # launch and retry routes before stamping it (gr657521, gr739375).
     if _model_rule_hit(plan, n) is not None:
         return True
     if _land_again_capped(plan, n):
@@ -10651,10 +10644,7 @@ def _step_hygiene(
                 block_node=True,
             )
         elif model_rule is not None:
-            # gr657521: the test session's different-model rule refused
-            # the launch — a routing verdict, not a lane failure. Every
-            # rung hits the same refusal, so the stamp caps the ladder
-            # on the first attempt and the call goes to the
+            # A stamped diversity refusal goes directly to the
             # coordinator: pin ``params.model``/``params.lane`` to a
             # model outside the run's code sessions', record the code
             # session's model when an unresolved default was the

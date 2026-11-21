@@ -533,12 +533,8 @@ VALIDATED_NOREPRO_KEY = "validated_norepro"
 #: leaves the node alone while its ``_step_ci_rerun`` owns it.
 NOREPRO_WAIT_TAG = "waiting-for:ci-rerun"
 
-#: Job-meta record ``submit`` stamps when it refuses a launch on the
-#: test session's different-model rule (gr657521): the refusal is
-#: deterministic — no ladder rung changes it — so ``plan_dispatch``
-#: sends the node straight to the coordinator ask instead of spending
-#: the retry budget on identical refusals. Carries the refusal's
-#: reason. Restated in ``plan_dispatch`` (the same one-way rule).
+#: A different-model refusal with no reachable launch or retry, or missing
+#: prior-session evidence. The dispatcher asks the coordinator immediately.
 MODEL_RULE_KEY = "model_rule_refusal"
 
 #: Lane-wait parks before the wait is given up (~6 h at
@@ -737,12 +733,34 @@ def resolve_model(
     return _router_model(Tier.FRONTIER)
 
 
+def _remote_diversity_lanes(ctx: Any, lanes: tuple[_lanes.Lane, ...]) -> frozenset[str]:
+    """Find lanes another live host advertises for this job's repository."""
+    from precis.workers.executors._common import advertised_by_host, placement_gap
+
+    params = (ctx.meta or {}).get("params") or {}
+    if params.get("target_node") or not lanes:
+        return frozenset()
+    with ctx.store.pool.connection() as conn:
+        remote = advertised_by_host(conn)
+    remote.pop(_slice_park.node_name(), None)
+    return frozenset(
+        ln.name
+        for ln in lanes
+        if not placement_gap(
+            {"job_type": "run_slice", "params": params, "adapter": ln.adapter},
+            remote,
+        )
+    )
+
+
 def _diverse_test_pick(
     ctx: Any,
     *,
     lane: _lanes.Lane,
     model: str | None,
     candidates: tuple[_lanes.Lane, ...],
+    reachable: tuple[_lanes.Lane, ...],
+    lane_pinned: bool,
     counts: dict[str, int] | None,
     backoffs: dict[str, datetime] | None,
     paid_ok: bool,
@@ -750,15 +768,12 @@ def _diverse_test_pick(
     task_class: str,
     todo_id: int,
 ) -> tuple[_lanes.Lane | None, str | None, str | None]:
-    """Route the test session around the run's code models (gr595545):
-    reads the prior picks off the sibling sessions and delegates to
-    ``plans.outcome.diverse_model_pick``; the pick's reasoning lands on
-    the job's event log either way. ``(None, None, note)`` when nothing
-    satisfies the MUST — the caller refuses the launch; ``(None, None,
-    None)`` when the launch PARKED instead — the pick's store read
-    failed, a transient fault the caller must not read as a refusal
-    (review td655142: an unestablishable prior model may never ride an
-    empty avoid past the different-model rule)."""
+    """Prove model diversity before launch and classify a refused pick.
+
+    A candidate can be temporarily busy, runnable on another host, or
+    available only on a later retry rung. A refusal with no reachable
+    alternative is returned to submit for the coordinator stamp.
+    """
     try:
         avoid, unknown_adapters, unknown = _outcome.code_session_models(
             ctx.store, todo_id
@@ -806,11 +821,43 @@ def _diverse_test_pick(
     )
     if note:
         ctx.append_chunk("job_event", note)
-    if new_lane is None and note and note.startswith(_outcome.DIVERSE_BUSY_PREFIX):
-        # A busy different-model lane is a wait (gr674214): park, never
-        # refuse — a refusal mints a coordinator ask per node.
-        _park_lane_full(ctx, note)
-        return None, None, None
+    if new_lane is None and note is not None:
+        possible = tuple(
+            ln
+            for ln in reachable
+            if ln.enabled
+            and ln.adapter in ADAPTERS
+            and ln.adapter not in unknown_adapters
+        )
+        local = tuple(ln for ln in possible if _adapter_ready(ln.adapter))
+        local_fit = _outcome.diverse_satisfiers(
+            local, task_class=task_class, avoid=avoid, unknown_adapters=unknown_adapters
+        )
+        current = tuple(ln for ln in local_fit if not lane_pinned or ln is lane)
+        if current:
+            _park_lane_full(ctx, note, lanes=[ln.name for ln in current])
+            return None, None, None
+        try:
+            remote = _remote_diversity_lanes(ctx, possible)
+        except Exception:
+            log.warning("run_slice: validator placement read failed", exc_info=True)
+            _park_lane_full(ctx, "run_slice: validator placement read failed")
+            return None, None, None
+        remote_fit = _outcome.diverse_satisfiers(
+            (ln for ln in possible if ln.name in remote),
+            remote_lanes=remote,
+            task_class=task_class,
+            avoid=avoid,
+            unknown_adapters=unknown_adapters,
+        )
+        current = tuple(ln for ln in remote_fit if not lane_pinned or ln is lane)
+        if current:
+            _park_lane_full(ctx, note, lanes=[ln.name for ln in current])
+            return None, None, None
+        if lane_pinned and (local_fit or remote_fit):
+            ctx.set_meta(diversity_retry={"lane": lane.name, "model": model})
+            ctx.record_failure(note)
+            return None, None, None
     return new_lane, new_model, note
 
 
@@ -7103,11 +7150,47 @@ def submit(ctx: Any, spec: Any) -> Any:
     # otherwise falls back to its adapter — a different vendor's lane
     # proves the difference).
     if task_class == _outcome.TEST_TASK_CLASS and lane is not None:
+        # The todo's pins survive escalation. The job's lane pin can
+        # also come from escalation, in which case only the ladder tail
+        # can offer an alternative on the next attempt.
+        op = (todo.meta or {}).get("op")
+        op_params = (op.get("params") or {}) if isinstance(op, dict) else {}
+        lane_pinned = pinned is not None and lane is pinned
+        retry_lane = op_params.get("lane")
+        retry_model = op_params.get("model")
+        reachable = tuple(
+            ln
+            for ln in lane_table
+            if (cap is None or _lane_offers(ln, cap))
+            and (not exclude or ln.vendor != exclude)
+            and (not retry_lane or ln.name == retry_lane or not lane_pinned)
+            and ("model" not in op_params or not lane_pinned or ln is lane)
+            and (lane_pinned or model_pin is None or ln.accepts_model(model_pin))
+            and (
+                not retry_model
+                or left_pin
+                or ln.accepts_model(str(retry_model).strip())
+            )
+        )
+        if lane_pinned and "model" not in op_params:
+            rungs = _lanes.ladder(task_class, lanes=lane_table)
+            if retry_lane:
+                rungs = tuple(r for r in rungs if r.lane == retry_lane)
+            idx = _lanes.rung_index(rungs, lane.name, model)
+            if idx is not None:
+                tail = {r.lane for r in rungs[idx:]}
+                reachable = tuple(ln for ln in reachable if ln.name in tail)
         lane, model, diversity_note = _diverse_test_pick(
             ctx,
             lane=lane,
             model=model,
-            candidates=pick_table or (lane,),
+            candidates=tuple(
+                ln
+                for ln in pick_table or (lane,)
+                if model_pin is None or ln.accepts_model(model_pin)
+            ),
+            reachable=reachable,
+            lane_pinned=lane_pinned,
             counts=counts,
             backoffs=backoffs,
             paid_ok=paid_ok,
@@ -7117,9 +7200,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         if lane is None:
             if diversity_note is not None:
-                # gr657521: the different-model refusal is
-                # deterministic — the stamp routes the node straight
-                # to the coordinator ask; no ladder rung changes it.
+                # No reachable route proves diversity. Ask immediately
+                # instead of spending retries on the same refusal.
                 ctx.set_meta(**{MODEL_RULE_KEY: diversity_note[:500]})
                 ctx.record_failure(diversity_note)
             return None

@@ -56,4 +56,9 @@ pressure: dispatch blocks the node on one coordinator ask before minting a
 slice. Submit checks again for configuration changes after minting. Full
 lanes, health parks and host backoffs retain the transient wait path; a
 coordinator repairs the class offering and closes the ask to release it.
+
+Validation submit proves model diversity using prior code-session records.
+Coordinator escalation considers only hosts and retry lanes the job can
+reach. An eligible remote Codex host resolves its own account default
+before launch because model defaults can vary by host.
 """
