@@ -145,6 +145,8 @@ Rules the door enforces:
   edge. Those edges are motivation, never support: evidence refinement is
   deliberately blind to them, because widening a guess by searching for
   evidence that agrees with it is a confirmation engine.
+  Zero `corroborates` or other evidence edges on a hypothesis hub is
+  expected even when the conjecture is well motivated.
 - The sentence faces the blocking lint, **minus the epistemic pair**.
   `no-epistemic-mode` and `no-evidence-verb` ask how a finding was
   established, and a conjecture has no answer — so naming a technique in
