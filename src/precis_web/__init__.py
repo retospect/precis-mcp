@@ -49,13 +49,14 @@ reservoir links from kinetic fork probabilities; changing it would imply
 a measured barrier. Legacy graphs fall back to ``kind``.
 Unknown barriers draw dashed ``Ea n/a`` connectors, never zero-height peaks.
 
-**Smartdraft review.** Shared block widget shows read-only F/C/S/A flags
-(✓ current / ~ stale / – unreviewed); structure/adversarial stay on prose,
-headings show S/A. One matrix for full-page and lazy blocks avoids ledger
-queries and keeps flags aligned with the tooltip. Machine-authored
-blocks (``store.drafts.authored_provenance``) get an inner-shadow
-stripe, since grounding provenance owns the left border; "around here"
-is ``draft_eyes.expand_around``.
+**Smartdraft review.** Block widget shows read-only F/C/S/A flags
+(✓ current / ~ stale / – unreviewed); structure/adversarial on prose,
+S/A on headings. One matrix for full-page and lazy blocks avoids ledger
+queries and tooltip drift. Machine-authored blocks
+(``store.drafts.authored_provenance``) get an inner-shadow stripe —
+grounding provenance owns the left border; "around here" is
+``draft_eyes.expand_around``. A per-chunk ⚠ marker
+(``smartdraft.chunk_issues``) lists issues.
 
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131; roster via ``precis users``); accounts have

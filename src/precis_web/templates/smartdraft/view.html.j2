@@ -215,6 +215,10 @@
   .sd-review-dot.sd-trust-unverified::after { content: "?"; color: rgb(var(--text-warning)); font-weight: 700; }  /* amber-600 */
   .sd-review-dot.sd-integrity::after { content: "!"; color: rgb(var(--text-danger)); font-weight: 700; }
   .sd-review-dot.sd-trust-unsupported::after { content: "‼"; color: rgb(var(--text-danger)); font-weight: 700; }
+  /* The ⚠ per-chunk issue marker (gr738927) — one span beside the review
+     dot when ANY check has a finding on this paragraph; the title hover
+     lists them all (``data-issue-kinds`` keeps the kinds greppable). */
+  .sd-issue-mark { cursor: help; font-size: 12px; line-height: 1; vertical-align: middle; }
   .sd-review-menu { white-space: normal; }
   /* Toolbar rollup badge (item 8) — N/M, emerald "review-complete" at N=M>0. */
   .sd-badge-rollup { border: 1px solid rgb(var(--border-line)); color: rgb(var(--text-fg-subtle)); }         /* slate-200/500 */

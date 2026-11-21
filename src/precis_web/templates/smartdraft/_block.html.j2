@@ -230,6 +230,9 @@
   {%- endfor -%}
 </span>
 {% endif %}
+{%- if review.issues -%}
+<span class="sd-issue-mark text-warning" data-issue-kinds="{{ review.issues | map(attribute='kind') | join(' ') }}" title="{% for i in review.issues %}⚠ {{ i.kind }}: {{ i.text }}{{ '\n' if not loop.last }}{% endfor %}" aria-label="{{ review.issues | length }} issue(s) on this paragraph">⚠</span>
+{% endif -%}
 <span class="relative inline-block" x-data="{ open: false }" @click.outside="open = false">
   <button type="button" @click="open = !open"
           title="{{ review.tooltip }}{% if not review.integrity_ok %}

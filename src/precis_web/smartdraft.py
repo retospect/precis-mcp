@@ -1465,6 +1465,196 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
     return True
 
 
+def retraction_issues_in(
+    store: Any, text: str, cache: dict[Any, Any]
+) -> list[dict[str, str]]:
+    """``{"kind", "text"}`` issues for the retraction state of the papers
+    ``text`` cites — :func:`chunk_issues`'s citation source. A set
+    ``refs.retraction_status`` (retracted / corrected /
+    expression of concern) → kind ``retracted-citation``; a NULL
+    ``refs.retraction_checked_at`` → kind ``unchecked-citation``: "never
+    checked" is a first-class state the retraction pane's ``unchecked``
+    bucket and ``retraction_coverage_entries``'s red warning both surface,
+    never a silent clean (gr725269). A missing ref earns no issue here —
+    a dead cite is :func:`cite_integrity_ok`'s flag. Read-time, like that
+    function.
+
+    Citation mining and resolution are the export's own, so the marker
+    flags exactly what the export retraction report counts: the
+    ``_COMBINED_BODY`` grammar (bracketed ``[pa5]``/``[pc9]``, display
+    links ``[source](pa5)``, bare ``pa<id>`` handles, ``[§slug~n]``,
+    ``paper:slug~n``, bare cite keys, pasted rawcite lines) resolved via
+    :func:`precis.export.walker.resolve_cite_handle` (merge redirects and
+    SI parents included) plus :func:`~precis.export.walker.resolve_si_slug`
+    + :func:`precis.export.sources._resolve_source_ref` — the same
+    two-step ``cited_paper_refs`` runs. A ``[fi]`` claim-hub cite is NOT
+    mined: its evidence papers' state is the collated report's view, and
+    its trust is ``claim_trust_for_block``'s lane.
+
+    ``cache`` is shared across the rendered window
+    (:func:`review_payloads_for`); it memoises all three resolution
+    stages so a token/slug cited from several blocks costs one lookup
+    each — ``("h", token)`` → cite key (or ``None``), ``("r", key)`` →
+    resolved ref (or ``None``), plus the ``"si_slug"`` / ``"si_target"``
+    sub-dicts ``resolve_si_slug``/``cite_target_for`` memoise through."""
+    if not text:
+        return []
+    from precis.export import walker
+    from precis.export.latex import _COMBINED_BODY, _RAWCITE_HANDLE, _iter_refs
+    from precis.export.sources import _resolve_source_ref
+    from precis.utils import mentions
+
+    si_cache = cache.setdefault("si_slug", {})
+    si_target = cache.setdefault("si_target", {})
+
+    def _handle_key(token: str) -> str | None:
+        """A paper/patent handle token → its cite key, once per window."""
+        k = ("h", token)
+        if k not in cache:
+            hit = walker.resolve_cite_handle(store, token)
+            cache[k] = hit[0] if hit else None
+        return cache[k]
+
+    def _slug_key(slug: str) -> str:
+        """A written cite slug → its canonical cite key (alias → slug, SI
+        record → parent) — memoised inside ``si_cache``/``si_target``."""
+        key, _is_si = walker.resolve_si_slug(
+            slug,
+            store,
+            si_cache=si_cache,
+            target_cache=si_target,
+            warnings=[],
+        )
+        return key
+
+    def _ref_for(key: str) -> Any | None:
+        """A cite key → its paper/patent/datasheet ref, once per window."""
+        k = ("r", key)
+        if k not in cache:
+            cache[k] = _resolve_source_ref(store, key)
+        return cache[k]
+
+    # (label, ref) per citation the export would resolve, in appearance
+    # order. Dispatch mirrors ``latex._render_reference``'s cite arms;
+    # authoring links, conv handles, non-paper ``kind:id`` mentions and
+    # ``fi`` findings never reach here. ``_iter_refs`` — the same scan
+    # ``_render_inline`` runs — keeps the bare-handle and pasted-rawcite
+    # arms prose-only: inside inline code or plausible math those tokens
+    # are literal content the export cites nothing for (td607394).
+    targets: list[tuple[str, Any]] = []
+    for m in _iter_refs(text, _COMBINED_BODY):
+        label: str | None = None
+        key: str | None = None
+        if m.group("rawcite") is not None:
+            hm = _RAWCITE_HANDLE.match(m.group("rawcite"))
+            if hm is not None:
+                label = hm.group(0)
+                key = _handle_key(label)
+        elif m.group("disp") is not None:
+            tgt = m.group("tgt").strip()
+            if tgt.startswith("§"):
+                cm = mentions.DRAFT_CITE_PATTERN.fullmatch(tgt)
+                if cm is not None:
+                    label = cm.group("slug")
+                    key = _slug_key(label)
+            else:
+                base, _sel = handle_registry.split_selector(tgt)
+                parsed = handle_registry.parse(base)
+                if parsed is not None and parsed[0] in ("paper", "patent"):
+                    label = base
+                    key = _handle_key(tgt)
+        elif m.group("bare") is not None:
+            bare = m.group("bare")
+            if bare[0] == "§":
+                cm = mentions.DRAFT_CITE_PATTERN.fullmatch(
+                    bare + (m.group("sel") or "")
+                )
+                if cm is not None:
+                    label = cm.group("slug")
+                    key = _slug_key(label)
+            elif bare[0] != "¶":
+                tgt = bare + (m.group("sel") or "")
+                parsed = handle_registry.parse(bare)
+                if parsed is not None and parsed[0] in ("paper", "patent"):
+                    label = bare
+                    key = _handle_key(tgt)
+        elif m.group("ref") is not None:
+            if m.group("kind") == "paper":
+                label = m.group("id")
+                key = _slug_key(label)
+        elif m.group("bare_paper") is not None:
+            label = m.group("bare_paper").split("~", 1)[0]
+            key = _slug_key(label)
+        elif m.group("bcite") is not None:
+            token = m.group("bcite")
+            parsed = handle_registry.parse(token)
+            if parsed is not None and parsed[0] in ("paper", "patent"):
+                label = token
+                key = _handle_key(token)
+        if key is None or label is None:
+            continue
+        ref = _ref_for(key)
+        if ref is not None:
+            targets.append((label, ref))
+
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for label, ref in targets:
+        cited_kind = str(getattr(ref, "kind", "") or "paper")
+        status = getattr(ref, "retraction_status", None)
+        if status:
+            kind = "retracted-citation"
+            text = f"cited {cited_kind} [{label}] is {status.replace('_', ' ')}"
+        elif getattr(ref, "retraction_checked_at", None) is None:
+            kind = "unchecked-citation"
+            text = f"cited {cited_kind} [{label}] was never checked for retraction"
+        else:
+            continue
+        if text not in seen:
+            seen.add(text)
+            out.append({"kind": kind, "text": text})
+    return out
+
+
+def chunk_issues(
+    integrity_ok: bool,
+    claim_trust: dict[str, Any] | None,
+    citations: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """The one per-chunk issue list behind the ⚠ triangle in the draft
+    reader: ``[{"kind", "text"}]``, empty when nothing is wrong. Later
+    checks add their findings by appending here; the hover lists them all.
+    ``citations`` is :func:`retraction_issues_in`'s per-cite list —
+    retracted/notice and never-checked cited papers. Soft trust labels
+    (abstract-only / author-vouched) are not issues."""
+    issues: list[dict[str, str]] = []
+    for h in (claim_trust or {}).get("heads", []):
+        if h["label"] == "unsupported":
+            issues.append(
+                {
+                    "kind": "unbacked-claim",
+                    "text": f"[{h['head']}] — no supporting source found for this claim",
+                }
+            )
+        elif h["label"] == "unverified":
+            issues.append(
+                {
+                    "kind": "unverified-claim",
+                    "text": f"[{h['head']}] — claim not yet verified"
+                    + (f": {h['note']}" if h.get("note") else ""),
+                }
+            )
+    issues.extend(citations)
+    if not integrity_ok:
+        issues.append(
+            {
+                "kind": "citation-integrity",
+                "text": "an unresolved or unheld citation",
+            }
+        )
+    return issues
+
+
 def claim_trust_for_block(
     # `Any`, not `Store`: unit tests call this with a bare `object()` —
     # the two store-touching calls (`resolve_head_ref_id`/`claim_trust`)
@@ -1588,19 +1778,32 @@ def review_payloads_for(
 ) -> dict[str, dict[str, Any]]:
     """``{dc: payload}`` for every reviewable node in ``nodes`` — scoped to
     the per-request RENDERED set (the middle pane, or one ``/blocks``
-    hydration window), never the whole draft, because both the integrity
-    and claim-trust flags can hit the store (``no per-block DB hits`` means
-    no per-RENDER-set blowup either — this shares one ``integrity_cache``
-    AND one ``trust_cache`` across the whole call, so a paper/finding
-    cited from several of these blocks costs one store hit, not N; the
-    trust cache is additionally pre-warmed in bulk up front, see
-    :func:`_prepopulate_trust_cache`). Each payload is :func:`review_indicator`'s
-    dict plus ``integrity_ok`` (5c) and ``claim_trust`` (finding-trust-
-    surfaces §3 — ``None`` / ``{"label": "unverified"|"unsupported",
-    "heads": [...]}``, worst-of across the block's cite heads)."""
+    hydration window), never the whole draft, because the integrity,
+    claim-trust and retraction flags can all hit the store (``no per-block
+    DB hits`` means no per-RENDER-set blowup either — this shares one
+    ``integrity_cache``, one ``retraction_cache`` AND one ``trust_cache``
+    across the whole call, so a paper/finding cited from several of these
+    blocks costs one store hit, not N; the trust cache is additionally
+    pre-warmed in bulk up front, see :func:`_prepopulate_trust_cache`).
+    Each payload is :func:`review_indicator`'s dict plus ``integrity_ok``
+    (5c), ``claim_trust`` (finding-trust-surfaces §3 — ``None`` /
+    ``{"label": "unverified"|"unsupported", "heads": [...]}``, worst-of
+    across the block's cite heads) and ``issues`` (:func:`chunk_issues`'s
+    ``[{"kind", "text"}]`` list behind the ⚠ per-chunk marker —
+    unbacked/unverified claim heads, retracted or never-checked cited
+    papers, citation-integrity failures)."""
+    from precis.export._ref_cache import RefLookupMemo
+
     integrity_cache: dict[int, bool] = {}
+    retraction_cache: dict[Any, Any] = {}
     trust_cache: dict[str, Any] = _prepopulate_trust_cache(store, nodes)
     section_titles = _section_titles_for(store, nodes, status_by_chunk)
+    # One lookup memo for the whole rendered window: the two cite checkers
+    # resolve the same handles/slugs, and each caches only its own stage —
+    # the memo makes ``get_ref``/``resolve_handle`` itself once-per-window
+    # (the export's own per-walk answer, ``cited_paper_refs``'s too).
+    # ``Any``: the memo is a delegating proxy, not a ``Store`` subclass.
+    cite_store: Any = RefLookupMemo(store)
     out: dict[str, dict[str, Any]] = {}
     for n in nodes:
         ind = review_indicator(
@@ -1608,8 +1811,13 @@ def review_payloads_for(
         )
         if ind is None:
             continue
-        ind["integrity_ok"] = cite_integrity_ok(store, n.text, integrity_cache)
+        ind["integrity_ok"] = cite_integrity_ok(cite_store, n.text, integrity_cache)
         ind["claim_trust"] = claim_trust_for_block(store, n.text, trust_cache)
+        ind["issues"] = chunk_issues(
+            ind["integrity_ok"],
+            ind["claim_trust"],
+            retraction_issues_in(cite_store, n.text, retraction_cache),
+        )
         out[n.dc] = ind
     return out
 
