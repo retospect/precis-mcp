@@ -492,8 +492,18 @@
     // gets its math typeset — the katex/auto-render scripts are ``defer``
     // in <head>, which always finishes before this fires.
     function renderTexScopes(root) {
+      if (window.katex) {
+        root.querySelectorAll('[data-cloze-math]').forEach((el) => {
+          window.katex.render(el.textContent, el, {
+            displayMode: el.dataset.clozeMath === 'block',
+            throwOnError: false,
+            trust: false,
+          });
+          delete el.dataset.clozeMath;
+        });
+      }
       if (!window.renderMathInElement) return;
-      (root || document).querySelectorAll('.tex-scope').forEach((el) => {
+      root.querySelectorAll('.tex-scope').forEach((el) => {
         window.renderMathInElement(el, {
           delimiters: [
             { left: '$$', right: '$$', display: true },
@@ -510,7 +520,7 @@
     document.addEventListener('htmx:afterSwap', (e) => {
       const target = e.detail && e.detail.target;
       if (!target) return;
-      if (target.matches && target.matches('.tex-scope')) {
+      if (target.matches && target.matches('.tex-scope, [data-cloze-math]')) {
         renderTexScopes(target.parentElement || document);
       } else {
         renderTexScopes(target);

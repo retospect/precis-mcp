@@ -10,16 +10,15 @@ the ``[web]`` extra.
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
 
-**Ref readers.** Memory bodies render Markdown blocks through ``linkify.linkify_toon``;
-inline spans preserve single newlines so older line-oriented bodies remain
-legible. Code stays literal; HTML is escaped.
-``ref_urls`` is the shared native-reader map for Drive,
-handle resolution and tag pivots. Browse-menu membership cannot gate stored
-ref detail: optional kinds still render when their handler is absent. ORCID
-reads its stored identity/authored papers without upstream refresh. File kinds
-read stored chunks; calling filesystem ``get`` could retire a ref merely
-because this web process lacks its originating corpus mount.
-PDF replacements preserve identity (``routes.papers.replace_pdf``).
+**Ref readers.** ``linkify.linkify_toon`` renders memory Markdown, preserving
+single newlines and literal code while escaping HTML. ``ref_urls`` maps Drive,
+handle resolution and tag pivots. Stored detail supports optional kinds with
+absent handlers. ORCID reads stored identity and papers. File readers use
+stored chunks because filesystem ``get`` can retire refs on missing mounts.
+``routes.papers.replace_pdf`` preserves identity.
+
+**Anki cards.** Keep each math span intact so TeX braces and colons stay
+inside cloze answers. KaTeX renders the escaped source.
 
 ``/graph/{kind}/{id}.json`` (``routes/graph.py``) is ``Store.neighbourhood``
 as JSON plus ``ring_group`` buckets.

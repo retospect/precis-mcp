@@ -53,7 +53,7 @@ import bisect
 import re
 import uuid
 from collections.abc import Callable, Collection, Mapping
-from html import escape
+from html import escape, unescape
 
 from markdown_it import MarkdownIt
 from markdown_it.renderer import RendererHTML
@@ -1881,10 +1881,34 @@ def linkify_toon(
     return Markup(html_out)
 
 
-#: A cloze deletion with the cN index + answer + optional ``::hint`` split
-#: out for display. Mirrors ``precis.handlers.anki._CLOZE_RE`` (which drops
-#: the index + hint); here we keep them to render the card legibly.
-_CLOZE_DISPLAY_RE = re.compile(r"\{\{c(\d+)::(.+?)(?:::(.+?))?\}\}", re.DOTALL)
+# Match complete math spans before looking for cloze separators inside them.
+_ANKI_MATH_RE = re.compile(
+    r"<anki-mathjax>.*?</anki-mathjax>|\\\(.*?\\\)|\\\[.*?\\\]", re.DOTALL
+)
+# The atomic token prevents backtracking into a formula to find :: or }}.
+_CLOZE_TOKEN = rf"(?>{_ANKI_MATH_RE.pattern}|.)"
+_CLOZE_DISPLAY_RE = re.compile(
+    rf"\{{\{{c(\d+)::({_CLOZE_TOKEN}+?)(?:::({_CLOZE_TOKEN}+?))?\}}\}}", re.DOTALL
+)
+
+
+def _render_card_text(text: str) -> str:
+    out: list[str] = []
+    pos = 0
+    for match in _ANKI_MATH_RE.finditer(text):
+        out.append(escape(text[pos : match.start()]))
+        math = match[0]
+        if math.startswith("<anki-mathjax>"):
+            tex = unescape(
+                math.removeprefix("<anki-mathjax>").removesuffix("</anki-mathjax>")
+            )
+        else:
+            tex = math[2:-2]
+        mode = "block" if math.startswith(r"\[") else "inline"
+        out.append(f'<span data-cloze-math="{mode}">{escape(tex)}</span>')
+        pos = match.end()
+    out.append(escape(text[pos:]))
+    return "".join(out)
 
 
 def render_cloze(text: str) -> Markup:
@@ -1892,15 +1916,13 @@ def render_cloze(text: str) -> Markup:
 
     ``{{c1::answer::hint}}`` → the *answer*, styled as a highlighted
     deletion with the cloze index as a small superscript and the hint (if
-    any) on hover. Everything outside a deletion is HTML-escaped verbatim
-    (the same untrusted-text contract as :func:`linkify_refs`), so a card
-    body can't inject markup. Text with no cloze deletion renders as plain
-    escaped prose — a safe no-op.
+    any) on hover. Both prose and formula source are HTML-escaped. Complete
+    Anki math spans become targets for the shared client-side KaTeX renderer.
     """
     out: list[str] = []
     pos = 0
     for m in _CLOZE_DISPLAY_RE.finditer(text or ""):
-        out.append(escape(text[pos : m.start()]))
+        out.append(_render_card_text(text[pos : m.start()]))
         idx, answer, hint = m.group(1), m.group(2), m.group(3)
         title = f"cloze c{escape(idx)}"
         if hint:
@@ -1908,12 +1930,12 @@ def render_cloze(text: str) -> Markup:
         out.append(
             f'<span class="rounded bg-warning-muted text-warning-deep px-1 '
             f'border-b border-dotted border-warning-emphasis" title="{title}">'
-            f"{escape(answer)}"
+            f"{_render_card_text(answer)}"
             f'<sup class="text-[0.6em] text-warning-soft ml-0.5">c{escape(idx)}</sup>'
             f"</span>"
         )
         pos = m.end()
-    out.append(escape(text[pos:] if text else ""))
+    out.append(_render_card_text(text[pos:] if text else ""))
     return Markup("".join(out))
 
 
@@ -1925,13 +1947,12 @@ def render_cloze_masked(text: str) -> Markup:
     reveals on hover/focus) and the gaps are labelled ``c1``, ``c2``, … in
     order of appearance — the quiz numbering starts at c1 and is positional,
     independent of the card's own ``{{cN}}`` indices. The hint, when present,
-    rides the ``title=`` tooltip. Text with no cloze deletion renders as plain
-    escaped prose.
+    rides the ``title=`` tooltip.
     """
     out: list[str] = []
     pos = 0
     for gap, m in enumerate(_CLOZE_DISPLAY_RE.finditer(text or ""), start=1):
-        out.append(escape(text[pos : m.start()]))
+        out.append(_render_card_text(text[pos : m.start()]))
         _idx, answer, hint = m.group(1), m.group(2), m.group(3)
         title = "hover to reveal"
         if hint:
@@ -1939,12 +1960,12 @@ def render_cloze_masked(text: str) -> Markup:
         out.append(
             f'<span class="cloze-mask" tabindex="0" title="{title}">'
             f'<span class="cloze-blank" aria-hidden="true">&mdash;</span>'
-            f'<span class="cloze-answer">{escape(answer)}</span>'
+            f'<span class="cloze-answer">{_render_card_text(answer)}</span>'
             f'<sup class="cloze-index">c{gap}</sup>'
             f"</span>"
         )
         pos = m.end()
-    out.append(escape(text[pos:] if text else ""))
+    out.append(_render_card_text(text[pos:] if text else ""))
     return Markup("".join(out))
 
 

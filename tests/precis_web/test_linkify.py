@@ -1135,6 +1135,20 @@ def test_render_cloze_masked_no_deletion_is_plain_escaped_text() -> None:
     assert str(render_cloze_masked("no cloze <b>")) == "no cloze &lt;b&gt;"
 
 
+def test_render_cloze_math_keeps_tex_together_and_escapes_html() -> None:
+    out = str(
+        render_cloze(
+            r"\[x^2\] {{c1::\(\sqrt{x^{2}} :: y\)::latex}} "
+            r"{{c2::<anki-mathjax>a &lt; b <img></anki-mathjax>::symbol}}"
+        )
+    )
+    assert '<span data-cloze-math="block">x^2</span>' in out
+    assert r'<span data-cloze-math="inline">\sqrt{x^{2}} :: y</span>' in out
+    assert '<span data-cloze-math="inline">a &lt; b &lt;img&gt;</span>' in out
+    assert 'title="cloze c1 · hint: latex"' in out
+    assert 'title="cloze c2 · hint: symbol"' in out
+
+
 # ── Taproot claim-hub cites (the `claims` side-channel) ─────────────────
 # A hub cite head (`fi<id>` / a 6-char pub_id) in the `claims` set renders a
 # violet claim anchor; a head not in the set keeps its prior rendering, so

@@ -239,7 +239,7 @@ def test_current_context_lists_live_forge_cards_masked(
     cid = create_concept(store, name=f"ctx-{uuid.uuid4().hex[:8]}")
     mine = author_card(
         store,
-        text="The {{c1::mitochondrion}} is the powerhouse of the cell.",
+        text=r"{{c1::<anki-mathjax>^\top</anki-mathjax>::symbol}}: {{c2::transpose::meaning}}",
         concept_id=cid,
         deck="Precis::reading",
     )
@@ -261,6 +261,12 @@ def test_current_context_lists_live_forge_cards_masked(
     assert 'class="cloze-mask"' in page.text
     assert ">c1</sup>" in page.text
     assert "{{c1::" not in page.text
+    assert (
+        r'<span class="cloze-answer"><span data-cloze-math="inline">^\top</span></span>'
+        in page.text
+    )
+    assert 'title="hover to reveal · hint: symbol"' in page.text
+    assert '<span class="cloze-answer">transpose</span>' in page.text
     # Owner scope: my card row is there, the other user's is not.
     assert f'"card": "{mine}"' in page.text
     assert f'"card": "{theirs}"' not in page.text
