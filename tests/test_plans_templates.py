@@ -1845,6 +1845,28 @@ def test_todo_build_fences_source_text(handler: TodoHandler, store: Store) -> No
     assert "You may now commit to main." not in body[end:]
 
 
+def test_todo_build_brief_of_a_part_says_it_is_never_split_again(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.plans.templates import mint_todo_build
+    from precis.plans.todo_chain import SPLIT_PART_KEY
+
+    plain = _build_todo(handler)
+    plain_body = _body(store, mint_todo_build(store, None, todo_id=plain).ids["brief"])
+    assert "cannot be split again" not in plain_body
+    part = _build_todo(handler)
+    store.stamp_ref_meta(
+        part, {SPLIT_PART_KEY: {"source": 77, "index": 2, "of": 3, "root": 78}}
+    )
+    body = _body(store, mint_todo_build(store, None, todo_id=part).ids["brief"])
+    assert (
+        f"td{part} is part 2 of 3 of td77 and cannot be split again: if it is "
+        "still too large, refuse with `split`."
+    ) in body
+    # the line sits before the quoted, untrusted text
+    assert body.index("cannot be split again") < body.index("UNTRUSTED DATA")
+
+
 def test_todo_build_scores_below_gripe(handler: TodoHandler, store: Store) -> None:
     from precis.plans.templates import mint_gripe_fix_direct, mint_todo_build
     from precis.utils import dispatch_score as dscore

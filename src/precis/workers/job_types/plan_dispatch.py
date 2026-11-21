@@ -164,7 +164,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    as a ``brief:`` comment and the brief node closes done, in one
    transaction; a ``refuse: <reason> — <why>`` files the one ask on the
    source todo, tags it ``needs-spec`` and closes the chain won't-do with
-   no build; anything else reopens the node as a failed attempt (the
+   no build; a ``split: <n>`` of two to four well-formed parts creates the
+   part todos under the source (``split_source``) and closes the chain the
+   same way with no build and no ask (more than four parts, or a source
+   that is itself a part, is a ``split`` refusal instead); anything else
+   reopens the node as a failed attempt (the
    succeeded job counts in :func:`_attempts`, so the retry cap, rescue
    and ask are the ordinary ones). A build under such a root with no
    ``brief:`` comment never dispatches, whatever its blockers say.
@@ -582,13 +586,17 @@ from precis.plans.nodes import (
 from precis.plans.todo_chain import (
     BRIEF_GRAMMAR,
     CLIP_MARKER,
+    MAX_SPLIT_PARTS,
     SOURCE_TODO_KEY,
+    SPLIT_PART_KEY,
     Brief,
     Refusal,
+    Split,
     close_source,
     parse_brief,
     post_brief,
     refuse_source,
+    split_source,
 )
 from precis.principal import worker_comment_meta
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS, SERVES_PARENT_WAIT_KEY
@@ -4175,7 +4183,9 @@ def _step_todo_briefs(
     node is copied onto it (``post_brief``) and the brief node closes done, in
     one transaction. A refusal files the one ask on the source, tags it and
     closes the chain with no build (``refuse_source``; the rest of the chain
-    closes here, in the same pass, so nothing dispatches behind it). Any other
+    closes here, in the same pass, so nothing dispatches behind it). A split
+    creates the part todos and closes the chain the same way with no ask
+    (``split_source``). Any other
     ending — no message, a clipped one, neither first line, a brief naming
     another node — is a failed attempt: the node reopens for a retry, and the
     succeeded job itself is the attempt :func:`_attempts` counts, so the cap,
@@ -4243,6 +4253,8 @@ def _todo_brief_node(
             if raw is None
             else "a clipped message (the brief outgrew the handoff cap)"
             if CLIP_MARKER in raw
+            else f"a malformed split ({_first_line(raw)!r})"
+            if re.match(r"\s*(?:handoff:\s*)?split:", raw, re.IGNORECASE)
             else f"neither a brief nor a refusal ({_first_line(raw)!r})"
         )
     else:
@@ -4268,11 +4280,47 @@ def _todo_brief_node(
         _close_brief_node(store, w, n, record, claims, post=(build, source, outcome))
         res.notes.append(f"td{n.id}: brief posted on td{build.id}; closed")
         return
-    assert isinstance(outcome, Refusal)  # ``what`` is set otherwise
-    record["outcome"] = f"refuse:{outcome.reason}"
+    split: Split | None = None
+    if isinstance(outcome, Split):
+        refused = _refuse_split(store, source, outcome)
+        if refused is None:
+            split = outcome
+        else:
+            outcome = refused
     ask_id: int | None = None
-    if not w.dry_run:
-        ask_id = refuse_source(store, n.root, source, outcome.reason, outcome.why)
+    part_ids: list[int] = []
+    withdrawn = False
+    if split is not None:
+        if not w.dry_run:
+            from precis.workers.executors._common import source_todo_holds
+
+            # The source may have changed while the brief ran: the build
+            # path's holds apply to a split too (``split_source`` reads them
+            # under the source's row lock).
+            part_ids = split_source(
+                store,
+                n.root,
+                source,
+                n.id,
+                split,
+                hold=lambda c: source_todo_holds(c, [n.id]).get(n.id),
+            )
+            withdrawn = not part_ids
+        record["outcome"] = (
+            "split-withdrawn" if withdrawn else f"split:{len(split.parts)}"
+        )
+        ended = (
+            f"the split of td{source} was not applied because the source "
+            "todo changed while the brief ran"
+            if withdrawn
+            else f"the brief for td{source} was split into {len(split.parts)} parts"
+        )
+    else:
+        assert isinstance(outcome, Refusal)  # ``what`` is set otherwise
+        record["outcome"] = f"refuse:{outcome.reason}"
+        if not w.dry_run:
+            ask_id = refuse_source(store, n.root, source, outcome.reason, outcome.why)
+        ended = f"the brief for td{source} was refused ({outcome.reason})"
     root = plan.nodes[n.root]
     root.status = "won't-do"
     closed = 0
@@ -4281,16 +4329,27 @@ def _todo_brief_node(
             continue
         if plan.live_job(m) or _is_ask_node(m):
             continue
-        w.comment(
-            m,
-            f"plan_dispatch: plan closed — the brief for td{source} was "
-            f"refused ({outcome.reason}); no build",
-        )
+        w.comment(m, f"plan_dispatch: plan closed — {ended}; no build")
         w.set_status(m, "won't-do")
         closed += 1
     # Last: the brief node is never done while the build is still open.
     _close_brief_node(store, w, n, record, claims, post=None)
     res.phases_closed += closed
+    if withdrawn:
+        res.notes.append(
+            f"td{n.root}: split of source td{source} not applied (source todo "
+            f"changed while the brief ran); plan td{n.root} closed won't-do, "
+            f"{closed} node(s) with it"
+        )
+        return
+    if split is not None:
+        res.notes.append(
+            f"td{n.root}: source td{source} split into {len(split.parts)} parts"
+            + (f" ({', '.join(f'td{i}' for i in part_ids)})" if part_ids else "")
+            + f"; plan td{n.root} closed won't-do, {closed} node(s) with it"
+        )
+        return
+    assert isinstance(outcome, Refusal)
     res.asks += 1
     res.notes.append(
         f"td{n.id}: brief refused ({outcome.reason}) — "
@@ -4298,6 +4357,30 @@ def _todo_brief_node(
         + f"td{source}, tagged needs-spec; plan td{n.root} closed won't-do, "
         f"{closed} node(s) with it"
     )
+
+
+def _refuse_split(store: Any, source: int, split: Split) -> Refusal | None:
+    """The refusal a split outcome turns into, or ``None`` when it stands:
+    more than :data:`MAX_SPLIT_PARTS` parts, or a source that is itself a
+    part (a part is never split again)."""
+    n = len(split.parts)
+    if n > MAX_SPLIT_PARTS:
+        return Refusal(
+            "split",
+            f"the brief session split it into {n} parts; more than four needs "
+            "the owner",
+        )
+    ref = store.get_ref(kind="todo", id=source)
+    part = (getattr(ref, "meta", None) or {}).get(SPLIT_PART_KEY)
+    if isinstance(part, dict):
+        titles = "; ".join(p.title for p in split.parts)
+        return Refusal(
+            "split",
+            f"this todo is part {part.get('index')} of td{part.get('source')} "
+            "and a part is never split again; the session proposed "
+            f"{n} parts: {titles}",
+        )
+    return None
 
 
 def _close_brief_node(

@@ -1,6 +1,6 @@
-"""The brief step's two outcomes (``precis.plans.todo_chain``): the grammar
-of a brief session's final message, the brief copied onto the build node and
-the refusal that files one ask on the source todo."""
+"""The brief step's three outcomes (``precis.plans.todo_chain``): the grammar
+of a brief session's final message, the brief copied onto the build node, the
+refusal that files one ask on the source todo and the split into part todos."""
 
 from __future__ import annotations
 
@@ -9,20 +9,29 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.todo import TodoHandler
 from precis.plans import templates as T
 from precis.plans.todo_chain import (
+    BRIEF_GRAMMAR,
     CLIP_MARKER,
+    MAX_SPLIT_PARTS,
     NEEDS_SPEC_TAG,
     REFUSAL_KEY,
     REFUSAL_REASONS,
+    SPLIT_KEY,
+    SPLIT_PART_KEY,
     Brief,
     Refusal,
+    Split,
+    SplitPart,
     close_source,
     parse_brief,
     post_brief,
     refuse_source,
+    split_source,
     sweep_landed_sources,
+    sweep_splits,
 )
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert
@@ -120,6 +129,103 @@ def test_the_clip_marker_is_the_one_run_slice_writes() -> None:
     from precis.workers.job_types import run_slice
 
     assert run_slice.CLIP_MARKER is CLIP_MARKER
+
+
+# -- the split grammar --------------------------------------------------------
+
+
+def _part_block(k: int) -> str:
+    return (
+        f"part {k}: Title {k}\n"
+        f"Change: change {k}\n"
+        f"Where: where {k}\n"
+        f"Done when: done {k}"
+    )
+
+
+def _split_msg(n: int, parts: int | None = None) -> str:
+    return f"split: {n}\n\n" + "\n\n".join(
+        _part_block(k) for k in range(1, (n if parts is None else parts) + 1)
+    )
+
+
+def _parts(n: int) -> tuple[SplitPart, ...]:
+    return tuple(
+        SplitPart(f"Title {k}", f"change {k}", f"where {k}", f"done {k}")
+        for k in range(1, n + 1)
+    )
+
+
+@pytest.mark.parametrize("n", [2, 3, 4, 5])
+def test_split_well_formed(n: int) -> None:
+    """Five parts still parses: the dispatcher turns it into a refusal."""
+    assert parse_brief(_split_msg(n)) == Split(_parts(n))
+
+
+def test_split_survives_the_handoff_prefix_case_and_multiline_fields() -> None:
+    text = (
+        "handoff: \n\n SPLIT: 2 \n"
+        "Part 1: First\nchange: one\n  and more\n\nstill one\n"
+        "WHERE: a.py\ndone when: it passes\n"
+        "part 2: Second\nChange: two\nWhere: b.py\nDone when: it also passes"
+    )
+    assert parse_brief(text) == Split(
+        (
+            SplitPart("First", "one\n  and more\n\nstill one", "a.py", "it passes"),
+            SplitPart("Second", "two", "b.py", "it also passes"),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _split_msg(1),  # one part is no split
+        "split: 0",
+        "split: 3\n" + _part_block(1) + "\n" + _part_block(2),  # count mismatch
+        _split_msg(2, parts=3),
+        "split: 2\n" + _part_block(1).replace("Where: where 1\n", ""),  # no label
+        _split_msg(2).replace("Done when: done 2", "Done when:   "),  # empty field
+        _split_msg(2).replace("Change: change 1", "Change:"),
+        _split_msg(2).replace("part 2:", "part 3:"),  # wrong numbering
+        _split_msg(2).replace("part 1:", "part 2:"),
+        "split: 2\n" + _part_block(2) + "\n" + _part_block(1),
+        _split_msg(2).replace("Where: where 2", "Change: again"),  # label twice
+        "split: x",
+        "split:",
+        "split two\n" + _part_block(1),
+        "split: 2 parts\n" + _part_block(1) + "\n" + _part_block(2),
+        "Intro text first\n" + _split_msg(2),  # not the first line
+        "split: 2\nI will split it.\n" + _split_msg(2).split("\n", 1)[1],
+        "split: 2\npart 1: T\nsome text\nChange: a\nWhere: b\nDone when: c\n"
+        + _part_block(2),  # text between a title and its first label
+    ],
+)
+def test_malformed_split_is_nothing(text: str) -> None:
+    assert parse_brief(text) is None
+
+
+def test_a_clipped_split_is_nothing() -> None:
+    text = _split_msg(3)
+    assert parse_brief(text.replace("done 3", f"done {CLIP_MARKER}")) is None
+    assert parse_brief(f"{text}\n{CLIP_MARKER}") is None
+
+
+def test_a_later_or_quoted_split_line_decides_nothing() -> None:
+    assert parse_brief("Here it is:\n" + _split_msg(2)) is None
+    assert parse_brief("> " + _split_msg(2).replace("\n", "\n> ")) is None
+    # as brief text or refusal text it is just text
+    assert isinstance(parse_brief("brief: td5\n" + _split_msg(2)), Brief)
+    assert isinstance(parse_brief("refuse: split — x\n" + _split_msg(2)), Refusal)
+
+
+def test_the_grammar_names_all_three_endings() -> None:
+    for part in ("`brief: td<build id>`", "`refuse: ", "`split: <n>`"):
+        assert part in BRIEF_GRAMMAR
+    assert "`part <k>: <title>`" in BRIEF_GRAMMAR
+    assert "`Change:`, `Where:` and `Done when:`" in BRIEF_GRAMMAR
+    assert "two to four reviewable changes with no decision" in BRIEF_GRAMMAR
+    assert "in build order" in BRIEF_GRAMMAR
 
 
 # -- the build node's brief and the refusal ----------------------------------
@@ -617,3 +723,360 @@ def test_second_chain_closes_reopened_source(
         f"done: {SHA[:9]} is in prod (chain td{first.root_id})",
         f"done: {other[:9]} is in prod (chain td{second.root_id})",
     ]
+
+
+# -- the split ----------------------------------------------------------------
+
+
+def _split_chain(handler: TodoHandler, store: Store) -> tuple[int, T.PlanMint]:
+    source = id_of(
+        handler.put(
+            text="Make it two things.",
+            tags=["factory:build", "project:precis", "side"],
+            prio=4,
+        ).body
+    )
+    return source, T.mint_todo_build(store, None, todo_id=source)
+
+
+def _body(store: Store, todo: int) -> str:
+    return "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo)
+        if c.chunk_kind == "todo_body"
+    )
+
+
+def _asks_on(store: Store, source: int) -> list[int]:
+    out = []
+    for c in _children(store, source):
+        ref = store.get_ref(kind="todo", id=c)
+        if ref is not None and "ask" in dict(ref.meta):
+            out.append(c)
+    return out
+
+
+def test_split_source_creates_the_parts_and_closes_the_root(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _split_chain(handler, store)
+    root, brief = mint.root_id, mint.ids["brief"]
+    ids = split_source(store, root, source, brief, Split(_parts(3)))
+    assert len(ids) == 3
+    assert _children(store, source) == ids
+    for k, part in enumerate(ids, start=1):
+        ref = store.get_ref(kind="todo", id=part)
+        assert ref is not None
+        assert ref.title == f"Title {k}"
+        assert ref.prio == 4
+        assert ref.parent_id == source
+        assert ref.meta[SPLIT_PART_KEY] == {
+            "source": source,
+            "index": k,
+            "of": 3,
+            "root": root,
+        }
+        assert "ask" not in ref.meta
+        assert _status(store, part) == "open"
+        tags = _open_tags(store, part)
+        assert {"factory:build", "project:precis"} <= tags
+        assert "side" not in tags and "ask-user" not in tags
+        assert _body(store, part) == (
+            f"Change: change {k}\nWhere: where {k}\nDone when: done {k}\n\n"
+            f"Part {k} of 3 of td{source}, split by the factory's brief step."
+        )
+    # part k is blocked by part k-1, and only by it; the first by nothing
+    assert _blockers(store, ids[0]) == []
+    assert _blockers(store, ids[1]) == [ids[0]]
+    assert _blockers(store, ids[2]) == [ids[1]]
+    # the source: still open, no tag, one split comment, the record
+    assert _status(store, source) == "open"
+    assert "factory:build" not in _open_tags(store, source)
+    assert NEEDS_SPEC_TAG not in _open_tags(store, source)
+    (note,) = [c for c in _comments(store, source) if c.startswith("split:")]
+    assert note == (
+        f"split: td{ids[0]}, td{ids[1]}, td{ids[2]} — the factory's brief step "
+        f"(td{brief}, chain td{root}) split this todo into 3 parts, built in "
+        "this order. This todo closes when every part is done."
+    )
+    src = store.get_ref(kind="todo", id=source)
+    assert src is not None
+    assert dict(src.meta)[SPLIT_KEY] == {"root": root, "parts": ids}
+    # the root is closed, no ask exists, nothing blocks the source
+    assert _status(store, root) == "won't-do"
+    assert _asks_on(store, source) == []
+    assert _blockers(store, source) == []
+
+
+def test_split_source_is_idempotent(handler: TodoHandler, store: Store) -> None:
+    source, mint = _split_chain(handler, store)
+    args = (store, mint.root_id, source, mint.ids["brief"])
+    first = split_source(*args, Split(_parts(2)))
+    assert split_source(*args, Split(_parts(4))) == first
+    assert _children(store, source) == first
+    assert len([c for c in _comments(store, source) if c.startswith("split:")]) == 1
+
+
+def test_split_source_caps_and_cleans_the_session_text(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _split_chain(handler, store)
+    long = "x" * 5000
+    parts = (
+        SplitPart("A\x00\nvery  spaced\ttitle " + "t" * 400, "c\x00" + long, "w", "d"),
+        SplitPart("B", "c", long, "d" + long),
+    )
+    ids = split_source(store, mint.root_id, source, mint.ids["brief"], Split(parts))
+    first = store.get_ref(kind="todo", id=ids[0])
+    assert first is not None
+    assert first.title.startswith("A very spaced title t") and len(first.title) == 200
+    body = _body(store, ids[0])
+    assert "\x00" not in body
+    assert body.splitlines()[0] == "Change: c" + "x" * 1499
+    assert len(_body(store, ids[1])) < 3200
+
+
+@pytest.mark.parametrize("n", [1, MAX_SPLIT_PARTS + 1])
+def test_split_source_refuses_a_count_outside_two_to_four(
+    handler: TodoHandler, store: Store, n: int
+) -> None:
+    source, mint = _split_chain(handler, store)
+    with pytest.raises(BadInput, match="parts"):
+        split_source(store, mint.root_id, source, mint.ids["brief"], Split(_parts(n)))
+    assert _children(store, source) == []
+    assert "factory:build" in _open_tags(store, source)
+    assert _status(store, mint.root_id) != "won't-do"
+
+
+def test_split_source_refuses_a_part(handler: TodoHandler, store: Store) -> None:
+    source, mint = _split_chain(handler, store)
+    first, _second = split_source(
+        store, mint.root_id, source, mint.ids["brief"], Split(_parts(2))
+    )
+    chain = T.mint_todo_build(store, None, todo_id=first)
+    with pytest.raises(BadInput, match="part of a split"):
+        split_source(store, chain.root_id, first, chain.ids["brief"], Split(_parts(2)))
+    assert _children(store, first) == []
+    assert "factory:build" in _open_tags(store, first)
+    assert _status(store, chain.root_id) != "won't-do"
+
+
+def _set_status(store: Store, todo: int, status: str = "done") -> None:
+    store.add_tag(
+        todo, Tag.closed("STATUS", status), set_by="agent", replace_prefix=True
+    )
+
+
+def _split_with_parts(
+    handler: TodoHandler, store: Store, n: int = 3
+) -> tuple[int, list[int]]:
+    source, mint = _split_chain(handler, store)
+    ids = split_source(store, mint.root_id, source, mint.ids["brief"], Split(_parts(n)))
+    return source, ids
+
+
+def test_sweep_splits_closes_when_every_part_is_done(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, ids = _split_with_parts(handler, store)
+    assert sweep_splits(store) == []
+    for part in ids[:-1]:
+        _set_status(store, part)
+    assert sweep_splits(store) == []
+    assert _status(store, source) == "open"
+    _set_status(store, ids[-1])
+    assert sweep_splits(store) == [source]
+    assert _status(store, source) == "done"
+    assert _comments(store, source)[-1] == (
+        f"done: every part is done (td{ids[0]}, td{ids[1]}, td{ids[2]})"
+    )
+    # terminal now: a second sweep writes nothing
+    assert sweep_splits(store) == []
+    assert len([c for c in _comments(store, source) if c.startswith("done:")]) == 1
+
+
+@pytest.mark.parametrize("status", ["open", "won't-do"])
+def test_sweep_splits_leaves_a_source_with_an_unfinished_part(
+    handler: TodoHandler, store: Store, status: str
+) -> None:
+    source, ids = _split_with_parts(handler, store, 2)
+    _set_status(store, ids[0])
+    _set_status(store, ids[1], status)
+    assert sweep_splits(store) == []
+    assert _status(store, source) == "open"
+
+
+def test_sweep_splits_leaves_a_source_with_a_retired_part(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, ids = _split_with_parts(handler, store, 2)
+    for part in ids:
+        _set_status(store, part)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (ids[1],))
+    assert sweep_splits(store) == []
+    assert _status(store, source) == "open"
+
+
+def test_sweep_splits_ignores_a_terminal_source_and_a_reopened_one(
+    handler: TodoHandler, store: Store
+) -> None:
+    gone, gone_parts = _split_with_parts(handler, store, 2)
+    kept, kept_parts = _split_with_parts(handler, store, 2)
+    for part in gone_parts + kept_parts:
+        _set_status(store, part)
+    _set_status(store, gone, "won't-do")
+    assert sweep_splits(store) == [kept]
+    assert _status(store, gone) == "won't-do"
+    # a person reopens the closed source: the same close is not made again
+    _reopen(store, kept)
+    assert sweep_splits(store) == []
+    assert _status(store, kept) == "open"
+
+
+def test_sweep_splits_ignores_a_plain_todo(handler: TodoHandler, store: Store) -> None:
+    plain, _mint = _chain(handler, store)
+    assert sweep_splits(store) == []
+    assert _status(store, plain) == "open"
+
+
+def test_sweep_splits_is_bounded_and_goes_on_past_a_failure(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.plans import todo_chain
+
+    first, first_parts = _split_with_parts(handler, store, 2)
+    second, second_parts = _split_with_parts(handler, store, 2)
+    for part in first_parts + second_parts:
+        _set_status(store, part)
+    assert sweep_splits(store, limit=0) == []
+    real = todo_chain._close_split_source
+
+    def flaky(store_: Store, source_id: int) -> bool:
+        if source_id == first:
+            raise RuntimeError("db hiccup")
+        return real(store_, source_id)
+
+    monkeypatch.setattr(todo_chain, "_close_split_source", flaky)
+    assert sweep_splits(store) == [second]
+    assert _status(store, first) == "open"
+    monkeypatch.undo()
+    assert sweep_splits(store, limit=1) == [first]
+
+
+# -- a split of a source that changed while the brief ran ---------------------
+
+
+def _try_split(
+    store: Store, source: int, mint: T.PlanMint, n: int = 2, **kw: Any
+) -> list[int]:
+    return split_source(
+        store, mint.root_id, source, mint.ids["brief"], Split(_parts(n)), **kw
+    )
+
+
+def test_split_source_held_writes_no_parts(handler: TodoHandler, store: Store) -> None:
+    source, mint = _split_chain(handler, store)
+    ref = store.get_ref(kind="todo", id=source)
+    assert ref is not None
+    tags, meta = _open_tags(store, source), dict(ref.meta)
+    seen: list[object] = []
+
+    def hold(conn: object) -> str:
+        seen.append(conn)
+        return f"source todo td{source} carries hold tag needs-spec"
+
+    assert _try_split(store, source, mint, hold=hold) == []
+    assert len(seen) == 1
+    assert _children(store, source) == []
+    (note,) = [c for c in _comments(store, source) if c.startswith("split not")]
+    assert note == (
+        f"split not applied: the factory's brief step (td{mint.ids['brief']}, "
+        f"chain td{mint.root_id}) proposed 2 parts (Title 1; Title 2), but "
+        f"source todo td{source} carries hold tag needs-spec."
+    )
+    assert not [c for c in _comments(store, source) if c.startswith("split:")]
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _open_tags(store, source) == tags and "factory:build" in tags
+    after = store.get_ref(kind="todo", id=source)
+    assert after is not None and SPLIT_KEY not in after.meta
+    assert dict(after.meta) == meta
+
+
+def test_split_source_clear_hold_applies(handler: TodoHandler, store: Store) -> None:
+    source, mint = _split_chain(handler, store)
+    assert len(_try_split(store, source, mint, hold=lambda c: None)) == 2
+
+
+def test_split_source_missing_source_closes_the_root_and_does_not_raise(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, mint = _split_chain(handler, store)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (source,))
+    assert _try_split(store, source, mint, hold=lambda c: "never asked") == []
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _children(store, source) == []
+
+
+def test_split_source_second_call_returns_the_parts_even_when_hold_reports(
+    handler: TodoHandler, store: Store
+) -> None:
+    """After the split the source has no tag, so the real hold would report:
+    the idempotent return comes before the hold check."""
+    source, mint = _split_chain(handler, store)
+    first = _try_split(store, source, mint, hold=lambda c: None)
+    assert _try_split(store, source, mint, hold=lambda c: "no tag now") == first
+    assert not [c for c in _comments(store, source) if c.startswith("split not")]
+
+
+def _resplit_chain(store: Store, source: int) -> T.PlanMint:
+    """The source is reopened and tagged again after a first split; a second
+    chain is minted on it."""
+    _reopen(store, source)
+    store.add_tag(source, Tag.open("factory:build"), set_by="agent")
+    return T.mint_todo_build(store, None, todo_id=source)
+
+
+def test_split_source_not_applied_beside_an_open_part_of_an_earlier_split(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, first_mint = _split_chain(handler, store)
+    old = _try_split(store, source, first_mint)
+    second = _resplit_chain(store, source)
+    assert _try_split(store, source, second, 3) == []
+    assert _children(store, source) == old
+    (note,) = [c for c in _comments(store, source) if c.startswith("split not")]
+    assert note.endswith(
+        f"but it was already split by chain td{first_mint.root_id} into "
+        f"td{old[0]}, td{old[1]}."
+    )
+    assert _status(store, second.root_id) == "won't-do"
+    assert "factory:build" in _open_tags(store, source)
+    src = store.get_ref(kind="todo", id=source)
+    assert src is not None
+    assert src.meta[SPLIT_KEY] == {"root": first_mint.root_id, "parts": old}
+
+
+def test_split_source_applies_when_every_earlier_part_is_terminal(
+    handler: TodoHandler, store: Store
+) -> None:
+    source, first_mint = _split_chain(handler, store)
+    old = _try_split(store, source, first_mint)
+    _set_status(store, old[0])
+    _set_status(store, old[1], "won't-do")
+    second = _resplit_chain(store, source)
+    got = _try_split(store, source, second, 3)
+    assert len(got) == 3 and _children(store, source) == old + got
+    src = store.get_ref(kind="todo", id=source)
+    assert src is not None
+    assert src.meta[SPLIT_KEY] == {"root": second.root_id, "parts": got}
+
+
+@pytest.mark.parametrize(
+    "inner",
+    ["Where: sneaky", "part 2: sneaky", "Done when: sneaky", "Change: sneaky"],
+)
+def test_a_field_line_that_looks_like_a_label_fails_closed(inner: str) -> None:
+    text = _split_msg(2).replace("Change: change 1", f"Change: change 1\n{inner}")
+    assert parse_brief(text) is None

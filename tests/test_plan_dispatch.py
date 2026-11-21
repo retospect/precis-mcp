@@ -14087,6 +14087,238 @@ def test_neither_reopens_and_counts_attempt(
     assert _todo_brief_comments(store, build) == [] and _jobs_under(store, build) == []
 
 
+def _split_handoff(n: int, count: int | None = None) -> str:
+    """A brief session's ``split:`` final message of ``n`` parts."""
+    blocks = "\n\n".join(
+        f"part {k}: Step {k}\nChange: change {k}\nWhere: where {k}\nDone when: done {k}"
+        for k in range(1, n + 1)
+    )
+    return f"split: {n if count is None else count}\n\n{blocks}"
+
+
+def test_split_outcome_creates_parts_and_closes_chain(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    jobs_before = _all_jobs(store)
+    _brief_session(store, mint, _split_handoff(3))
+    res = pd.run_pass(store)
+    # Three open children carrying the tag, two blocked-by links in order.
+    parts = _children(store, source)
+    assert len(parts) == 3
+    for part in parts:
+        assert "factory:build" in _open_tags(store, part)
+        assert _status(store, part) == "open"
+        assert "ask" not in _meta(store, part)
+    assert [_blocked_by_ids(store, p) for p in parts] == [
+        [],
+        [parts[0]],
+        [parts[1]],
+    ]
+    # The source stays open without the tag; no ask, no needs-spec.
+    assert _status(store, source) == "open"
+    assert "factory:build" not in _open_tags(store, source)
+    assert "needs-spec" not in _open_tags(store, source)
+    assert _asks_on(store, source) == []
+    assert _blocked_by_ids(store, source) == []
+    # No build job, and the whole chain closed in the same pass.
+    assert _jobs_under(store, build) == []
+    assert _all_jobs(store) == jobs_before + 1  # the brief's own job
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _status(store, brief) == "done"
+    for key in ("build", "review", "gate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _meta(store, brief)["brief_read"]["outcome"] == "split:3"
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert any(
+        f"td{mint.root_id}: source td{source} split into 3 parts (td{parts[0]}" in n
+        for n in res.notes
+    )
+    # Idempotent over later passes: no second set of parts.
+    pd.run_pass(store)
+    assert _children(store, source) == parts
+
+
+def test_split_of_five_parts_files_refusal(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    build = mint.ids["build"]
+    _brief_session(store, mint, _split_handoff(5))
+    res = pd.run_pass(store)
+    (ask,) = _asks_on(store, source)
+    assert _children(store, source) == [ask]
+    assert _meta(store, ask)["todo_refusal"]["reason"] == "split"
+    body = _body_text(store, ask)
+    assert "split it into 5 parts; more than four needs the owner" in body
+    assert "needs-spec" in _open_tags(store, source)
+    assert "factory:build" in _open_tags(store, source)
+    assert _jobs_under(store, build) == []
+    assert _status(store, mint.root_id) == "won't-do"
+    assert _meta(store, mint.ids["brief"])["brief_read"]["outcome"] == "refuse:split"
+    assert (res.asks, res.dispatched) == (1, 0)
+
+
+def test_split_of_a_part_files_refusal(store: Store, hub: Any) -> None:
+    from precis.plans.todo_chain import Split, SplitPart, split_source
+
+    source, mint = _todo_chain(store, hub)
+    first, second = split_source(
+        store,
+        mint.root_id,
+        source,
+        mint.ids["brief"],
+        Split(tuple(SplitPart(f"S{k}", "c", "w", "d") for k in (1, 2))),
+    )
+    chain = T.mint_todo_build(store, None, todo_id=first)
+    _brief_session(store, chain, _split_handoff(2))
+    res = pd.run_pass(store)
+    (ask,) = _asks_on(store, first)
+    assert _children(store, first) == [ask]
+    body = _body_text(store, ask)
+    assert f"this todo is part 1 of td{source}" in body
+    assert "a part is never split again" in body
+    assert "Step 1; Step 2" in body
+    assert _meta(store, ask)["todo_refusal"]["reason"] == "split"
+    assert "needs-spec" in _open_tags(store, first)
+    assert _status(store, chain.root_id) == "won't-do"
+    assert _jobs_under(store, chain.ids["build"]) == []
+    # the other part and the source are untouched
+    assert _children(store, second) == []
+    assert (res.asks, res.dispatched) == (1, 0)
+
+
+def _split_not_applied(store: Store, hub: Any, source: int, mint: T.PlanMint) -> Any:
+    """One tick after a ``split: 2`` session whose source changed meanwhile:
+    no part, no ask, no build job, the chain closed, the brief node done."""
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    jobs_before = _all_jobs(store)
+    res = pd.run_pass(store)
+    assert _children(store, source) == []
+    assert _asks_on(store, source) == []
+    assert _jobs_under(store, build) == []
+    assert _all_jobs(store) == jobs_before
+    assert _status(store, brief) == "done"
+    assert _status(store, mint.root_id) == "won't-do"
+    for key in ("build", "review", "gate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _meta(store, brief)["brief_read"]["outcome"] == "split-withdrawn"
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert any(
+        f"td{mint.root_id}: split of source td{source} not applied (source todo "
+        f"changed while the brief ran); plan td{mint.root_id} closed won't-do, " in n
+        for n in res.notes
+    )
+    assert any(
+        "the split of td" in c and "not applied because the source todo changed" in c
+        for c in _todo_comments(store, build)
+    )
+    return res
+
+
+def test_split_not_applied_when_source_withdrawn(store: Store, hub: Any) -> None:
+    from precis.workers import todo_dispatch as td
+
+    source, mint = _todo_chain(store, hub)
+    _brief_session(store, mint, _split_handoff(2))
+    # A person withdraws the tag, and adds a hold tag, while the brief ran.
+    store.remove_tag(source, Tag.open("factory:build"))
+    store.add_tag(source, Tag.open("hold:no-dispatch"), set_by="agent")
+    _split_not_applied(store, hub, source, mint)
+    (note,) = [c for c in _todo_comments(store, source) if c.startswith("split not")]
+    assert "proposed 2 parts (Step 1; Step 2)" in note
+    assert "no longer carries factory:build" in note
+    assert "factory:build" not in _open_tags(store, source)
+    # Idempotent over later passes.
+    pd.run_pass(store)
+    assert _children(store, source) == []
+    assert len([c for c in _todo_comments(store, source) if "split not" in c]) == 1
+    assert td.sweep_ended(store) == []  # nothing tagged: nothing to release
+
+
+def test_split_not_applied_when_source_closed_mid_brief(store: Store, hub: Any) -> None:
+    source, mint = _todo_chain(store, hub)
+    _brief_session(store, mint, _split_handoff(2))
+    store.add_tag(
+        source, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+    _split_not_applied(store, hub, source, mint)
+    assert _status(store, source) == "done"
+    (note,) = [c for c in _todo_comments(store, source) if c.startswith("split not")]
+    assert "source todo td" in note and "is done" in note
+
+
+def test_split_not_applied_when_source_gets_a_hold_tag_the_tag_is_released(
+    store: Store, hub: Any
+) -> None:
+    """A hold tag keeps ``factory:build`` on the source: the ended-chain sweep
+    releases the tag with its ordinary comment, so it is not picked again.
+    (``needs-spec`` is the one hold the sweep leaves to its owner.)"""
+    from precis.workers import todo_dispatch as td
+
+    source, mint = _todo_chain(store, hub)
+    _brief_session(store, mint, _split_handoff(2))
+    store.add_tag(source, Tag.open("hold:no-dispatch"), set_by="agent")
+    _split_not_applied(store, hub, source, mint)
+    (note,) = [c for c in _todo_comments(store, source) if c.startswith("split not")]
+    assert "carries hold tag hold:no-dispatch" in note
+    assert "factory:build" in _open_tags(store, source)
+    assert td.sweep_ended(store) == [source]
+    assert "factory:build" not in _open_tags(store, source)
+    assert any(
+        f"dispatch: the chain td{mint.root_id} was dropped" in c
+        for c in _todo_comments(store, source)
+    )
+
+
+def test_split_hold_reads_the_source_from_the_brief_node(
+    store: Store, hub: Any
+) -> None:
+    """``source_todo_holds`` walks from the brief node up to the root's
+    ``meta.source_todo``: the hold the split passes is the source's."""
+    from precis.workers.executors._common import source_todo_holds
+
+    source, mint = _todo_chain(store, hub)
+    brief = mint.ids["brief"]
+    with store.pool.connection() as conn:
+        assert source_todo_holds(conn, [brief]) == {}
+    store.add_tag(source, Tag.open("needs-spec"), set_by="agent")
+    with store.pool.connection() as conn:
+        held = source_todo_holds(conn, [brief])
+    assert list(held) == [brief]
+    assert f"td{source}" in held[brief] and "needs-spec" in held[brief]
+
+
+@pytest.mark.parametrize(
+    "handoff",
+    [
+        _split_handoff(3, count=2),  # the count does not match the parts
+        _split_handoff(1),  # one part is no split
+        _split_handoff(2).replace("Where: where 2\n", ""),  # a missing line
+        _split_handoff(2) + "\n" + "…(clipped)…",
+        "split: two",
+    ],
+)
+def test_malformed_split_is_a_failed_attempt(
+    store: Store, hub: Any, handoff: str
+) -> None:
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    _brief_session(store, mint, handoff)
+    res = pd.run_pass(store)
+    # Nothing created, nothing asked, the node reopened for the retry.
+    assert _children(store, source) == []
+    assert "factory:build" in _open_tags(store, source)
+    assert _status(store, brief) == "open"
+    assert _meta(store, brief)["brief_read"]["outcome"] is None
+    assert _status(store, mint.root_id) == "open"
+    assert _jobs_under(store, build) == []
+    plan = pd._load(store, [mint.root_id])
+    assert pd._attempts(plan, plan.nodes[brief]) == 1
+    assert res.dispatched == 1 and res.asks == 0
+    assert any(
+        "malformed split" in c or "clipped message" in c
+        for c in _todo_comments(store, brief)
+    )
+
+
 def test_cap_after_failed_briefs_parks_and_files_the_ordinary_ask(
     store: Store, hub: Any
 ) -> None:

@@ -9,9 +9,11 @@ root links to stays a plain relation — so the key is what the chain
 inventory (``workers.gripe_dispatch``) and the source holds
 (``workers.executors._common.source_todo_holds``) match on.
 
-The brief step's two outcomes live here too: :func:`parse_brief` reads the
+The brief step's three outcomes live here too: :func:`parse_brief` reads the
 session's final message, :func:`post_brief` copies a brief onto the build
-node and :func:`refuse_source` acts on a refusal. The plan tick
+node, :func:`refuse_source` acts on a refusal and :func:`split_source` on a
+split into two to four sequenced part todos (:func:`sweep_splits` closes the
+source when every part is done). The plan tick
 (``plan_dispatch._step_todo_briefs``) is their only caller.
 
 The source todo carries the chain's two completion marks. The land
@@ -29,6 +31,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from psycopg.types.json import Jsonb
+
+from precis.errors import BadInput
+from precis.plans.nodes import finish_mint
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
@@ -36,6 +42,8 @@ from precis.todo.asks_view import TRIAGE_PREFIX
 from precis.todo.guards import check_ask_meta
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from psycopg import Connection
 
     from precis.store import Store
@@ -62,14 +70,23 @@ SKIP_TAG = "factory:skip"
 #: a backfill, a production step).
 REFUSAL_REASONS: tuple[str, ...] = ("rewrite", "split", "decide", "built", "not-code")
 
+#: Longest part title, and longest value of one of a part's three lines.
+_PART_TITLE_CAP = 200
+_PART_FIELD_CAP = 1500
+
 #: What a brief session ends with — the one place the closing section in
-#: ``run_slice`` and the verdict parser share. Either outcome rides the
+#: ``run_slice`` and the verdict parser share. Every outcome rides the
 #: FIRST line of the final message; any other ending is a failed attempt.
 BRIEF_GRAMMAR = (
     "`brief: td<build id>` as the FIRST line of the final message, the brief "
     "text on the following lines; or "
     f"`refuse: <{'|'.join(REFUSAL_REASONS)}> — <what is missing, or the "
-    "evidence>` as the FIRST line"
+    "evidence>` as the FIRST line; or `split: <n>` as the FIRST line, then "
+    "for each part, in build order, a line `part <k>: <title>` followed by "
+    "its three lines `Change:`, `Where:` and `Done when:` (a title is cut at "
+    f"{_PART_TITLE_CAP} characters, each line at {_PART_FIELD_CAP}) — use it "
+    "only when the todo is two to four reviewable changes with no decision "
+    "between them"
 )
 
 #: The marker ``run_slice`` puts in the middle of a ``handoff:`` comment it
@@ -80,6 +97,14 @@ CLIP_MARKER = "…(clipped)…"
 #: ``meta`` key on the ask :func:`refuse_source` files: ``{source, reason,
 #: root}``, the marker later code finds a refusal ask by.
 REFUSAL_KEY = "todo_refusal"
+#: ``meta`` key on a split source: ``{root, parts: [ids]}``, written by
+#: :func:`split_source` and read by :func:`sweep_splits`.
+SPLIT_KEY = "todo_split"
+#: ``meta`` key on a part todo: ``{source, index, of, root}``. A todo that
+#: carries it is never split again.
+SPLIT_PART_KEY = "todo_split_part"
+#: The most parts a split may have; more is a refusal with reason ``split``.
+MAX_SPLIT_PARTS = 4
 
 #: What a refusal's first line puts between the reason and the why: an em
 #: dash, en dash or colon, or a hyphen followed by whitespace (a bare hyphen
@@ -88,6 +113,9 @@ _REFUSE_REST_RE = re.compile(r"\s*(?:[—–:]|-(?=\s))\s*(\S.*)", re.DOTALL)
 _BRIEF_HEAD_RE = re.compile(r"brief:\s*td(\d+)", re.IGNORECASE)
 _REFUSE_HEAD_RE = re.compile(r"refuse:\s*", re.IGNORECASE)
 _HANDOFF_PREFIX_RE = re.compile(r"\s*handoff:", re.IGNORECASE)
+_SPLIT_HEAD_RE = re.compile(r"split:\s*(\d{1,3})", re.IGNORECASE)
+_PART_HEAD_RE = re.compile(r"\s*part\s+(\d{1,3})\s*:\s*(\S.*)", re.IGNORECASE)
+_PART_LABEL_RE = re.compile(r"\s*(change|where|done when)\s*:(.*)", re.IGNORECASE)
 _COMMENT_KIND = "todo_comment"
 #: Longest stretch of the session's refusal text quoted into the ask.
 _WHY_CAP = 1500
@@ -111,7 +139,72 @@ class Refusal:
     why: str
 
 
-BriefOutcome = Brief | Refusal
+@dataclass(frozen=True, slots=True)
+class SplitPart:
+    """One part of a split: its title and its three labelled lines."""
+
+    title: str
+    change: str
+    where: str
+    done_when: str
+
+
+@dataclass(frozen=True, slots=True)
+class Split:
+    """A split outcome: ``parts`` in build order, as many as the session
+    named in its ``split: <n>`` line (so possibly more than
+    :data:`MAX_SPLIT_PARTS`: the caller turns that into a refusal)."""
+
+    parts: tuple[SplitPart, ...]
+
+
+BriefOutcome = Brief | Refusal | Split
+
+
+def _parse_split(count: int, rest: list[str]) -> Split | None:
+    """The parts of a ``split: <count>`` message, or ``None`` when it is
+    malformed: fewer than two parts, a count that does not match the parts
+    given, parts not numbered 1..n in order, text before the first part or
+    between a part's title and its first label, a label missing or given
+    twice, or an empty field."""
+    if count < 2:
+        return None
+    blocks: list[tuple[str, dict[str, list[str]]]] = []
+    field: list[str] | None = None
+    for line in rest:
+        head = _PART_HEAD_RE.fullmatch(line)
+        if head is not None:
+            if int(head.group(1)) != len(blocks) + 1:
+                return None
+            blocks.append((head.group(2).strip(), {}))
+            field = None
+            continue
+        if not line.strip():
+            if field is not None:
+                field.append("")
+            continue
+        if not blocks:
+            return None
+        label = _PART_LABEL_RE.fullmatch(line)
+        if label is not None:
+            key = label.group(1).lower()
+            if key in blocks[-1][1]:
+                return None
+            field = [label.group(2)]
+            blocks[-1][1][key] = field
+        elif field is None:
+            return None
+        else:
+            field.append(line)
+    if len(blocks) != count:
+        return None
+    parts: list[SplitPart] = []
+    for title, fields in blocks:
+        text = {k: "\n".join(v).strip() for k, v in fields.items()}
+        if set(text) != {"change", "where", "done when"} or not all(text.values()):
+            return None
+        parts.append(SplitPart(title, text["change"], text["where"], text["done when"]))
+    return Split(tuple(parts))
 
 
 def parse_brief(text: str) -> BriefOutcome | None:
@@ -119,12 +212,15 @@ def parse_brief(text: str) -> BriefOutcome | None:
 
     Decided by the FIRST non-empty line alone (after the optional
     ``handoff:`` prefix the posted comment carries): ``brief: td<id>`` with
-    at least one more non-empty line, or ``refuse: <reason> <dash> <why>``
-    with ``<reason>`` in :data:`REFUSAL_REASONS`. Anything else is ``None``
+    at least one more non-empty line, ``refuse: <reason> <dash> <why>``
+    with ``<reason>`` in :data:`REFUSAL_REASONS`, or ``split: <n>`` with
+    ``n`` well-formed parts (:func:`_parse_split`; an ``n`` above
+    :data:`MAX_SPLIT_PARTS` still parses, the caller refuses it). Anything
+    else, a malformed ``split:`` message included, is ``None``
     — a failed step, never a pass to the build. A message carrying
     :data:`CLIP_MARKER` is ``None``: a cut brief is not a brief. A
-    ``brief:`` or ``refuse:`` line further down, or inside a quoted block,
-    decides nothing: it is not the first line."""
+    ``brief:``, ``refuse:`` or ``split:`` line further down, or inside a
+    quoted block, decides nothing: it is not the first line."""
     if CLIP_MARKER in text:
         return None
     m = _HANDOFF_PREFIX_RE.match(text)
@@ -135,6 +231,9 @@ def parse_brief(text: str) -> BriefOutcome | None:
     brief = _BRIEF_HEAD_RE.fullmatch(first)
     if brief is not None:
         return Brief(int(brief.group(1)), rest) if rest else None
+    if first.lower().startswith("split:"):
+        head = _SPLIT_HEAD_RE.fullmatch(first)
+        return _parse_split(int(head.group(1)), lines[1:]) if head else None
     refuse = _REFUSE_HEAD_RE.match(first)
     if refuse is None:
         return None
@@ -379,6 +478,261 @@ def _file_refusal(
     return int(ref.id)
 
 
+def _clean(text: str, cap: int, *, one_line: bool = False) -> str:
+    """Model text about untrusted todo text: no NUL, capped; one line when
+    asked."""
+    text = text.replace("\x00", "")
+    text = " ".join(text.split()) if one_line else text.strip()
+    return text[:cap]
+
+
+def _recorded_parts(meta: dict[str, Any], root_id: int) -> list[int] | None:
+    """The part ids a source's :data:`SPLIT_KEY` records for ``root_id``."""
+    done = meta.get(SPLIT_KEY)
+    if not isinstance(done, dict) or done.get("root") != root_id:
+        return None
+    return [int(p) for p in done.get("parts") or []]
+
+
+def _insert_part(
+    store: Store,
+    source: Any,
+    root_id: int,
+    k: int,
+    n: int,
+    part: SplitPart,
+    *,
+    carried: list[str],
+    conn: Connection,
+) -> int:
+    """Insert part ``k`` of ``n`` as an open, tagged child todo of ``source``
+    (an ordinary todo: no ``meta.ask``, no ``ask-user`` tag) and return its
+    id; :func:`split_source` links it to the part before it."""
+    handle = f"td{source.id}"
+    body = (
+        f"Change: {_clean(part.change, _PART_FIELD_CAP)}\n"
+        f"Where: {_clean(part.where, _PART_FIELD_CAP)}\n"
+        f"Done when: {_clean(part.done_when, _PART_FIELD_CAP)}\n\n"
+        f"Part {k} of {n} of {handle}, split by the factory's brief step."
+    )
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=_clean(part.title, _PART_TITLE_CAP, one_line=True),
+        meta={
+            SPLIT_PART_KEY: {
+                "source": int(source.id),
+                "index": k,
+                "of": n,
+                "root": root_id,
+            }
+        },
+        parent_id=int(source.id),
+        prio=source.prio,
+        conn=conn,
+    )
+    store.add_tag(
+        ref.id,
+        Tag.closed("STATUS", "open"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    store.add_tag(ref.id, Tag.open(FACTORY_BUILD_TAG), set_by="system", conn=conn)
+    for value in carried:
+        store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+        conn=conn,
+    )
+    return int(ref.id)
+
+
+def split_source(
+    store: Store,
+    root_id: int,
+    source_id: int,
+    brief_node_id: int,
+    split: Split,
+    *,
+    hold: Callable[[Connection], str | None] | None = None,
+    conn: Connection | None = None,
+) -> list[int]:
+    """Act on a split: in ONE transaction one child todo of the source per
+    part (the three labelled lines, ``factory:build``, the source's priority
+    and its ``project:`` / ``repo:`` tags), each part after the first
+    ``blocked-by`` the one before it; the source loses ``factory:build``,
+    records :data:`SPLIT_KEY` and gets one ``split:`` comment naming the
+    parts; the chain's root closes ``won't-do`` (the plan tick closes the
+    rest). No ask, no build. Returns the part ids in order; an EMPTY list
+    means the split was not applied (see below).
+
+    Idempotent: a source that already records a split for ``root_id`` gets
+    nothing written and its recorded parts come back. Raises ``BadInput``
+    for a count outside 2..:data:`MAX_SPLIT_PARTS` and for a source that is
+    itself a part: the caller checks both first, this is the backstop.
+
+    The source may have changed while the brief session ran, so under the
+    row lock a split is NOT applied when the source is gone (retired), when
+    it records an earlier split by another chain with a part still open, or
+    when ``hold(conn)`` (the caller's read of the source's holds: a callable
+    because ``plans`` never imports ``workers``) names a reason. A held split
+    writes no part, leaves the source's tags and :data:`SPLIT_KEY` alone,
+    leaves one ``split not applied:`` comment naming the reason (none when
+    the source is gone) and closes the root ``won't-do``."""
+    if conn is None:
+        with store.tx() as own:
+            return split_source(
+                store, root_id, source_id, brief_node_id, split, hold=hold, conn=own
+            )
+    n = len(split.parts)
+    if not 2 <= n <= MAX_SPLIT_PARTS:
+        raise BadInput(
+            f"split of td{source_id}: {n} parts",
+            next=f"a split is 2 to {MAX_SPLIT_PARTS} parts; refuse with `split`",
+        )
+    # Serialises two splits of one source, as in :func:`refuse_source`.
+    conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (source_id,))
+    source = store.get_ref(kind="todo", id=source_id, conn=conn)
+    if source is None:
+        _close_root(store, root_id, conn)
+        return []
+    meta = dict(source.meta or {})
+    if isinstance(meta.get(SPLIT_PART_KEY), dict):
+        raise BadInput(
+            f"split of td{source_id}: it is already a part of a split",
+            next="a part is never split again; refuse with `split`",
+        )
+    recorded = _recorded_parts(meta, root_id)
+    if recorded is not None:
+        return recorded
+    reason = _earlier_split_hold(meta, conn)
+    if reason is None and hold is not None:
+        reason = hold(conn)
+    if reason is not None:
+        _comment_held(store, source_id, brief_node_id, root_id, split, reason, conn)
+        _close_root(store, root_id, conn)
+        return []
+    carried = [
+        str(t.value)
+        for t in store.tags_for(source_id, conn=conn)
+        if t.namespace == "open" and str(t.value).startswith(("project:", "repo:"))
+    ]
+    part_ids: list[int] = []
+    for k, part in enumerate(split.parts, start=1):
+        part_id = _insert_part(
+            store, source, root_id, k, n, part, carried=carried, conn=conn
+        )
+        if part_ids:
+            store.add_link(
+                src_ref_id=part_id,
+                dst_ref_id=part_ids[-1],
+                relation="blocked-by",
+                conn=conn,
+            )
+        part_ids.append(part_id)
+    # The mint contract (td603429): every mint that links its todos ends in
+    # ``finish_mint``. The parts are store-direct, so it is a no-op here.
+    for part_id in part_ids:
+        finish_mint(store, part_id, conn=conn)
+    store.remove_tag(source_id, Tag.open(FACTORY_BUILD_TAG), conn=conn)
+    store.stamp_ref_meta(
+        source_id, {SPLIT_KEY: {"root": root_id, "parts": part_ids}}, conn=conn
+    )
+    ord_ = max(
+        (int(c.ord) for c in store.chunks.list_chunks_for_ref(source_id, conn=conn)),
+        default=0,
+    )
+    store.chunks.insert_chunks(
+        source_id,
+        [
+            ChunkInsert(
+                ord=ord_ + 1,
+                text=f"split: {_handles(part_ids)} — the factory's brief step "
+                f"(td{brief_node_id}, chain td{root_id}) split this todo into "
+                f"{n} parts, built in this order. This todo closes when every "
+                "part is done.",
+                meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+            )
+        ],
+        conn=conn,
+    )
+    _close_root(store, root_id, conn)
+    return part_ids
+
+
+def _close_root(store: Store, root_id: int, conn: Connection) -> None:
+    """Close the chain's root ``won't-do``; the plan tick closes the rest."""
+    store.add_tag(
+        root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+
+
+def _earlier_split_hold(meta: dict[str, Any], conn: Connection) -> str | None:
+    """The reason a split is held when the source records a split by ANOTHER
+    chain with at least one part still live and not terminal (a reopened,
+    re-tagged source gets no second set of parts beside open old ones)."""
+    done = meta.get(SPLIT_KEY)
+    if not isinstance(done, dict):
+        return None
+    old = [int(p) for p in done.get("parts") or []]
+    row = conn.execute(
+        """
+        SELECT 1 FROM refs r
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL AND r.ref_id = ANY(%s)
+           AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                            WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                              AND t.value = ANY(%s))
+         LIMIT 1
+        """,
+        (old, sorted(TERMINAL_TODO_STATUSES)),
+    ).fetchone()
+    if row is None:
+        return None
+    return f"it was already split by chain td{done.get('root')} into {_handles(old)}"
+
+
+def _comment_held(
+    store: Store,
+    source_id: int,
+    brief_node_id: int,
+    root_id: int,
+    split: Split,
+    reason: str,
+    conn: Connection,
+) -> None:
+    """The one ``split not applied:`` comment on the source."""
+    titles = "; ".join(
+        _clean(p.title, _PART_TITLE_CAP, one_line=True) for p in split.parts
+    )
+    ord_ = max(
+        (int(c.ord) for c in store.chunks.list_chunks_for_ref(source_id, conn=conn)),
+        default=0,
+    )
+    store.chunks.insert_chunks(
+        source_id,
+        [
+            ChunkInsert(
+                ord=ord_ + 1,
+                text=f"split not applied: the factory's brief step "
+                f"(td{brief_node_id}, chain td{root_id}) proposed "
+                f"{len(split.parts)} parts ({titles}), but {reason}.",
+                meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+            )
+        ],
+        conn=conn,
+    )
+
+
+def _handles(ids: list[int]) -> str:
+    return ", ".join(f"td{i}" for i in ids)
+
+
 #: ``landed: <sha>`` — the first line of the comment the land writes on a
 #: todo (``land_slice._record_land`` and the source todo's own note).
 _LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
@@ -596,19 +950,130 @@ def sweep_landed_sources(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]
     return closed
 
 
+#: ``STATUS:done`` parts of ``%(parts)s`` (a jsonb array of ids) — the
+#: parts that are live and done; a split source closes when it is all of them.
+_DONE_PARTS_SQL = """
+    SELECT count(*) FROM refs c
+     WHERE c.kind = 'todo' AND c.retired_at IS NULL
+       AND c.ref_id::text IN (SELECT jsonb_array_elements_text(%(parts)s))
+       AND EXISTS (SELECT 1 FROM ref_tags ct JOIN tags t USING (tag_id)
+                    WHERE ct.ref_id = c.ref_id AND t.namespace = 'STATUS'
+                      AND t.value = 'done')
+"""
+
+
+def _all_parts_done(conn: Connection, parts: list[int]) -> bool:
+    row = conn.execute(_DONE_PARTS_SQL, {"parts": Jsonb(parts)}).fetchone()
+    return bool(parts) and row is not None and int(row[0]) == len(set(parts))
+
+
+def _close_split_source(store: Store, source_id: int) -> bool:
+    """Close one split source whose parts are all done; ``False`` when it is
+    not (any more) closable or already carries this close's comment (a
+    person reopened it: a split closes its source at most once)."""
+    with store.tx() as conn:
+        locked = conn.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s AND kind = 'todo' "
+            "AND retired_at IS NULL FOR UPDATE",
+            (source_id,),
+        ).fetchone()
+        source = store.get_ref(kind="todo", id=source_id, conn=conn)
+        if locked is None or source is None:
+            return False
+        done = (source.meta or {}).get(SPLIT_KEY)
+        parts = [int(p) for p in (done or {}).get("parts") or []]
+        tags = store.tags_for(source_id, conn=conn)
+        if any(
+            t.prefix == "STATUS" and t.value in TERMINAL_TODO_STATUSES for t in tags
+        ):
+            return False
+        if not _all_parts_done(conn, parts):
+            return False
+        note = f"{_DONE_HEAD}every part is done ({_handles(parts)})"
+        existing = list(store.chunks.list_chunks_for_ref(source_id, conn=conn))
+        if any(
+            c.chunk_kind == _COMMENT_KIND and str(c.text or "") == note
+            for c in existing
+        ):
+            return False
+        ord_ = max((int(c.ord) for c in existing), default=0)
+        store.chunks.insert_chunks(
+            source_id,
+            [
+                ChunkInsert(
+                    ord=ord_ + 1,
+                    text=note,
+                    meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+                )
+            ],
+            conn=conn,
+        )
+        set_source_done(store, source_id, tags, conn=conn)
+    return True
+
+
+def sweep_splits(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
+    """Close the split sources whose parts are all done; returns their ids.
+
+    A source carrying :data:`SPLIT_KEY`, live and not terminal, whose
+    recorded parts are every one live and ``STATUS:done`` gets one ``done:
+    every part is done`` comment and :func:`set_source_done`. A part that is
+    ``won't-do``, retired or still open leaves the source alone. At most
+    ``limit`` sources per call, lowest id first; a close that fails is
+    logged and the sweep goes on."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.ref_id FROM refs s
+             WHERE s.kind = 'todo' AND s.retired_at IS NULL
+               AND s.meta ? %(key)s
+               AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
+                                WHERE st.ref_id = s.ref_id
+                                  AND t.namespace = 'STATUS'
+                                  AND t.value = ANY(%(terminal)s))
+             ORDER BY s.ref_id
+            """,
+            {"key": SPLIT_KEY, "terminal": sorted(TERMINAL_TODO_STATUSES)},
+        ).fetchall()
+        candidates: list[int] = []
+        for (source_id,) in rows:
+            if len(candidates) >= max(0, limit):
+                break
+            ref = store.get_ref(kind="todo", id=int(source_id), conn=conn)
+            done = (getattr(ref, "meta", None) or {}).get(SPLIT_KEY)
+            parts = [int(p) for p in (done or {}).get("parts") or []]
+            if _all_parts_done(conn, parts):
+                candidates.append(int(source_id))
+    closed: list[int] = []
+    for source_id in candidates:
+        try:
+            if _close_split_source(store, source_id):
+                closed.append(source_id)
+        except Exception:
+            log.warning(
+                "todo_chain: sweep close of split td%s failed", source_id, exc_info=True
+            )
+    return closed
+
+
 __all__ = [
     "BRIEF_GRAMMAR",
     "CLIP_MARKER",
     "FACTORY_BUILD_TAG",
+    "MAX_SPLIT_PARTS",
     "NEEDS_SPEC_TAG",
     "REFUSAL_KEY",
     "REFUSAL_REASONS",
     "SKIP_TAG",
     "SOURCE_TODO_KEY",
+    "SPLIT_KEY",
+    "SPLIT_PART_KEY",
     "SWEEP_LIMIT",
     "Brief",
     "BriefOutcome",
     "Refusal",
+    "Split",
+    "SplitPart",
     "close_source",
     "done_note",
     "has_landed_comment",
@@ -617,5 +1082,7 @@ __all__ = [
     "refuse_source",
     "set_source_done",
     "source_of_root",
+    "split_source",
     "sweep_landed_sources",
+    "sweep_splits",
 ]

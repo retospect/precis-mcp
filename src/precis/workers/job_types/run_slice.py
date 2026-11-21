@@ -2340,11 +2340,12 @@ def _analyst_close(todo_id: int, mcp: bool = True) -> list[str]:
 
 def _brief_close(todo_id: int, mcp: bool = True) -> list[str]:
     """Closing steps of a brief generator's brief (a todo-sourced chain): one
-    final message that is either the builder's brief or a refusal, nothing
-    minted, nothing committed, nothing edited. The first-line grammar is
-    :data:`~precis.plans.todo_chain.BRIEF_GRAMMAR`, which the tick's verdict
-    step parses; the message is posted on this node as the ``handoff:``
-    comment whichever lane ran, so the session posts nothing itself."""
+    final message that is the builder's brief, a refusal or a split into
+    sequenced parts, nothing minted, nothing committed, nothing edited. The
+    first-line grammar is :data:`~precis.plans.todo_chain.BRIEF_GRAMMAR`,
+    which the tick's verdict step parses; the message is posted on this node
+    as the ``handoff:`` comment whichever lane ran, so the session posts
+    nothing itself."""
     from precis.plans.todo_chain import BRIEF_GRAMMAR, REFUSAL_REASONS
 
     reasons = ", ".join(f"`{r}`" for r in REFUSAL_REASONS)
@@ -2374,13 +2375,15 @@ def _brief_close(todo_id: int, mcp: bool = True) -> list[str]:
         "what the todo asks, refuse with `built` and cite the commit or "
         "`file:line`.",
         "",
-        f"Your final message has exactly two possible endings: {BRIEF_GRAMMAR}. "
+        f"Your final message has exactly three possible endings: {BRIEF_GRAMMAR}. "
         f"The refusal reasons are {reasons}: the todo does not say what "
         "should change (`rewrite`), it is more than one reviewable change "
         "(`split`), it needs a decision only a person can make (`decide`), "
         "the code already does it (`built`), or it is not a code change — a "
-        "run, a measurement, a backfill, a production step (`not-code`). Any "
-        "other ending counts as a failed attempt.",
+        "run, a measurement, a backfill, a production step (`not-code`). A "
+        "split names no files and no approach beyond the three lines per part: "
+        "the brief for each part is written later, against the code as it "
+        "then is. Any other ending counts as a failed attempt.",
         "",
         "A brief must let a builder with no access to the todo graph work "
         "from it alone. It names:",

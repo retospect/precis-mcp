@@ -701,9 +701,9 @@ slots; at most 3 new chains per pass, none ever cancelled.
 Read a pass in the worker log of the lit host:
 `todo_dispatch: base=… free=… open=… budget=… minted=… refused=… failed=…`.
 The pass result also carries `minted`, `skipped` (first 50, plus
-`skipped_total`), `refused`, `refusals_applied`, `released`, `closed` and
-`open_todo`; the scheduler logs only the line and the claimed / ok /
-failed counts. Reason words in `skipped`: `not-open`, `plan-node`, `ask`,
+`skipped_total`), `refused`, `refusals_applied`, `released`, `closed`,
+`split_closed` and `open_todo`; the scheduler logs only the line and the
+claimed / ok / failed counts. Reason words in `skipped`: `not-open`, `plan-node`, `ask`,
 `hold-tag`, `needs-spec`, `skip-tag`, `open-child`, `blocked`, `chained`
 (live chain), `closing` (landed, source not yet closed), `other-repo`
 (a `repo:` / `project:` tag the factory does not land; one comment),
@@ -724,6 +724,19 @@ Stop conditions:
   settled), `split` or `drop` (drop `needs-spec` and `factory:build`),
   `close as done` (also closes the todo). Read 2 minutes after the ask
   closes; none or several named: nothing changes, one comment says so.
+- **Split by the brief session.** A todo that is two to four reviewable
+  changes with no decision between them is split instead of refused: code
+  creates one child todo per part (its `Change:` / `Where:` / `Done when:`
+  lines, `factory:build`, the source's priority), each part blocked by the
+  one before it, removes `factory:build` from the source and closes the
+  chain with no build and no ask. Each part is then an ordinary tagged
+  todo, so only the first is eligible and the next is briefed once the
+  earlier one has landed. The source stays open and is closed `done` by a
+  sweep (`split_closed` in the pass result) when every part is done; a
+  refused or dropped part leaves it open. A part is never split again (a
+  brief session that would split one refuses with `split`), and more than
+  four parts is a `split` refusal too. A malformed `split:` message is a
+  failed attempt like any other.
 - **Chain ended without a land** (dropped, or closed with no commit): the
   source loses `factory:build` with one comment; tag it again to offer it
   again. A brief session that ends as neither brief nor refusal is a

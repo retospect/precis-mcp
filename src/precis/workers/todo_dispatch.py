@@ -12,7 +12,9 @@ reads nothing and writes nothing). Switched on, one fire does, in order:
   :func:`sweep_ended` releases the source of a chain that ended without a
   land (its root closed in any terminal status, no refusal). The completion
   backstop (:func:`~precis.plans.todo_chain.sweep_landed_sources`) closes
-  the sources the gate hook missed. Each sweep fails on its own.
+  the sources the gate hook missed. :func:`~precis.plans.todo_chain.sweep_splits`
+  closes a source the brief step split once every one of its parts is done
+  (a refused or dropped part leaves it open). Each sweep fails on its own.
 * **Survey.** :func:`survey` lists the tagged todos that are eligible — open,
   not a plan node or an ask, no open child, no open blocker, no hold tag
   (the gripe dispatcher's, ``needs-spec``, ``factory:skip``), no live chain
@@ -61,6 +63,7 @@ from precis.plans.todo_chain import (
     refuse_source,
     set_source_done,
     sweep_landed_sources,
+    sweep_splits,
 )
 from precis.principal import worker_comment_meta
 from precis.store import Store
@@ -727,8 +730,8 @@ def sweep_ended(store: Store) -> list[int]:
 def run_todo_dispatch_pass(
     store: Store, *, offer: GripeOffer, host: str | None = None
 ) -> BatchResult:
-    """One fire after the gripe pass: the three sweeps (refusal answers,
-    ended chains, the completion backstop), survey, budget, then one
+    """One fire after the gripe pass: the four sweeps (refusal answers,
+    ended chains, the completion backstop, split sources), survey, budget, then one
     todo-build chain per pick (at most :data:`_MINT_BATCH`). ``claimed`` is
     the number of picks tried, ``ok`` the chains minted. With the switch off
     nothing is read beyond the setting and nothing is written."""
@@ -760,6 +763,7 @@ def run_todo_dispatch_pass(
     applied: list[dict[str, Any]] = []
     released: list[int] = []
     closed: list[int] = []
+    split_closed: list[int] = []
     try:
         applied = sweep_refusals(store)
     except Exception:
@@ -772,6 +776,10 @@ def run_todo_dispatch_pass(
         closed = sweep_landed_sources(store)
     except Exception:
         log.warning("todo_dispatch: landed-source sweep failed", exc_info=True)
+    try:
+        split_closed = sweep_splits(store)
+    except Exception:
+        log.warning("todo_dispatch: split-source sweep failed", exc_info=True)
     eligible, skipped = survey(store)
     for s in skipped:
         if s["reason"] == "other-repo":
@@ -840,6 +848,7 @@ def run_todo_dispatch_pass(
         "refusals_applied": applied,
         "released": released,
         "closed": closed,
+        "split_closed": split_closed,
     }
     log.info(
         "todo_dispatch: base=%d free=%d open=%d budget=%d minted=%d refused=%d "

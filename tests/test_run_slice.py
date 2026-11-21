@@ -1663,6 +1663,35 @@ def test_analyst_brief_posts_one_analysis_and_mints_nothing(
     assert "add=['STATUS:done']" not in brief
 
 
+def test_brief_close_states_the_split_ending(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """The closing section names three endings, the split's grammar and that
+    a split carries no files or approach."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Write the builder brief for td7",
+        body="Brief td7.",
+        meta={"generate": {"role": "brief", "from": "td7"}},
+    )
+    _submit(store, seams)
+    brief = (_job_tree(tmp_path, 42) / "scratch" / "brief.md").read_text(
+        encoding="utf-8"
+    )
+    tail = brief[brief.index("## When done") :]
+    assert "exactly three possible endings" in tail
+    assert "two possible endings" not in tail
+    assert "`split: <n>` as the FIRST line" in tail
+    assert "`part <k>: <title>`" in tail
+    assert "two to four reviewable changes with no decision between them" in tail
+    assert (
+        "A split names no files and no approach beyond the three lines per part" in tail
+    )
+    assert "Keep the whole final message under 5000 characters" in tail
+    assert "Start no line of it with `no-op:`, `moot:` or `validated:`" in tail
+
+
 def test_brief_close_states_two_outcomes(seams: dict[str, Any], tmp_path: Path) -> None:
     """A brief writer ends with a brief or a refusal on the first line of
     its final message — the grammar the tick parses — and edits nothing."""

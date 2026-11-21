@@ -17,8 +17,11 @@ from precis.plans.todo_chain import (
     NEEDS_SPEC_TAG,
     REFUSAL_KEY,
     SKIP_TAG,
+    Split,
+    SplitPart,
     done_note,
     refuse_source,
+    split_source,
 )
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -1016,12 +1019,80 @@ def test_each_sweep_fails_on_its_own(
     def boom(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError("sweep blew up")
 
-    for name in ("sweep_refusals", "sweep_ended", "sweep_landed_sources"):
+    for name in (
+        "sweep_refusals",
+        "sweep_ended",
+        "sweep_landed_sources",
+        "sweep_splits",
+    ):
         monkeypatch.setattr(td, name, boom)
     res = _run(store)
     assert [m["todo"] for m in res.extra["minted"]] == [src]
     assert (res.extra["refusals_applied"], res.extra["released"]) == ([], [])
-    assert res.extra["closed"] == []
+    assert res.extra["closed"] == [] and res.extra["split_closed"] == []
+
+
+# -- split sources ------------------------------------------------------------
+
+
+def _split_source(store: Store, n: int = 2) -> tuple[int, list[int]]:
+    """A tagged todo whose brief step split it into ``n`` parts; the parts
+    are aged past the settle time."""
+    src = _todo(store)
+    mint = T.mint_todo_build(store, todo_id=src)
+    parts = split_source(
+        store,
+        mint.root_id,
+        src,
+        mint.ids["brief"],
+        Split(tuple(SplitPart(f"Part {k}", "c", "w", "d") for k in range(1, n + 1))),
+    )
+    for part in parts:
+        _age(store, part, 120)
+    return src, parts
+
+
+def test_only_first_part_is_eligible(store: Store) -> None:
+    src, (first, second, third) = _split_source(store, 3)
+    eligible, skipped = td.survey(store)
+    assert [p.todo_id for p in eligible] == [first]
+    assert {"todo": second, "reason": "blocked"} in skipped
+    assert {"todo": third, "reason": "blocked"} in skipped
+    # the source lost the tag: it is not offered at all
+    assert all(s["todo"] != src for s in skipped)
+    assert src not in [p.todo_id for p in eligible]
+    # the pass mints a chain for the first part only
+    _on(store)
+    res = _run(store)
+    assert [m["todo"] for m in res.extra["minted"]] == [first]
+    assert _roots(store, second) == [] and _roots(store, third) == []
+    # once the first part is done the next one is offered
+    _close(store, first, "done")
+    eligible, _skipped = td.survey(store)
+    assert [p.todo_id for p in eligible] == [second]
+
+
+def test_pass_closes_split_source_when_parts_done(store: Store) -> None:
+    src, (first, second) = _split_source(store)
+    _on(store)
+    res = _run(store)
+    assert res.extra["split_closed"] == []
+    _close(store, first, "done")
+    assert _run(store).extra["split_closed"] == []
+    _close(store, second, "done")
+    res = _run(store)
+    assert res.extra["split_closed"] == [src]
+    assert _status(store, src) == "done"
+    assert _run(store).extra["split_closed"] == []
+
+
+def test_a_dropped_part_leaves_the_source_open(store: Store) -> None:
+    src, (first, second) = _split_source(store)
+    _close(store, first, "done")
+    _close(store, second, "won't-do")
+    _on(store)
+    assert _run(store).extra["split_closed"] == []
+    assert _status(store, src) == "open"
 
 
 # -- failures -----------------------------------------------------------------
