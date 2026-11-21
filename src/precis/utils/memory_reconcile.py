@@ -1,8 +1,10 @@
 """Load the memory writer's canonical reconciliation policy for garden judges.
 
 The packaged skill section is the source of truth. Reusing the skill include
-resolver keeps interactive guidance and machine prompts identical; a digest
-lets memory-only proposer rejections reopen when that policy changes.
+resolver keeps interactive guidance and machine prompts identical. The
+prompt-cache version is a hand-bumped constant, not a digest of this prose:
+a wording-only edit must not re-ask decided questions across all memory
+detectors (gr732279).
 
 The evaluator's memory-body checklist follows the same DRY rule (gr560762):
 the per-type checks, the disagreement shapes and the standard of done with
@@ -18,7 +20,6 @@ new memory detectors cannot silently omit the policy.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from functools import cache
 from importlib import resources
@@ -28,6 +29,13 @@ from precis.ingest.skill_template import DocResolver
 
 _SKILL = "precis-memory-help"
 _SECTION = "memory-reconciliation-policy"
+
+#: Prompt-cache identity stamped on memory proposer rejection rows. Bump
+#: by hand ONLY when the pinned policy's meaning for the proposer judge
+#: changes — never a digest of the prose, so wording-only edits to the
+#: skill sections leave decided questions closed (gr732279). Tests pin the
+#: prose digest and fail when it drifts without this constant moving.
+MEMORY_POLICY_VERSION = "garden-propose.memory.v5"
 
 #: The checklist skill and the H2 sections the evaluator pins verbatim
 #: (gr560762): the per-type checks, the disagreement shapes, the standard
@@ -87,14 +95,16 @@ def memory_body_checklist() -> str:
 
 
 def memory_policy_version() -> str:
-    """Prompt-cache identity for the memory proposer's pinned text: the
-    reconciliation policy plus the pinned checklist sections."""
-    digest = hashlib.sha256(
-        (memory_reconciliation_policy() + "\n\n" + memory_body_checklist()).encode(
-            "utf-8"
-        )
-    ).hexdigest()
-    return f"garden-propose.memory.v4.{digest[:12]}"
+    """Prompt-cache identity for the memory proposer's pinned text.
+
+    Hand-bumped via :data:`MEMORY_POLICY_VERSION`, never derived from the
+    pinned prose (gr732279): a typo, reflow or example change re-asks every
+    decided question on all 13 memory detectors when the version is a
+    digest. Bump the constant only when the policy's meaning for the
+    proposer judge changes; the test suite pins the prose digest as a
+    tripwire so any edit to the pinned sections forces that decision.
+    """
+    return MEMORY_POLICY_VERSION
 
 
 def uses_memory_policy(

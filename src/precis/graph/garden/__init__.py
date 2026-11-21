@@ -146,11 +146,11 @@ evidence only reopens re-audit.
 **Memory reconciliation.** Memory candidates (including ``dup_pair``)
 and interactive ``precis-make-memory`` share packaged memory-help
 policy (:mod:`precis.utils.memory_reconcile`) across proposer, consumer
-and sampled reviewers; its digest versions only memory proposer
-rejections, keeping identity/conflict/preservation judgments consistent
-without detector interpretation or broader apply doors. Sampled reviews
-read bounded body excerpts; merge repointing never synthesizes loser's
-unique claims into the winner.
+and sampled reviewers; a hand-bumped version gates only
+memory proposer rejections, keeping identity/conflict/preservation
+judgments consistent without detector interpretation or broader apply
+doors. Sampled reviews read bounded body excerpts; merge repointing
+never synthesizes loser's unique claims into the winner.
 
 **Scheduling.** ``graph_garden`` job_type (``job_inproc`` executor) runs one
 bounded pass per tick. ``params.pass`` selects detectors
