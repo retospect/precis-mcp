@@ -10,13 +10,17 @@ covered by the DB-backed ``test_acquire.py`` / ``test_stubs.py``.
 
 from __future__ import annotations
 
+import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers import paper as paper_mod
 from precis.handlers.paper import PaperHandler
 from precis.response import Response
 
@@ -89,6 +93,32 @@ def test_put_args_carries_acquire_knobs() -> None:
     h.put(args={"doi": "10.1038/nature10352", "verify": False})
     assert cap["identifier"] == "doi:10.1038/nature10352"
     assert cap["verify"] is False
+
+
+def test_put_doi_without_pdf_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr740076: a DOI resolved by S2 and the registry works on core installs."""
+    doi = "10.1038/nature10352"
+    record = {"title": "Graphene transport measurements", "year": 2011, "doi": doi}
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: {**record, "s2_id": "abc123"}
+    )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda _: record)
+    monkeypatch.setitem(sys.modules, "precis.ingest.verify_metadata", None)
+    store = MagicMock()
+    store.tx.return_value = nullcontext()
+    store.find_ref_by_identifier.return_value = None
+    store.upsert_stub_paper.return_value = (42, True)
+    store.pin_stub_for_fetch.return_value = True
+    hub = cast(Hub, SimpleNamespace(store=store, embedder=None))
+
+    response = PaperHandler(hub=hub).put(args={"doi": doi})
+
+    assert "minted stub paper id=pa42" in response.body
+    assert store.upsert_stub_paper.call_args.kwargs["identifiers"] == [
+        ("doi", doi),
+        ("s2", "abc123"),
+    ]
+    store.pin_stub_for_fetch.assert_called_once()
 
 
 def test_put_args_verify_string_false() -> None:

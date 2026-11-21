@@ -776,7 +776,7 @@ def _scrub_uncorroborated_s2_doi(id_kind: str, meta: dict[str, Any]) -> dict[str
     (Crossref / DataCite / JaLC — the same fallback the ``doi:`` leg
     already uses) and require the registered work to look like the same
     paper — at least one shared distinctive title token
-    (:func:`~precis.ingest.verify_metadata.title_overlap`; the published
+    (:func:`~precis.utils.title_merge.content_tokens`; the published
     version of a preprint essentially always shares one) and no clear
     first-author disagreement
     (:func:`~precis.utils.title_merge.first_author_agreement`). The
@@ -858,13 +858,16 @@ def _registry_disagreement(
     reg_title = str((reg or {}).get("title") or "").strip()
     if not reg_title:
         return reg, None
-    from precis.ingest.verify_metadata import title_overlap
     from precis.utils.title_merge import content_tokens, first_author_agreement
 
-    if not content_tokens(reg_title) or not content_tokens(s2_title):
+    # DOI acquisition also runs on core-only gateways. Keep this title
+    # comparison independent of PDF verification and its optional dependencies.
+    reg_tokens = content_tokens(reg_title)
+    s2_tokens = content_tokens(s2_title)
+    if not reg_tokens or not s2_tokens:
         return reg, None
     if (
-        title_overlap(reg_title, s2_title) > 0
+        reg_tokens & s2_tokens
         and first_author_agreement(meta.get("authors"), (reg or {}).get("authors"))
         is not False
     ):
