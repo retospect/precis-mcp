@@ -2552,6 +2552,23 @@ _AUTOCATPATH_KINETICS_KEYS: tuple[str, ...] = (
     "log_tof_p95",
 )
 
+#: Kinetics scalars that are NOT trust-gated: ``bep_flux_share`` is the very
+#: gate that makes a solve untrusted (a gated copy would vanish exactly when
+#: it explains the verdict), and ``q_over_k`` describes the solve rather than
+#: ranking it. Both stay plottable (kept out of ``frontier._META_NON_MEASURE``).
+_AUTOCATPATH_KINETICS_UNGATED_KEYS: tuple[str, ...] = (
+    "bep_flux_share",
+    "q_over_k",
+)
+
+#: Per-solve categorical values for Pareto colour and filtering.
+_AUTOCATPATH_KINETICS_CATEGORY_KEYS = (
+    "mari",
+    "poisoned",
+    "surface_holders",
+    "kinetics_method",
+)
+
 #: ``kinetics_trusted``/``kinetics_note`` context (the kinetics-specific
 #: trust verdict — a run_kinetics failure/import-miss, or the guard-bracket
 #: excluded-step warning) — never measures on their own, but drive the
@@ -2561,6 +2578,7 @@ _AUTOCATPATH_KINETICS_CONTEXT_KEYS: tuple[str, ...] = (
     "kinetics_note",
     "drc_top",
     "drc_note",
+    *_AUTOCATPATH_KINETICS_CATEGORY_KEYS,
 )
 
 #: Suffix a gated-out kinetics measure is stashed under on an untrusted
@@ -2660,6 +2678,9 @@ _LOSING_JOB_FLAG_KEYS: tuple[str, ...] = (
     "barrier_seed_blocker",
     "barrier_independent_seeds",
     "warnings",
+    # per-solve kinetics context: it describes the losing job's own solve
+    *_AUTOCATPATH_KINETICS_UNGATED_KEYS,
+    *_AUTOCATPATH_KINETICS_CATEGORY_KEYS,
 )
 
 
@@ -2778,6 +2799,10 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, Any]:
         else:
             for k, v in kin_measures.items():
                 out[f"{k}{_KINETICS_UNTRUSTED_VALUE_SUFFIX}"] = v
+    for k in _AUTOCATPATH_KINETICS_UNGATED_KEYS:
+        v = _num_measure(src.get(k))
+        if v is not None:
+            out[k] = v
     for k in _AUTOCATPATH_KINETICS_CONTEXT_KEYS:
         ctx = src.get(k)
         if isinstance(ctx, str) and ctx:
@@ -2786,6 +2811,15 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, Any]:
     # previous run's, or the frontier names it beside "No usable rate control".
     if "drc_note" in out and "drc_top" not in out:
         out["drc_top"] = None
+    # A new kinetics attempt supersedes the previous solve's picker values.
+    # Explicit nulls clear omitted values during the shallow merge, including
+    # when the new attempt only reports a kinetics error.
+    if "kinetics_trusted" in out or "kinetics_method" in out:
+        for k in (
+            *_AUTOCATPATH_KINETICS_UNGATED_KEYS,
+            *_AUTOCATPATH_KINETICS_CATEGORY_KEYS,
+        ):
+            out.setdefault(k, None)
     return out
 
 
@@ -7616,6 +7650,7 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     # staleness story as the barrier above
     "kinetics_trusted",
     *_AUTOCATPATH_KINETICS_KEYS,
+    *_AUTOCATPATH_KINETICS_UNGATED_KEYS,
     *_AUTOCATPATH_KINETICS_CONTEXT_KEYS,
     *(f"{k}{_KINETICS_UNTRUSTED_VALUE_SUFFIX}" for k in _AUTOCATPATH_KINETICS_KEYS),
     # CHE electro scalars — lifted off the same engine run as the barrier,

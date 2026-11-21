@@ -733,6 +733,10 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_fbar: float | None = None
     frontier_ftof: float | None = None
     frontier_axis_keys: list[str] = []
+    frontier_axis_groups: list[tuple[str, list[tuple[str, str, int]]]] = []
+    frontier_cat_keys: list[tuple[str, str, int]] = []
+    frontier_cat_values: dict[str, dict[str, int]] = {}
+    frontier_fcat: tuple[str, str] | None = None
     frontier_axis_counts: dict[str, int] = {}
     frontier_axis_docs: list[dict[str, str]] = []
     if show_frontier:
@@ -758,15 +762,37 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             # pickers label each option "atom_cost (5)" so a sparse/empty axis
             # is self-explanatory before plotting it. A declared objective
             # nothing has measured yet shows "(0)" rather than vanishing.
+            # Flag-held diagnostics (adsorption_barrier) are lifted into
+            # plot-only copies: selectable here, never ranked.
+            plot_frontier, plot_provisional = frontier_mod.with_plot_only_measures(
+                fr.frontier, fr.provisional
+            )
+            plot_dominated, _ = frontier_mod.with_plot_only_measures(fr.dominated)
+            plot_unevaluated, _ = frontier_mod.with_plot_only_measures(fr.unevaluated)
             frontier_axis_counts = {k: 0 for k, _ in objectives}
-            for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+            for c in (*plot_frontier, *plot_dominated, *plot_unevaluated):
                 for k in c.measures:
                     frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
-            for pc in fr.provisional:
+            for pc in plot_provisional:
                 for k in pc.measures:
                     frontier_axis_counts[k] = frontier_axis_counts.get(k, 0) + 1
-            frontier_axis_keys = sorted(frontier_axis_counts)
+            # Categorical measures (kinetics rung, poisoning verdict, MARI,
+            # surface holders) sit on candidate flags: they colour and filter
+            # the plot and never reach x or y (gr553414).
+            frontier_cat_values = frontier_mod.categorical_value_counts(
+                [*fr.frontier, *fr.dominated, *fr.unevaluated], fr.provisional
+            )
+            for k, vals in frontier_cat_values.items():
+                frontier_axis_counts[k] = sum(vals.values())
+            frontier_axis_groups = frontier_mod.grouped_axis_keys(frontier_axis_counts)
+            frontier_cat_keys = frontier_mod.categorical_axis_keys(frontier_axis_counts)
+            frontier_axis_keys = sorted(
+                k
+                for k in frontier_axis_counts
+                if k not in frontier_mod.CATEGORICAL_KEYS
+            )
             axis_key_set = set(frontier_axis_keys)
+            cat_key_set = {k for k, _l, _n in frontier_cat_keys}
             req_fx = request.query_params.get("fx")
             req_fy = request.query_params.get("fy")
             if req_fx is not None and req_fx in axis_key_set:
@@ -795,7 +821,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
                 z_key = next(
                     (k for k, _s in objectives if k not in (x_key, y_key)), None
                 )
-            elif req_fz and req_fz in axis_key_set:
+            elif req_fz and (req_fz in axis_key_set or req_fz in cat_key_set):
                 z_key = req_fz
             if z_key:
                 z_label = frontier_mod.axis_label_for(z_key)
@@ -815,6 +841,12 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
                 request.query_params.get("fbar"), minimum=0.0
             )
             frontier_ftof = _quest_float_param(request.query_params.get("ftof"))
+            # Categorical visual filter (``?fcat=key=value``): dims points
+            # whose value for the key differs, composing with fbar/ftof; an
+            # unknown key or value is "no filter".
+            frontier_fcat = frontier_mod.parse_categorical_filter(
+                request.query_params.get("fcat"), frontier_cat_values
+            )
             # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
             # [lo, hi]}``) — unions into the plotted range so the axis doesn't
             # keep re-scaling as new points land inside a range already widened
@@ -823,8 +855,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             raw_viewport = (getattr(ref, "meta", None) or {}).get("frontier_viewport")
             viewport = raw_viewport if isinstance(raw_viewport, dict) else None
             frontier_scatter = frontier_mod.build_frontier_scatter(
-                fr.frontier + fr.dominated,
-                provisional=fr.provisional,
+                plot_frontier + plot_dominated,
+                provisional=plot_provisional,
                 open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
                 frontier_ref_ids={c.ref_id for c in fr.frontier},
                 x_measure=x_key,
@@ -833,11 +865,13 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
                 y_label=y_label,
                 viewport=viewport,
                 objectives=objectives,
-                z_measure=z_key,
+                z_measure=None if z_key in cat_key_set else z_key,
                 z_label=z_label,
                 contour=frontier_c,
                 barrier_max=frontier_fbar,
                 log_tof_min=frontier_ftof,
+                cat_measure=z_key if z_key in cat_key_set else None,
+                cat_filter=frontier_fcat,
             )
             if frontier_scatter is not None:
                 axis_slots = [("x", x_key), ("y", y_key)]
@@ -948,6 +982,10 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "frontier_scatter": frontier_scatter,
             "frontier_has_candidates": frontier_has_candidates,
             "frontier_axis_keys": frontier_axis_keys,
+            "frontier_axis_groups": frontier_axis_groups,
+            "frontier_cat_keys": frontier_cat_keys,
+            "frontier_cat_values": frontier_cat_values,
+            "frontier_fcat": frontier_fcat,
             "frontier_x": frontier_x,
             "frontier_y": frontier_y,
             "frontier_z": frontier_z,

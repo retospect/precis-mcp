@@ -81,24 +81,43 @@
   <form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-fg-subtle">
     <label class="flex items-center gap-1">x:
       <select name="fx" class="rounded border border-line-strong px-1 py-0.5 text-xs">
-        {% for k in frontier_axis_keys %}
-        <option value="{{ k }}" {% if k == frontier_x %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
+        {% for fam, rows in frontier_axis_groups %}
+        <optgroup label="{{ fam }}">
+          {% for k, lbl, n in rows %}
+          <option value="{{ k }}" {% if k == frontier_x %}selected{% endif %}>{{ lbl }} · {{ k }} ({{ n }})</option>
+          {% endfor %}
+        </optgroup>
         {% endfor %}
       </select>
     </label>
     <label class="flex items-center gap-1">y:
       <select name="fy" class="rounded border border-line-strong px-1 py-0.5 text-xs">
-        {% for k in frontier_axis_keys %}
-        <option value="{{ k }}" {% if k == frontier_y %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
+        {% for fam, rows in frontier_axis_groups %}
+        <optgroup label="{{ fam }}">
+          {% for k, lbl, n in rows %}
+          <option value="{{ k }}" {% if k == frontier_y %}selected{% endif %}>{{ lbl }} · {{ k }} ({{ n }})</option>
+          {% endfor %}
+        </optgroup>
         {% endfor %}
       </select>
     </label>
     <label class="flex items-center gap-1">color:
       <select name="fz" class="rounded border border-line-strong px-1 py-0.5 text-xs">
         <option value="" {% if not frontier_z %}selected{% endif %}>(none)</option>
-        {% for k in frontier_axis_keys %}
-        <option value="{{ k }}" {% if k == frontier_z %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
+        {% for fam, rows in frontier_axis_groups %}
+        <optgroup label="{{ fam }}">
+          {% for k, lbl, n in rows %}
+          <option value="{{ k }}" {% if k == frontier_z %}selected{% endif %}>{{ lbl }} · {{ k }} ({{ n }})</option>
+          {% endfor %}
+        </optgroup>
         {% endfor %}
+        {% if frontier_cat_keys %}
+        <optgroup label="Categorical (colour only)">
+          {% for k, lbl, n in frontier_cat_keys %}
+          <option value="{{ k }}" {% if k == frontier_z %}selected{% endif %}>{{ lbl }} · {{ k }} ({{ n }})</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
       </select>
     </label>
     <label class="flex items-center gap-1">contour:
@@ -125,6 +144,23 @@
       <input type="number" name="ftof" step="any" aria-label="log₁₀ turnover floor"
              class="w-20 rounded border border-line-strong px-1 py-0.5 text-xs"
              value="{{ frontier_ftof if frontier_ftof is not none else '' }}">
+    </label>
+    {% endif %}
+    {# Categorical visual filter — dims points whose flag differs from the
+       picked value, composing with barrier/TOF above; blank = no filter. #}
+    {% if frontier_cat_values %}
+    <label class="flex items-center gap-1"
+           title="Dim candidates whose categorical value differs; a candidate with no value for it stays visible">only:
+      <select name="fcat" class="rounded border border-line-strong px-1 py-0.5 text-xs">
+        <option value="">(all)</option>
+        {% for k, lbl, n in frontier_cat_keys %}
+        <optgroup label="{{ lbl }}">
+          {% for v, vn in frontier_cat_values[k].items() | sort %}
+          <option value="{{ k }}={{ v }}" {% if frontier_fcat and frontier_fcat[0] == k and frontier_fcat[1] == v %}selected{% endif %}>{{ v }} ({{ vn }})</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
     </label>
     {% endif %}
     <button class="rounded-md border border-line-strong bg-surface text-xs px-2 py-1 text-fg-secondary hover:bg-surface-subtle">plot</button>
@@ -203,6 +239,9 @@
     {% if fs.z_key and p.z is defined %}
       {% set ns.mid = ns.mid ~ "\n" ~ fs.z_label ~ " = " ~ "%g"|format(p.z) %}
     {% endif %}
+    {% if fs.cat_key and p.cat is defined %}
+      {% set ns.mid = ns.mid ~ "\n" ~ fs.cat_label ~ " = " ~ p.cat %}
+    {% endif %}
     {% for pr in p.params %}
       {% set ns.mid = ns.mid ~ "\n" ~ pr.key ~ " = " ~ pr.value %}
     {% endfor %}
@@ -275,19 +314,28 @@
     <span>{{ fs.z_label }}</span>
   </div>
   {% endif %}
+  {% if fs.cat_key %}
+  <div class="flex flex-wrap items-center gap-3 text-xs text-fg-faint mb-1 max-w-3xl">
+    <span>{{ fs.cat_label }}:</span>
+    {% for l in fs.cat_legend %}
+    <span class="inline-flex items-center gap-1"><span class="inline-block h-2.5 w-2.5 rounded-full" style="background: {{ l.color }}"></span>{{ l.value }} ({{ l.count }})</span>
+    {% endfor %}
+  </div>
+  {% endif %}
   <p class="text-xs text-fg-faint mb-3">
     star = on the frontier, circle = off it · filled blue = confirmed ·
     hollow/dashed orange = provisional (measured, unconfirmed) ·
     hollow/dashed grey = awaiting sim · hover a point for details
-    {%- if fs.z_key %} · fill colour = {{ fs.z_label }}{% endif %}
+    {%- if fs.z_key %} · fill colour = {{ fs.z_label }}{% elif fs.cat_key %} · fill colour = {{ fs.cat_label }} (see legend){% endif %}
     {%- if fs.contour_bands %} · background = interpolated {{ fs.z_label }} (trusted points only){% endif %}
   </p>
-  {% if frontier_fbar is not none or frontier_ftof is not none %}
+  {% if frontier_fbar is not none or frontier_ftof is not none or frontier_fcat %}
   {% set n_dim = fs.points | selectattr('filtered') | list | length %}
   <p class="text-xs text-fg-faint mb-3">
     visual filters:
     {%- if frontier_fbar is not none %} barrier ≤ {{ "%g" | format(frontier_fbar) }} eV{% endif %}
     {%- if frontier_ftof is not none %} log₁₀ TOF ≥ {{ "%g" | format(frontier_ftof) }}{% endif %}
+    {%- if frontier_fcat %} {{ frontier_fcat[0] }} = {{ frontier_fcat[1] }}{% endif %}
     — {{ n_dim }} of {{ fs.points | length }} point{{ "" if (fs.points | length) == 1 else "s" }} dimmed;
     a candidate missing the filtered measure stays visible
   </p>

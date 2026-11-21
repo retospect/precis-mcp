@@ -80,6 +80,16 @@ _SPEC = {
 # ── pure Pareto ───────────────────────────────────────────────────────
 
 
+_SURFACE_CTX: dict[str, Any] = {
+    "bep_flux_share": 0.8,
+    "q_over_k": 0.01,
+    "mari": "NO@fcc",
+    "poisoned": "yes",
+    "surface_holders": "CO, H",
+    "kinetics_method": "chain",
+}
+
+
 class TestPareto:
     def test_lower_energy_dominates(self) -> None:
         a = Candidate(1, "st1", "A", {"energy": -10.0}, True)
@@ -845,6 +855,50 @@ class TestAxisDescriptionFor:
 
         for key in _AXIS_LABELS:
             assert axis_description_for(key) != "", key
+
+    def test_family_exact_keys_and_prefix_rules(self) -> None:
+        from precis.quest.frontier import axis_family_for
+
+        assert axis_family_for("bep_flux_share") == "Kinetics"
+        assert axis_family_for("order_NO") == "Kinetics"
+        assert axis_family_for("optimum_T") == "Kinetics"
+        assert axis_family_for("U_L_abs") == "Thermodynamics / electrochem"
+        assert axis_family_for("window_area_VpH") == "Thermodynamics / electrochem"
+        assert axis_family_for("adsorption_barrier") == "Barriers"
+        assert axis_family_for("P_side") == "Selectivity"
+        assert axis_family_for("n_steps") == "Structure / cost"
+        assert axis_family_for("shapley_ipr") == "Diagnostics"
+        assert axis_family_for("seed_retries") == "Diagnostics"
+        assert axis_family_for("mystery") == "Other"
+
+    def test_grouped_axis_keys_order_and_categoricals_apart(self) -> None:
+        from precis.quest.frontier import categorical_axis_keys, grouped_axis_keys
+
+        counts = {
+            "mystery": 1,
+            "atom_cost": 2,
+            "log_tof": 3,
+            "barrier": 4,
+            "poisoned": 5,
+            "mari": 0,
+        }
+        groups = grouped_axis_keys(counts)
+        assert [f for f, _ in groups] == [
+            "Kinetics",
+            "Barriers",
+            "Structure / cost",
+            "Other",
+        ]
+        flat = {k for _f, rows in groups for k, _l, _n in rows}
+        assert "poisoned" not in flat and "mari" not in flat
+        assert groups[0][1] == [("log_tof", "log₁₀ TOF (site⁻¹ s⁻¹)", 3)]
+        assert categorical_axis_keys(counts) == [("poisoned", "Poisoned surface", 5)]
+
+    def test_every_family_key_with_a_label_is_described(self) -> None:
+        from precis.quest.frontier import _AXIS_LABELS, CATEGORICAL_KEYS
+
+        for key in CATEGORICAL_KEYS:
+            assert key in _AXIS_LABELS, key
 
     def test_unknown_key_returns_empty(self) -> None:
         from precis.quest.frontier import axis_description_for
@@ -6470,6 +6524,111 @@ class TestAutocatpathHarvest:
         assert c.flags["kinetics_trusted"] is True
         assert c.flags["drc_top"] == "NO->N+O"
 
+    def test_untrusted_solve_still_lands_bep_share_and_surface_context(
+        self, store: Any
+    ) -> None:
+        """bep_flux_share is the gate that makes a solve untrusted, so it
+        (and q_over_k) is not trust-gated; the categorical context lands
+        as candidate flags and never as measures."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "kinetics_trusted": False,
+                    "tof": 1e-3,
+                    "kinetics_note": "bep_flux_share=0.80",
+                    **_SURFACE_CTX,
+                }
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["bep_flux_share"] == 0.8
+        assert meta["q_over_k"] == 0.01
+        assert "bep_flux_share_untrusted_value" not in meta
+        assert meta["tof_untrusted_value"] == 1e-3
+        for k in ("mari", "poisoned", "surface_holders", "kinetics_method"):
+            assert meta[k] == _SURFACE_CTX[k]
+        c = _cand(store, sid)
+        assert c.measures["bep_flux_share"] == 0.8
+        assert c.measures["q_over_k"] == 0.01
+        for k in ("mari", "poisoned", "surface_holders", "kinetics_method"):
+            assert k not in c.measures
+            assert c.flags[k] == _SURFACE_CTX[k]
+
+    def test_clean_solve_clears_stale_surface_context(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {"result": {"barrier": 0.4, "kinetics_trusted": True, **_SURFACE_CTX}},
+        )
+        compute_mod.harvest_measures(store, qid)
+        # a later clean, vacancy-only solve: no MARI, holders; poisoned=no
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "kinetics_trusted": True,
+                    "kinetics_method": "chain",
+                    "poisoned": "no",
+                }
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["poisoned"] == "no"
+        assert meta.get("mari") is None
+        assert meta.get("surface_holders") is None
+        assert (
+            "mari" not in _cand(store, sid).flags or not _cand(store, sid).flags["mari"]
+        )
+
+    def test_reset_clears_surface_context(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.4, **_SURFACE_CTX}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["mari"] == "NO@fcc"
+        compute_mod.reset_compute(store, qid, keep_dossier=True)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        for k in _SURFACE_CTX:
+            assert meta.get(k) is None, k
+
+    def test_kinetics_error_clears_previous_picker_values(self, store: Any) -> None:
+        from precis_pathway._dispatch_common import _kinetics_scalars
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {"result": {"barrier": 0.4, "kinetics_trusted": True, **_SURFACE_CTX}},
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert {k: meta[k] for k in _SURFACE_CTX} == _SURFACE_CTX
+
+        error = _kinetics_scalars({"kinetics_error": "solver failed"})
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.4, **error}})
+        compute_mod.harvest_measures(store, qid)
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["kinetics_note"] == "solver failed"
+        candidate = _cand(store, sid)
+        for k in _SURFACE_CTX:
+            assert meta.get(k) is None, k
+            assert k not in candidate.measures
+            assert candidate.flags.get(k) is None, k
+
     @pytest.mark.parametrize("nested", [False, True])
     def test_harvest_keeps_unrecorded_drc_source_note(
         self, store: Any, nested: bool
@@ -7146,6 +7305,25 @@ class TestStructNebHarvest:
         assert meta["barrier_source"] == "struct_neb"
         assert meta["neb_run_id"] == run_id
         assert meta["barrier_untrusted_value"] == 0.2
+
+    def test_stashed_job_stamps_no_surface_context(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._neb_run(store, sid, barrier_fwd_ev=0.6)
+        compute_mod.harvest_measures(store, qid)
+        pw = self._pathway_ref(store, sid, trusted=False)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.2, **_SURFACE_CTX},
+                "pathway_ref": pw,
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        for k in _SURFACE_CTX:
+            assert meta.get(k) is None, k
 
     def test_stashed_job_stamps_no_derived_keys(self, store: Any) -> None:
         """Must-fix 1: the whole losing job stashes — an untrusted

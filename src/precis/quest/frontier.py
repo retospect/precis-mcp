@@ -258,6 +258,12 @@ _AXIS_LABELS: dict[str, str] = {
     "reset_window_fraction": "Guaranteed-reset window fraction",
     "env_best_J": "env_best J (eV)",
     "env_pareto_fraction": "env Pareto fraction",
+    "bep_flux_share": "BEP-priced flux share",
+    "q_over_k": "Q/K (overall reaction)",
+    "mari": "Most-abundant surface intermediate",
+    "poisoned": "Poisoned surface",
+    "surface_holders": "Species holding the surface",
+    "kinetics_method": "Kinetics rung",
 }
 
 
@@ -426,6 +432,44 @@ _AXIS_DESCRIPTIONS: dict[str, str] = {
         "physical and trust masks; its denominator is the producer's "
         "sampled sweep box. Higher is better."
     ),
+    "bep_flux_share": (
+        "The share of the net step flux (target production) that runs "
+        "through steps whose barrier was BEP-priced rather than measured by "
+        "NEB. Above 0.5 the TOF depends on predicted barriers and the "
+        "solve is untrusted (its log₁₀ TOF is left off the ranked "
+        "measures); this share itself is always kept. 0–1, lower means "
+        "more of the rate rests on measured barriers."
+    ),
+    "q_over_k": (
+        "Q/K of the overall reaction at the solved conditions: the "
+        "reaction quotient over the equilibrium constant. 1 is equilibrium, "
+        "≪ 1 is driven forward; a TOF at Q/K near 1 is a net of "
+        "forward and reverse flux."
+    ),
+    "mari": (
+        "Most-abundant surface intermediate (MARI): the species with the "
+        "largest steady-state coverage in the kinetics record, other than "
+        "the vacancy, written token@site-class. Categorical — colours and "
+        "filters the plot, never an axis."
+    ),
+    "poisoned": (
+        "Whether the mean-field solve found the surface poisoned: yes when "
+        "its diagnosis is a poisoned surface, no when the solve converged "
+        "cleanly, unknown otherwise. Categorical — colours and filters "
+        "the plot, never an axis."
+    ),
+    "surface_holders": (
+        "The species covering the sites when the surface is poisoned "
+        "(the mean-field diagnosis's covering list). Present only on a "
+        "poisoned solve. Categorical — colours and filters the plot, "
+        "never an axis."
+    ),
+    "kinetics_method": (
+        "The kinetics rung that supplied the ranked TOF: chain (the "
+        "reaction-chain rate), mf (mean-field steady state) or kmc "
+        "(lattice kinetic Monte Carlo). Categorical — colours and "
+        "filters the plot, never an axis."
+    ),
 }
 
 
@@ -433,6 +477,199 @@ def axis_description_for(key: str) -> str:
     """A precise, chemistry-verified prose description of what ``key``
     measures, or ``""`` for an unknown key (never a fabricated guess)."""
     return _AXIS_DESCRIPTIONS.get(key, "")
+
+
+#: Categorical (string-valued) kinetics measures: they live on a candidate's
+#: ``flags``, colour and filter the Pareto plot, and never reach x or y
+#: (gr553414). Order is the picker's order.
+CATEGORICAL_KEYS: tuple[str, ...] = (
+    "kinetics_method",
+    "poisoned",
+    "mari",
+    "surface_holders",
+)
+
+#: Picker families in the gripe's order (gr553414), then a catch-all. Exact
+#: keys first; prefix rules (``window_*``, ``shapley_*``, ``*_retries`` …)
+#: in :func:`axis_family_for`.
+AXIS_FAMILIES: tuple[str, ...] = (
+    "Kinetics",
+    "Thermodynamics / electrochem",
+    "Barriers",
+    "Selectivity",
+    "Structure / cost",
+    "Diagnostics",
+    "Other",
+)
+_FAMILY_KEYS: dict[str, frozenset[str]] = {
+    "Kinetics": frozenset(
+        {
+            "tof",
+            "log_tof",
+            "log_tof_p5",
+            "log_tof_p95",
+            "bep_flux_share",
+            "q_over_k",
+            "mari",
+            "poisoned",
+            "surface_holders",
+            "kinetics_method",
+            "ea_app",
+        }
+    ),
+    "Thermodynamics / electrochem": frozenset(
+        {
+            "U_L",
+            "U_L_abs",
+            "U_opt",
+            "span",
+            "span_at_Uopt",
+            "her_margin_at_Uopt",
+            "reset_window_area",
+            "reset_window_fraction",
+            "env_best_J",
+            "env_pareto_fraction",
+        }
+    ),
+    "Barriers": frozenset({"barrier", "adsorption_barrier"}),
+    "Selectivity": frozenset(
+        {"selectivity_margin", "trap_margin", "poison_margin", "P_side"}
+    ),
+    "Structure / cost": frozenset(
+        {"energy", "atom_cost", "max_force", "max_disp", "n_steps"}
+    ),
+    "Diagnostics": frozenset({"ridge_churn", "barrier_marginal_count"}),
+}
+#: (prefix, family) rules for keys not named above.
+_FAMILY_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("window_", "Thermodynamics / electrochem"),
+    ("order_", "Kinetics"),
+    ("optimum_", "Kinetics"),
+    ("shapley_", "Diagnostics"),
+)
+
+
+def axis_family_for(key: str) -> str:
+    """The picker family of ``key`` (one of :data:`AXIS_FAMILIES`)."""
+    for family, keys in _FAMILY_KEYS.items():
+        if key in keys:
+            return family
+    for prefix, family in _FAMILY_PREFIXES:
+        if key.startswith(prefix):
+            return family
+    if key.endswith("_retries"):
+        return "Diagnostics"
+    return "Other"
+
+
+def grouped_axis_keys(
+    counts: dict[str, int],
+) -> list[tuple[str, list[tuple[str, str, int]]]]:
+    """``[(family, [(key, label, count), ...])]`` over the NUMERIC keys of
+    ``counts`` (categorical keys never reach x or y — see
+    :func:`categorical_axis_keys`), families in :data:`AXIS_FAMILIES` order,
+    empty families dropped, keys sorted within a family."""
+    by_family: dict[str, list[tuple[str, str, int]]] = {f: [] for f in AXIS_FAMILIES}
+    for key in sorted(counts):
+        if key in CATEGORICAL_KEYS:
+            continue
+        by_family[axis_family_for(key)].append((key, axis_label_for(key), counts[key]))
+    return [(f, rows) for f, rows in by_family.items() if rows]
+
+
+def categorical_axis_keys(
+    counts: dict[str, int],
+) -> list[tuple[str, str, int]]:
+    """``[(key, label, count)]`` for the categorical keys with >= 1
+    candidate, in :data:`CATEGORICAL_KEYS` order."""
+    return [
+        (k, axis_label_for(k), counts[k]) for k in CATEGORICAL_KEYS if counts.get(k)
+    ]
+
+
+#: Flag-held numeric diagnostics that stay out of ranking (``measures`` is
+#: what ranks) yet are selectable and plottable on the Pareto picker.
+PLOT_ONLY_KEYS: tuple[str, ...] = ("adsorption_barrier",)
+
+
+def _lift_plot_only(
+    measures: dict[str, float], flags: dict[str, Any]
+) -> dict[str, float]:
+    extra = {
+        k: float(v)
+        for k in PLOT_ONLY_KEYS
+        if k not in measures
+        and isinstance(v := flags.get(k), (int, float))
+        and not isinstance(v, bool)
+    }
+    return {**measures, **extra} if extra else measures
+
+
+def with_plot_only_measures(
+    candidates: Sequence[Candidate],
+    provisional: Sequence[ProvisionalCandidate] = (),
+) -> tuple[list[Candidate], list[ProvisionalCandidate]]:
+    """Copies of the bands with :data:`PLOT_ONLY_KEYS` lifted from flags
+    into ``measures`` — for the picker and scatter only; call it AFTER
+    ranking so these diagnostics never rank or dominate."""
+    cands = [
+        replace(c, measures=_lift_plot_only(c.measures, c.flags)) for c in candidates
+    ]
+    provs = [
+        replace(pc, measures=_lift_plot_only(pc.measures, pc.candidate.flags))
+        for pc in provisional
+    ]
+    return cands, provs
+
+
+#: Discrete palette for a categorical colour axis (Okabe–Ito, colourblind
+#: safe). A value past the ninth cycles; the legend lists every value.
+_CATEGORY_PALETTE: tuple[str, ...] = (
+    "#0072b2",
+    "#e69f00",
+    "#009e73",
+    "#cc79a7",
+    "#d55e00",
+    "#56b4e9",
+    "#f0e442",
+    "#000000",
+    "#999999",
+)
+
+
+def _cat_value(flags: dict[str, Any], key: str) -> str | None:
+    v = flags.get(key)
+    return v if isinstance(v, str) and v else None
+
+
+def categorical_value_counts(
+    candidates: Sequence[Candidate],
+    provisional: Sequence[ProvisionalCandidate] = (),
+) -> dict[str, dict[str, int]]:
+    """``{categorical key: {value: candidates carrying it}}`` over every
+    band (the provisional wrapper's own candidate included); a key nobody
+    carries is absent."""
+    out: dict[str, dict[str, int]] = {}
+    for c in (*candidates, *(pc.candidate for pc in provisional)):
+        for key in CATEGORICAL_KEYS:
+            v = _cat_value(c.flags, key)
+            if v is not None:
+                vals = out.setdefault(key, {})
+                vals[v] = vals.get(v, 0) + 1
+    return out
+
+
+def parse_categorical_filter(
+    raw: str | None, value_counts: dict[str, dict[str, int]]
+) -> tuple[str, str] | None:
+    """``"key=value"`` -> ``(key, value)`` when ``key`` is categorical and
+    some candidate carries ``value``; anything else is no filter."""
+    if not raw or "=" not in raw:
+        return None
+    key, _, value = raw.partition("=")
+    if value in value_counts.get(key, {}):
+        return key, value
+    return None
 
 
 #: Shared conditions footnote for the axis-description block — the
@@ -685,6 +922,13 @@ class FrontierScatter:
     #: measure's bound lands on the axis that plots it. Empty when no
     #: filter is active or the filtered measure isn't a plotted axis.
     filter_lines: list[dict[str, Any]] = field(default_factory=list)
+    #: Categorical colour axis (``build_frontier_scatter``'s ``cat_measure``):
+    #: the flag key (``None`` when off or no plottable point carries a
+    #: value), its label, and the legend ``{"value","color","count"}``
+    #: rows over the plotted points.
+    cat_key: str | None = None
+    cat_label: str = ""
+    cat_legend: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _svg_path(px: Any, py: Any, *, close: bool) -> str:
@@ -871,6 +1115,8 @@ def _filter_reasons(
     measures: dict[str, float],
     barrier_max: float | None,
     log_tof_min: float | None,
+    flags: dict[str, Any] | None = None,
+    cat_filter: tuple[str, str] | None = None,
 ) -> list[str]:
     """Which active visual-filter bounds ``measures`` violates (gr636179).
 
@@ -889,6 +1135,13 @@ def _filter_reasons(
     t = measures.get("log_tof")
     if log_tof_min is not None and isinstance(t, (int, float)) and t < log_tof_min:
         out.append(f"log₁₀ TOF {t:g} < {log_tof_min:g}")
+    if cat_filter is not None:
+        key, want = cat_filter
+        have = _cat_value(flags or {}, key)
+        # a candidate with no value for the key stays visible (same
+        # absence rule as the numeric bounds)
+        if have is not None and have != want:
+            out.append(f"{axis_label_for(key)} {have} ≠ {want}")
     return out
 
 
@@ -971,6 +1224,8 @@ def build_frontier_scatter(
     contour: bool = True,
     barrier_max: float | None = None,
     log_tof_min: float | None = None,
+    cat_measure: str | None = None,
+    cat_filter: tuple[str, str] | None = None,
 ) -> FrontierScatter | None:
     """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
 
@@ -1033,7 +1288,18 @@ def build_frontier_scatter(
     already displayed on an axis or as a declared objective
     (:func:`_measure_indicators`) — and a bound whose measure is itself a
     plotted axis lands in ``filter_lines`` as a dashed guide.
+
+    ``cat_measure`` (a :data:`CATEGORICAL_KEYS` key, the quest hub's
+    ``?fz=``) colours points by that flag's value from a discrete palette
+    (``FrontierScatter.cat_legend`` lists value/colour/count; a point
+    without a value keeps the default marker); it takes the place of
+    ``z_measure``, which is ignored when both are given. ``cat_filter``
+    (``(key, value)``, the ``?fcat=`` control) dims points whose value for
+    the key differs — composing with ``barrier_max``/``log_tof_min`` in one
+    ``filter_reasons`` list; a point missing the key stays visible.
     """
+    if x_measure in CATEGORICAL_KEYS or y_measure in CATEGORICAL_KEYS:
+        return None  # categorical measures never reach x or y
     plottable = [
         c
         for c in candidates
@@ -1082,6 +1348,10 @@ def build_frontier_scatter(
     # z-axis (color) — collected over the SAME plottable pool as x/y, keyed
     # by ref_id so the point-building loops below can stamp a value/color
     # without a second measures lookup. See the docstring's z_measure note.
+    if cat_measure not in CATEGORICAL_KEYS:
+        cat_measure = None
+    if cat_measure:
+        z_measure = None
     z_values: dict[int, float] = {}
     if z_measure:
         for c in plottable:
@@ -1142,6 +1412,19 @@ def build_frontier_scatter(
             to_px=_to_px,
         )
 
+    cat_colors: dict[str, str] = {}
+    cat_counts: dict[str, int] = {}
+    if cat_measure:
+        pool = [c.flags for c in plottable] + [
+            pc.candidate.flags for pc in plottable_provisional
+        ]
+        for fl in pool:
+            v = _cat_value(fl, cat_measure)
+            if v is not None:
+                cat_counts[v] = cat_counts.get(v, 0) + 1
+        for i, v in enumerate(sorted(cat_counts)):
+            cat_colors[v] = _CATEGORY_PALETTE[i % len(_CATEGORY_PALETTE)]
+
     obj_sense = {k: s for k, s in objectives}
     x_better = better_arrow_for("x", obj_sense.get(x_measure))
     y_better = better_arrow_for("y", obj_sense.get(y_measure))
@@ -1177,7 +1460,9 @@ def build_frontier_scatter(
     for c in plottable:
         x = c.measures[x_measure]
         y = c.measures[y_measure]
-        filter_reasons = _filter_reasons(c.measures, barrier_max, log_tof_min)
+        filter_reasons = _filter_reasons(
+            c.measures, barrier_max, log_tof_min, c.flags, cat_filter
+        )
         point: dict[str, Any] = {
             "ref_id": c.ref_id,
             "handle": c.handle,
@@ -1203,6 +1488,9 @@ def build_frontier_scatter(
         if c.ref_id in z_values and z_min is not None:
             point["z"] = z_values[c.ref_id]
             point["color"] = viridis_color((z_values[c.ref_id] - z_min) / z_span)
+        if cat_measure and (cv := _cat_value(c.flags, cat_measure)) is not None:
+            point["cat"] = cv
+            point["color"] = cat_colors[cv]
         if open_url_for is not None:
             point["open_url"] = open_url_for(c)
         points.append(point)
@@ -1211,7 +1499,9 @@ def build_frontier_scatter(
         c = pc.candidate
         x = pc.measures[x_measure]
         y = pc.measures[y_measure]
-        filter_reasons = _filter_reasons(pc.measures, barrier_max, log_tof_min)
+        filter_reasons = _filter_reasons(
+            pc.measures, barrier_max, log_tof_min, c.flags, cat_filter
+        )
         ppoint: dict[str, Any] = {
             "ref_id": c.ref_id,
             "handle": c.handle,
@@ -1238,6 +1528,9 @@ def build_frontier_scatter(
         if c.ref_id in z_values and z_min is not None:
             ppoint["z"] = z_values[c.ref_id]
             ppoint["color"] = viridis_color((z_values[c.ref_id] - z_min) / z_span)
+        if cat_measure and (cv := _cat_value(c.flags, cat_measure)) is not None:
+            ppoint["cat"] = cv
+            ppoint["color"] = cat_colors[cv]
         if open_url_for is not None:
             ppoint["open_url"] = open_url_for(c)
         points.append(ppoint)
@@ -1274,6 +1567,12 @@ def build_frontier_scatter(
         contour_bands=contour_bands,
         contour_lines=contour_lines,
         filter_lines=filter_lines,
+        cat_key=cat_measure if cat_counts else None,
+        cat_label=axis_label_for(cat_measure) if cat_measure and cat_counts else "",
+        cat_legend=[
+            {"value": v, "color": cat_colors[v], "count": cat_counts[v]}
+            for v in sorted(cat_counts)
+        ],
     )
 
 
@@ -1579,6 +1878,12 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "barrier_wrong_site",
         "adsorption_barrier",
         "barrier_screen",
+        # categorical kinetics context (strings; flags, not measures) —
+        # bep_flux_share and q_over_k stay OUT of this set: plottable
+        "mari",
+        "poisoned",
+        "surface_holders",
+        "kinetics_method",
         # Bulk Pourbaix stamps (quest.pourbaix.harvest_pourbaix_candidate)
         # feed the ruled-out:pourbaix-dissolved gate, never Pareto axes.
         "pourbaix_verdict",
@@ -1876,6 +2181,7 @@ def _candidate_from_structure(
         "drc_note",
         "atom_cost_dearest",
         "correction_policy_issues",
+        *CATEGORICAL_KEYS,
     ):
         if k in meta:
             flags[k] = meta.get(k)

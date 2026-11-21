@@ -40,6 +40,27 @@ def _finite_num(v: Any) -> float | None:
     return float(v) if math.isfinite(v) else None
 
 
+def _mari(coverages: Any) -> str | None:
+    """The most-abundant surface intermediate of a kinetics v2
+    ``coverages`` record (``{site class: {token: theta}}``) as
+    ``token@class`` — the flat naming of ``pathway_kinetics._v2_overlay`` —
+    skipping the vacancy token ``*``. ``None`` without a finite positive
+    coverage (never a guess)."""
+    if not isinstance(coverages, dict):
+        return None
+    best: tuple[float, str] | None = None
+    for cls, tokens in coverages.items():
+        if not isinstance(tokens, dict):
+            continue
+        for token, theta in tokens.items():
+            th = _finite_num(theta)
+            if token == "*" or th is None or th <= 0.0:
+                continue
+            if best is None or th > best[0]:
+                best = (th, f"{token}@{cls}")
+    return best[1] if best else None
+
+
 #: Electrochemistry (CHE) scalars catpath's ``_apply_electrochemistry`` already
 #: computes onto ``results_json`` top level (the potential-lever pass-through,
 #: slice 2) — no recompute here; the four route scalars are trust-gated on
@@ -294,6 +315,23 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     mf_status = v2.get("mf_status")
     mf_status = mf_status if isinstance(mf_status, dict) else {}
     mf_failed = method == "chain" and mf_status.get("ok") is False
+    # Surface-state context for the quest Pareto plot's categorical colour
+    # and filter (never axes): the most-abundant intermediate, the
+    # poisoning verdict (three-valued as in environment_optimizer's
+    # trust_checks) and the species holding the sites. MARI and holders
+    # require evidence; the verdict is unknown without mean-field evidence.
+    mari = _mari(v2.get("coverages"))
+    if mari is not None:
+        out["mari"] = mari
+    diagnosis = mf_status.get("diagnosis")
+    diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
+    is_poisoned = diagnosis.get("kind") == "poisoned_surface"
+    out["poisoned"] = (
+        "yes" if is_poisoned else "no" if mf_status.get("ok") is True else "unknown"
+    )
+    covering = diagnosis.get("covering")
+    if is_poisoned and isinstance(covering, list) and covering:
+        out["surface_holders"] = ", ".join(str(c) for c in covering)
     near_noise = (method == "mf" and mf_status.get("tof_near_noise") is True) or (
         method == "chain" and v2.get("tof_chain_near_noise") is True
     )

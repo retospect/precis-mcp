@@ -240,6 +240,63 @@ def test_kinetics_scalars_lift_v2_fields():
     assert out["optimum_p_total"] == opt["p_total"]
 
 
+def test_kinetics_scalars_lift_surface_context():
+    """mari (token@class, vacancy skipped), the three-valued poisoned
+    verdict and the holders ride the job meta."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    poisoned = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_chain": 1.0e-3,
+                "tof": 1.0e-3,
+                "coverages": {"fcc": {"*": 0.9, "NO": 0.07, "H": 0.03}},
+                "mf_status": {
+                    "ok": False,
+                    "diagnosis": {"kind": "poisoned_surface", "covering": ["CO", "H"]},
+                },
+            }
+        }
+    )
+    assert poisoned["mari"] == "NO@fcc"
+    assert poisoned["poisoned"] == "yes"
+    assert poisoned["surface_holders"] == "CO, H"
+
+    clean = _kinetics_scalars(
+        {"kinetics_v2": {"tof_mf": 1.0, "mf_status": {"ok": True}}}
+    )
+    assert clean["poisoned"] == "no"
+    assert "surface_holders" not in clean and "mari" not in clean
+
+    status_cases: tuple[dict[str, Any], ...] = (
+        {},
+        {"mf_status": {}},
+        {"mf_status": {"ok": None}},
+    )
+    for status in status_cases:
+        unknown = _kinetics_scalars({"kinetics_v2": {"tof_mf": 1.0, **status}})
+        assert unknown["poisoned"] == "unknown"
+        assert "mari" not in unknown and "surface_holders" not in unknown
+    assert _kinetics_scalars({"kinetics": {"tof": 1.0}})["poisoned"] == "unknown"
+    assert "poisoned" not in _kinetics_scalars({"kinetics_error": "solver failed"})
+    # only the vacancy covered: no intermediate to name
+    vac = _kinetics_scalars(
+        {"kinetics_v2": {"tof_mf": 1.0, "coverages": {"fcc": {"*": 1.0}}}}
+    )
+    assert "mari" not in vac
+
+
+def test_kinetics_scalars_lift_bep_share_and_rung():
+    from precis_pathway._dispatch_common import _kinetics_scalars
+
+    out = _kinetics_scalars(
+        {"kinetics_v2": {"tof_mf": 1.0, "bep_flux_share": 0.25, "q_over_k": 0.5}}
+    )
+    assert out["bep_flux_share"] == 0.25
+    assert out["q_over_k"] == 0.5
+    assert out["kinetics_method"] == "mf"
+
+
 # --- kinetics v2 slice 5: the lattice KMC at kmc_points (D7/D8) --------------
 
 

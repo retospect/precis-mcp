@@ -518,6 +518,54 @@ def test_frontier_axis_picker_renders_selectable_keys(
     # the quest's own declared axes are the default selection
     assert 'value="log_tof" selected' in resp.text
     assert 'value="atom_cost" selected' in resp.text
+    # the picker is grouped by family, in the gripe's order
+    for fam in ("Kinetics", "Selectivity", "Structure / cost"):
+        assert f'<optgroup label="{fam}">' in resp.text
+    assert resp.text.index('<optgroup label="Kinetics">') < resp.text.index(
+        '<optgroup label="Selectivity">'
+    )
+    assert "Selectivity margin (eV) · selectivity_margin (2)" in resp.text
+
+
+def test_frontier_picker_offers_flag_held_adsorption_barrier(
+    client, runtime, monkeypatch
+) -> None:
+    """``adsorption_barrier`` lives in flags (never ranks) yet is a
+    selectable Barriers entry that plots."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    store = runtime.store
+    store.quests[0].meta = {
+        "rubric_objectives": [
+            {"key": "log_tof", "sense": "max"},
+            {"key": "atom_cost", "sense": "min"},
+        ]
+    }
+    frontier = FrontierResult(
+        objectives=[("log_tof", "max"), ("atom_cost", "min")],
+        frontier=[
+            Candidate(
+                i,
+                f"st{i}",
+                f"C{i}",
+                {"log_tof": float(i), "atom_cost": 1.0 / i},
+                True,
+                flags={"adsorption_barrier": 0.1 * i},
+            )
+            for i in (1, 2, 3)
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+    resp = client.get("/refs/quest/97?fx=adsorption_barrier&fy=log_tof")
+    assert resp.status_code == 200
+    assert '<optgroup label="Barriers">' in resp.text
+    assert '<option value="adsorption_barrier"' in resp.text
+    assert 'value="adsorption_barrier" selected' in resp.text
+    assert "<circle" in resp.text
+    # still not a ranking measure
+    assert all("adsorption_barrier" not in c.measures for c in frontier.frontier)
 
 
 def test_frontier_fx_fy_override_valid_key(client, runtime, monkeypatch) -> None:
@@ -795,8 +843,8 @@ def test_frontier_default_fz_colors_by_first_unplotted_objective(
     assert "· fill colour = " in resp.text
     # picker options carry per-measure candidate counts — both candidates
     # measure log_tof, nothing measures the declared poison_margin.
-    assert ">log_tof (2)</option>" in resp.text
-    assert ">poison_margin (0)</option>" in resp.text
+    assert "· log_tof (2)</option>" in resp.text
+    assert "· poison_margin (0)</option>" in resp.text
 
 
 def test_frontier_explicit_none_fz_suppresses_default_colorbar(
@@ -946,3 +994,103 @@ def test_quest_draft_url_prefers_slug_falls_back_to_id() -> None:
         fetch_refs_by_ids=lambda ids: {502: SimpleNamespace(id=502, slug=None)}
     )
     assert refs_mod._quest_draft_url(store_no_slug, 502) == "/smartdraft/502"
+
+
+def _surface_frontier():
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    def cand(i, barrier, log_tof, rung, poisoned=None):
+        flags = {"kinetics_method": rung}
+        if poisoned:
+            flags["poisoned"] = poisoned
+        return Candidate(
+            i,
+            f"st{i}",
+            f"C{i}",
+            {"barrier": barrier, "energy": -float(i), "log_tof": log_tof},
+            True,
+            flags=flags,
+        )
+
+    return FrontierResult(
+        objectives=[("barrier", "min"), ("energy", "min")],
+        frontier=[cand(1, 0.3, 1.0, "mf", "no")],
+        dominated=[
+            cand(2, 2.0, -3.0, "chain", "yes"),
+            Candidate(
+                3, "st3", "C3", {"barrier": 0.5, "energy": -3.0, "log_tof": 2.0}, True
+            ),
+        ],
+    )
+
+
+def test_frontier_categorical_colour_legend_and_never_xy(
+    client, runtime, monkeypatch
+) -> None:
+    frontier = _surface_frontier()
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+    resp = client.get("/refs/quest/97?fz=kinetics_method")
+    assert resp.status_code == 200
+    text = resp.text
+    assert 'value="kinetics_method" selected' in text
+    assert "Kinetics rung:" in text and "chain (1)" in text and "mf (1)" in text
+    assert "Categorical (colour only)" in text
+    # categorical keys are options of the colour and filter selects only
+    fx_sel = text[text.index('name="fx"') : text.index('name="fy"')]
+    fy_sel = text[text.index('name="fy"') : text.index('name="fz"')]
+    for sel in (fx_sel, fy_sel):
+        assert "kinetics_method" not in sel and "poisoned" not in sel
+    # a categorical fx/fy link degrades to the defaults
+    assert client.get("/refs/quest/97?fx=poisoned").status_code == 200
+
+
+def test_frontier_categorical_filter_dims_and_composes(
+    client, runtime, monkeypatch
+) -> None:
+    frontier = _surface_frontier()
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+    resp = client.get("/refs/quest/97?fcat=kinetics_method%3Dmf")
+    assert resp.status_code == 200
+    assert resp.text.count('class="fs-pt"') == 3
+    # st2 (chain) dims; st3 carries no rung and stays visible
+    assert resp.text.count('opacity="0.25"') == 1
+    assert "1 of 3 points dimmed" in resp.text
+    assert 'value="kinetics_method=mf" selected' in resp.text
+
+    # one request, all three filters: st2 carries a reason from each
+    resp = client.get("/refs/quest/97?fcat=kinetics_method%3Dmf&fbar=1.0&ftof=0")
+    assert resp.text.count('opacity="0.25"') == 1
+    assert "filtered: barrier 2 eV &gt; 1 eV" in resp.text
+    assert "filtered: log₁₀ TOF -3 &lt; 0" in resp.text
+    assert "filtered: Kinetics rung chain ≠ mf" in resp.text
+
+
+def test_frontier_categorical_filter_unknown_value_is_no_filter(
+    client, runtime, monkeypatch
+) -> None:
+    frontier = _surface_frontier()
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+    for bad in ("kinetics_method%3Dnope", "bogus%3Dmf", "kinetics_method", "x"):
+        resp = client.get(f"/refs/quest/97?fcat={bad}")
+        assert resp.status_code == 200
+        assert resp.text.count('opacity="0.25"') == 0
+
+
+def test_frontier_old_links_without_categorical_render_as_before(
+    client, runtime, monkeypatch
+) -> None:
+    frontier = _surface_frontier()
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+    resp = client.get("/refs/quest/97?fx=barrier&fy=energy&fz=log_tof")
+    assert resp.status_code == 200
+    assert "Kinetics rung:" not in resp.text
+    assert resp.text.count('opacity="0.25"') == 0
+    assert 'value="log_tof" selected' in resp.text
