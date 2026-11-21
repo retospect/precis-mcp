@@ -1,0 +1,20 @@
+{% if undo_entries %}
+<section aria-labelledby="known-undo-heading" class="mb-6 max-w-3xl rounded-lg border border-line bg-surface p-4">
+  <h2 id="known-undo-heading" class="text-sm font-semibold">Marked as mastered</h2>
+  <p class="mt-1 text-xs text-fg-subtle">If Anki already removed the cards, it will recreate them with fresh review schedules at the next sync.</p>
+  <ul class="mt-2 divide-y divide-line-subtle">
+    {% for concept_id, name, token in undo_entries %}
+    <li class="flex items-center justify-between gap-2 py-2 text-sm">
+      <span>{{ name }}</span>
+      <form method="post" action="/anki/undo-known">
+        <input type="hidden" name="concept" value="{{ concept_id }}" />
+        <input type="hidden" name="token" value="{{ token }}" />
+        <input type="hidden" name="return_to" value="{{ return_to }}" />
+        <button type="submit" aria-label="Undo mastery for {{ name }}"
+                class="rounded border border-line px-2 py-0.5 text-xs text-fg-muted hover:border-info-emphasis hover:text-info-emphasis transition">Undo</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

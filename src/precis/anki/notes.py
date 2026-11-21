@@ -29,6 +29,9 @@ GUID_PREFIX = "precis:"
 #: "our" notes and never touch a foreign one.
 MANAGED_TAG = "precis::managed"
 
+# Per-login PostgreSQL advisory-lock namespace shared by sync and card retirement.
+ANKI_SYNC_LOCK = 0x616E6B69
+
 
 def guid_for(ref_id: int) -> str:
     """Deterministic Anki guid for a precis `anki` ref."""
@@ -63,6 +66,7 @@ class AnkiCardSpec:
     # The unacknowledged retag revision, if any. A missing revision preserves
     # manual deck moves on existing notes, including notes synced before rollout.
     pending_deck_revision: str | None = None
+    restore_pending: bool = False
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
@@ -91,6 +95,7 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
         fields=out,
         deck=meta.get("deck") or PRECIS_DECK,
         previously_synced=bool(meta.get("anki_synced_at")),
+        restore_pending=bool(meta.get("anki_restore_pending")),
         boost=bool(meta.get("anki_boost_due")),
         pending_deck_revision=(
             deck_revision

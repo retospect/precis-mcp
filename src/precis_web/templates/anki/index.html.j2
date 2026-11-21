@@ -23,10 +23,13 @@
   &nbsp;&mdash;&nbsp; {{ counts.mastered }} concept(s) mastered / {{ counts.active }} active
 </p>
 
+{% include "anki/_known_undo.html.j2" %}
+
 {# ── Review ───────────────────────────────────────────────────────── #}
 <h2 class="text-sm font-semibold text-fg-secondary mt-4 mb-2">Review</h2>
 <div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
   {% if groups %}
+  <p class="text-xs text-fg-subtle"><strong>I know this</strong> marks the selected concepts as mastered and permanently removes your cards for them from study and from Anki at the next sync. Use <strong>Undo</strong> to restore them.</p>
   <form method="post" action="/anki/known">
     <ul class="divide-y divide-line-subtle">
       {% for g in groups %}

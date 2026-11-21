@@ -230,7 +230,7 @@ def test_current_context_lists_live_forge_cards_masked(
     """gr664414: /learning shows the learner's live forge cards, grouped by
     concept, each cloze rendered masked with hover reveal, with per-row
     htmx delete (``/anki/drop``) and boost (``/anki/boost``), and a concept
-    delete (``/anki/known``). Another owner's card on the same concept must
+    dismissal (``/anki/known``). Another owner's card on the same concept must
     not leak in."""
     from precis.reading.flashcards import author_card
     from precis.reading.promote import create_concept
@@ -264,7 +264,8 @@ def test_current_context_lists_live_forge_cards_masked(
     # Owner scope: my card row is there, the other user's is not.
     assert f'"card": "{mine}"' in page.text
     assert f'"card": "{theirs}"' not in page.text
-    assert f'"concept": "{cid}"' in page.text
+    assert f'name="concept" value="{cid}"' in page.text
+    assert "permanently removes your cards" in page.text
     assert 'hx-post="/anki/drop"' in page.text
     assert 'hx-post="/anki/boost"' in page.text
     assert 'hx-post="/anki/known"' in page.text
@@ -281,6 +282,30 @@ def test_current_context_lists_live_forge_cards_masked(
     page = client.get("/learning", headers=_auth())
     assert "boost queued" in page.text
     assert 'hx-post="/anki/boost"' not in page.text
+
+    from precis.reading.known import known_undo_entries
+
+    marked = client.post(
+        "/anki/known",
+        data={"concept": str(cid), "return_to": "learning"},
+        headers=_auth(),
+    )
+    assert marked.status_code == 200
+    assert 'action="/anki/undo-known"' in marked.text
+    assert f'"card": "{mine}"' not in marked.text
+    assert "Current context" not in marked.text
+    [(_, _, token)] = known_undo_entries(store, first)
+    assert f'value="{token}"' in marked.text
+
+    undone = client.post(
+        "/anki/undo-known",
+        data={"concept": str(cid), "token": str(token), "return_to": "learning"},
+        headers=_auth(),
+    )
+    assert undone.status_code == 200
+    assert "Dismissal undone" in undone.text
+    assert f'"card": "{mine}"' in undone.text
+    assert 'action="/anki/undo-known"' not in undone.text
 
     dropped = client.post(
         "/anki/drop",

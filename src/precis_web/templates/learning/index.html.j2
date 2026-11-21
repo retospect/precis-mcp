@@ -52,10 +52,12 @@
 </section>
 {% endif %}
 
+{% include "anki/_known_undo.html.j2" %}
+
 {% if groups %}
 <section aria-labelledby="context-heading" class="mb-6 max-w-3xl rounded-lg border border-line bg-surface p-4">
   <h2 id="context-heading" class="text-sm font-semibold">Current context</h2>
-  <p class="mt-1 text-xs text-fg-subtle">The cards you are learning right now, grouped by concept. Every cloze gap is masked — hover it (or tab to it) to reveal the answer. <strong>boost</strong> queues a card to come up today at the next Anki sync; <strong>drop</strong> retires it; <strong>I know this</strong> retires the whole concept.</p>
+  <p class="mt-1 text-xs text-fg-subtle">The cards you are learning right now, grouped by concept. Every cloze gap is masked — hover it (or tab to it) to reveal the answer. <strong>boost</strong> queues a card to come up today at the next Anki sync; <strong>drop</strong> retires it; <strong>I know this</strong> marks the concept as mastered and permanently removes your cards for it from study and from Anki at the next sync. Use <strong>Undo</strong> to restore them.</p>
   <ul class="mt-3 divide-y divide-line-subtle">
     {% for g in groups %}
     <li class="py-3">
@@ -63,10 +65,12 @@
         <span class="flex-1 text-sm font-medium text-fg-primary">{{ g.name }}
           <span class="text-xs font-normal text-fg-faint">&mdash; {{ g.state }}{% if g.mastery %} &middot; mastery {{ '%.2f' | format(g.mastery) }}{% endif %}</span>
         </span>
-        <button type="button"
-                hx-post="/anki/known" hx-vals='{"concept": "{{ g.concept_id }}"}'
-                hx-target="closest li" hx-swap="delete"
-                class="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-fg-muted hover:text-danger hover:border-danger transition">I know this</button>
+        <form method="post" action="/anki/known" hx-post="/anki/known" hx-swap="none">
+          <input type="hidden" name="concept" value="{{ g.concept_id }}" />
+          <input type="hidden" name="return_to" value="learning" />
+          <button type="submit"
+                  class="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-fg-muted hover:text-danger hover:border-danger transition">I know this</button>
+        </form>
       </div>
       <ul class="ml-4 mt-1 space-y-1">
         {% for card in g.cards %}

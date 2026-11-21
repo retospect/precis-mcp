@@ -22,7 +22,8 @@ their Anki deck on rollout, preserving manual moves.
 Anki-side deletions retire the authored ref rather than recreating its note.
 The pre-download mirror and ``meta.anki_synced_at`` distinguish missing
 previously synced notes from new adds, including after a mirror rebuild.
-Only an explicit new add (a new ref/guid) brings a deleted card back.
+Undoing a web dismissal explicitly queues the original ref for re-push.
+Sync honors that intent until a completed push confirms the note is back.
 
 - `creds` — per-user AnkiWeb credentials in the secrets vault; also
   `anki_logins()`, the roster the sync fans out over.

@@ -1,8 +1,8 @@
 """``/anki`` — the card-forge review page (:mod:`precis_web.routes.anki`).
 
 Route-level tests with a fake store, like ``test_account.py``: the SQL
-helpers degrade to empty on the non-parsing fake pool, and the write paths
-(retire / mastery stamp / queue / cap) are pinned through recording fakes.
+reads degrade to empty on the non-parsing fake pool. Route responses are
+checked separately from the transactional known/undo implementation.
 Real-PG coverage for the raw SQL lives in ``test_anki_sql.py``.
 """
 
@@ -143,21 +143,27 @@ def test_page_renders_for_the_signed_in_user() -> None:
     assert "term (one per line)" in r.text
 
 
-def test_known_stamps_mastery_and_retires() -> None:
-    """No forge cards exist under the fake pool, but the mastery fold must
-    still fire for each selected concept."""
-    store = FakeStore()
-    r = _client(store).post(
+def test_known_submits_a_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis_web.routes import anki
+
+    calls: list[tuple[str, list[int], bool]] = []
+
+    def mark(
+        store: FakeStore, user: WebUser, ids: list[int], *, require_cards: bool
+    ) -> int:
+        calls.append((user.login, ids, require_cards))
+        return 3
+
+    monkeypatch.setattr(anki, "mark_known", mark)
+    r = _client(FakeStore()).post(
         "/anki/known",
         data={"concept": ["11", "22"]},
         headers=_auth(),
         follow_redirects=False,
     )
     assert r.status_code == 303
-    stamped = {cid for cid, _ in store.meta_writes}
-    assert stamped == {11, 22}
-    for _cid, patch in store.meta_writes:
-        assert patch["mastery"] == 1.0 and patch["state"] == "mastered"
+    assert r.headers["location"] == "/anki?retired=3"
+    assert calls == [("reto", [11, 22], False)]
 
 
 def test_known_with_nothing_selected_shows_an_error() -> None:
@@ -236,17 +242,26 @@ def test_boost_htmx_swaps_the_queued_chip() -> None:
     assert {cid for cid, _ in store.meta_writes} == {9}
 
 
-def test_known_htmx_returns_empty_ok_for_row_delete() -> None:
-    store = FakeStore()
-    r = _client(store).post(
+def test_known_htmx_refreshes_learning_to_show_undo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_web.routes import anki
+
+    def mark(
+        store: FakeStore, user: WebUser, ids: list[int], *, require_cards: bool
+    ) -> int:
+        assert require_cards and ids == [11]
+        return 1
+
+    monkeypatch.setattr(anki, "mark_known", mark)
+    r = _client(FakeStore()).post(
         "/anki/known",
-        data={"concept": ["11"]},
+        data={"concept": "11", "return_to": "learning"},
         headers={**_auth(), "HX-Request": "true"},
         follow_redirects=False,
     )
     assert r.status_code == 200
-    assert r.text == ""
-    assert {cid for cid, _ in store.meta_writes} == {11}
+    assert r.headers["HX-Redirect"] == "/learning"
 
 
 def test_queue_mints_asked_terms(monkeypatch: pytest.MonkeyPatch) -> None:

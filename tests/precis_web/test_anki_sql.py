@@ -1,7 +1,7 @@
 """Real-PG regression tests for the ``/anki`` route's raw SQL
 (``precis_web.routes.anki``) — the route-level ``test_anki.py`` runs against
 a fake store that never parses SQL, so ``_counts`` / ``_forge_groups`` /
-``_concept_cards`` are exercised here against the live ``store`` fixture.
+the known/undo transaction are exercised here against the live ``store`` fixture.
 """
 
 from __future__ import annotations
@@ -10,9 +10,10 @@ import uuid
 from typing import Any
 
 from precis.reading.flashcards import author_card
+from precis.reading.known import known_undo_entries, mark_known, undo_known
 from precis.reading.promote import create_concept
 from precis.users import hash_password
-from precis_web.routes.anki import _concept_cards, _counts, _forge_groups
+from precis_web.routes.anki import _counts, _forge_groups
 
 
 def _user(store: Any, login: str = "reto") -> str:
@@ -69,11 +70,62 @@ def test_forge_groups_group_cards_by_concept(store: Any) -> None:
     assert {c["id"] for c in g2["cards"]} == {c1, c2}
 
 
-def test_concept_cards_scopes_to_owner(store: Any) -> None:
-    owner = _user(store)
-    other = _user(store, login="alice")
+def test_known_undo_restores_only_its_cards_and_prior_mastery(store: Any) -> None:
+    owner = store.get_web_user(_user(store))
+    other = store.get_web_user(_user(store, login="alice"))
     cid = create_concept(store, name=f"own-{uuid.uuid4().hex[:8]}")
-    mine = _forge_card(store, cid, owner)
-    theirs = _forge_card(store, cid, other)
-    assert _concept_cards(store, cid, owner) == [mine]
-    assert theirs not in _concept_cards(store, cid, owner)
+    prior = {
+        "state": "active",
+        "mastery": 0.35,
+        "mastery_updated_at": "2026-11-20T00:00:00Z",
+    }
+    store.update_ref(cid, meta_patch=prior)
+    mine = _forge_card(store, cid, owner.login)
+    dropped = _forge_card(store, cid, owner.login)
+    theirs = _forge_card(store, cid, other.login)
+    redropped = _forge_card(store, cid, owner.login)
+    store.retire_ref(dropped)
+
+    assert mark_known(store, owner, [cid, cid], require_cards=True) == 2
+    assert mark_known(store, owner, [cid], require_cards=True) == 0
+    assert store.get_ref(kind="concept", id=cid).meta["state"] == "mastered"
+    assert store.get_ref(kind="anki", id=mine) is None
+    assert store.get_ref(kind="anki", id=theirs) is not None
+    [(entry_id, _, token)] = known_undo_entries(store, owner)
+    assert entry_id == cid
+    assert known_undo_entries(store, other) == []
+    assert not undo_known(store, other, cid, token)
+
+    assert store.restore_ref(redropped)
+    store.retire_ref(redropped)
+    store.update_ref(cid, meta_patch={"definition": "Updated after dismissal."})
+    assert undo_known(store, owner, cid, token)
+    assert not undo_known(store, owner, cid, token)
+    assert store.get_ref(kind="anki", id=mine).meta["anki_restore_pending"] is True
+    assert store.get_ref(kind="anki", id=dropped) is None
+    assert store.get_ref(kind="anki", id=redropped) is None
+    meta = store.get_ref(kind="concept", id=cid).meta
+    assert {key: meta[key] for key in prior} == prior
+    assert meta["definition"] == "Updated after dismissal."
+
+
+def test_overlapping_owners_share_the_original_mastery_snapshot(store: Any) -> None:
+    first = store.get_web_user(_user(store))
+    second = store.get_web_user(_user(store, login="alice"))
+    cid = create_concept(store, name=f"overlap-{uuid.uuid4().hex[:8]}")
+    mine = _forge_card(store, cid, first.login)
+    theirs = _forge_card(store, cid, second.login)
+    before = store.get_ref(kind="concept", id=cid).meta
+
+    assert mark_known(store, first, [cid], require_cards=True) == 1
+    [(_, _, first_token)] = known_undo_entries(store, first)
+    assert mark_known(store, second, [cid], require_cards=True) == 1
+    [(_, _, second_token)] = known_undo_entries(store, second)
+    assert undo_known(store, first, cid, first_token)
+    assert store.get_ref(kind="concept", id=cid).meta["state"] == "mastered"
+    assert store.get_ref(kind="anki", id=mine) is not None
+    assert store.get_ref(kind="anki", id=theirs) is None
+
+    assert undo_known(store, second, cid, second_token)
+    assert store.get_ref(kind="anki", id=theirs) is not None
+    assert store.get_ref(kind="concept", id=cid).meta == before

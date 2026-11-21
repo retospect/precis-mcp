@@ -3777,6 +3777,11 @@ video {
   border-color: rgb(var(--border-danger-strong) / var(--tw-border-opacity, 1));
 }
 
+.hover\:border-info-emphasis:hover {
+  --tw-border-opacity: 1;
+  border-color: rgb(var(--border-info-emphasis) / var(--tw-border-opacity, 1));
+}
+
 .hover\:border-line-strong:hover {
   --tw-border-opacity: 1;
   border-color: rgb(var(--border-line-strong) / var(--tw-border-opacity, 1));

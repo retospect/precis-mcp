@@ -26,8 +26,11 @@ self-quiz.
   due date forward. Your review history is never rewritten — only the due
   date moves. A boosted card shows *boost queued* until the sync applies it.
 - **drop** retires that one card (the same retire path as the Anki page).
-- **I know this** retires every live card of the concept and marks the
-  concept mastered.
+- **I know this** marks the concept mastered and permanently retires your cards
+  for it. The next Anki sync removes those notes. Use **Undo** under
+  **Marked as mastered** to restore the cards and reverse the dismissal.
+  If Anki already removed them, the next sync recreates the notes with
+  fresh review schedules.
 
 The panel is yours alone: it lists only the signed-in account's cards.
 

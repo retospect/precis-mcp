@@ -13,7 +13,7 @@ Per-user: each web user brings their own AnkiWeb credentials
 ``.anki2`` mirror under ``<anki_mirror_dir>/<login>/``. A default call
 (``login=None``) fans out over :func:`precis.anki.creds.anki_logins` —
 every enabled web user with credentials configured — syncing each one in
-turn; a per-user advisory lock (:data:`_ANKI_SYNC_LOCK` + the login's own
+turn; a per-user advisory lock (:data:`precis.anki.notes.ANKI_SYNC_LOCK` + the login's own
 hash) serialises a cadence-fired tick against a concurrent manual
 ``precis anki-sync --user <login>`` run for *that* login only, so two
 users' syncs never block each other. A single user's failure doesn't stop
@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.anki.notes import ANKI_SYNC_LOCK
 from precis.anki.sync import AnkiSyncError
 from precis.store.advisory import try_xact_advisory_lock
 
@@ -35,11 +36,6 @@ if TYPE_CHECKING:
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
-
-#: Fixed advisory-lock key namespace — paired with ``hashtext(login)`` (the
-#: two-key ``pg_try_advisory_xact_lock`` form) so concurrent runners serialise
-#: per-user rather than fleet-wide.
-_ANKI_SYNC_LOCK = 0x616E6B69  # "anki"
 
 
 class AnkiSyncMisconfigured(AnkiSyncError):
@@ -109,7 +105,7 @@ def _sync_one_user(
     # connection only holds the lock; the sync itself uses the store pool.
     if store.dsn is None:
         raise AnkiSyncMisconfigured("the store has no DSN to hold the sync lock on.")
-    with try_xact_advisory_lock(store.dsn, _ANKI_SYNC_LOCK, text_key=login) as got:
+    with try_xact_advisory_lock(store.dsn, ANKI_SYNC_LOCK, text_key=login) as got:
         if not got:
             return f"{prefix}: another sync holds the lock; skipping."
         refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
@@ -178,6 +174,11 @@ def _sync_one_user(
                 patch["anki_synced_deck_revision"] = pushed_revisions[ref_id]
             store.update_ref(ref_id, meta_patch=patch)
         if not result.aborted:
+            for spec in specs:
+                if spec.restore_pending and spec.ref_id in stats:
+                    store.clear_ref_meta_keys(
+                        spec.ref_id, ["anki_restore_pending"], source="anki_restore"
+                    )
             # Consumed boosts only (a mirror card actually moved — its due
             # date rode this push forward). A `meta ||` merge cannot express
             # a delete, so the marker clears through the dedicated key

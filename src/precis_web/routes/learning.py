@@ -29,6 +29,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from precis.errors import BadInput, Conflict, Denied, NotFound
 from precis.learning import LearningStore, timezone_choices
+from precis.reading.known import known_undo_entries
 from precis.user_context import user_scope
 from precis.users import WebUser
 from precis_web.auth import current_user
@@ -136,6 +137,8 @@ def _render(
             "settings": settings,
             "activity": activity,
             "groups": groups,
+            "undo_entries": known_undo_entries(get_store(request), user),
+            "return_to": "learning",
             "selected": selected,
             "timezones": timezone_choices(settings.timezone),
             "error": error,
@@ -183,6 +186,7 @@ def _page(request: Request, user: WebUser) -> HTMLResponse:
             saved = request.query_params.get("saved", "")
             notice = {
                 "checkin": "Study check-in saved.",
+                "undo-known": "Dismissal undone. Restored cards will sync back to Anki.",
                 "settings": "Learning preferences saved.",
             }.get(saved, "")
             return _render(

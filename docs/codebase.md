@@ -203,6 +203,11 @@ Paper cards draw on the publisher abstract, a labelled generated abstract,
 or leading body prose. New nanopub approvals use chunk-anchored passages.
 RDF and LaTeX preserve context literals already frozen into publish rows.
 
+Learning and Anki review share `precis.reading.known` for card dismissal and
+undo. `anki_known_undo` records the owner's retirement set and the prior
+shared mastery fields. Undo restores the original card refs and queues their
+notes for the next sync.
+
 The jobs settings surface reports effective allowlisted flags. Flag updates
 and reverts take a per-key transaction lock before reading the predecessor,
 and commit the override and audit together. Inbound chase uses this setting

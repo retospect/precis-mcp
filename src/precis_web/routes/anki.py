@@ -13,6 +13,7 @@ teach, and the daily mint cap for heavy mornings.
                           the next ``anki-sync`` removes the note from the
                           mirror) and set ``meta.mastery=1.0`` /
                           ``state='mastered'``.
+* ``POST /anki/undo-known`` — restore the signed-in owner's dismissal.
 * ``POST /anki/drop``   — the same retire path on one bad card.
 * ``POST /anki/boost``  — stamp ``meta.anki_boost_due`` on one live card;
                           the next ``anki_sync`` tick brings the mirror
@@ -39,14 +40,17 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
 from precis.reading.asked import queue_asked_term
 from precis.reading.concepts import STATE_MASTERED
 from precis.reading.flashcards import CARDS_PER_DAY_KEY, effective_cards_per_day
+from precis.reading.known import known_undo_entries, mark_known, undo_known
 from precis.users import WebUser
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
@@ -171,22 +175,6 @@ def _forge_groups(store: Store, owner: str) -> list[dict[str, Any]]:
     return list(groups.values())
 
 
-def _concept_cards(store: Store, concept_id: int, owner: str) -> list[int]:
-    """Live ``anki`` ref ids ``owner`` has that render ``concept_id`` — the
-    retire set for "I know this"."""
-    sql = """
-        SELECT a.ref_id FROM refs a
-        JOIN links l ON (
-                 (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
-              OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by'))
-        WHERE a.kind = 'anki' AND a.retired_at IS NULL AND a.owner_login = %s
-          AND CASE WHEN l.src_ref_id = a.ref_id
-                   THEN l.dst_ref_id ELSE l.src_ref_id END = %s
-    """
-    with store.pool.connection() as conn:
-        return [int(r[0]) for r in conn.execute(sql, (owner, concept_id)).fetchall()]
-
-
 def _render(
     request: Request,
     *,
@@ -206,6 +194,8 @@ def _render(
             "notice": notice,
             "counts": _counts(store, user.login),
             "groups": _forge_groups(store, user.login),
+            "undo_entries": known_undo_entries(store, user),
+            "return_to": "anki",
             "cap": effective_cards_per_day(store),
             "cap_key": CARDS_PER_DAY_KEY,
             "dated_key": f"{CARDS_PER_DAY_KEY}:{today.isoformat()}",
@@ -226,46 +216,62 @@ async def index(
         notice = f"Queued {queued} term(s) — the forge mints asked concepts first."
     elif retired:
         notice = f"Retired {retired} card(s); the next sync removes them."
+    elif saved == "undo-known":
+        notice = "Dismissal undone. Restored cards will sync back to Anki."
     elif saved:
         notice = "Saved."
     return _render(request, user=user, notice=notice)
 
 
+def _review_redirect(request: Request, path: str) -> Response:
+    if request.headers.get("HX-Request") == "true":
+        return Response(headers={"HX-Redirect": path, "Cache-Control": "no-store"})
+    return RedirectResponse(
+        path, status_code=303, headers={"Cache-Control": "no-store"}
+    )
+
+
 @router.post("/known", response_class=HTMLResponse)
 async def known(request: Request) -> Response:
-    """The "I know this" batch — retire the selected concepts' cards and mark the
-    concepts mastered. Concept ids without cards still get the mastery
-    stamp: the human said they know it, which is exactly what the field
-    means."""
+    """Retire selected cards and save an owner-bound undo in one transaction."""
     user = _require_user(request)
-    store = get_store(request)
     form = await request.form()
     ids = [
         int(v)
         for v in form.getlist("concept")
-        if isinstance(v, str) and v.strip().isdigit()
+        if (
+            isinstance(v, str)
+            and v.isascii()
+            and v.isdecimal()
+            and len(v) <= 19
+            and 0 < int(v) < 2**63
+        )
     ]
     if not ids:
-        return _render(request, user=user, error="Nothing selected.")
-    retired = 0
-    for cid in ids:
-        for card_id in _concept_cards(store, cid, user.login):
-            store.retire_ref(card_id)
-            retired += 1
-        store.update_ref(
-            cid,
-            meta_patch={
-                "mastery": 1.0,
-                "mastery_updated_at": datetime.now(UTC).isoformat(),
-                "state": STATE_MASTERED,
-            },
+        return await run_in_threadpool(
+            _render, request, user=user, error="Nothing selected."
         )
-    if request.headers.get("HX-Request") == "true":
-        # htmx row delete (``hx-swap="delete"`` on /learning's concept rows)
-        # — the surrounding list is already correct; a 303 would swap the
-        # whole /anki page into the row.
-        return Response(status_code=200)
-    return RedirectResponse(f"/anki?retired={retired}", status_code=303)
+    learning = form.get("return_to") == "learning"
+    retired = await run_in_threadpool(
+        mark_known, get_store(request), user, ids, require_cards=learning
+    )
+    path = "/learning" if learning else f"/anki?retired={retired}"
+    return _review_redirect(request, path)
+
+
+@router.post("/undo-known", response_class=HTMLResponse)
+def restore_known(
+    request: Request,
+    concept: int = Form(..., gt=0, lt=2**63),
+    token: UUID = Form(...),
+    return_to: str = Form("anki"),
+) -> Response:
+    user = _require_user(request)
+    restored = undo_known(get_store(request), user, concept, token)
+    path = "/learning" if return_to == "learning" else "/anki"
+    if restored:
+        path += "?saved=undo-known"
+    return _review_redirect(request, path)
 
 
 @router.post("/drop", response_class=HTMLResponse)

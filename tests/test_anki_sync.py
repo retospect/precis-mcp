@@ -61,6 +61,12 @@ def test_remote_deletion_is_not_recreated(
         AnkiCardSpec(7, {"Text": "{{c1::same}}"}, previously_synced=not had_mirror),
         AnkiCardSpec(8, {"Text": "{{c1::same}}"}),
         AnkiCardSpec(9, {"Text": "{{c1::edited}}"}, previously_synced=True),
+        AnkiCardSpec(
+            10,
+            {"Text": "{{c1::restored}}"},
+            previously_synced=True,
+            restore_pending=True,
+        ),
     ]
     result, _ = sync.sync_tick(
         mirror_path="unused", user="user", password="pw", specs=specs
@@ -719,9 +725,10 @@ class TestRunAnkiSyncLock:
         """The per-user xact lock is held elsewhere => skip message, no
         ``sync_tick``; another login's lock is independent (gr463966)."""
         import precis.anki.sync as sync_mod
+        from precis.anki.notes import ANKI_SYNC_LOCK
         from precis.anki.sync import SyncResult
         from precis.store.advisory import try_xact_advisory_lock
-        from precis.workers.anki_sync import _ANKI_SYNC_LOCK, run_anki_sync
+        from precis.workers.anki_sync import run_anki_sync
         from tests.workers._helpers import skip_if_backends_multiplexed
 
         _add_user(store, "reto", "rs")
@@ -743,7 +750,7 @@ class TestRunAnkiSyncLock:
         assert store.dsn
         skip_if_backends_multiplexed(store.dsn)
         cfg = _cfg(mirror_dir=str(tmp_path))
-        with try_xact_advisory_lock(store.dsn, _ANKI_SYNC_LOCK, text_key="reto") as h:
+        with try_xact_advisory_lock(store.dsn, ANKI_SYNC_LOCK, text_key="reto") as h:
             assert h is True
             summary = run_anki_sync(store, cfg)
         assert "another sync holds the lock; skipping." in summary
@@ -929,12 +936,14 @@ class TestDeckRetagReceipt:
             meta={
                 "deck": "Precis::ml-potentials",
                 "anki_deck_revision": "retag-1",
+                "anki_restore_pending": True,
             },
             owner_login="reto",
         )
 
         def sync_tick(**kwargs: Any) -> tuple[SyncResult, dict[int, dict[str, int]]]:
             assert kwargs["specs"][0].pending_deck_revision == "retag-1"
+            assert kwargs["specs"][0].restore_pending
             # A retag arriving while AnkiWeb sync is in flight stays pending.
             store.update_ref(
                 card.id,
@@ -955,6 +964,7 @@ class TestDeckRetagReceipt:
         assert (ref.meta or {}).get("anki_synced_deck_revision") == (
             None if aborted else "retag-1"
         )
+        assert bool(ref.meta.get("anki_restore_pending")) is aborted
         spec = spec_from_ref(ref)
         assert spec is not None and spec.pending_deck_revision == "retag-2"
 

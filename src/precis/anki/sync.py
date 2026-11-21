@@ -343,7 +343,8 @@ def sync_tick(
         result.deleted_ref_ids = [
             spec.ref_id
             for spec in specs
-            if (spec.previously_synced or spec.ref_id in known_refs)
+            if not spec.restore_pending
+            and (spec.previously_synced or spec.ref_id in known_refs)
             and spec.ref_id not in present_refs
         ]
         deleted = set(result.deleted_ref_ids)

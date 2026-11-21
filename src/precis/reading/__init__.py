@@ -14,6 +14,9 @@ package holds the concept-graph layer:
 - `promote` — glossary terms → concept nodes; corpus-wide name-anchored
   dedup via ``meta.norm_name``; cohorts in ``meta.cohorts``;
   ``derived-from`` → paper provenance.
+- `known` — records exactly which cards a login dismissed and the prior
+  shared mastery fields. Undo restores those cards in the same transaction
+  as the last dismissal's reversal of the shared mastery stamp.
 - `term_quality` — the non-concept filter (the ``precis-cloze`` rule-0
   taxonomy), gating both the glossary build and the promotion chokepoint so
   topic-labels / stock phrases / front-matter never become concepts
