@@ -51,7 +51,7 @@ query, and dropped after 24 h idle
 (`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or when the tree is removed.
 They are NOT in the default cross-root search; name one with
 `scope='wt-x'` or `scope='wt-x/docs/conventions'`. If the alias does not
-resolve, fall back to Grep/Read.
+resolve, fall back to Read/`rg` (Bash).
 
 The same aliases work on `kind='skill'` as a corpus root:
 `get(kind='skill', id='wt-<tree>/precis-foo-help')` (or

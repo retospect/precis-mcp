@@ -70,7 +70,7 @@ a stat revalidation, so only the first-ever read of a tree pays the parse. They
 are NOT in the default cross-root
 search; name one with `scope='wt-x'` (or `wt-x::pkg.mod`). Semantic vectors
 are not warmed for them (cached vectors from main still hit). If the alias does
-not resolve, fall back to Grep.
+not resolve, fall back to `rg`/`grep` over Bash.
 
 Cold builds: the first read on a never-indexed corpus pays one full
 walk+parse (~seconds on a large tree; the summary line reports
@@ -157,7 +157,7 @@ aliases included, unless a static root of the same name shadows the alias:
 that name resolves to the static checkout, so it is never recommended);
 otherwise inspect the alias with
 `get(kind='python', id='<alias>')` without `expected_root`,
-or use local Grep/Read for your tree. Roots are
+or use local Read/`rg` (Bash) for your tree. Roots are
 registered at server construction; there is no request-time arbitrary-path fallback. Do not bind
 production to an unreviewed mutable task checkout or edit through another root.
 

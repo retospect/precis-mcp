@@ -148,7 +148,7 @@ re-driven from memory each session:
   (`search(kind='python', mode='pattern', q=...)`, `get(kind='python',
   id='main::<qualname>')` for signature, callers and callees) indexes the
   **MAIN checkout**, so one index serves every worktree; a worktree queries
-  its own tree as `wt-<name>::<qualname>`. Grep is truth for uncommitted
+  its own tree as `wt-<name>::<qualname>`. `rg` (Bash) is truth for uncommitted
   edits. A separate vector-store stack (Milvus + a `claude-context` MCP) was
   tried first and retired in 2026-10: a second index to keep up and a node
   stack to boot per session, for discovery the product kind already does.

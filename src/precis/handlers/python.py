@@ -1399,7 +1399,7 @@ class PythonHandler(Handler):
             body += (
                 "\n\nNote: literal matches the constant's whole value — "
                 "a fragment inside a longer string is a text search "
-                "(Grep/ripgrep stays the right tool there)."
+                "(`rg`/`grep` via Bash stays the right tool there)."
             )
             return Response(body=body)
 
@@ -2341,7 +2341,7 @@ class PythonHandler(Handler):
             return
         hint = (
             f"get(kind='python', id={alias!r}) without expected_root "
-            "to inspect the configured checkout, or Grep/Read in your own tree; "
+            "to inspect the configured checkout, or Read/`rg` (Bash) in your own tree; "
             "expected_root grants no access or registration"
         )
         match = self._alias_for_root(expected.resolve())
@@ -2517,7 +2517,7 @@ class PythonHandler(Handler):
                 f"worktree {alias!r} not configured: its directory does not exist "
                 f"(or is not a registered git worktree under the mapped prefix)",
                 options=[*self.roots, *wts],
-                next="Grep/Read in your own tree, or get(kind='python') to list roots",
+                next="Read/`rg` (Bash) in your own tree, or get(kind='python') to list roots",
             )
         raise NotFound(
             f"unknown python repo alias {alias!r}",

@@ -111,7 +111,7 @@
   body: >-
     The harness guard fails closed whenever it cannot prove git stays in this
     worktree. Use RTK_DISABLED=1 git or /usr/bin/git, a static python -c or a
-    written script file, and the Read/Grep tools instead of grep/find mentioning git.
+    written script file, and the Read tool instead of grep/find mentioning git.
   enforcers:
     - path: scripts/hooks/rtk-hook.sh
       what: "shim leaves git-mentioning commands unrewritten in .claude/worktrees sessions"
@@ -602,7 +602,7 @@
 - id: rtk/digest-not-evidence-of-absence
   file: docs/conventions/rtk.md
   section: "Consequence: filtered, not raw, output"
-  title: "Re-run through rtk proxy (or Read/Grep) before acting on an absence found in digested output."
+  title: "Re-run through rtk proxy (or Read/`rg` over Bash) before acting on an absence found in digested output."
   body: >-
     Bash output is a filtered digest, so a grep can look exhaustive while
     partial (28 vs 287 packages in uv.lock). Hits are safe to trust; negatives are not.

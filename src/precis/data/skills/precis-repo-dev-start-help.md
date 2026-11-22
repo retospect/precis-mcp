@@ -64,7 +64,7 @@ search(kind="memory", tags=["spec:*"], view="toc")         # open specs; threads
 ```
 
 `wt-<tree>::<qualname>` reads your worktree; `scripts/coderef
-callers|deps` walks it too. Grep is the truth for code you changed.
+callers|deps` walks it too. `rg` (Bash) is the truth for code you changed.
 Mechanics: [[precis-python-help]], [[precis-md-help]].
 
 ## Find ship, test and convention procedures

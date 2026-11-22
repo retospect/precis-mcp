@@ -657,7 +657,7 @@ TREE_JSON_FORMAT = "se-tree/1"
 #: discarding the tree); ``posed_by_state`` is a read-time label for
 #: whose pose a block is currently carrying; and ``template_only`` is
 #: surfaced from the workspaces record at load time, not stored on the
-#: block row (gr514241). Grep the dataclass when
+#: block row (gr514241). grep the dataclass when
 #: adding a field here — the count in this comment has drifted before
 #: (gr458297).
 _BLOCK_TRANSIENT = frozenset(

@@ -193,7 +193,7 @@ the plain shape is the one that never surprises.
 | `git commit -m "$(cat <<'EOF' …)"`, or `-m "…"` quoting `'`/`` ` ``/`$` | `git commit -F scratch/commit-msg.txt` — write the message with the Write tool; `scratch/` is the named gitignored scratch dir (gr514617, gr514743, gr515326, gr515823) |
 | `mkdir -p /tmp/x && LOG=… && scripts/ship … > "$LOG" 2>&1` ("construct too complex", 95) | Split into plain commands; a literal `> /tmp/x.log 2>&1` redirect |
 | `LOG=/tmp/x.log` or any variable holding a path, referenced as `"$LOG"` (even alone) | Literal paths — the guard cannot trace a variable's value |
-| `grep`/`find` whose arguments contain the token `git` | Grep/Read tools |
+| `grep`/`find` whose arguments contain the token `git` | the Read tool |
 
 `github`, `git_sha` and similar word-boundary near-misses pass. The
 worktree-isolation guard is a harness built-in; the upstream asks are

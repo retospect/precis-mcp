@@ -136,7 +136,7 @@ def test_expected_root_refuses_different_tree_before_indexing(
             h.search(q="f", scope="wt-alpha", expected_root=expected)
     hint = str(caught.value.next)
     assert "get(kind='python', id='wt-alpha') without expected_root" in hint
-    assert "Grep/Read in your own tree" in hint
+    assert "Read/`rg` (Bash) in your own tree" in hint
     assert h.cache.known_roots() == []
 
 
@@ -188,7 +188,7 @@ def test_expected_root_mismatch_skips_shadowed_worktree_alias(env, verb):
     hint = str(caught.value.next)
     assert "wt-alpha::m.f" not in hint
     assert "resolves to the expected root" not in hint
-    assert "Grep/Read in your own tree" in hint
+    assert "Read/`rg` (Bash) in your own tree" in hint
 
 
 def test_expected_root_mismatch_recommends_unshadowed_worktree_alias(env):
@@ -318,7 +318,7 @@ def test_missing_worktree_alias_warns_even_with_another_index(env, verb):
         assert error.options == ["main", "wt-alpha"]
         assert (
             error.next
-            == "Grep/Read in your own tree, or get(kind='python') to list roots"
+            == "Read/`rg` (Bash) in your own tree, or get(kind='python') to list roots"
         )
     else:
         assert "no python repo matches scope='wt-missing'" in error.cause

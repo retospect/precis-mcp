@@ -55,8 +55,8 @@ so a partial result reads as an exhaustive one.
 Presence of hits is safe to trust — the digest never invents matches. Only
 the *negative* is unsafe. So whenever the ABSENCE of hits is the load-bearing
 conclusion — "this kwarg doesn't exist", "nothing references this", "no
-writer for this column" — re-run through `rtk proxy` (or read the file with
-Read/Grep) **before** acting on it.
+writer for this column" — re-run through `rtk proxy` (or check it with Read,
+or `rg`/`grep` it over Bash) **before** acting on it.
 
 Two real misses on 2026-09-07, same root cause:
 

@@ -726,7 +726,7 @@ class MdHandler(Handler):
                 f"exist (or is not a registered git worktree under the "
                 f"mapped prefix)",
                 options=[*self.roots, *wts],
-                next="Grep/Read in your own tree, or get(kind='md') to list roots",
+                next="Read/`rg` (Bash) in your own tree, or get(kind='md') to list roots",
             )
         raise NotFound(
             f"unknown md root alias {alias!r}",
