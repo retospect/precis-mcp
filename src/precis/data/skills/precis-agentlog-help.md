@@ -60,7 +60,9 @@ does all of this — a new agentic write path gets attribution by
 opening a log and setting the env var. `stamp_result_meta(store,
 log_id=, res=)` writes the resolved-model ids (`meta.model_actual`,
 `meta.models_used`) from the run's `LlmResult`; `meta.model` is only the
-requested tier/pin.
+requested tier/pin. An OSS tool loop also calls `stamp_dispatched_model`
+before its first tool write, so `meta.model_actual` is already set on a run
+that is still going; `models_used` arrives only at run end.
 
 ## Reading (agent side)
 
