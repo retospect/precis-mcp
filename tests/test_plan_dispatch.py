@@ -6472,7 +6472,14 @@ def test_dead_phase_inside_a_live_plan_is_not_swept(store: Store) -> None:
     res = pd.run_pass(store)
     assert _status(store, phase) == "won't-do"
     assert _status(store, task) != "won't-do"
+    assert _status(store, mint.root_id) == "open"
     assert not any(f"td{task}" in n and "won't-do" in n for n in res.notes)
+
+    pd.run_pass(store)
+    assert _status(store, task) != "won't-do"
+    _mark_done(store, task)
+    pd.run_pass(store)
+    assert _status(store, mint.root_id) == "done"
 
 
 def test_task_moot_stamp_failure_keeps_the_tag(

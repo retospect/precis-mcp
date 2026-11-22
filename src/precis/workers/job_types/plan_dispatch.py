@@ -197,8 +197,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    child is still open (a generator's session mints children, it does not
    close the node; counted as ``reopened``). Then closes every node whose work
    is finished: a phase
-   (``meta.auto_close``) or a generator with children, once every child is
-   closed — unless the node itself carries a ``waiting-for:`` tag, a park
+   (``meta.auto_close``) or a generator with children, once its subtree
+   has settled — unless the node itself carries a ``waiting-for:`` tag, a park
    that outranks its children's state (the FIX-chain cap's
    ``waiting-for:coordinator`` on the root, an unsettled mint); an
    ``analyst`` generator once its newest job succeeded and an
@@ -5867,11 +5867,22 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
     # ``done`` root would drop the whole plan out of the candidates and
     # the retained tag could never fire (td584381 review round 1).
     mooted_roots = {n.root for n in plan.todos() if MOOT_TAG in n.open_tags}
+    unsettled_subtrees: set[int] = set()
     for n in sorted(plan.todos(), key=lambda x: (-x.depth, x.id)):
+        kids = plan.child_todos(n)
+        # Propagate unfinished work through closed intermediate todos.
+        # Otherwise the outer phase can close and drop the remaining
+        # work from the next tick's candidate scan (gr722570).
+        if any(
+            c.id in unsettled_subtrees
+            or isinstance(c.meta.get(_templates.PENDING_LAND_KEY), dict)
+            or not (_closed(c) or _informational_ask(c))
+            for c in kids
+        ):
+            unsettled_subtrees.add(n.id)
         if _closed(n) or n.status == "paused":
             continue
         kind = node_kind(n.meta)
-        kids = plan.child_todos(n)
         if n.id == n.root and n.root in mooted_roots:
             continue
         if kind in ("phase", "generator"):
@@ -5891,14 +5902,12 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
             # is done but not landed: the plan stays open through the
             # land and any recovery rebuild, until ``_record_land``
             # clears the stamp.
-            if any(
-                isinstance(c.meta.get(_templates.PENDING_LAND_KEY), dict) for c in kids
-            ):
+            if n.id in unsettled_subtrees:
                 continue
-            if kids and all(_closed(c) or _informational_ask(c) for c in kids):
+            if kids:
                 w.set_status(n, "done")
                 res.phases_closed += 1
-                res.notes.append(f"{kind} td{n.id} closed: every child is closed")
+                res.notes.append(f"{kind} td{n.id} closed: subtree settled")
             elif not kids and _analysis_posted(plan, w.store, n):
                 w.set_status(n, "done")
                 res.phases_closed += 1

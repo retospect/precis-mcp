@@ -6,7 +6,9 @@ on existing fields, never by a new kind:
 
 - task: a leaf with a brief; ``meta.op`` names the job_type (default
   ``run_slice`` for LLM work);
-- phase: a todo with children and ``meta.auto_close``;
+- phase: a todo with children and ``meta.auto_close``. Dispatch waits for
+  work below closed intermediate todos too, so closing a phase cannot
+  remove those descendants from the candidate scan;
 - gate: ``meta.gate = {kind, args}`` — ``sha-in-prod``, ``tests-green``,
   ``answer``, ``not-before``, ``drc-clean``; evaluated, never dispatched;
 - loop: ``meta.loop = {max, until, body}``;
