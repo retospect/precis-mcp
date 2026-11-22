@@ -221,8 +221,11 @@ Host needs: the slice host's checkout (`PRECIS_SLICE_ROOT`), `gh` (the
 script's gate step), and whatever `scripts/deploy` needs for the deploy.
 Push rights come from the vault, not the host: the fine-grained GitHub
 token stored as `PRECIS_FACTORY_GIT_TOKEN` (`scripts/prod-precis secret set
-PRECIS_FACTORY_GIT_TOKEN --prompt`; repository `precis-mcp` only, Contents
-and Pull requests read/write) is installed as git's credential helper and
+PRECIS_FACTORY_GIT_TOKEN --prompt`; repositories `precis-mcp` and every
+second repo the factory opens, e.g. `catpath`: Contents and Pull requests
+read/write, plus Actions read/write for a repo with a releaser — proven
+for `catpath` 2026-11-22: ls-remote, a repo read, an Actions runs read and
+one re-run) is installed as git's credential helper and
 `GH_TOKEN` in the env of `land_slice`, `release_cut`/`release_deploy` and
 every `gh` call (`workers/factory_git.py`). The slice session never sees
 it. Without it those jobs run on the host's own credentials, and a service
