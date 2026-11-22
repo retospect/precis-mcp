@@ -116,6 +116,10 @@ class Cadence:
     cadence-staleness check does not read a deliberately dark service as
     "stopped firing" (al567129).
 
+    A host either gate skips logs no liveness row; the pass-dead probe
+    mirrors both (``conditions._dark_at_cadence_gate``, gr635245) — change
+    them together.
+
     ``spends`` marks a cadence whose work bills an LLM, so it is gated on the
     global daily ceiling — see :func:`_over_daily_budget`."""
 

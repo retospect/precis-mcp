@@ -24,6 +24,15 @@ was invisible for 4 days):
   off live via ``service_config`` (prio 0) are excluded, as are worker
   units freshly observed inactive AND disabled by the host heartbeat.
   Missing/stale unit observations and failed/enabled units still alert.
+  A ``service=``-gated scheduler cadence (``gripe_dispatch``,
+  ``gripe_triage``, ``asks_triage``) is also excluded on a host its gate
+  skips before the claim (:func:`_dark_at_cadence_gate`, gr635245): the
+  scheduler logs a liveness row only for a fire it claimed, so that host
+  is silent by design. The gate skips a host whose ``service_config``
+  prio resolves to 0 (no row, or a 0 one; exact host over ``'*'``),
+  whatever other hosts do; ``gripe_dispatch`` alone
+  (``claim_when_dark``) skips it only while some row lights the service
+  elsewhere.
 * ``rescue-pass-cadence`` — the rescue-critical passes (sweeper,
   nursery, quest_loop_reconcile) have a fleet-wide cadence SLO. For
   sweeper/nursery (system-profile, fast rotation, where a gap IS
@@ -116,7 +125,7 @@ from functools import partial
 from precis.store import Store
 from precis.workers.bounded_heal import HealSpec, run_bounded_heal
 from precis.workers.health_digest import CheckResult
-from precis.workers.runner import RESCUE_SERVICES
+from precis.workers.runner import RESCUE_SERVICES, _emit_handler
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +242,53 @@ def _disabled_services(store: Store) -> set[tuple[str, str]]:
             "SELECT host, service FROM service_config WHERE prio = 0"
         ).fetchall()
     return {(str(r[0]), str(r[1])) for r in rows}
+
+
+def _cadence_service_gates() -> dict[str, tuple[str, bool]]:
+    """``payload.handler`` → ``(service, claim_when_dark)`` for every
+    ``service=``-gated scheduler cadence, keyed on the name
+    ``run_scheduler_pass`` logs a fire under."""
+    from precis.workers.scheduler import CADENCES
+
+    return {
+        _emit_handler(cad.name, cad.name): (cad.service, cad.claim_when_dark)
+        for cad in CADENCES
+        if cad.service is not None
+    }
+
+
+def _service_prios(store: Store, services: set[str]) -> dict[str, dict[str, int]]:
+    """``service → {host: prio}`` for the named services' ``service_config``
+    rows (``'*'`` kept as a literal host)."""
+    if not services:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT service, host, prio FROM service_config WHERE service = ANY(%s)",
+            (sorted(services),),
+        ).fetchall()
+    out: dict[str, dict[str, int]] = defaultdict(dict)
+    for service, host, prio in rows:
+        out[str(service)][str(host)] = int(prio)
+    return out
+
+
+def _dark_at_cadence_gate(
+    host: str, gate: tuple[str, bool], prios: dict[str, dict[str, int]]
+) -> bool:
+    """True when ``run_scheduler_pass`` skips the cadence on ``host`` before
+    the claim, so no fire and no liveness row is expected there.
+
+    Mirrors the scheduler's gate: the host's resolved prio (exact-host row
+    over ``'*'``, no row = dark) is 0, and — for a ``claim_when_dark``
+    cadence — some row lights the service elsewhere. With no lit row
+    anywhere such a cadence is claimed by the dark host too, so its
+    silence there stays a finding."""
+    service, claim_when_dark = gate
+    rows = prios.get(service, {})
+    if rows.get(host, rows.get("*", 0)) > 0:
+        return False
+    return not claim_when_dark or any(p > 0 for p in rows.values())
 
 
 def _handler_service(handler: str) -> str:
@@ -388,6 +444,8 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
             },
         ).fetchall()
     disabled = _disabled_services(store)
+    gates = _cadence_service_gates()
+    prios = _service_prios(store, {service for service, _ in gates.values()})
     parked = _parked_workers(store)
     installed = _fresh_unit_lists(store)
     live_names = _liveness_handler_names(store)
@@ -413,6 +471,13 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
         service = _handler_service(str(handler))
         if (str(host), service) in disabled or ("*", service) in disabled:
             continue  # switched off on purpose — not a death
+        gate = gates.get(str(handler))
+        if gate is not None and _dark_at_cadence_gate(str(host), gate, prios):
+            # The cadence's own ``service_config`` gate skips this host
+            # before the claim (no row, while another host is lit): no
+            # fire, no liveness row, and a restart would heal nothing
+            # (gr635245).
+            continue
         if (
             str(process).startswith("precis-worker")
             and str(host) in installed

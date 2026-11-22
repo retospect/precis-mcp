@@ -364,6 +364,83 @@ def test_pass_dead_respects_service_config_off(
             conn.commit()
 
 
+def test_pass_dead_excuses_a_dark_host_of_a_service_gated_cadence(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr635245: the ``gripe_dispatch`` cadence is ``service=``-gated with
+    ``claim_when_dark`` — a host with no ``service_config`` row skips the
+    fire without claiming, so without a liveness row, while another host
+    is lit. That silence is the gate, not a death. A lit host's silence
+    still is one, and so is a row-less host's while no row lights the
+    service anywhere (it then claims every fire)."""
+    from precis.workers.service_config import set_service_prio
+
+    handler = "gripe_dispatch"
+    lit_host = "cond-test-lit-host"
+    key = f"pass-dead:{_HOST}/{_PROC}/{handler}"
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600.0, registered=False)
+
+    def fired() -> list[ConditionFinding]:
+        return [f for f in _probe_pass_dead(store) if f.key == key]
+
+    # Dark fleet-wide: the row-less host claims every fire and logs it.
+    assert len(fired()) == 1
+
+    # Another host lit: the row-less host skips before the claim.
+    _registered_services.add((lit_host, handler))
+    set_service_prio(store, lit_host, handler, 1)
+    assert fired() == []
+
+    # This host lit too: it fires the cadence, so its silence is a death.
+    _registered_services.add((_HOST, handler))
+    set_service_prio(store, _HOST, handler, 1)
+    found = fired()
+    assert len(found) == 1
+    assert found[0].heal == HealRequest("restart-worker", _HOST, _PROC)
+
+
+@pytest.mark.parametrize(
+    ("handler", "rows", "fires"),
+    [
+        # `*` alone lights every host: this one fires the cadence.
+        ("gripe_dispatch", [("*", 1)], True),
+        # An exact-host 0 beats the lit `*`: this host skips, the fleet is lit.
+        ("gripe_dispatch", [("*", 1), (_HOST, 0)], False),
+        # No ``claim_when_dark``: a row-less host skips whatever the fleet does.
+        ("gripe_triage", [], False),
+        ("asks_triage", [], False),
+    ],
+    ids=["star-lit", "exact-zero-under-lit-star", "triage-no-row", "asks-no-row"],
+)
+def test_pass_dead_mirrors_the_cadence_service_gate(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    handler: str,
+    rows: list[tuple[str, int]],
+    fires: bool,
+) -> None:
+    """gr635245: the probe resolves a ``service=``-gated cadence's rows the
+    scheduler's way — exact host over ``*``, no row dark — and a cadence
+    without ``claim_when_dark`` is silent on a dark host even when no row
+    lights the service anywhere."""
+    from precis.workers.service_config import set_service_prio
+
+    key = f"pass-dead:{_HOST}/{_PROC}/{handler}"
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600.0, registered=False)
+    for host, prio in rows:
+        _registered_services.add((host, handler))
+        set_service_prio(store, host, handler, prio)
+    assert [f.key for f in _probe_pass_dead(store) if f.key == key] == (
+        [key] if fires else []
+    )
+
+
 def _unit_snapshot(
     process: str = _PROC,
     *,
