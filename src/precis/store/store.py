@@ -71,7 +71,6 @@ from precis.store._dependants import DependantsMixin
 from precis.store._draft_ops import DraftStore
 from precis.store._drive_state_ops import DriveStateMixin
 from precis.store._email_ops import EmailAccountMixin
-from precis.store._events_ops import EventsMixin
 from precis.store._favorites_ops import FavoritesMixin
 from precis.store._grounding_ops import GroundingsMixin
 from precis.store._heartbeat_ops import HeartbeatMixin
@@ -143,7 +142,6 @@ class Store(
     CacheMixin,
     IdentifiersMixin,
     IntegrationLedgerMixin,
-    EventsMixin,
     ReviewsMixin,
     GroundingsMixin,
     HeartbeatMixin,

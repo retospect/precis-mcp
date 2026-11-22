@@ -75,9 +75,9 @@ content-derived `pub_id` is added — the **old** one is kept as an alias,
 so existing `[<pub_id>]` cites keep resolving. Ref-level evidence edges are
 untouched; chunk-addressed users cause an atomic refusal until retargeting is
 supported. Candidate/reviewed claims edit in place; unsigned approval reopens
-and the response lists consumers flagged for re-review. Do not retitle a
-frozen or signed hub — a signed (anchored, published) nanopub freezes the
-wording and the retitle refuses: see `precis-nanopub-help`'s correction boundary.
+and the response lists consumers flagged for re-review. A signed, anchored,
+or published nanopub freezes the wording. See [[precis-nanopub-help]] for
+the state-specific steps before a retitle.
 Rejects a non-hub finding. `dry_run=True` previews the retitle —
 old/new sentence and the `pub_id` change — and writes nothing; drop
 `dry_run` to apply. If the new wording's `pub_id` already belongs to a

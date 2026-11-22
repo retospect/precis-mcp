@@ -24,6 +24,8 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
+from precis.nanopub.state import published_externally
+from precis.store._events_ops import EventsMixin
 
 #: Publish states with no live claim on the hub — the partial unique
 #: index `nanopub_publish_one_live_per_hub` excludes exactly these.
@@ -248,7 +250,38 @@ def _row_to_artifact(row: tuple[Any, ...]) -> ArtifactRow:
     )
 
 
-class NanopubMixin:
+def _check_explicit_reopen(row: PublishRow) -> None:
+    if row.state == "publishing":
+        raise BadInput(
+            _PUBLISHING_MSG.format(row=row.id),
+            next="Wait for publication or ask a human to run `precis nanopub reconcile`.",
+        )
+    if (
+        published_externally(
+            row.state, published_at=row.published_at, registry_url=row.registry_url
+        )
+        or row.state in TERMINAL_STATES
+    ):
+        raise BadInput(
+            f"publish row {row.id} is {row.state!r}; further action requires a human",
+            next="Ask the claim owner to review its publication history.",
+        )
+    if row.state == "anchored":
+        raise BadInput(
+            f"publish row {row.id} is anchored and cannot be reopened",
+            next=(
+                f"edit(kind='finding', id='fi{row.claim_ref_id}', "
+                "args={'supersede': True, 'reason': '<why>'})"
+            ),
+        )
+    if row.state not in ("reviewed", "signed"):
+        raise BadInput(
+            f"publish row {row.id} is {row.state!r}; only reviewed or signed rows reopen",
+            next="Review the candidate.",
+        )
+
+
+class NanopubMixin(EventsMixin):
     """Mixin: assumes the concrete Store provides ``self.pool``."""
 
     pool: Any
@@ -352,7 +385,9 @@ class NanopubMixin:
                 )
         return _row_to_publish(row)
 
-    def nanopub_supersede(self, row_id: int) -> PublishRow:
+    def nanopub_supersede(
+        self, row_id: int, *, reason: str | None = None, actor: str = "agent"
+    ) -> PublishRow:
         """Atomically replace an anchored, unpublished row with a candidate.
 
         The local state changes; frozen bytes/fields and OTS proofs never do.
@@ -364,7 +399,10 @@ class NanopubMixin:
                 "SELECT claim_ref_id FROM nanopub_publish WHERE id = %s", (row_id,)
             ).fetchone()
             if hub is None:
-                raise BadInput(f"no publish row {row_id}")
+                raise BadInput(
+                    f"no publish row {row_id}",
+                    next="Read the claim's current state with view='publish-preflight'.",
+                )
             conn.execute(
                 "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE", hub
             )
@@ -373,17 +411,27 @@ class NanopubMixin:
                 (row_id,),
             ).fetchone()
             if raw is None:
-                raise BadInput(f"publish row {row_id} disappeared")
+                raise BadInput(
+                    f"publish row {row_id} disappeared",
+                    next="Read the claim's current state with view='publish-preflight'.",
+                )
             old = _row_to_publish(raw)
             if old.state == "publishing":
-                raise BadInput(_PUBLISHING_MSG.format(row=old.id))
-            if (
-                old.state != "anchored"
-                or old.published_at is not None
-                or old.registry_url
+                raise BadInput(
+                    _PUBLISHING_MSG.format(row=old.id),
+                    next="Wait for publication or run `precis nanopub reconcile`.",
+                )
+            if published_externally(
+                old.state, published_at=old.published_at, registry_url=old.registry_url
             ):
                 raise BadInput(
-                    "supersede requires an anchored, unpublished predecessor"
+                    "supersede requires an unpublished predecessor",
+                    next="Ask a human to use `precis nanopub retract`.",
+                )
+            if old.state != "anchored":
+                raise BadInput(
+                    "supersede requires an anchored, unpublished predecessor",
+                    next="Read get(kind='finding', id='fi<N>', view='publish-preflight').",
                 )
             proof = conn.execute(
                 "SELECT 1 FROM nanopub_artifacts a "
@@ -401,7 +449,8 @@ class NanopubMixin:
             ).fetchone()
             if proof is None:
                 raise BadInput(
-                    "predecessor needs its own signed artifact and OTS proof"
+                    "predecessor needs its own signed artifact and OTS proof",
+                    next="Ask the claim owner to inspect the artifact and its OTS batch.",
                 )
             conn.execute(
                 "UPDATE nanopub_publish SET state = 'superseded', updated_at = now() "
@@ -419,6 +468,22 @@ class NanopubMixin:
                 "VALUES (%s, %s)",
                 (old.id, new[0]),
             )
+            if reason is not None:
+                self.append_event(
+                    old.claim_ref_id,
+                    source="nanopub",
+                    event="publish_superseded",
+                    payload={
+                        "actor": actor,
+                        "reason": reason,
+                        "from_state": old.state,
+                        "predecessor_id": old.id,
+                        "successor_id": new[0],
+                        "trusty_uri": old.trusty_uri,
+                        "artifact_id": old.artifact_id,
+                    },
+                    conn=conn,
+                )
         return _row_to_publish(new)
 
     def nanopub_retire_rows(self, claim_ref_id: int, *, conn: Any) -> list[RetireRow]:
@@ -624,12 +689,25 @@ class NanopubMixin:
             )
             return cur.rowcount == 1
 
-    def nanopub_reopen(self, row_id: int) -> bool:
+    def nanopub_reopen(
+        self, row_id: int, *, reason: str | None = None, actor: str = "agent"
+    ) -> bool:
         """Drift/edit reopen: flip a pre-anchor row (``reviewed`` or
         ``signed``) back to ``candidate``, discarding the frozen fields.
         The signed artifact row (if any) stays — append-only — but the
-        publish row no longer points at it."""
+        publish row no longer points at it. Explicit requests pass a reason
+        and audit the locked row in the same transaction as the flip."""
         with self.pool.connection() as conn:
+            old = None
+            if reason is not None:
+                raw = conn.execute(
+                    f"SELECT {_PUBLISH_COLS} FROM nanopub_publish WHERE id = %s FOR UPDATE",
+                    (row_id,),
+                ).fetchone()
+                if raw is None:
+                    return False
+                old = _row_to_publish(raw)
+                _check_explicit_reopen(old)
             cur = conn.execute(
                 "UPDATE nanopub_publish SET state = 'candidate', "
                 "approved_title = NULL, claim_sha = NULL, aida_uri = NULL, "
@@ -638,7 +716,23 @@ class NanopubMixin:
                 "WHERE id = %s AND state IN ('reviewed', 'signed')",
                 (row_id,),
             )
-            return cur.rowcount == 1
+            changed = cur.rowcount == 1
+            if changed and old is not None:
+                self.append_event(
+                    old.claim_ref_id,
+                    source="nanopub",
+                    event="publish_reopened",
+                    payload={
+                        "actor": actor,
+                        "reason": reason,
+                        "from_state": old.state,
+                        "publish_id": old.id,
+                        "voided_trusty_uri": old.trusty_uri,
+                        "voided_artifact_id": old.artifact_id,
+                    },
+                    conn=conn,
+                )
+            return changed
 
     def nanopub_discard_candidate(self, row_id: int) -> bool:
         """gr279770 sweep half: drop a ``candidate`` row that no longer

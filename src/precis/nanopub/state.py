@@ -27,6 +27,20 @@ the claim hub itself is a separate door with its own legality,
 
 from __future__ import annotations
 
+from datetime import datetime
+
+
+def published_externally(
+    state: str, *, published_at: datetime | None, registry_url: str | None
+) -> bool:
+    """An in-flight or recorded registry publication precludes local revision."""
+    return (
+        state in ("publishing", "published")
+        or published_at is not None
+        or registry_url is not None
+    )
+
+
 STATES = (
     "candidate",
     "reviewed",

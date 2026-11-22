@@ -20,12 +20,14 @@ from precis.errors import BadInput
 from precis.nanopub import assemble, evidence, mint, mirror, state
 from precis.nanopub.supersede import supersede
 from precis.nanopub.vocab import NPX
+from precis.runtime import PrecisRuntime
+from precis.store.revision_context import revision_context
 from tests.test_nanopub_gates_mint import _payload, _seed_hub, _seed_paper
 from tests.workers._helpers import seed_ref
 
 
-def _anchor(store: Any, row: Any) -> Any:
-    """Synthetic artifact/proof rows only: no cryptography or calendar calls."""
+def _sign(store: Any, row: Any) -> Any:
+    """Record a synthetic artifact without cryptography."""
     if row.state == "candidate":
         assert store.nanopub_approve(
             row.id,
@@ -53,11 +55,16 @@ def _anchor(store: Any, row: Any) -> Any:
         artifact_id=artifact,
         dependency_codes={},
     )
+    return store.nanopub_publish_row_by_id(row.id)
+
+
+def _anchor(store: Any, row: Any) -> Any:
+    row = _sign(store, row)
     batch = store.nanopub_create_batch(
         merkle_root=f"{row.id:064x}",
         construction="synthetic",
         calendar_url="test:calendar",
-        leaves=[(artifact, 0, "cd" * 32, b"leaf")],
+        leaves=[(row.artifact_id, 0, "cd" * 32, b"leaf")],
         pending_proof=b"pending proof",
     )
     assert store.nanopub_set_batch(row.id, batch)
@@ -90,7 +97,7 @@ def _persisted(store: Any, old: Any) -> tuple[Any, ...]:
 def test_atomic_staging_preserves_predecessor_and_proof(store: Any) -> None:
     old = _old(store)
     before = _persisted(store, old)
-    successor = supersede(store, old.claim_ref_id, interactive=True)
+    successor = supersede(store, old.claim_ref_id, reason="Update evidence")
     after = _persisted(store, old)
     assert after[0] == [(old.id, "superseded"), (successor.id, "candidate")]
     assert after[1] == [(old.id, successor.id)]
@@ -173,15 +180,15 @@ def test_refuses_unsafe_predecessor(store: Any, posture: str) -> None:
     assert _persisted(store, old) == before
 
 
-def test_noninteractive_and_missing_refuse(store: Any) -> None:
+def test_blank_reason_and_missing_refuse(store: Any) -> None:
     old = _old(store)
     before = _persisted(store, old)
-    with pytest.raises(PermissionError):
-        supersede(store, old.claim_ref_id)
+    with pytest.raises(BadInput, match="non-empty reason"):
+        supersede(store, old.claim_ref_id, reason=" ")
     with pytest.raises(BadInput, match="no publish row"):
         store.nanopub_supersede(-1)
     with pytest.raises(BadInput, match="no live publish row"):
-        supersede(store, -1, interactive=True)
+        supersede(store, -1, reason="Update evidence")
     assert _persisted(store, old) == before
 
 
@@ -377,7 +384,9 @@ def test_cli_parser_and_real_local_staging(store: Any, capsys: Any) -> None:
     parser = argparse.ArgumentParser()
     cli.add_parser(parser.add_subparsers(dest="command"))
     old = _old(store)
-    args = parser.parse_args(["nanopub", "supersede", f"fi{old.claim_ref_id}"])
+    args = parser.parse_args(
+        ["nanopub", "supersede", f"fi{old.claim_ref_id}", "--reason", "Update evidence"]
+    )
     cli._supersede(args, store)
     assert "review and sign separately" in capsys.readouterr().out
     assert store.nanopub_publish_row(old.claim_ref_id).state == "candidate"
@@ -515,3 +524,99 @@ def test_generic_transition_refuses_superseded(store: Any) -> None:
         store.nanopub_transition(old.id, to_state="superseded", expect=("anchored",))
     assert _persisted(store, old) == before
     assert store.nanopub_publish_row_by_id(old.id).state == "anchored"
+
+
+def _edit_publish(
+    runtime: PrecisRuntime, hub_id: int, operation: str
+) -> tuple[str, bool]:
+    with revision_context(actor="test:curator"):
+        return runtime.dispatch_with_status(
+            "edit",
+            {
+                "kind": "finding",
+                "id": f"fi{hub_id}",
+                "__extras__": {operation: True, "reason": "Update evidence"},
+            },
+        )
+
+
+def test_edit_reopen_door_audits_and_refuses_anchored(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.store
+    assert store is not None
+    hub = seed_ref(store, title="Synthetic claim.", kind="finding")
+    signed = _sign(store, store.nanopub_create_publish_row(hub))
+    body, is_error = _edit_publish(runtime_with_store, hub, "reopen")
+    assert not is_error, body
+    row = store.nanopub_publish_row_by_id(signed.id)
+    assert row is not None and row.state == "candidate" and row.artifact_id is None
+    assert store.nanopub_artifact(signed.artifact_id) is not None
+    [event] = store.events_for(hub, source="nanopub", event="publish_reopened")
+    assert event.payload == {
+        "actor": "test:curator",
+        "reason": "Update evidence",
+        "from_state": "signed",
+        "publish_id": signed.id,
+        "voided_trusty_uri": signed.trusty_uri,
+        "voided_artifact_id": signed.artifact_id,
+    }
+
+    anchored = _old(store)
+    body, is_error = _edit_publish(runtime_with_store, anchored.claim_ref_id, "reopen")
+    assert is_error and "supersede" in body
+    assert store.nanopub_publish_row_by_id(anchored.id) == anchored
+    assert not store.events_for(anchored.claim_ref_id, source="nanopub")
+
+
+def test_edit_reopen_refuses_terminal_history(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.store
+    assert store is not None
+    old = _old(store)
+    successor = store.nanopub_supersede(old.id)
+    assert store.nanopub_discard_candidate(successor.id)
+    assert store.nanopub_publish_row(old.claim_ref_id) is None
+
+    body, is_error = _edit_publish(runtime_with_store, old.claim_ref_id, "reopen")
+    assert is_error
+    assert "is 'superseded'; further action requires a human" in body
+
+
+def test_edit_supersede_door_needs_no_tty(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.store
+    assert store is not None
+    old = _old(store)
+    body, is_error = _edit_publish(runtime_with_store, old.claim_ref_id, "supersede")
+    assert not is_error, body
+    successor = store.nanopub_publish_row(old.claim_ref_id)
+    assert successor is not None and successor.state == "candidate"
+    predecessor = store.nanopub_publish_row_by_id(old.id)
+    assert predecessor is not None and predecessor.state == "superseded"
+    [event] = store.events_for(
+        old.claim_ref_id, source="nanopub", event="publish_superseded"
+    )
+    assert event.payload == {
+        "actor": "test:curator",
+        "reason": "Update evidence",
+        "from_state": "anchored",
+        "predecessor_id": old.id,
+        "successor_id": successor.id,
+        "trusty_uri": old.trusty_uri,
+        "artifact_id": old.artifact_id,
+    }
+
+    published = _old(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE nanopub_publish SET state = 'published' WHERE id = %s",
+            (published.id,),
+        )
+    body, is_error = _edit_publish(
+        runtime_with_store, published.claim_ref_id, "supersede"
+    )
+    assert is_error and "precis nanopub retract" in body
+    body, is_error = _edit_publish(runtime_with_store, published.claim_ref_id, "reopen")
+    assert is_error and "human" in body
+    assert not store.events_for(published.claim_ref_id, source="nanopub")

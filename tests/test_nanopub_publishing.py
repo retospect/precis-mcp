@@ -299,7 +299,7 @@ def test_other_doors_refuse_a_publishing_row(store: Any) -> None:
     with pytest.raises(BadInput, match="publishing"):
         store.nanopub_supersede(old.id)
     with pytest.raises(BadInput, match="publishing"):
-        supersede(store, old.claim_ref_id, interactive=True)
+        supersede(store, old.claim_ref_id, reason="Update evidence")
     with pytest.raises(BadInput, match="publishing"):
         store.nanopub_create_publish_row(old.claim_ref_id)
     assert store.nanopub_reopen(old.id) is False  # discard/restage/demote path

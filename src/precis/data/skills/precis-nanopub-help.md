@@ -10,7 +10,7 @@ answers:
   - how do I propose a hypothesis for a human to review?
   - how do I record a rejection of a hypothesis I proposed?
   - how do I check my payload against the mint gates without approving?
-  - when does signing freeze a claim's content?
+  - how do I reopen a claim for review or stage a successor?
   - why does a claim hub show as unmintable?
   - what does the OpenTimestamps (OTS) anchor prove, and when does a signed nanopub count as anchored?
 applies-to: get (kind='finding', view='nanopub'|'mint-preflight'|'publish-preflight'); put (kind='finding', hypothesis=True); reading publish state
@@ -56,12 +56,6 @@ exists. Details: [[precis-taproot-help]].
   `contradicts` edge also raises `nanopub-demote/contradicted-frozen:<hub>`
   (warn) — the freeze stands, but the claim needs a successor or a
   dispute adjudication before it can be read as settled.
-- **Signing is the correction boundary.** Candidate/reviewed claims are
-  internal: edit in place, returning unsigned approvals to candidate and
-  flagging their consumers for re-review. Once signed, correct through a
-  successor nanopublication (`npx:supersedes`), including anchored/published
-  predecessors. Existing bytes and proofs remain immutable. Re-read the
-  current state before acting.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
   candidate envelope as `args={'payload': {...}}`; omit it and the hub's
@@ -168,8 +162,23 @@ the claim is unsigned (`candidate`/`reviewed`), `edit(kind='finding',
 id='fi<N>', args={'testable_by': …})` (and/or `'motivation': …`) patches the parked
 envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
-are flagged/listed for re-review. Once signed, correction requires a successor
-nanopublication; this edit door refuses.
+are flagged/listed for re-review. For a signed or anchored claim, clear the
+frozen review using the appropriate operation below before sharpening.
+
+## Reopen or stage a successor
+
+- Reviewed or signed before anchoring:
+  `edit(kind='finding', id='fi<N>', args={'reopen': True, 'reason': '<why>'})`.
+  The row returns to `candidate`. The audit records the reason and any
+  voided signature reference. The stored signed bytes remain immutable.
+- Anchored and unpublished:
+  `edit(kind='finding', id='fi<N>', args={'supersede': True, 'reason': '<why>'})`.
+  The old row becomes `superseded` and a linked candidate is staged.
+  Its eventual artifact cites the predecessor with `npx:supersedes`.
+
+During registry publication, wait for it to resolve or ask a human to
+reconcile. For an externally published claim, ask a human to retract.
+Review and signing remain separate from these edits. Signing stays human.
 
 ## Record a rejection
 
@@ -443,7 +452,7 @@ per class — do not mutate the hub, its edges, or its sources:
 Quote-trimming, claim restructuring (atom vs composite), and every
 approve/sign/signoff click stay out of scope for this triage.
 
-## Correcting a claim: signing is the boundary
+## Editing claim wording and scope
 
 Before signing (candidate/reviewed), edit the claim in place with
 `edit(kind='finding', id='fi<N>', title='...')` or `meta={'scope': {...}}`.
@@ -459,12 +468,9 @@ currently cause title/scope edits to refuse atomically until reference
 retargeting is supported.
 No-op and scope dry-run edits leave review state unchanged.
 
-Once signed (including anchored/published), use a new nanopublication whose
-pubinfo asserts `<successor> npx:supersedes <predecessor trusty URI>`, signed with
-the same key. Existing bytes and OTS proofs are immutable. `npx:retracts` is
-withdrawal without a successor. No tool stages a successor for you, and
-until one is staged the in-place edit refuses signed claims. Actual
-approval/signing and publication of successors remain the normal human flow.
+For signed or anchored claims, use the re-review or successor operation above
+before editing the wording. A successor must be signed with the predecessor's
+key.
 
 ## Publish states
 
@@ -475,9 +481,9 @@ otherwise one line per issue marked **blocking** or **note**. Notes do not
 block publication. This complements `view='mint-preflight'`, which checks
 the candidate payload before approval.
 
-For `grounding-stale`, today ask a person to reopen the claim to candidate
-and re-approve its grounding, or to read the newer evidence edges and sign
-using the claim page's accept-newer-evidence checkbox.
+For `grounding-stale`, reopen the claim to candidate
+and ask for approval of its grounding. A signer who has read the newer
+evidence edges can use the claim page's accept-newer-evidence checkbox.
 
 `anchored` → `publishing` → `published`. While a row is `publishing` (the
 registry upload is in flight), supersede, reopen, restage and a second

@@ -20,8 +20,11 @@ from precis.handlers import _finding_hypothesis
 from precis.handlers._finding_common import fetch_ref_any_kind
 from precis.handlers.plaintext import _require_find_and_text
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
+from precis.nanopub.reopen import reopen as reopen_publish_row
+from precis.nanopub.supersede import supersede as supersede_publish_row
 from precis.response import Response
 from precis.store.pool import connection_is_pinned
+from precis.store.revision_context import current_revision_context
 from precis.store.types import Tag
 from precis.taproot import authoring, consumer_review, hub
 from precis.taproot.consumer_review import render_users
@@ -49,7 +52,8 @@ _STATUS_TRACING = "tracing"
 #: (:class:`precis.taproot.hub.HubFrozenError`).
 _FROZEN_NEXT = (
     "the hub has signed nanopub bytes, so its identity is frozen — "
-    "supersede the nanopub (a human door) and edit the successor instead"
+    "reopen a signed, unanchored nanopub or stage a successor for an anchored, "
+    "unpublished nanopub before editing"
 )
 
 
@@ -73,6 +77,8 @@ def edit(
     testable_by: str | None = None,
     motivation: str | None = None,
     reason: str | None = None,
+    reopen: bool = False,
+    supersede: bool = False,
     meta: dict[str, Any] | None = None,
     dry_run: bool | str | None = None,
 ) -> Response:
@@ -135,7 +141,7 @@ def edit(
     (:func:`precis.workers.chase._snapshot_chain`) records
     ``primary_cite_key``/``via_cite_keys``/``caveats``, re-emits
     ``card_combined``, and flips ``STATUS:dead_chain`` ->
-    ``STATUS:established``. ``reason=`` (only accepted on this call) is
+    ``STATUS:established``. ``reason=`` is
     recorded as ``meta.close_out_reason`` — the audit trail for a chain
     resolved by hand. Refuses when the finding isn't dead_chain, its
     ``meta.chain`` has no frontier, the frontier ref is gone, or the
@@ -315,6 +321,10 @@ def edit(
     rescoping = meta_scope is not None
     if rescoping:
         given.append("meta['scope']")
+    if reopen:
+        given.append("reopen")
+    if supersede:
+        given.append("supersede")
     if body_edit:
         given.append("find=/text=")
     # ``title`` + ``meta['scope']`` is the one allowed pairing: both reword
@@ -324,7 +334,7 @@ def edit(
         raise BadInput(
             "edit(kind='finding') accepts exactly one of pick_candidate, "
             "title (optionally with meta={'scope': …}), unacquirable_note, "
-            "testable_by=/motivation=, or a body edit (find=/text= with "
+            "testable_by=/motivation=, reopen, supersede, or a body edit (find=/text= with "
             f"mode='find-replace'|'replace') — got {', '.join(given)}",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
@@ -337,19 +347,47 @@ def edit(
                 "find='<span>', text='<replacement>')"
             ),
         )
+    if reopen or supersede:
+        operation = "reopen" if reopen else "supersede"
+        call = (
+            "edit(kind='finding', id='fi<N>', "
+            f"args={{'{operation}': True, 'reason': '<why>'}})"
+        )
+        if dry:
+            raise BadInput(
+                f"{operation} does not support dry_run",
+                next=f"Use view='publish-preflight' to inspect the claim, then {call}.",
+            )
+        if id is None or not isinstance(reason, str) or not reason.strip():
+            raise BadInput(f"{operation} requires id and a non-empty reason", next=call)
+        if unacquirable_mode is not None:
+            raise BadInput(f"{operation} does not accept unacquirable_mode", next=call)
+        ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=id)
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or "agent"
+        if reopen:
+            row_id = reopen_publish_row(store, ref_id, reason=reason, actor=actor)
+            body = f"Reopened fi{ref_id} publish row {row_id} → candidate."
+        else:
+            row = supersede_publish_row(store, ref_id, reason=reason, actor=actor)
+            body = f"Staged successor publish row {row.id} for fi{ref_id} → candidate."
+        return Response(body=body, ref_id=ref_id)
     is_self_pick = (
         isinstance(pick_candidate, str) and pick_candidate.strip().lower() == "self"
     )
     if reason is not None and not is_self_pick and not body_edit:
         raise BadInput(
-            "edit(kind='finding') reason= applies to pick_candidate='self' "
-            "or to a body edit (it lands on the body_replaced ref_event) — "
-            "the other ops record no reason",
+            "edit(kind='finding') reason= applies to pick_candidate='self', "
+            "a body edit, reopen, or supersede",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='self', "
                 "reason='<why the held paper settles it>') or "
                 "edit(kind='finding', id='fi<N>', mode='find-replace', "
-                "find=…, text=…, reason='<why>')"
+                "find=…, text=…, reason='<why>') or "
+                "edit(kind='finding', id='fi<N>', "
+                "args={'reopen': True, 'reason': '<why>'}) or "
+                "edit(kind='finding', id='fi<N>', "
+                "args={'supersede': True, 'reason': '<why>'})"
             ),
         )
     if is_self_pick and reason is not None and not reason.strip():

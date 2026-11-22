@@ -336,12 +336,9 @@ laundered into a draft.
 **A claim can move backwards.** When the widening pass attaches a
 `contradicts` edge, the hub's publish posture follows the evidence: a
 `reviewed`/`signed` hub reopens to `candidate` (it must earn approval
-again). This legacy signed demotion still needs alignment: signing is now
-the correction boundary; never use reopen to edit a signed claim. An
-`anchored`/`published` claim cannot be reopened — its
-bytes are frozen — so it raises an alert for a human to supersede or
-retract. So a `state` you read yesterday is not a promise about today;
-re-check before citing.
+again). Anchored or published claims raise an alert. For explicit corrections,
+use the reopen or successor edit in [[precis-nanopub-help]], which also explains
+when a human must handle the claim. Re-check the current state before citing.
 
 ## Read a finding
 ## Look up a finding by id

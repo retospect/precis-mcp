@@ -2264,6 +2264,8 @@ class FindingHandler(AuditedRetirementHandler):
         testable_by: str | None = None,
         motivation: str | None = None,
         reason: str | None = None,
+        reopen: bool = False,
+        supersede: bool = False,
         meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
         refine: str | None = None,
@@ -2312,9 +2314,18 @@ class FindingHandler(AuditedRetirementHandler):
         ``'candidate'`` — :func:`precis.handlers._finding_merge.merge_door`
         (gr684893). ``id`` is the hub that retires; one pair per call.
 
+        ``reopen=True`` returns a reviewed or signed publication to candidate.
+        ``supersede=True`` stages a successor for an anchored, unpublished row.
+        Both require ``reason=`` for the audit and refuse dry runs.
+
         ``id=[...]`` (``batch_ids``) applies the same edit to every id in
         one transaction — :meth:`_edit_batch` (gr514482).
         """
+        if not isinstance(reopen, bool) or not isinstance(supersede, bool):
+            raise BadInput(
+                "reopen and supersede require boolean flags",
+                next="Pass True for the requested operation and omit the other flag.",
+            )
         if merge_into is not None:
             from precis.handlers import _finding_merge
 
@@ -2342,6 +2353,8 @@ class FindingHandler(AuditedRetirementHandler):
                 "motivation": motivation,
                 "meta": meta,
                 "refine": refine,
+                "reopen": reopen or None,
+                "supersede": supersede or None,
             }
             given = sorted(k for k, v in others.items() if v is not None)
             if match is not None and match != "unique":
@@ -2377,6 +2390,8 @@ class FindingHandler(AuditedRetirementHandler):
                 testable_by=testable_by,
                 motivation=motivation,
                 reason=reason,
+                reopen=reopen,
+                supersede=supersede,
                 meta=meta,
                 dry_run=dry_run,
                 refine=refine,
@@ -2399,6 +2414,8 @@ class FindingHandler(AuditedRetirementHandler):
                     testable_by,
                     motivation,
                     reason,
+                    reopen or None,
+                    supersede or None,
                     meta,
                 )
             ) or (match is not None and match != "unique"):
@@ -2427,6 +2444,8 @@ class FindingHandler(AuditedRetirementHandler):
             testable_by=testable_by,
             motivation=motivation,
             reason=reason,
+            reopen=reopen,
+            supersede=supersede,
             meta=meta,
             dry_run=dry_run,
         )

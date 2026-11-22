@@ -22,9 +22,9 @@ Subcommands:
 * ``intro``             — sign + publish the attesting key→ORCID
   introduction nanopub (``--live`` to POST; then add its trusty URI to
   the ORCID record out-of-band — that back-link is the actual binding).
-* ``reopen FI``         — flip a pre-anchor row back to candidate.
-* ``supersede FI``      — stage a linked candidate for an anchored, unpublished
-  row; no signing or network. Published predecessors are refused.
+* ``reopen FI --reason WHY`` — flip a pre-anchor row back to candidate.
+* ``supersede FI --reason WHY`` — stage a linked candidate for an anchored,
+  unpublished row; no signing or network. Published predecessors are refused.
 * ``reconcile``         — resolve ``publishing`` rows (an ambiguous registry
   POST) by asking the registry for their trusty URI: present → published,
   404 → back to anchored, anything else → left alone.
@@ -67,6 +67,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 
@@ -135,6 +136,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     p_reopen = s.add_parser("reopen", help="Flip a pre-anchor row back to candidate.")
     p_reopen.add_argument("hub")
+    p_reopen.add_argument(
+        "--reason", required=True, help="Reason recorded in the audit."
+    )
 
     p_supersede = s.add_parser(
         "supersede",
@@ -142,6 +146,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description="Stage a successor for an anchored, unpublished hub; no signing or network.",
     )
     p_supersede.add_argument("hub", help="fi<id> or bare ref id.")
+    p_supersede.add_argument(
+        "--reason", required=True, help="Reason recorded in the audit."
+    )
 
     p_reconcile = s.add_parser(
         "reconcile",
@@ -496,22 +503,20 @@ def _sign(args: argparse.Namespace, store) -> None:
 
 
 def _reopen(args: argparse.Namespace, store) -> None:
-    hub_id = _hub_id(args.hub)
-    row = store.nanopub_publish_row(hub_id)
-    if row is None:
-        print("no live publish row")
-        sys.exit(1)
-    if store.nanopub_reopen(row.id):
-        print(f"reopened publish row {row.id} → candidate")
-    else:
-        print(f"row {row.id} is {row.state!r} — only reviewed/signed reopen")
-        sys.exit(1)
+    from precis.nanopub.reopen import reopen
+
+    row_id = reopen(
+        store, _hub_id(args.hub), reason=args.reason, actor=getpass.getuser()
+    )
+    print(f"reopened publish row {row_id} → candidate")
 
 
 def _supersede(args: argparse.Namespace, store) -> None:
     from precis.nanopub.supersede import supersede
 
-    row = supersede(store, _hub_id(args.hub), interactive=True)
+    row = supersede(
+        store, _hub_id(args.hub), reason=args.reason, actor=getpass.getuser()
+    )
     print(
         f"staged successor publish row {row.id} for fi{row.claim_ref_id} → candidate; "
         "review and sign separately"
@@ -638,8 +643,6 @@ def _preflight(args: argparse.Namespace, store) -> None:
 
 
 def _signoff(args: argparse.Namespace, store) -> None:
-    import getpass
-
     from precis.nanopub.preflight import signoff_edge
 
     # This CLI subcommand IS the interactive surface — a person runs it.
