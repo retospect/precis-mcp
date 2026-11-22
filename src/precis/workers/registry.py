@@ -1415,6 +1415,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="reap_worktrees",
+        label="Reap worktrees (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Run scripts/reap-worktrees on demand and report local worktree "
+        "and branch outcomes.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="release_cut",
         label="Release cut (job)",
         category="jobs",

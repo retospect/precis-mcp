@@ -2,7 +2,7 @@
 id: precis-job-factory-help
 family: work
 title: precis — dark-factory and PR job types
-summary: the factory lane job_types — run_slice, land_slice, plan_dispatch, factory_rescue_tick, ci_watch, gripe_validate, lane_health, boundary_probe, and the pr-intake plan (pr_poll, dep_check, pr_action); the release lanes are precis-job-release-help
+summary: the factory lane job_types — run_slice, land_slice, plan_dispatch, factory_rescue_tick, ci_watch, gripe_validate, lane_health, boundary_probe, reap_worktrees, and the pr-intake plan (pr_poll, dep_check, pr_action); the release lanes are precis-job-release-help
 answers:
   - how do I dispatch an existing todo to a factory lane right now?
   - which job types run slices, land branches and drive plans?
@@ -104,6 +104,8 @@ The release pass and release-fix job types (`release_cut`,
 `ci_verdict_poll` incl. `restamp`, `release_deploy`,
 `release_confirm` + `merge_back`, `ci_red_digest`, `ci_rerun`,
 `release_poll`) moved to [[precis-job-release-help]].
+
+On demand, `reap_worktrees` runs on `ssh_node` and reports removed and kept local worktrees and branches by bucket. Optional params are `target_node` and `resources`.
 
 ## Inbound pull-request job types — the pr-intake plan
 

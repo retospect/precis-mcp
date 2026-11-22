@@ -29,6 +29,9 @@ entry-point group; failure isolation mirrors
 :func:`precis.dispatch._load_plugins` — one broken plugin must not
 brick the worker.
 
+``reap_worktrees`` uses the host's existing reaper for eligibility and the
+grace re-check. Its before/after inventories are used only for reporting.
+
 A pre-land coordinator ask holds the builder and reviewer together.
 Builds can be done with a pending land, so a review checks the build's
 ask separately from sequencing on the build's status.
@@ -1055,17 +1058,11 @@ def _load_release_op(name: str) -> JobTypeSpec:
     )
 
 
-#: Inbound pull requests (td543749): the poll is a plugin dispatch under
-#: job_inproc; dep_check is a detached submit/poll pair and pr_action a
-#: submit-only act under ssh_node. PRECIS_FACTORY=off refuses the two.
-_PR_OPS: tuple[str, ...] = ("pr_poll", "dep_check", "pr_action")
+#: Factory-gated checkout operations under ssh_node.
+_HOST_OPS: tuple[str, ...] = ("dep_check", "pr_action", "reap_worktrees")
 
 
-def _load_pr_op(name: str) -> JobTypeSpec:
-    if name == "pr_poll":
-        from precis.workers.job_types import pr_poll
-
-        return pr_poll.SPEC
+def _load_host_op(name: str) -> JobTypeSpec:
     from importlib import import_module
 
     mod = import_module(f"precis.workers.job_types.{name}")
@@ -1283,6 +1280,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "pr_poll",
     "dep_check",
     "pr_action",
+    "reap_worktrees",
     "youtube_bulk",
     "cite_resolve",
     "lane_health",
@@ -1456,8 +1454,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name in _RELEASE_OPS:
         _REGISTRY[name] = _load_release_op(name)  # dark release pass (td543733)
         return _REGISTRY[name]
-    if name in _PR_OPS:
-        _REGISTRY[name] = _load_pr_op(name)  # inbound pull requests (td543749)
+    if name == "pr_poll":
+        from precis.workers.job_types import pr_poll
+
+        _REGISTRY[name] = pr_poll.SPEC
+        return pr_poll.SPEC
+    if name in _HOST_OPS:
+        _REGISTRY[name] = _load_host_op(name)
         return _REGISTRY[name]
     if name == "diagnose_gripe":
         _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()

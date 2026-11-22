@@ -47,14 +47,14 @@ def _str_tuple(tree: ast.Module, name: str) -> set[str] | None:
 def _dispatch_names(tree: ast.Module) -> set[str]:
     """Names ``get_job_type``'s chain resolves: every
     ``if name == "<x>"`` literal plus the ``if name in _RELEASE_OPS``
-    / ``if name in _PR_OPS`` legs (read from those module-level
+    / ``if name in _HOST_OPS`` legs (read from those module-level
     tuples)."""
     fn = next(
         n
         for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "get_job_type"
     )
-    groups = {g: _str_tuple(tree, g) or set() for g in ("_RELEASE_OPS", "_PR_OPS")}
+    groups = {g: _str_tuple(tree, g) or set() for g in ("_RELEASE_OPS", "_HOST_OPS")}
     names: set[str] = set()
     for sub in ast.walk(fn):
         if not (isinstance(sub, ast.Compare) and len(sub.ops) == 1):
