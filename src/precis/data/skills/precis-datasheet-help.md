@@ -36,8 +36,8 @@ caption-only chunk (a `*Figure 211: …*` legend whose pixels never became
 text) renders a pointer line after its body — `figure image: <dk…>` when
 the crop was stored, else `page N of <da>` — naming the
 `get(view='page_image', args={'ord': N})` / `args={'page': N}` call that
-mints a signed URL to the image, which is how a schematic or land pattern
-that ingested caption-only stays retrievable.
+returns the image and a signed URL to it, which is how a schematic or land
+pattern that ingested caption-only stays retrievable.
 
 Sandbox scripts with `precis_access='read'` can read stored datasheets via
 `precis_client.call('get', kind='datasheet', id='da123~7')` and inspect

@@ -74,6 +74,7 @@ from precis.errors import (
     BadInput,
     Gone,
     NotFound,
+    PrecisError,
     ResultBudgetExceeded,
     Unsupported,
     Upstream,
@@ -112,7 +113,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.ingest.cards import GENERATED_LABEL, rewrite_cards
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import ArgsSpec, Handler, KindSpec
-from precis.response import Response
+from precis.response import Response, ResponseImage
 from precis.store import (
     SEMANTIC_DISTANCE_FLOOR,
     Ref,
@@ -475,6 +476,37 @@ class _NoteWindow(NamedTuple):
 #: (gr520326: 835 claimed vs. ~857 actual), the nearest real span
 #: brackets much tighter.
 _PAGE_SPAN_WINDOW = 6
+
+#: What ``view='page_image'`` may put in the result itself (gr719555).
+#: Raster types only — the set the ``/files/blob`` route serves — and a
+#: byte cap, because the image rides the tool result base64-encoded and
+#: a multimodal client refuses an oversize block. Past either limit the
+#: signed link is still the door.
+_INLINE_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+_INLINE_IMAGE_MAX_BYTES = 3 * 1024 * 1024
+
+
+def _inline_image(
+    data: bytes | None, mime: str, missing: str
+) -> tuple[tuple[ResponseImage, ...], str]:
+    """``(Response.images, body line)`` for one ``page_image`` payload:
+    the image when it may travel in the result, else no image and the
+    reason, so the caller knows whether to look or to fetch the link."""
+    if data is None:
+        why = missing
+    elif mime not in _INLINE_IMAGE_MIMES:
+        why = f"{mime} is not a raster image"
+    elif len(data) > _INLINE_IMAGE_MAX_BYTES:
+        why = (
+            f"{len(data):,} bytes is over the inline cap "
+            f"({_INLINE_IMAGE_MAX_BYTES:,} bytes)"
+        )
+    else:
+        return (
+            (ResponseImage(data=data, mime=mime),),
+            f"image: in this result's image block ({mime}, {len(data):,} bytes)",
+        )
+    return (), f"image: not inline — {why}; fetch the url"
 
 
 # Tunable knobs for the nearest-match suggester. The cutoff (0.6 of
@@ -10738,14 +10770,19 @@ class PaperHandler(Handler):
     def _render_page_image_view(
         self, ref: Ref, args: dict[str, Any] | None = None
     ) -> Response:
-        """``view='page_image'`` — a signed link to a figure's pixels
-        (gr520326): a stored figure crop when the named chunk carries
-        one, else one page of the ref's held PDF rendered to PNG.
+        """``view='page_image'`` — a figure's pixels (gr520326): a
+        stored figure crop when the named chunk carries one, else one
+        page of the ref's held PDF rendered to PNG.
 
-        Bytes never ride an MCP result — the ``file_links`` contract of
-        ``pdf_link``: precis_web streams ``GET /files/blob/<sha>`` for a
-        ``chunk_blobs`` crop, ``GET /files/pdf_page/<sha>/<page>`` for a
-        page render (fitz). ``args={'page': N}`` is the 0-based PDF page
+        The image travels in the result (``Response.images``, an
+        ``ImageContent`` block on the MCP wire) — a client with no way
+        to fetch a URL still sees the page (gr719555). The signed link
+        stays beside it for humans and for the cases the image cannot
+        ride (:func:`_inline_image`): precis_web streams
+        ``GET /files/blob/<sha>`` for a ``chunk_blobs`` crop,
+        ``GET /files/pdf_page/<sha>/<page>`` for a page render (fitz) —
+        the ``file_links`` contract of ``pdf_link``.
+        ``args={'page': N}`` is the 0-based PDF page
         — the numbering ``chunks.page_first`` and Marker ``page-N``
         spans share. ``args={'ord': N}`` names a body chunk: a stored
         crop wins, else the chunk's page resolves server-side (own
@@ -10832,16 +10869,23 @@ class PaperHandler(Handler):
 
         if blob_sha is not None:
             url, expires = _mint_url(blob_sha, f"/files/blob/{blob_sha}")
+            blob = self.store.chunks.chunk_blob_for_ref(blob_sha, ref.id)
+            images, image_line = _inline_image(
+                blob[0] if blob else None,
+                blob[1] if blob else "",
+                "the stored crop is gone",
+            )
             lines = [
                 *banner,
                 f"# {handle} — figure image link (chunk ~{blob_ord})",
                 f"url: {url}",
                 f"expires: {expires} (reusable until then)",
                 f"sha256: {blob_sha}",
+                image_line,
                 "",
                 f"curl -fo {shlex.quote(stem + f'-c{blob_ord}.img')} '{url}'",
             ]
-            return Response(body="\n".join(lines))
+            return Response(body="\n".join(lines), images=images)
 
         try:
             page = int(page_raw)
@@ -10873,6 +10917,8 @@ class PaperHandler(Handler):
                 f"page {page} is past the end — {handle}'s PDF has {int(row[0])} pages",
                 next=f"get(id='{handle}', view='page_image', args={{'page': {int(row[0]) - 1}}})",
             )
+        png, missing = self._local_page_png(ref, sha, page)
+        images, image_line = _inline_image(png, "image/png", missing)
         url, expires = _mint_url(sha, f"/files/pdf_page/{sha}/{page}")
         lines = [
             *banner,
@@ -10880,10 +10926,61 @@ class PaperHandler(Handler):
             f"url: {url}",
             f"expires: {expires} (reusable until then)",
             f"page: {page} (0-based PDF index)",
+            image_line,
             "",
             f"curl -fo {shlex.quote(stem + f'-p{page}.png')} '{url}'",
         ]
-        return Response(body="\n".join(lines))
+        return Response(body="\n".join(lines), images=images)
+
+    def _local_page_png(
+        self, ref: Ref, sha: str, page: int
+    ) -> tuple[bytes | None, str]:
+        """``(PNG, '')`` for one page of the ref's held PDF rendered on
+        this node, or ``(None, why)`` when it cannot be — the caller then
+        answers with the link alone.
+
+        The same resolve and render as the ``/files/pdf_page`` route, so
+        the inline image and the linked one are the same pixels: recorded
+        ``storage_path`` (as-is, then rebased), else the cite_key
+        convention, and a convention hit serves only when its size
+        matches the ``pdfs`` record (a replace can leave older bytes
+        under the same name). A page the file does not have refuses.
+        """
+        from pathlib import Path
+
+        from precis.corpus_layout import (
+            corpus_roots_from_env,
+            rebase_onto_local,
+            resolve_local_pdf,
+        )
+        from precis.figdigit import render_page_png
+
+        roots = corpus_roots_from_env()
+        recorded = self.store.pdf_storage_path(sha)
+        path = resolve_local_pdf(
+            roots, recorded, [ref.slug or "", *self.store.ref_cite_keys(ref.id)]
+        )
+        if path is None:
+            return None, "the PDF is not on this node"
+        on_recorded_leg = recorded and path in (
+            Path(recorded),
+            rebase_onto_local(recorded, roots),
+        )
+        if not on_recorded_leg:
+            size = self.store.pdf_size_bytes(sha)
+            if size is None or path.stat().st_size != size:
+                return None, "the stored bytes no longer match the record"
+        handle = _pa(ref)
+        try:
+            png, _page_count = render_page_png(path, page=page)
+        except IndexError:
+            raise BadInput(
+                f"page {page} is past the end of {handle}'s PDF",
+                next=f"get(id='{handle}', view='page_image', args={{'page': 0}})",
+            ) from None
+        except (PrecisError, OSError, RuntimeError, ValueError) as e:
+            return None, f"this node could not render the page ({type(e).__name__})"
+        return png, ""
 
     def _chunk_page_hint(
         self,

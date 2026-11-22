@@ -11,6 +11,7 @@ rides the env layer (``PRECIS_FILE_LINK_KEY``), same fixture as
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers._paper_text import _is_caption_only_block
 from precis.handlers.paper import PaperHandler
+from precis.response import ResponseImage
 from precis.store import Store
 from precis.store.types import ChunkInsert
 
@@ -382,3 +384,141 @@ class TestCaptionOnlyDetector:
     )
     def test_legends_are_caption_only(self, text: str) -> None:
         assert _is_caption_only_block(text)
+
+
+def _hold_pdf(
+    store: Store, path: Any, *, pages: int = 3, recorded: bool = True
+) -> None:
+    """Write a real ``pages``-page PDF at ``path`` and point the seeded
+    ``pdfs`` row at it (``recorded=False`` leaves ``storage_path`` blank,
+    so only the cite_key convention can find the file)."""
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    try:
+        for _ in range(pages):
+            doc.new_page()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(path)
+    finally:
+        doc.close()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pdfs SET storage_path = %s, size_bytes = %s, page_count = %s "
+            "WHERE pdf_sha256 = %s",
+            (str(path) if recorded else "", path.stat().st_size, pages, _SHA),
+        )
+
+
+class TestPageImageInline:
+    """gr719555 — an MCP-only client has no way to fetch the signed URL,
+    so the view puts the pixels in the result (``Response.images``, an
+    ``ImageContent`` block on the wire) next to the link."""
+
+    @pytest.fixture(autouse=True)
+    def _corpus(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        monkeypatch.setenv("PRECIS_CORPUS_DIR", str(tmp_path / "corpus"))
+
+    def test_stored_crop_travels_in_the_result(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed(store, "pimginl2020")
+        rows = _chunks(store, ref_id, [{"text": "*Figure 1: schematic*"}])
+        _add_blob(store, rows[0].id)
+        resp = handler.get(id="pimginl2020", view="page_image", args={"ord": 0})
+        assert resp.images == (ResponseImage(data=_BLOB, mime="image/png"),)
+        assert "image: in this result's image block (image/png" in resp.body
+        assert _url(resp.body).startswith(f"/files/blob/{_BLOB_SHA}?t=")
+
+    def test_page_render_travels_in_the_result(
+        self, store: Store, handler: PaperHandler, tmp_path
+    ) -> None:
+        _seed(store, "pimgpage2020")
+        _hold_pdf(store, tmp_path / "held" / "any-name.pdf")
+        resp = handler.get(id="pimgpage2020", view="page_image", args={"page": 1})
+        assert len(resp.images) == 1
+        assert resp.images[0].mime == "image/png"
+        assert resp.images[0].data.startswith(b"\x89PNG\r\n\x1a\n")
+        assert "image: in this result's image block (image/png" in resp.body
+        assert _url(resp.body).startswith(f"/files/pdf_page/{_SHA}/1?t=")
+
+    def test_page_past_the_end_of_the_held_pdf_refuses(
+        self, store: Store, handler: PaperHandler, tmp_path
+    ) -> None:
+        """A recorded ``page_count`` larger than the held file passes the
+        bounds check; the render itself knows the truth — no link to a 404."""
+        _seed(store, "pimgend2020")
+        _hold_pdf(store, tmp_path / "held" / "short.pdf")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE pdfs SET page_count = 12 WHERE pdf_sha256 = %s", (_SHA,)
+            )
+        with pytest.raises(BadInput, match="past the end"):
+            handler.get(id="pimgend2020", view="page_image", args={"page": 7})
+
+    def test_no_local_pdf_keeps_the_link_and_says_why(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed(store, "pimgaway2020")
+        resp = handler.get(id="pimgaway2020", view="page_image", args={"page": 0})
+        assert resp.images == ()
+        assert "image: not inline — the PDF is not on this node" in resp.body
+        assert _url(resp.body).startswith(f"/files/pdf_page/{_SHA}/0?t=")
+
+    def test_cite_key_leg_checks_size(
+        self, store: Store, handler: PaperHandler, tmp_path
+    ) -> None:
+        """Same stale-bytes guard as the ``/files/pdf_page`` route: a
+        cite_key-convention hit may be an older PDF under the same name,
+        so it renders only when its size matches the ``pdfs`` record."""
+        _seed(store, "pimgconv2020")
+        conv = tmp_path / "corpus" / "p" / "pimgconv2020.pdf"
+        _hold_pdf(store, conv, recorded=False)
+        resp = handler.get(id="pimgconv2020", view="page_image", args={"page": 0})
+        assert len(resp.images) == 1
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE pdfs SET size_bytes = size_bytes + 1 WHERE pdf_sha256 = %s",
+                (_SHA,),
+            )
+        resp = handler.get(id="pimgconv2020", view="page_image", args={"page": 0})
+        assert resp.images == ()
+        assert "image: not inline — the stored bytes no longer match" in resp.body
+
+    def test_oversize_image_stays_a_link(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.handlers import paper as paper_mod
+
+        monkeypatch.setattr(
+            paper_mod, "_INLINE_IMAGE_MAX_BYTES", len(_BLOB) - 1, raising=False
+        )
+        ref_id = _seed(store, "pimgbig2020")
+        rows = _chunks(store, ref_id, [{"text": "*Figure 1: schematic*"}])
+        _add_blob(store, rows[0].id)
+        resp = handler.get(id="pimgbig2020", view="page_image", args={"ord": 0})
+        assert resp.images == ()
+        assert "image: not inline — " in resp.body
+        assert "over the inline cap" in resp.body
+
+    def test_image_reaches_the_mcp_wire(
+        self, store: Store, runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end through the tool surface: the result is a
+        ``CallToolResult`` carrying the pixels as an ``ImageContent``
+        block beside the text — nothing to fetch out of band."""
+        from precis.tools import core as tools_core
+
+        ref_id = _seed(store, "pimgwire2020")
+        rows = _chunks(store, ref_id, [{"text": "*Figure 1: schematic*"}])
+        _add_blob(store, rows[0].id)
+        monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+        out: Any = tools_core.get(
+            kind="paper", id="pimgwire2020", view="page_image", args={"ord": 0}
+        )
+        parts = list(out.content)
+        texts = [p for p in parts if getattr(p, "type", "") == "text"]
+        images = [p for p in parts if getattr(p, "type", "") == "image"]
+        assert "figure image link" in texts[0].text
+        assert len(images) == 1
+        assert base64.b64decode(images[0].data) == _BLOB
+        assert images[0].mimeType == "image/png"
