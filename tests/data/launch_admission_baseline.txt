@@ -87,6 +87,7 @@ scripts/wt_mcp.py::_seed_state 1
 scripts/wt_mcp.py::cmd_claude 2
 scripts/wt_mcp.py::run_ensure 1
 src/asa_bot/precis_client.py::PrecisClient._spawn 1
+src/precis/bench/ann_recall.py::ProdPsqlRunner.run 1
 src/precis/cli/watch.py::_run_in_process_group 1
 src/precis/export/compile.py::compile_pdf 1
 src/precis/export/remarkable.py::_run 1

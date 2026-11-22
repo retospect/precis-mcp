@@ -13,4 +13,11 @@ the worker's job (``fill_embeddings``). Arms that change the corpus itself
 each. :mod:`precis.bench.reformulations` holds the committed per-task query
 rephrasings the multi-query arm reads. Entry point: ``scripts/bench``; design
 in the memory graph, hub ``me621608``; slices under todo ``td604839``.
+
+A second, standalone benchmark lives here too: :mod:`precis.bench.ann_recall`
+measures recall@k of the ``chunk_embeddings`` HNSW index against an exact
+scan — the number the contextual-embedding re-embed sweep is gated on
+(gr690288). Entry point: ``scripts/bench-ann-recall`` (prod through the
+sanctioned ``scripts/prod-psql`` hop, or ``--url`` for any reachable DB);
+the measured numbers and their interpretation are in the module docstring.
 """

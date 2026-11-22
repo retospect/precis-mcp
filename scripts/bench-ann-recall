@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# scripts/bench-ann-recall — HNSW recall benchmark for chunk_embeddings
+# (gr690288). Thin wrapper: module + transport selection live in
+# src/precis/bench/ann_recall.py.
+#
+# Measures recall@k of the HNSW index against an exact scan, on a
+# deterministic sample of chunk_embeddings rows as queries, at the default
+# build params and hnsw.ef_search (40; sweep with --efs 40,80,160,320).
+#
+# Usage:
+#   scripts/bench-ann-recall                     # prod via scripts/prod-psql
+#                                                # (the sanctioned hop; needs a
+#                                                # host with the overlay+ssh)
+#   scripts/bench-ann-recall --url postgresql://…  # any directly reachable DB
+#                                                  # (dev/test, or a replica)
+#   scripts/bench-ann-recall --efs 40,80,160 --n 100 --json --out run.json
+#
+# The prod transport is SELECT-only by construction (BEGIN; SET LOCAL …;
+# EXPLAIN probe; SELECT; rollback at psql exit) — see the module docstring.
+# Each leg's SET LOCALs include a bounded statement_timeout (default 20 min,
+# --stmt-timeout-s) that overrides the prod role's 120s default for the
+# transaction — the exact leg seqscans chunk_embeddings once per query and
+# at >1M rows that is minutes of sequential read — run it off-peak, and
+# read the report's plan/notes before trusting a 1.0 (a seqscan-fallback
+# ANN leg is exact by construction).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+exec uv run --no-sync python -m precis.bench.ann_recall "$@"
