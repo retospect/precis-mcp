@@ -11,6 +11,7 @@
 # Usage:
 #   scripts/gen-schema                      # → docs/reference/schema.md
 #   scripts/gen-schema path/to/out.md       # → custom path
+#   scripts/gen-schema --check [path]       # how stale is the committed doc?
 #
 # Override the connection via env (defaults target precis_prod):
 #   PRECIS_SCHEMA_SSH_HOST  (default: the overlay's postgres_host)
@@ -18,6 +19,16 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# --check (gr676943): no ssh, no overlay, no database. Reads the migration
+# marker in the doc's Source line and counts the migration files in this tree
+# newer than it. Prints `schema.md lags N migrations`; exit 1 when N > 10 or
+# the header names no migration (a doc from before the marker: unknown, so
+# stale), else 0. Advisory: nothing gates on it. It sits above the overlay
+# lookup so it runs in a tree, or on a host, that cannot reach prod.
+if [ "${1:-}" = "--check" ]; then
+    exec uv run precis schema-doc --check -o "${2:-docs/reference/schema.md}"
+fi
 
 # Resolved from the gitignored cluster overlay — the address must not live in
 # this public repo (see scripts/lib/pgb-host.sh).
@@ -32,6 +43,13 @@ DATE="$(date -u +%Y-%m-%d)"
 
 # Single source of truth for the introspection query.
 SQL="$(uv run python -c 'from precis.cli.schema_doc import INTROSPECT_SQL; print(INTROSPECT_SQL)')"
+
+# The header label: "<db> @ <date> · migrations through <NNNN_name>", naming
+# the newest src/precis/migrations file of THIS tree — the marker `--check`
+# counts from. It is the tree's newest file, not prod's ledger, so run this
+# from a tree whose migrations prod has applied (after the release that
+# carried them), or the header claims migrations the doc does not show.
+SNAPSHOT="$(uv run python -c 'import sys; from precis.cli.schema_doc import snapshot_label; print(snapshot_label(sys.argv[1], sys.argv[2]))' "$DB_NAME" "$DATE")"
 
 # The introspection walks information_schema, whose key/constraint views go
 # through `_pg_expandarray` — slow enough on this corpus to blow the server's
@@ -75,4 +93,4 @@ printf 'BEGIN;\nSET LOCAL statement_timeout = %s;\n%s\nCOMMIT;\n' \
           printf "gen-schema: introspection done — %d rows; rendering %s\n", \
               n, out > "/dev/stderr"
       }' \
-  | uv run precis schema-doc --from-tsv - --snapshot "${DB_NAME} @ ${DATE}" -o "$OUT"
+  | uv run precis schema-doc --from-tsv - --snapshot "$SNAPSHOT" -o "$OUT"

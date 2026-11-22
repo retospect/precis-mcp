@@ -17,6 +17,9 @@ actually wrong.
 - Agent job transcripts — `meta.transcript` on prod jobs — for `[error:*]`
   tool-call confusion, retries, and repeated failure signatures (read-only psql
   for verification only, never a write).
+- Table/column names: grep `docs/reference/schema.md` first (check its header
+  date and migration marker; `scripts/gen-schema --check` counts the lag; if it
+  lags, `information_schema.columns` via `scripts/prod-psql --ro`).
 
 ## How to work
 1. Scope to what the caller asked (a host, a time window, a job_type, an error

@@ -24,6 +24,9 @@ to change anything. You exist so that 100-line log tails and psql dumps burn
 - Prod DB reads: `scripts/prod-psql --ro "SELECT …"` (hops database host→pgbouncer→
   `precis_prod` as `agent_ro`, in a read-only transaction). Pass
   `PRECIS_PROD_PSQL_OPTS="-At"` for terse.
+- Table/column names: grep `docs/reference/schema.md` first (check its header
+  date and migration marker; `scripts/gen-schema --check` counts the lag; if it
+  lags, `information_schema.columns` via `scripts/prod-psql --ro`).
 
 ## Hard rules — read-only ALWAYS
 
