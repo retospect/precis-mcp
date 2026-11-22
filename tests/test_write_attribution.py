@@ -16,6 +16,7 @@ from precis.runtime.trust_verb import WRITER_NUDGE
 from precis.store import Store
 from precis.store.revision_context import current_revision_context, revision_context
 from precis.utils.inproc_context import TickContext, tick_context
+from precis.utils.llm import openai_tools, precis_tools, router
 
 
 class _Session:
@@ -71,6 +72,59 @@ def test_session_write_stamps_client_and_session(
     assert writer["client"] == "writer-test/1"
     assert writer["actor"] == "agent"
     assert "session_id" in writer and "model" not in writer
+
+
+def test_local_tool_write_records_served_model_during_run(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = store.insert_ref(
+        kind="agentlog", slug=None, title="local run", meta={"model": "local"}
+    )
+    written: list[int] = []
+    model = "served-model"
+
+    class Client:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["model"] == model
+
+        def chat(self, messages: Any, *, tools: Any) -> openai_tools.ChatTurn:
+            call = [] if written else [openai_tools.ToolCall("1", "put", {})]
+            return openai_tools.ChatTurn(
+                message={},
+                content="done",
+                tool_calls=call,
+                total_tokens=None,
+                finish_reason=None,
+            )
+
+    def execute(name: str, args: dict[str, Any]) -> str:
+        assert name == "put"
+        ref_id, response = _put(runtime_with_store)
+        written.append(ref_id)
+        return response
+
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
+    monkeypatch.setattr(openai_tools, "ToolChatClient", Client)
+    monkeypatch.setattr(precis_tools, "runtime_executor", lambda: execute)
+    result = router._dispatch_openai_tools(
+        router.LlmRequest(
+            tier=router.Tier.MEDIUM,
+            prompt="write a memory",
+            mcp_config="test-config",
+            local_url="http://127.0.0.1:11444/v1",
+            env_overlay={agentlog.ENV_VAR: str(run.id)},
+        ),
+        model,
+    )
+
+    assert result.stop_reason == "stop"
+    (ref_id,) = written
+    (writer,) = _writers(store, ref_id)
+    assert writer is not None
+    assert (writer["model"], writer["model_source"]) == (model, "agentlog")
+    updated = store.get_ref(kind="agentlog", id=run.id)
+    assert updated is not None
+    assert (updated.meta["model"], updated.meta["model_actual"]) == ("local", model)
 
 
 def test_claimed_model_and_human_are_labelled(

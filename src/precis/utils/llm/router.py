@@ -7091,6 +7091,14 @@ def run_oss_tool_loop(
         tools = [tool for tool in tools if tool.name in tool_allowlist]
     advertised = {tool.name for tool in tools}
     dispatch = runtime_executor()
+    if advertised:
+        from precis import agentlog
+        from precis.budget import meter
+
+        log_id = agentlog.current_from_env()
+        store = meter.active_store()
+        if log_id is not None and store is not None:
+            agentlog.stamp_dispatched_model(store, log_id=log_id, model=model)
 
     def execute(name: str, args: dict[str, Any]) -> str:
         if name not in advertised:

@@ -49,13 +49,10 @@ Resolution, per dispatch (in order)
    ``chase:verify`` uses the BIG capability tier; its per-operation chain
    selects the local-serving node's gpt-oss rung, with the endpoint resolved from the
    model card rather than embedded in code.
-   The override may also carry a ``chain`` (rung dicts in the
-   ``llm.chain.<tier>`` grammar, same parser): that source then walks it
-   while the rest of the tier keeps the tier chain (step 4); malformed ⇒
-   warned and ignored. Op chains are invisible to ``resolve_chain``
-   consumers (the ``/status`` models panel, ``planner_rung0_model``), which
-   show the tier chain. A saturated local rung 0 advances to the chain's
-   next rung rather than re-pointing at the hosted endpoint. Excluded on purpose: functional pins
+   An op override may carry a ``chain`` using ``llm.chain.<tier>`` grammar.
+   Malformed chains are logged and ignored. ``resolve_chain`` consumers
+   (the ``/status`` models panel, ``planner_rung0_model``) show the tier chain.
+   A saturated local op rung 0 advances to the next rung. Exclusions: functional pins
    (``classify_topics``→``summarizer``, ``classify:escalate``→its Tier-2
    re-judge model) and router-bypassers (``fix_gripe``).
 3. **Model** — :func:`resolve_model`: ``llm.model.<tier>`` DB override →
@@ -106,6 +103,10 @@ local rung to the DGX-pair llama-server instead of the hosted fallback. A
 hosted OSS endpoint instead of the busy hardware — unless
 ``placement='local'`` pins the call, which takes the paused backoff.
 That retry logs as ``cloud`` whatever rung 0's label says.
+
+Before an OSS tool loop with an agentlog can write, the router records the
+resolved dispatch model as ``meta.model_actual``. Revision stamps are
+captured during tool execution, so run-end metadata arrives too late.
 
 Route-log placement: ``llm_call_log.placement`` is the rung that ran
 (landed; the dollar caps exclude ``local``); ``placement_routed`` (0179) is

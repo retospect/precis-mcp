@@ -328,15 +328,22 @@ def stamp_result_meta(store: Store, *, log_id: int | None, res: Any) -> None:
     ``log_id=None`` or an empty patch; a write failure is logged, never
     raised — attribution must not sink the run it records.
     """
-    if log_id is None:
-        return
-    patch = run_result_meta(res)
+    if log_id is not None:
+        _stamp_run_meta(store, log_id, run_result_meta(res))
+
+
+def stamp_dispatched_model(store: Store, *, log_id: int, model: str) -> None:
+    """Record the resolved wire model before any in-process tool writes."""
+    _stamp_run_meta(store, log_id, {"model_actual": model})
+
+
+def _stamp_run_meta(store: Store, log_id: int, patch: dict[str, Any]) -> None:
     if not patch:
         return
     try:
         _patch_meta(store, log_id, patch)
     except Exception:
-        log.warning("agentlog: result-meta stamp failed for %s", log_id, exc_info=True)
+        log.warning("agentlog: model stamp failed for %s", log_id, exc_info=True)
 
 
 def _patch_meta(store: Store, log_id: int, patch: dict[str, Any]) -> None:
@@ -585,6 +592,7 @@ __all__ = [
     "read_checkpoint",
     "run_env",
     "run_result_meta",
+    "stamp_dispatched_model",
     "stamp_result_meta",
     "stash_checkpoint",
     "touch_from_env",
