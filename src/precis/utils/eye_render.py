@@ -1164,7 +1164,10 @@ def _cut_marker(kind: str, handle: str, shown: int, total: int) -> str:
     )
     line = f"… cut: {shown} of {total} chars — full body: {call}"
     if kind == "memory":
-        line += " · split it: a summary node + part-of children"
+        line += (
+            " · split it: home each claim in the memory that owns it "
+            "(get(kind='skill', id='how-to-split-memory'))"
+        )
     return line
 
 

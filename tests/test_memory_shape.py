@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime, timedelta
+from importlib import resources
 from unittest.mock import Mock
 
 import pytest
 
 from precis.handlers import _memory_shape as shape
+from precis.skill_index import chunk_by_h2
 from precis.store import Tag
+
+#: The split skill and the section holding its placement rule (gr674663).
+_SPLIT_SKILL = "how-to-split-memory"
+_SPLIT_SECTION = "Home each claim in the memory that owns it"
 
 
 def _codes(**kwargs) -> set[str]:
@@ -93,6 +99,42 @@ def test_grab_bag_clusters_repeated_topics_and_proposes_titles():
         "Parser tokens require escaping",
         "Upload retries preserve offsets",
     )
+
+
+def _skill_text(slug: str) -> str:
+    skills = resources.files("precis.data").joinpath("skills")
+    return skills.joinpath(f"{slug}.md").read_text(encoding="utf-8")
+
+
+def test_grab_bag_finding_names_the_split_skill_and_its_placement_section():
+    """gr674663: "split" alone sends every claim under the node it sat in;
+    the advice names the skill and the section that says where each goes."""
+    audit = shape.audit_shape(
+        title="Independent failures need separate repairs",
+        body="- Cache keys include the namespace\n- Cache keys include the version\n"
+        "- Parser tokens require escaping\n- Upload retries preserve offsets",
+    )
+    advisory = next(f for f in audit.findings if f.code == "grab-bag").advisory()
+    assert f"get(kind='skill', id='{_SPLIT_SKILL}')" in advisory
+    assert f'section "{_SPLIT_SECTION}"' in advisory
+
+
+def test_split_skill_states_the_placement_rule():
+    """gr674663: the section both hints name exists and carries the rule —
+    a claim goes to the memory that owns its subject, values are linked and
+    not copied, and the container keeps the reading order."""
+    sections = {c.heading: c.text for c in chunk_by_h2(_skill_text(_SPLIT_SKILL))}
+    assert _SPLIT_SECTION in sections, sorted(sections)
+    rule = " ".join(sections[_SPLIT_SECTION].split())
+    for phrase in (
+        "copy no values",
+        "`part-of` that hub, not the container",
+        "decompose it first",
+        "ordered handle list",
+    ):
+        assert phrase in rule, phrase
+    # one home for the rule: the reconcile skill points here
+    assert f"[[{_SPLIT_SKILL}]]" in _skill_text("precis-make-memory")
 
 
 @pytest.mark.parametrize("incident_tags", [(), ("prod-incident",), ("incident",)])

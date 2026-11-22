@@ -87,9 +87,11 @@ def test_cut_body_names_the_full_read_and_the_split(
 
     assert re.search(
         rf"… cut: {_VERBATIM_CAP} of \d+ chars — full body: "
-        rf"get\(kind='memory', id='{_h(big)}'\) · split it: a summary node "
-        r"\+ part-of children",
+        rf"get\(kind='memory', id='{_h(big)}'\) · split it: home each claim in "
+        r"the memory that owns it "
+        r"\(get\(kind='skill', id='how-to-split-memory'\)\)$",
         out,
+        flags=re.M,
     )
     assert "… cut" not in render_eye(store, _h(small), "fisheye")
     # the named call returns the whole body

@@ -341,7 +341,9 @@ def audit_shape(
             ShapeFinding(
                 "grab-bag",
                 f"this body carries ~{count} claims; {count} memories find better; "
-                "split into one claim per memory",
+                "split into one claim per memory: "
+                "get(kind='skill', id='how-to-split-memory'), section "
+                '"Home each claim in the memory that owns it"',
                 titles,
             )
         )

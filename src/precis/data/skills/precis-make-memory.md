@@ -20,7 +20,8 @@ Use when asked to remember free text, especially several subjects or claims.
 Keep incoming claims transient while comparing them with the graph. A request
 for a critique or preview returns the proposed changes without writing.
 Runtime mechanics and repo-dev filing: [[precis-memory-help]]. Background
-maintenance: [[precis-gardener-help]].
+maintenance: [[precis-gardener-help]]. Decomposing an existing node, and
+where each of its claims is homed: [[how-to-split-memory]].
 
 ## Read, decide, write
 

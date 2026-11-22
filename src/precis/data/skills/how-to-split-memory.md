@@ -7,6 +7,7 @@ answers:
   - how do I split a memory that exceeds the 4000 character goal?
   - should I shorten a memory or make summary and detail nodes?
   - how do I preserve evidence and links when splitting notes?
+  - where does each claim go when I decompose a grab-bag memory?
 applies-to: get/put/edit/link (kind='memory')
 tags: [workflow, drafting]
 kinds: [memory]
@@ -50,13 +51,44 @@ rather than minting a duplicate.
   give each child a unique atomic claim title and enough context to stand
   alone. Use graph links rather than a hand-maintained children list.
 - **Split per claim** when independent subjects have accumulated. Give
-  each claim its own node and appropriate subject hub. Keep the original
-  as an overview only if it still serves a coherent purpose; do not force
-  unrelated claims under it merely because they shared a note.
+  each claim its own node, placed as the next section says. Keep the
+  original as an overview only if it still serves a coherent purpose; do
+  not force unrelated claims under it merely because they shared a note.
 
 Prefer semantic boundaries over equal-sized character slices. Keep a claim
 with its supporting evidence and exceptions. Aim below 4000 characters per
 body, with room for future corrections.
+
+## Home each claim in the memory that owns it
+
+A grab-bag restates facts whose subject already has a home. Condense, do
+not only atomize: place each claim by its subject, not under the node it
+was found in. Find the home before any write.
+
+```python
+search(kind='memory', q='<the claim: subject and property>',
+       tags=['SPACE:repo-dev'])
+get(kind='memory', id='<candidate handle>', extent='fisheye+1hop')
+```
+
+- **The home claim exists.** No-op, or extend it with the missing
+  qualification or evidence. Link it and copy no values: the container
+  links to it by `[handle]`, and a container claim that depends on it
+  takes a `derived-from` edge. A number lives in one node.
+- **The subject has a home hub but no such claim.** Create the claim
+  `part-of` that hub, not the container.
+- **The home hub is itself an unsplit grab-bag.** It has no claim node to
+  link to yet: decompose it first, then place the claim.
+- **The claim is the container's own.** Only these become `part-of`
+  children of the container.
+- **Two extracted claims say nearly the same.** Merge them into one node
+  before writing.
+
+The container stays as a short summary plus an ordered handle list: one
+`[handle]` line per claim in reading order, its own children and claims
+homed elsewhere alike. This list is not a copy of its `part-of` children;
+it carries the order an export follows and names claims whose parent is
+another hub.
 
 ## Create and verify children before trimming the original
 
@@ -65,7 +97,8 @@ source anchor and UTC date. Use the original's space and relevant topic
 tags. In a hub-shaped space, inherit the parent's section type (use
 `section:reference` for results) and give each detail exactly one
 `part-of` edge to the summary. It inherits the summary's scope; do not
-copy its `qualifies` edges onto children.
+copy its `qualifies` edges onto children. A claim homed elsewhere takes
+its one `part-of` edge to its home hub instead.
 
 ```python
 put(kind='memory', title='<atomic claim, at most 12 words>',
