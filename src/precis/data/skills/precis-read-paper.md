@@ -143,6 +143,11 @@ search(kind="taxon", q="<the method or model, described by meaning>")
 link(kind="memory", id="me<setup>", target="taxon:<id>", rel="instance-of")
 ```
 
+Run as a worker with a model identity, skip that `link`: it is refused
+`machine-edge-structural` whatever its evidence. Name the term under
+step 6 `gaps:` and in the report; do not retry under another relation
+or without the identity.
+
 Absent and likely to recur → mint the term with a one-sentence
 definition under its broader node
 (`get(kind='skill', id='precis-taxon-help')`,
@@ -304,7 +309,7 @@ put(kind="paper", id="pa<id>",
     text="read-paper: setup me<a>; hubs fi<1> (new), fi<2> (converged); "
          "measures mx<p>, mx<q>; survey_extract jb<j>; "
          "memories edited me<x>, me<y>; new me<z>; considered: me<q>, me<r>; "
-         "gaps: SI not ingested")
+         "gaps: SI not ingested; unclassified me<a> → taxon:<id>")
 ```
 
 This note is step 0's marker for the next reader. Report the same list
@@ -315,8 +320,8 @@ to the caller, with each hub labelled new or existing.
 - **Ground on the full chunk.** Fisheye previews pick neighbours; judge
   on `get(kind='paper', id='<slug>~A..B')` reads.
 - **Machine-writer edges.** Run as a worker with a model identity,
-  `related-to` and `see-also` are refused and `instance-of` becomes a
-  gardener proposal; the typed edges above need a chunk pin in
+  `related-to`, `see-also` and `instance-of` are refused (step 2 says
+  where the classification goes); the typed edges above need a chunk pin in
   `meta.evidence` and the `meta.{model,prompt_version,run_id,why}`
   annotation (`get(kind='skill', id='precis-relations')`, machine-written
   edges). On an inline
