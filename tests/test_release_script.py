@@ -307,7 +307,7 @@ def test_cut_only_refuses_when_the_shared_row_names_a_branch_on_origin(
     monkeypatch.setattr(mod, "rnd", _no_rnd)
     cuts: list[str] = []
 
-    def _cut_and_finish(args: object, s: str, branch: str = "") -> int:
+    def _cut_and_finish(args: object, s: str, branch: str = "", **_kw: object) -> int:
         cuts.append(s)
         return 0
 
@@ -368,11 +368,14 @@ def test_a_stuck_row_whose_branch_prod_holds_does_not_block_the_cut(
     )
     cuts: list[str] = []
 
-    def _cut_and_finish(args: object, s: str, branch: str = "") -> int:
+    def _cut_and_finish(args: object, s: str, branch: str = "", **_kw: object) -> int:
         cuts.append(s)
         return 0
 
     monkeypatch.setattr(mod, "cut_and_finish", _cut_and_finish)
+    # The coupled-commit guard (gr687874) is not this test's subject; the
+    # mocked git history cannot satisfy it.
+    monkeypatch.setattr(mod, "_select_cut", lambda s, main_at="": (s, None))
     args = mod.argparse.Namespace(
         deploy_only="",
         sha="",
@@ -1076,11 +1079,14 @@ def test_cut_only_retires_a_dead_pending_cut_the_shared_row_hides(
     monkeypatch.setattr(mod, "rnd", _rnd)
     cuts: list[str] = []
 
-    def _cut_and_finish(args: object, s: str, branch: str = "") -> int:
+    def _cut_and_finish(args: object, s: str, branch: str = "", **_kw: object) -> int:
         cuts.append(s)
         return 0
 
     monkeypatch.setattr(mod, "cut_and_finish", _cut_and_finish)
+    # The coupled-commit guard (gr687874) is not this test's subject; the
+    # mocked git history cannot satisfy it.
+    monkeypatch.setattr(mod, "_select_cut", lambda s, main_at="": (s, None))
     args = mod.argparse.Namespace(
         deploy_only="",
         sha="",

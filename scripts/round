@@ -37,6 +37,11 @@ and nothing is tracked or pushed.
                                       origin (kept, never fatal, otherwise)
                                       (cut and --supersede warn unless the factory release
                                       pass set PRECIS_RELEASE_PASS — one cutter, gr675506)
+                                      --main-at M (scripts/release): push nothing unless
+                                      the refreshed origin/main is M, the snapshot whose
+                                      commit pairings were checked (gr687874);
+                                      --require-pushed: a pending cut only finalizes a
+                                      branch origin already holds, never pushes it
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
   scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
                                       record, delete its origin branch when the head is
@@ -1772,10 +1777,11 @@ def _lgm_run(root: Path, *flags: str) -> tuple[str, int]:
     return cp.stdout.strip(), cp.returncode
 
 
-def _fetch(root: Path) -> None:
-    """Refresh origin's main/gated/prod; a failure is a warning, not fatal."""
+def _fetch(root: Path) -> bool:
+    """Refresh origin's main/gated/prod; a failure is a warning, not fatal.
+    True when origin/main itself was fetched."""
     if _rgit(root, "fetch", "-q", "origin", "main", "gated", "prod") is not None:
-        return
+        return True
     # A ref absent on origin fails the combined fetch: retry one by one.
     got = [
         _rgit(root, "fetch", "-q", "origin", r) is not None
@@ -1786,6 +1792,7 @@ def _fetch(root: Path) -> None:
             "scripts/round: warning: fetch of origin/main failed — using local refs",
             file=sys.stderr,
         )
+    return got[0]
 
 
 def _docs_only(root: Path, sha: str) -> bool:
@@ -2862,6 +2869,36 @@ def _cut_refuse(why: str) -> int:
     return 1
 
 
+#: scripts/release matches this phrase (_MAIN_MOVED_PHRASE) to re-check the
+#: declared commit pairings on a fresh fetch (gr687874).
+_MAIN_MOVED = "origin/main moved since the pairing check"
+
+
+def _main_moved(root: Path, main_at: str, fetched: bool) -> str:
+    """Why a cut must not publish (gr687874), or "" — ``--main-at`` names
+    the origin/main snapshot scripts/release checked the declared
+    Change-Set/Requires pairings against; this fresh fetch of main is the
+    snapshot that authorizes the push, so the two must be the same commit.
+    No ``--main-at``: nothing to compare."""
+    if not main_at:
+        return ""
+    if not fetched:
+        # A transient network miss, not a failed cut: a classified wait
+        # (release_cut's `holding: `), so it costs no attempt (td759095).
+        return (
+            f"holding: could not fetch origin/main to confirm the pairing "
+            f"check's snapshot {main_at[:9]} — nothing pushed; re-run"
+        )
+    want = _ref(root, f"{main_at}^{{commit}}")
+    now = _ref(root, "refs/remotes/origin/main")
+    if want and now == want:
+        return ""
+    return (
+        f"{_MAIN_MOVED} ({main_at[:9]} -> {(now or '?')[:9]}) — nothing pushed;"
+        " re-check the pairings and cut again"
+    )
+
+
 def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     root = _root()
     if args.abandon:
@@ -2899,6 +2936,25 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
                     f"dry-run: would reconcile pending cut {rel['branch']} at {rel['base'][:9]}"
                 )
                 return 0
+            if not tip and getattr(args, "require_pushed", False):
+                # The caller read the branch on origin and skipped the
+                # pairing check for it (td759095): a branch gone since is
+                # never re-pushed unchecked — the next run checks it.
+                return _cut_refuse(
+                    f"holding: {rel['branch']} left origin after the caller "
+                    "read it — nothing pushed; re-run to check and push it"
+                )
+            if not tip:
+                # The push publishes the cut: the caller's pairing check
+                # must hold on main as it is now (gr687874). A branch
+                # origin already holds is finalized as it stands.
+                main_at = getattr(args, "main_at", "")
+                fetched = bool(main_at) and (
+                    _rgit(root, "fetch", "-q", "origin", "main") is not None
+                )
+                moved = _main_moved(root, main_at, fetched)
+                if moved:
+                    return _cut_refuse(moved)
             if (
                 not tip
                 and _rgit(
@@ -2978,7 +3034,15 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             return _cut_refuse(
                 "no open release is recorded in round.json — nothing to supersede"
             )
-    _fetch(root)
+    fetched = _fetch(root)
+    # gr687874: every check below and the push itself read this snapshot of
+    # main — scripts/release checked the declared pairings against
+    # --main-at, so the two must agree before anything is recorded.
+    moved = (
+        "" if args.dry_run else _main_moved(root, getattr(args, "main_at", ""), fetched)
+    )
+    if moved:
+        return _cut_refuse(moved)
     block = _soak_debt_check(root)
     if block:
         return _cut_refuse(block)
@@ -3726,6 +3790,19 @@ def main(argv: list[str] | None = None) -> int:
     p_cut = sub.add_parser("cut")
     p_cut.add_argument("--sha", default="")
     p_cut.add_argument("--dry-run", action="store_true")
+    p_cut.add_argument(
+        "--main-at",
+        default="",
+        metavar="SHA",
+        help="refuse (pushing nothing) unless the refreshed origin/main is SHA "
+        "— the snapshot scripts/release checked commit pairings against",
+    )
+    p_cut.add_argument(
+        "--require-pushed",
+        action="store_true",
+        help="a pending cut only finalizes a branch origin already holds; "
+        "refuse (pushing nothing) when it is absent",
+    )
     cut_mode = p_cut.add_mutually_exclusive_group()
     cut_mode.add_argument("--abandon", action="store_true")
     cut_mode.add_argument("--supersede", action="store_true")

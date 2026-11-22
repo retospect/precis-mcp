@@ -18,8 +18,9 @@
 #                                    nor $3 carries a Co-Authored-By
 #   ship_branch_attr_trailers BASE [HEAD]
 #                                  → the branch's Co-Authored-By/Claude-Session
-#                                    trailers (BASE..HEAD, no merges, no wip(*),
-#                                    deduped, oldest commit first)
+#                                    and Change-Set/Requires trailers (BASE..HEAD,
+#                                    no merges, no wip(*), deduped, oldest
+#                                    commit first)
 #
 # Resolution: MSG (-m) wins; else the branch's non-WIP, non-merge commits since
 # BASE_REF: one → its full message; several → refuse when their
@@ -31,7 +32,9 @@
 # Trailers stay verbatim through the squash (gr517803): a non-Claude
 # builder's Co-Authored-By/Claude-Session lands as written — they used to
 # be dropped and a Claude footer substituted. The mint merges them with
-# ship's own Gate:/fallback-Co-Authored-By instead.
+# ship's own Gate:/fallback-Co-Authored-By instead. The release-cut
+# pairing trailers Change-Set:/Requires: (gr687874) ride the same way, on
+# the explicit-subject path too — the factory lander always passes one.
 
 _SHIP_SUBJECT_RE='^(feat|fix|docs|test|chore|build|refactor|perf|ci|release|revert)(\([a-z0-9/_.-]+\))?!?: [^[:space:]]'
 
@@ -121,7 +124,10 @@ ship_resolve_msg() {
 # Claude-Session trailers, deduped, oldest-commit-first. The resolved
 # message does not always carry them — an explicit -m never consulted the
 # branch (gr538832: the squash then minted only the generic Co-Authored-By
-# and the branch's real footer never reached main). wip(*) snapshots are
+# and the branch's real footer never reached main). The release-cut
+# pairing trailers Change-Set:/Requires: are carried the same way
+# (gr687874): land_slice launches ship with an explicit subject, so a
+# builder's declaration reached main only through here. wip(*) snapshots are
 # skipped the same way ship_resolve_msg skips them (a footer ship minted
 # itself is not attribution), and HEAD is bounded to the pre-WIP tip for
 # the same reason — under -m the snapshot commit is named after -m, not
@@ -135,7 +141,7 @@ ship_branch_attr_trailers() {
         [[ "$subj" == wip\(* ]] && continue
         git log -1 --format=%B "$sha" | git interpret-trailers --parse
     done < <(git rev-list --reverse --no-merges "${1:-origin/main}..$head" 2>/dev/null) \
-        | awk 'tolower($0) ~ /^(co-authored-by|claude-session):/ && !seen[$0]++'
+        | awk 'tolower($0) ~ /^(co-authored-by|claude-session|change-set|requires):/ && !seen[$0]++'
 }
 
 # ship_msg_body: stdin message → stdout, minus the trailer block. What

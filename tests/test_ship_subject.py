@@ -576,3 +576,105 @@ def test_ship_does_not_merge_stderr_into_message() -> None:
     for line in src.splitlines():
         if "ship_resolve_msg" in line and "$(" in line:
             assert "2>&1" not in line, line
+
+
+def test_mint_trailers_keeps_requires_and_change_set() -> None:
+    """gr687874: the release-cut pairing trailers survive the squash mint
+    next to Gate: and Co-Authored-By, on a message with a trailer block."""
+    msg = "fix(a): x\n\nWhy: y.\n\nRequires: td123\nChange-Set: x\n"
+    r = _fn(
+        "ship_mint_trailers",
+        msg,
+        "Gate: lint only",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Gate: lint only\nRequires: td123\nChange-Set: x\n"
+        "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+    )
+
+
+def test_mint_trailers_keeps_requires_on_explicit_message() -> None:
+    """The explicit -m path: a message ending in a Requires: trailer."""
+    r = _fn(
+        "ship_mint_trailers",
+        "fix(a): x\n\nRequires: td123",
+        "Gate: g",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Gate: g\nRequires: td123\nCo-Authored-By: Claude <noreply@anthropic.com>\n"
+    )
+
+
+def test_multi_commit_branch_carries_requires_and_change_set(tmp_path: Path) -> None:
+    repo = _repo(
+        tmp_path,
+        [
+            "fix(a): one\n\nRequires: td123\n",
+            "fix(a): two\n\nChange-Set: x\n",
+        ],
+    )
+    r = _resolve(repo)
+    assert r.returncode == 0, r.stderr
+    assert "Requires: td123" in r.stdout.splitlines()
+    assert "Change-Set: x" in r.stdout.splitlines()
+    m = _fn("ship_mint_trailers", r.stdout, "", "")
+    assert sorted(m.stdout.splitlines()) == ["Change-Set: x", "Requires: td123"]
+
+
+def test_factory_explicit_subject_squash_keeps_change_set_and_requires(
+    tmp_path: Path,
+) -> None:
+    """td759095 review finding (3): land_slice launches ship with an
+    explicit subject (``scripts/ship <flag> <subject>``), so the resolved
+    message is the subject alone. The squash mint must still carry the
+    builder commits' Change-Set/Requires trailers — scripts/ship's own
+    composition (resolve, branch trailers, mint), driven as ship does."""
+    need = "a" * 40
+    repo = _repo(
+        tmp_path,
+        [
+            "fix(a): one\n\nChange-Set: pair-1\nRequires: " + need + "\n"
+            "Co-Authored-By: Codex <noreply@openai.com>",
+            "fix(a): two\n\nChange-Set: pair-1\n"
+            "Co-Authored-By: Codex <noreply@openai.com>",
+        ],
+    )
+    r = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; msg="$(ship_resolve_msg "$2" origin/main)" || exit 1; '
+            'attrs="$(ship_branch_attr_trailers origin/main HEAD)"; '
+            'printf "%s\\n" "$msg" | ship_mint_trailers "Gate: g" "$3" "$attrs"',
+            "_",
+            str(LIB),
+            "fix(release): land the pair (td5)",
+            "Co-Authored-By: Claude <noreply@anthropic.com>",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={k: v for k, v in os.environ.items() if k != "PRECIS_SHIP_SUBJECT_LINT"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == (
+        "Gate: g\nChange-Set: pair-1\nRequires: " + need + "\n"
+        "Co-Authored-By: Codex <noreply@openai.com>\n"
+    )
+
+
+def test_ship_mints_every_squash_with_the_branch_trailers() -> None:
+    """The factory land path's carriage is ship's BRANCH_ATTRS: collected by
+    ship_branch_attr_trailers and passed to every squash mint — a mint
+    without it would drop Change-Set/Requires under an explicit subject."""
+    src = SHIP.read_text(encoding="utf-8")
+    assert 'BRANCH_ATTRS="$(ship_branch_attr_trailers ' in src
+    mints = [ln for ln in src.splitlines() if "| ship_mint_trailers " in ln]
+    assert mints, "scripts/ship no longer mints through ship_mint_trailers"
+    for ln in mints:
+        assert '"$BRANCH_ATTRS"' in ln, ln

@@ -5188,6 +5188,11 @@ def _launch_ship(
                     handle[key] = carry[key]
             if attempt_dir is not None:
                 _rs._write_launch_record(attempt_dir / "baseline", handle)
+            # ``subject`` is ship's explicit message, a subject alone: the
+            # builder commits' trailers (attribution, and the Change-Set:/
+            # Requires: pairings a release cut honours, gr687874) reach the
+            # squash through ship's branch-trailer carriage
+            # (scripts/lib/ship-subject.sh::ship_branch_attr_trailers).
             pid = _launch(
                 [ship_bin(tree), flag, *(("--onto", onto) if onto else ()), subject],
                 cwd=tree,

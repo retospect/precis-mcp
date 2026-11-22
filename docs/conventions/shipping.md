@@ -41,6 +41,61 @@ carries the `hold:no-autoclose` tag (a plain tag, applied with
 names it plainly, gripe-validate skips it and posts a `shipped in r<N>`
 note instead of `STATUS:done`.
 
+**Declare coupled commits when a change must ship whole or not at all**
+(gr687874, Reto 2026-11-15: "commit A requires B" is a release-cutting
+restriction). Add a trailer to the commit message. Ship carries it
+through the squash on every path: verbatim with the resolved message
+(gr517803), and from the branch's commits when `-m` or the factory lander
+supplies the subject (`land_slice` always passes one; ship's branch-trailer
+carriage includes `Change-Set:` and `Requires:` next to `Co-Authored-By:` and
+`Claude-Session:`). `scripts/release` reads the trailers on main's
+first-parent line at cut time:
+
+- `Change-Set: <id> [<n>]` — every commit carrying the same one-token
+  `<id>` is one set of `<n>` members (n defaults to 2; write the count for
+  a bigger set). Every member carries the trailer — that is the explicit
+  membership. A release carries all n members or none: a set with fewer
+  than n members on main is *incomplete* and never ships alone. Members
+  origin/prod already holds count as shipped.
+- `Requires: <sha>` — the commit requires commit `<sha>` (7-40 hex, a
+  commit reachable from origin/main — the landed sha, not a pre-squash
+  builder sha). A release carries both or neither; a `<sha>` already on
+  origin/prod satisfies the pairing. A value that names no commit on
+  origin/main (a `td`/`gr` handle, a squashed-away builder commit, a
+  sibling that never landed) cannot be honoured: the cut names it in a
+  `warning: … not enforced` line on stderr and goes out anyway.
+
+The cut, not the land, is constrained — and the check runs only where a
+cut is selected, so re-running `scripts/release` still resumes, deploys
+or reports a release already recorded at its base when the newer tip
+straddles a pairing. A pinned cut that would split a landed set
+(Requires is checked in both directions — a cut at B with A above it, A
+requiring B, holds) refuses with a `holding: ` line: a classified wait,
+attempt-free, and the next cut re-targets to origin/main's tip where the
+set ships whole. An incomplete set moves the cut below its oldest landed
+member for an older hand-pinned cut when there is earlier work to ship.
+Tip cuts and factory cuts hold for completion. A factory pass needs a
+release containing its requested SHA. A pending cut whose branch is not
+yet on origin reconciles at its recorded base after the same check; a
+base that would split a set holds until the pending record is abandoned.
+A pending cut whose branch origin already holds at its base (the push
+landed, the record was never finalized) is finalized without the check:
+nothing new is published, and a counterpart landed since rides the next
+cut. Release passes `--require-pushed` there, so a branch deleted before
+round reads it is never re-pushed unchecked (a `holding: ` wait; the next
+run checks it like any unpushed pending cut). Unreadable history also
+holds.
+
+The check reads one origin/main snapshot, and only that snapshot may
+authorize the push: `scripts/release` passes it to `scripts/round cut
+--main-at <sha>`, which pushes and records nothing when its own refresh of
+main differs (`origin/main moved since the pairing check`). A fresh cut
+then re-checks on a new fetch and retries (an unrelated land costs one
+retry; a counterpart that would now be split holds; main still moving
+after the retry cap holds too). A pending reconcile or a red re-cut holds
+with a `holding: ` line instead, and the next pass re-checks. A failed
+fetch of main under `--main-at` is a `holding: ` wait too.
+
 After a landing, `scripts/ship` comments `landed <sha> on main` on each
 gripe the landed commit fixes. On a deploy, `scripts/release` comments
 `deployed r<N> (<sha>); runtime confirmation pending` on each gripe fixed by

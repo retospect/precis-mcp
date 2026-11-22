@@ -98,6 +98,28 @@ failed); a journal with rollout done prints the `next:` line at once.
 A converged deployment with an unpublished prod pointer takes `round deploy
 --finish-pointer`, using round's receipt proof without repeating the rollout.
 
+Declared commit pairings (gr687874): a commit carrying a `Change-Set: <id>
+[<n>]` or `Requires: <sha>` trailer (preserved verbatim by ship, gr517803)
+may not be split across releases — a cut carries the whole declared set or
+none of it. The target is checked over origin/main's first-parent line
+only where a cut is selected: a re-run resumes or reports a recorded
+release at its own base even when the requested tip straddles an
+incomplete set, a pending cut that would still push reconciles at its
+recorded base after the same check (a base that would split a set holds
+until the pending record is abandoned), and a pending cut whose branch
+origin already holds at its base is finalized unchecked (nothing new is
+published; `round cut --require-pushed` refuses if the branch is gone by
+then). The checked origin/main snapshot is passed to `round cut
+--main-at`, which pushes nothing when its own refresh of main differs: the
+fresh cut re-checks and retries (holding once the retry cap is spent), the
+other cut paths hold. A cut below the tip that would split a landed set
+holds with a `holding: ` line (a classified wait, like in-flight); an
+incomplete Change-Set (fewer than n members, those on origin/prod counted
+as shipped) moves an older hand-pinned cut below its oldest landed member.
+Tip and factory cuts hold for completion. A Requires value naming no
+commit on origin/main is unenforceable: the cut warns on stderr, naming
+the commit and the value, and does not hold on it.
+
 --dry-run only reads; it prints the plan and passes --dry-run to round cut and
 round deploy where they apply.
 
@@ -746,6 +768,323 @@ def next_line(sha: str) -> str:
         "--runtime-evidence '<observed services/boot SHAs/readiness/session MCP>' "
         "&& scripts/round close"
     )
+
+
+# ── coupled-commit guard (gr687874) ────────────────────────────────
+#
+# Reto's ruling 2026-11-15: "commit A requires B" is a release-cutting
+# restriction — a release must carry both parts or neither. The pairing
+# is declared at land time as commit-message trailers; ship preserves a
+# branch's trailer block verbatim through the squash (gr517803), so a
+# trailer written on the slice's commits reaches main unchanged:
+#
+#   Change-Set: <id> [<n>]   every commit on main's first-parent line
+#                            carrying the same <id> is one set of <n>
+#                            members (n defaults to 2 — write the count
+#                            for a bigger set; <id> is one token). A cut
+#                            carries all n members or none. A set whose
+#                            landed members number fewer than n is
+#                            INCOMPLETE and never ships alone.
+#   Requires: <sha>          the commit requires commit <sha> (7-40 hex,
+#                            a commit reachable from origin/main); a cut
+#                            carries both or neither. A <sha> already on
+#                            origin/prod satisfies the pairing.
+#
+# _split_set_cut applies the rule to every cut target S over the
+# first-parent commits in (origin/prod..origin/main]:
+#
+#  - A landed pairing the cut would SPLIT (members on both sides of S)
+#    HOLDS — a pinned cut must not ship half. release_cut classes the
+#    `holding: ` line a wait (attempt-free), the retarget marker moves
+#    the next cut to origin/main's tip, and a tip cut never splits a
+#    landed set. Requires is checked in both directions: a pinned cut at
+#    B with A above it, A requiring B, holds.
+#  - An incomplete Change-Set (fewer than n members, counting the ones
+#    origin/prod already holds as shipped) moves the cut BELOW its oldest
+#    landed member — the cut ships none of the set. From a tip cut, or
+#    when the move would leave nothing shippable, it HOLDS instead (a
+#    pipelined cut can take only the tip anyway).
+#  - A Requires value that is not a commit reachable from origin/main (a
+#    td/gr handle, a pre-squash builder sha, a sibling that never landed)
+#    FAILS OPEN: it cannot be honoured, so the cut names it in one
+#    warning line on stderr and never holds on it — one bad trailer must
+#    not stop every release (td759095 review).
+#  - An unreadable history HOLDS — the cut never proceeds unchecked.
+#
+# Lands stay free; only the cut is constrained, and only where a cut is
+# SELECTED (the fresh cut, the red re-cut, a pending cut's recorded base
+# that reconciling would still push): resuming or reporting an
+# already-recorded release, or finalizing a pending cut whose branch
+# origin already holds at its base, is never re-gated on pairings landed
+# since (td695907).
+#
+# The check reads one origin/main snapshot, and that snapshot is what
+# authorizes publication: the caller hands it to `round cut --main-at`,
+# which refuses with _MAIN_MOVED when its own refresh of main differs
+# (a lane landed in between). The fresh cut re-checks on a new fetch and
+# retries; the other cut paths hold. Nothing is pushed on that refusal.
+
+#: ``round cut``'s refusal when main moved past ``--main-at`` (scripts/round
+#: _MAIN_MOVED) — cut_and_finish maps it to MAIN_MOVED.
+_MAIN_MOVED_PHRASE = "origin/main moved since the pairing check"
+#: cut_and_finish's result when ``round cut`` refused on _MAIN_MOVED_PHRASE.
+MAIN_MOVED = -2
+
+_CHANGE_SET_KEY = "change-set"
+_REQUIRES_KEY = "requires"
+_SHA_TOKEN_RE = re.compile(r"[0-9a-f]{7,40}")
+_TRAILER_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):(?:[ \t]+(.*))?$")
+
+
+def _trailers(body: str) -> list[tuple[str, str]]:
+    """(key, value) pairs of the message's trailer block — the last
+    paragraph whose non-blank lines are all `Key: value` (with
+    continuation lines folded into the previous value), the same rule
+    ship_msg_body applies — so prose mentioning a key is not read."""
+    lines = body.splitlines()
+    end = len(lines)
+    while end > 0 and not lines[end - 1].strip():
+        end -= 1
+    start = end
+    while start > 0 and lines[start - 1].strip():
+        start -= 1
+    if start < 1 or start >= end:  # no blank line before it: not a block
+        return []
+    out: list[tuple[str, str]] = []
+    for ln in lines[start:end]:
+        if not ln.strip():
+            return []
+        m = _TRAILER_LINE_RE.match(ln)
+        if m is None:
+            if ln[:1] in (" ", "\t") and out:
+                value = ln.strip()
+                if value:
+                    key, prev = out[-1]
+                    out[-1] = (key, f"{prev} {value}" if prev else value)
+                continue
+            return []
+        out.append((m.group(1), (m.group(2) or "").strip()))
+    return out
+
+
+def _first_parent_walk(prod: str, tip: str) -> list[tuple[str, str]] | None:
+    """(sha, message) of every first-parent commit in (prod..tip],
+    NEWEST first (git log's order — the guard's positions index it); None
+    when git cannot read the range (the caller holds). With no prod ref
+    the walk covers the entire first-parent line through tip."""
+    rng = f"{prod}..{tip}" if prod else tip
+    out = git(
+        "log",
+        "--first-parent",
+        "--format=%H%x1f%B%x1e",
+        rng,
+    )
+    if out is None:
+        return None
+    walk: list[tuple[str, str]] = []
+    for rec in out.split("\x1e"):
+        sha, sep, body = rec.strip("\n").partition("\x1f")
+        if sep and sha:
+            walk.append((sha.strip(), body))
+    return walk
+
+
+def _change_sets(walk: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
+    """Change-Set id → {"members": [sha...] (land order), "want": n} —
+    the highest declared member count wins."""
+    out: dict[str, dict[str, Any]] = {}
+    for sha, body in walk:
+        for key, value in _trailers(body):
+            if key.lower() != _CHANGE_SET_KEY or not value:
+                continue
+            tokens = value.split()
+            cid = tokens[0]
+            want = 2
+            if len(tokens) > 1 and tokens[1].isdigit() and int(tokens[1]) >= 2:
+                want = int(tokens[1])
+            ent = out.setdefault(cid, {"members": [], "want": 2})
+            ent["want"] = max(ent["want"], want)
+            if sha not in ent["members"]:
+                ent["members"].insert(0, sha)  # land order, oldest first
+    return out
+
+
+def _requires(walk: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(commit sha, raw value) of every Requires trailer (walk order;
+    evaluation order is irrelevant)."""
+    return [
+        (sha, value)
+        for sha, body in walk
+        for key, value in _trailers(body)
+        if key.lower() == _REQUIRES_KEY
+    ]
+
+
+def _resolve_requires(raw: str) -> str | None:
+    """The full sha a Requires value names, or None when the value is not
+    a hex commit id resolvable in this checkout."""
+    tokens = raw.split()
+    token = tokens[0] if tokens else ""
+    if not _SHA_TOKEN_RE.fullmatch(token):
+        return None
+    return rev(f"{token}^{{commit}}") or None
+
+
+def _shipped_members(prod: str, cids: list[str]) -> dict[str, int] | None:
+    """Change-Set id → how many commits origin/prod already holds that
+    carry it in their trailer block (members shipped before this range),
+    for the ``cids`` asked about; None when git cannot read prod's history
+    (the caller holds). No prod ref: nothing has shipped."""
+    if not prod or not cids:
+        return {}
+    out = git("log", "-i", "--grep=^change-set:", "--format=%H%x1f%B%x1e", prod)
+    if out is None:
+        return None
+    want = set(cids)
+    seen: dict[str, set[str]] = {}
+    for rec in out.split("\x1e"):
+        sha, sep, body = rec.strip("\n").partition("\x1f")
+        if not (sep and sha):
+            continue
+        for key, value in _trailers(body):
+            tokens = value.split()
+            if key.lower() == _CHANGE_SET_KEY and tokens and tokens[0] in want:
+                seen.setdefault(tokens[0], set()).add(sha.strip())
+    return {cid: len(shas) for cid, shas in seen.items()}
+
+
+def _requires_targets(
+    requires: list[tuple[str, str]], pos: dict[str, int], prod: str, tip: str
+) -> dict[str, tuple[str, str] | None]:
+    """Requires value → (full sha, where): ``line`` on the first-parent
+    walk, ``merge`` reachable from origin/main through a merge, ``prod``
+    already shipped; None when the value names no commit reachable from
+    origin/main — unenforceable, so the guard fails open on it."""
+    out: dict[str, tuple[str, str] | None] = {}
+    for _a, raw in requires:
+        if raw in out:
+            continue
+        full = _resolve_requires(raw)
+        if full is None:
+            out[raw] = None
+        elif full in pos:
+            out[raw] = (full, "line")
+        elif prod and ancestor(full, prod):
+            out[raw] = (full, "prod")
+        elif ancestor(full, tip):
+            out[raw] = (full, "merge")
+        else:
+            out[raw] = None
+    return out
+
+
+def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
+    """(cut sha, hold reason) — the cut sha honoring every declared
+    Change-Set/Requires pairing, or the reason to hold when no cut at or
+    below S can proceed without splitting one. ``main_at`` is the
+    origin/main snapshot to check against (the one the caller passes to
+    ``round cut --main-at``); empty reads the current ref. See the
+    section header."""
+    prod = rev("origin/prod")
+    tip = main_at or rev("refs/remotes/origin/main")
+    if not tip:
+        return s, "origin/main is unreadable — refusing to cut unchecked"
+    walk = _first_parent_walk(prod, tip)
+    if walk is None:
+        return s, "commit history is unreadable — refusing to cut unchecked"
+    pos = {sha: i for i, (sha, _body) in enumerate(walk)}  # 0 = newest
+    if s not in pos:
+        if prod and ancestor(s, prod):
+            return s, None  # already shipped; the rollback guard still applies
+        return s, f"{s[:9]} is outside the release history"
+    sets = _change_sets(walk)
+    short = [
+        cid
+        for cid, ent in sets.items()
+        if len([m for m in ent["members"] if m in pos]) < ent["want"]
+    ]
+    shipped = _shipped_members(prod, short)
+    if shipped is None:
+        return s, "origin/prod's history is unreadable — refusing to cut unchecked"
+    requires = _requires(walk)
+    targets = _requires_targets(requires, pos, prod, tip)
+    cut = pos[s]
+
+    def _done(result: tuple[str, str | None]) -> tuple[str, str | None]:
+        # One line per unenforceable Requires the cut carries: named, not
+        # held on (td759095 review).
+        for a, raw in dict.fromkeys(requires):
+            if targets[raw] is None and pos[a] >= cut:
+                print(
+                    f"scripts/release: warning: {a[:9]} Requires {raw[:40]!r}, "
+                    "which is not a commit on origin/main — not enforced",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        return result
+
+    while True:
+        holds: list[str] = []
+        drops: list[int] = []  # positions of landed members to cut below
+        drop_why: list[str] = []
+        for cid, ent in sets.items():
+            members = [m for m in ent["members"] if m in pos]
+            in_cut = [m for m in members if pos[m] >= cut]
+            if not in_cut:
+                continue  # entirely above the cut: not this release's problem
+            have = len(members) + shipped.get(cid, 0)  # prod's count as shipped
+            if have < ent["want"]:
+                drops.append(max(pos[m] for m in in_cut))
+                drop_why.append(
+                    f"Change-Set {cid} has {have} of {ent['want']} members on main"
+                )
+            elif any(pos[m] < cut for m in members):
+                holds.append(
+                    f"Change-Set {cid} is landed but straddles the cut"
+                    f" ({len(in_cut)} of {len(members)} members would ship)"
+                )
+        for a, raw in requires:
+            found = targets[raw]
+            if found is None or found[1] == "prod":
+                continue  # unenforceable (named by _done), or already shipped
+            full, where = found
+            in_cut_a = pos[a] >= cut
+            in_cut_b = (
+                pos[full] >= cut if where == "line" else ancestor(full, walk[cut][0])
+            )
+            if in_cut_a != in_cut_b:
+                holds.append(
+                    f"{a[:9]} Requires {full[:9]} and the two straddle the cut"
+                )
+        if holds:
+            return _done((s, "; ".join(dict.fromkeys(holds))))
+        if not drops:
+            return _done((walk[cut][0], None))
+        why = "; ".join(dict.fromkeys(drop_why))
+        if cut == 0 or release_pass():
+            # A factory pass records a cut that contains its requested SHA.
+            # Pipelined cuts also require the tip.
+            return _done((s, f"{why} — waiting for the rest to land"))
+        target = max(drops) + 1
+        if target >= len(walk):
+            return _done((s, f"{why} — cutting below it would leave nothing to ship"))
+        cut = target
+
+
+def _select_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
+    """The sha to actually cut honouring declared pairings — S itself, the
+    retarget below an incomplete set, or the hold reason (gr687874),
+    checked against the origin/main snapshot ``main_at`` the cut then pins
+    with ``round cut --main-at``. Runs only where a cut is selected; a
+    recorded release's resume path checks its own base instead."""
+    safe, hold_why = _split_set_cut(s, main_at)
+    if hold_why or safe == s:
+        return s, hold_why
+    say(
+        f"change-set guard (gr687874): cutting at {safe[:9]} instead of {s[:9]} "
+        "— an incomplete declared set ships none of itself"
+    )
+    return safe, None
 
 
 def live_releases(
@@ -2286,7 +2625,16 @@ def run(args: argparse.Namespace) -> int:
             return die(4, f"scripts/release: {stale[0][1]}")
 
         # Nothing in flight: prepare the round, then cut. The next number is
-        # global on origin (gr573151), not this clone's stale record.
+        # global on origin (gr573151), not this clone's stale record. The
+        # pairing guard gates only the selection of a cut (td695907): a
+        # re-run resumes or reports a recorded release at its own base even
+        # when the requested tip straddles an incomplete set. The snapshot
+        # it checks is the one `round cut --main-at` must still see.
+        main_at = rev("refs/remotes/origin/main")
+        s, hold_why = _select_cut(s, main_at)
+        if hold_why:
+            return die(1, f"scripts/release: holding: {hold_why}")
+        s9 = s[:9]
         n = int(cur.get("n", 0) or 0)
         is_open = bool(cur.get("open"))
         if is_open and cur.get("deployed"):
@@ -2318,10 +2666,18 @@ def run(args: argparse.Namespace) -> int:
                 s, n, is_open and not cur.get("deployed"), cut_only=args.cut_only
             )
 
-        rc = cut_and_finish(args, s)
-        if rc == -1:  # lost a cut race
+        rc = cut_and_finish(args, s, main_at=main_at)
+        if rc in (-1, MAIN_MOVED):  # lost a cut race, or main moved: re-check
             races += 1
             if races > MAX_CUT_RACES:
+                if rc == MAIN_MOVED:
+                    # Heavy landing is transient: a classified wait, and the
+                    # next pass re-checks on a fresh fetch (td759095).
+                    return die(
+                        1,
+                        "scripts/release: holding: origin/main kept moving while "
+                        f"the pairings were checked ({races} tries) — re-run",
+                    )
                 return die(1, "scripts/release: gave up after repeated cut races")
             continue
         return rc
@@ -2469,12 +2825,25 @@ def deploy_only(args: argparse.Namespace) -> int:
 
 
 def cut_and_finish(
-    args: argparse.Namespace, s: str, branch: str = "", *, supersede: bool = False
+    args: argparse.Namespace,
+    s: str,
+    branch: str = "",
+    *,
+    supersede: bool = False,
+    main_at: str = "",
+    require_pushed: bool = False,
 ) -> int:
     """Cut (or reconcile our own pending cut), wait for CI, deploy. -1 = not ours.
 
     ``supersede`` passes ``--supersede`` to ``round cut``: the caller has
-    already proved the open release red and contained in main."""
+    already proved the open release red and contained in main. ``main_at``
+    passes ``--main-at``: the origin/main snapshot the caller checked the
+    declared pairings against (gr687874); ``round cut`` pushes nothing
+    when its own refresh of main differs, and this returns MAIN_MOVED.
+    ``require_pushed`` passes ``--require-pushed``: the caller skipped the
+    pairing check because origin held the pending branch, so round only
+    finalizes it and never pushes it."""
+    reconcile = bool(branch)  # the caller names the branch only for a pending cut
     if not branch:
         n = next_round_n() or (round_state() or {}).get("n")
         branch = f"release/r{n}"
@@ -2499,11 +2868,24 @@ def cut_and_finish(
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     # Marker first: a crash between cut and marker must still resume as ours.
     write_owner(branch, s, stamp)
-    cp = rnd("cut", "--sha", s, *(("--supersede",) if supersede else ()))
+    cp = rnd(
+        "cut",
+        "--sha",
+        s,
+        *(("--supersede",) if supersede else ()),
+        *(("--main-at", main_at) if main_at else ()),
+        *(("--require-pushed",) if require_pushed else ()),
+    )
     sys.stdout.write(cp.stdout)
     sys.stdout.flush()
     if cp.returncode:
         err = cp.stderr
+        if _MAIN_MOVED_PHRASE in err:
+            # Nothing pushed or recorded. A pending cut's intent stays ours.
+            if not reconcile:
+                clear_owner()
+            sys.stderr.write(err)
+            return MAIN_MOVED
         if "is already tagged on origin" in err:
             clear_owner()  # stale round number: nothing recorded by us
             return die(1, err.rstrip())
@@ -2553,11 +2935,42 @@ def resume(
             say(f"{s[:9]} rides the next cut")
             return 0
         say(f"resuming: {branch} has a pending cut — reconciling")
+        base = str(rel["base"])
+        main_at = ""
+        pushed = remote(f"refs/heads/{branch}") == base
+        if pushed:
+            # td759095: origin already holds the branch at the recorded base
+            # (the push landed, the record was never finalized). Reconciling
+            # publishes nothing — round only finalizes the record — so the
+            # pairing guard does not apply: the cut was checked when it was
+            # pushed, and a counterpart landed since rides the next cut.
+            # --require-pushed: a branch deleted before round reads it is
+            # never re-pushed unchecked.
+            say(f"{branch} is already on origin at {base[:9]} — finalizing")
+        else:
+            # Reconciling would push the branch (an unreadable or different
+            # remote, round refuses): it is a cut publication like any
+            # other, so check the pairings and pin the snapshot.
+            main_at = rev("refs/remotes/origin/main")
+            safe, hold_why = _split_set_cut(base, main_at)
+            if hold_why or safe != base:
+                why = hold_why or f"the safe cut is {safe[:9]}"
+                return die(
+                    1,
+                    f"scripts/release: holding: pending cut at {base[:9]}: {why}. "
+                    "Run scripts/round cut --abandon before cutting again.",
+                )
         if args.dry_run:
             say("would reconcile the cut, wait for CI, deploy")
             return 0
         # the recorded base, not S: cut refuses a different pending SHA
-        rc = cut_and_finish(args, str(rel["base"]), branch)
+        rc = cut_and_finish(args, base, branch, main_at=main_at, require_pushed=pushed)
+        if rc == MAIN_MOVED:
+            return die(
+                1,
+                f"scripts/release: holding: pending cut at {base[:9]}: "
+                "origin/main moved while its pairings were checked — re-run",
+            )
         return die(1, "scripts/release: lost the pending cut") if rc == -1 else rc
     if has:
         say(f"resuming release {branch} at {tip[:9]}: it ships {s[:9]}")
@@ -2581,6 +2994,10 @@ def resume(
             # gr648267: pass --supersede — round's own red reader needs
             # every gate leg completed and reads a rerun in flight as
             # undecided, so its auto-supersede would refuse the cut.
+            main_at = rev("refs/remotes/origin/main")
+            s, hold_why = _select_cut(s, main_at)
+            if hold_why:
+                return die(1, f"scripts/release: holding: {hold_why}")
             say(
                 f"release {branch} is red and its head is on main: "
                 f"re-cutting at {s[:9]}"
@@ -2588,7 +3005,7 @@ def resume(
             if args.dry_run:
                 say(f"would mark {branch} superseded and cut at {s[:9]}")
                 return 0
-            rc = cut_and_finish(args, s, supersede=True)
+            rc = cut_and_finish(args, s, supersede=True, main_at=main_at)
             if rc:
                 # Any non-zero outcome can leave the marker naming a branch
                 # that was never recorded (the refusal) or cleared (a lost
@@ -2609,6 +3026,12 @@ def resume(
                         str(still["branch"]),
                         str(still["base"]),
                         str(still.get("cut_at") or ""),
+                    )
+                if rc == MAIN_MOVED:
+                    return die(
+                        1,
+                        f"scripts/release: holding: re-cut of {branch}: origin/main "
+                        "moved while its pairings were checked — re-run",
                     )
                 if rc == -1:
                     return die(

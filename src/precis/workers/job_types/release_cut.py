@@ -46,7 +46,11 @@ detached submit/poll pair under ``ssh_node``:
   on the marker, quoting the refusal), and an ``in-flight`` first
   cut mints at most one job per ``IN_FLIGHT_PACE_MIN`` minutes. Any
   other refusal is ``unclassified``: the plan tick's retry cap files the ask,
-  now quoting the line.
+  now quoting the line. A ``holding: `` line also comes from
+  ``scripts/release``'s coupled-commit guard (gr687874: a declared
+  ``Change-Set:``/``Requires:`` pairing the cut would split, or whose
+  history cannot be read) — same wait handling: attempt-free, the hold
+  recorded, the next cut re-targets.
 
 Before any launch :func:`submit` refuses (:func:`overlay_refusal`,
 gr713351, gr700433) a checkout without the pinned deploy's inventory and
