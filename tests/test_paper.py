@@ -1002,8 +1002,9 @@ class TestChunks:
         """gr621056 acceptance: follow the emitted scalar hint through
         the real dispatcher — the requested center survives verbatim
         with its cluster context. The explicit ``kind='paper'`` form
-        renders the same split; a batch ``id=[...]`` still refuses, so
-        no trailer may advertise one."""
+        renders the same split. A batch ``id=[...]`` is one combined
+        eye over both centers (gr659493); the scalar trailer still
+        advertises the scalar form only."""
         _seed_paper(store, blocks=[f"para {i}" for i in range(10)])
         resp = handler.get(id="wang2020state~3")
         pc = chunk_handle(store, "wang2020state", ord=3)
@@ -1022,14 +1023,16 @@ class TestChunks:
             "get", {"kind": "paper", "id": pc, "extent": "fisheye"}
         )
         assert not err2 and f"▸ {pc}" in out2
-        # Batch + extent is not a supported read — the trailers must
-        # never advertise ``id=[...]`` (gr621056: a list id resolves to
-        # no live ref, NotFound).
+        # Batch + extent renders one combined eye with both centers
+        # marked verbatim (gr659493, td760288).
         pc0 = chunk_handle(store, "wang2020state", ord=2)
         out3, err3 = runtime_with_store.dispatch_with_status(
             "get", {"kind": "paper", "id": [pc0, pc], "extent": "fisheye"}
         )
-        assert err3
+        assert not err3, out3
+        assert "(batch, extent='fisheye')" in out3
+        assert f"▸ {pc0}" in out3 and f"▸ {pc}" in out3
+        assert "para 2" in out3 and "para 3" in out3
         assert "id=[" not in resp.body
 
     def test_card_variant_chunk_fetch(

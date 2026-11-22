@@ -188,7 +188,9 @@ def test_artifact_fix_citing_a_memory_keeps_the_repo_project(
     )
     tags = _open_tag_values(store, gid)
     assert "project:precis" in tags and "project:memory" not in tags
-    assert f"fix:{fix}" in tags
+    # A model-returned ``infra`` reads as ``code`` (td761771): nothing
+    # dispatches ``fix:infra``, but it is still an artifact fix.
+    assert f"fix:{'code' if fix == 'infra' else fix}" in tags
     assert _concerns(store, gid) == set()
     assert not any(c.startswith("triage: memory gripe") for c in _comments(store, gid))
 
