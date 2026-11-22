@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import os
+import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
@@ -338,6 +339,120 @@ _SLICING_KEY_PREFIX = "claim.slicing."
 DEFAULT_SLICE_S = 1200.0
 SLICE_S_ENV = "PRECIS_JOB_SLICE_S"
 _SLICE_S_KEY_PREFIX = "claim.slice_s."
+
+
+#: Spawn-footprint CPU override (gr741695): ``app_state``
+#: ``claim.footprint.<work>.cpu_milli`` replaces the code default
+#: ``cpu_milli`` of one run_slice work class
+#: (:data:`precis.workers.job_types.run_slice._WORK_FOOTPRINTS`), read live
+#: at claim (the ``launch_fits`` probe) and at the launch's own spawn
+#: admission, so an operator re-sizes the reservation without a deploy.
+#: A positive int; anything else falls back to the code default.
+_FOOTPRINT_KEY_PREFIX = "claim.footprint."
+_FOOTPRINT_CPU_FIELD = "cpu_milli"
+
+#: Ceiling on a ``claim.footprint.<work>.cpu_milli`` override — 256 cores.
+#: The setting door refuses a bigger value; the runtime read clamps to it,
+#: so a row written straight to ``app_state`` can't go unbounded either.
+FOOTPRINT_CPU_MAX_MILLI = 256_000
+
+#: ``(key, raw)`` pairs already warned about, so a bad override warns once
+#: per worker process, not once per claim candidate per pass.
+_footprint_bad_warned: set[tuple[str, str]] = set()
+
+
+def footprint_cpu_key(work: str) -> str:
+    """The ``app_state`` key of ``work``'s CPU override."""
+    return f"{_FOOTPRINT_KEY_PREFIX}{work}.{_FOOTPRINT_CPU_FIELD}"
+
+
+def parse_footprint_cpu_milli(raw: Any) -> int | None:
+    """A stored override as a positive int of millicores, else ``None``.
+
+    Accepts the canonical string the setting door writes (``"1000"``) and
+    an int-valued float string (``"1000.0"``); a bool, zero, a negative, a
+    fraction or garbage is ``None`` — the caller keeps the code default.
+    A value above :data:`FOOTPRINT_CPU_MAX_MILLI` clamps to it.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        num = float(str(raw).strip())
+    except ValueError:
+        return None
+    if not math.isfinite(num) or not num.is_integer() or num <= 0:
+        return None
+    return min(int(num), FOOTPRINT_CPU_MAX_MILLI)
+
+
+def footprint_cpu_milli_override(conn: Connection, work: str) -> int | None:
+    """``work``'s live ``claim.footprint.<work>.cpu_milli``, or ``None``
+    when unset or unusable (warned once per bad value)."""
+    key = footprint_cpu_key(work)
+    row = conn.execute("SELECT value FROM app_state WHERE key = %s", (key,)).fetchone()
+    if row is None:
+        return None
+    parsed = parse_footprint_cpu_milli(row[0])
+    if parsed is None:
+        marker = (key, str(row[0]))
+        if marker not in _footprint_bad_warned:
+            _footprint_bad_warned.add(marker)
+            log.warning(
+                "claim: %s=%r is not a positive int; using the code default",
+                key,
+                row[0],
+            )
+    return parsed
+
+
+#: A run_slice claim refused by ``launch_fits`` logs at most once per job
+#: per this many seconds (gr741695): the claim loop re-evaluates every
+#: queued row every pass (~10 s), so an unthrottled line would flood.
+_LAUNCH_REFUSAL_LOG_S = 600.0
+
+#: ``ref_id -> monotonic`` of the last refusal line per job.
+_launch_refusal_logged: dict[int, float] = {}
+
+
+def _log_launch_refusal(
+    conn: Connection, ref_id: int, host: str, work: str, footprint: Any
+) -> None:
+    """INFO line naming host, work class and needed vs free units when a
+    fresh run_slice claim does not fit the host's spawn ledger.
+
+    Throttled per job (:data:`_LAUNCH_REFUSAL_LOG_S`); the ledger read runs
+    only when the line is actually emitted, so a full host's every-pass
+    refusals cost one dict lookup each."""
+    now = time.monotonic()
+    last = _launch_refusal_logged.get(ref_id)
+    if last is not None and now - last < _LAUNCH_REFUSAL_LOG_S:
+        return
+    if len(_launch_refusal_logged) > 4096:
+        cutoff = now - _LAUNCH_REFUSAL_LOG_S
+        for stale in [k for k, t in _launch_refusal_logged.items() if t < cutoff]:
+            del _launch_refusal_logged[stale]
+    _launch_refusal_logged[ref_id] = now
+    need: dict[str, int] = dict(footprint.requirements())
+    rows = conn.execute(
+        "SELECT resource, capacity, free FROM resource_slots "
+        "WHERE host = %s AND resource = ANY(%s)",
+        (host, list(need)),
+    ).fetchall()
+    have = {str(r): (int(cap), int(free)) for r, cap, free in rows}
+    parts = []
+    for resource, units in need.items():
+        if resource in have:
+            cap, free = have[resource]
+            parts.append(f"{resource} need {units} free {free}/{cap}")
+        else:
+            parts.append(f"{resource} need {units} (not published)")
+    log.info(
+        "claim: hold job %s on %s — %s launch does not fit the spawn ledger: %s",
+        ref_id,
+        host,
+        work,
+        "; ".join(parts),
+    )
 
 
 def _truthy(value: Any) -> bool:
@@ -2541,11 +2656,15 @@ def claim_executor_jobs(
             meta.pop("reserved", None)
         if meta.get("job_type") == "run_slice" and status_value != RUNNING:
             from precis.workers.admission import launch_fits
-            from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+            from precis.workers.job_types.run_slice import work_footprint
 
             # Launch runs locally, even if params carry a target_node.
             # Check the exact spawn ledger, not learned RSS or executor cap.
-            if not launch_fits(conn, default_host, _WORK_FOOTPRINTS["slice"]):
+            # The footprint honours the live claim.footprint.slice.cpu_milli
+            # override, the same one the launch's spawn admits (gr741695).
+            slice_fp = work_footprint(conn, "slice")
+            if not launch_fits(conn, default_host, slice_fp):
+                _log_launch_refusal(conn, ref_id, default_host, "slice", slice_fp)
                 return None
         requires = effective_requires(meta)
         # The resource lives where the job runs: its target_node (an

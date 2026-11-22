@@ -986,7 +986,7 @@ def test_deficit_pre_limit_order_keeps_the_owed_lane(store: Store) -> None:
     assert all(s not in got for s in smalls)
 
 
-@pytest.mark.parametrize("cpu,mem", [(1999, 8192), (4000, 4095), (4000, None)])
+@pytest.mark.parametrize("cpu,mem", [(999, 8192), (4000, 4095), (4000, None)])
 def test_slice_claim_waits_for_launch_capacity(
     store: Store, cpu: int, mem: int | None
 ) -> None:
@@ -1023,7 +1023,7 @@ def test_slice_claim_observes_live_launch_hold(store: Store) -> None:
     run = _job(store, origin="background", prio=5, job_type="run_slice")
     with store.pool.connection() as conn:
         held = admission.admit(
-            conn, "h1", admission.Footprint(cpu_milli=3000, mem_mb=5000), "test"
+            conn, "h1", admission.Footprint(cpu_milli=3500, mem_mb=5000), "test"
         )
     assert held is not None
     assert _claim(store) == []
@@ -1035,3 +1035,116 @@ def test_slice_claim_observes_live_launch_hold(store: Store) -> None:
         launched = admission.admit(conn, "h1", _WORK_FOOTPRINTS["slice"], "test")
         assert launched is not None
         admission.release(conn, launched)
+
+
+def test_slice_footprint_default_is_one_core() -> None:
+    """gr741695: a build session mostly waits on its LLM — one core per
+    slice, the land gate keeps its six (it runs pytest under xdist)."""
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+    assert _WORK_FOOTPRINTS["slice"].cpu_milli == 1000
+    assert _WORK_FOOTPRINTS["slice"].mem_mb == 4096
+    assert _WORK_FOOTPRINTS["land"].cpu_milli == 6000
+
+
+def _set_app_state(store: Store, key: str, value: str | None) -> None:
+    with store.pool.connection() as conn:
+        if value is None:
+            conn.execute("DELETE FROM app_state WHERE key = %s", (key,))
+        else:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                (key, value),
+            )
+
+
+def test_slice_claim_reads_the_cpu_override(store: Store) -> None:
+    """gr741695: ``claim.footprint.slice.cpu_milli`` re-sizes the claim's
+    launch probe live — a 1500-milli host fits a 1000 default, refuses a
+    2000 override, and fits again once the override is cleared."""
+    from precis.workers.job_types.run_slice import work_footprint
+
+    key = "claim.footprint.slice.cpu_milli"
+    _advertise_all(store)
+    store.sync_host_capacity("h1", {"cpu_milli": 1500, "mem_mb": 8192})
+    _set_app_state(store, key, "2000")
+    with store.pool.connection() as conn:
+        assert work_footprint(conn, "slice").cpu_milli == 2000
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _claim(store) == []
+    _set_app_state(store, key, None)
+    assert _claim(store) == [run]
+
+
+@pytest.mark.parametrize("raw", ["0", "-500", "abc", "1.5", "", "true"])
+def test_bad_cpu_override_falls_back_to_the_default(
+    store: Store,
+    raw: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.workers.executors import _common
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS, work_footprint
+
+    monkeypatch.setattr(_common, "_footprint_bad_warned", set())
+    _set_app_state(store, "claim.footprint.slice.cpu_milli", raw)
+    with caplog.at_level("WARNING"), store.pool.connection() as conn:
+        assert work_footprint(conn, "slice") is _WORK_FOOTPRINTS["slice"]
+    assert "not a positive int" in caplog.text
+
+
+def test_cpu_override_parser() -> None:
+    from precis.workers.executors._common import parse_footprint_cpu_milli
+
+    assert parse_footprint_cpu_milli("750") == 750
+    assert parse_footprint_cpu_milli("750.0") == 750
+    assert parse_footprint_cpu_milli(None) is None
+    assert parse_footprint_cpu_milli(True) is None
+    assert parse_footprint_cpu_milli("nan") is None
+    assert parse_footprint_cpu_milli("inf") is None
+    # A row written around the setter clamps to the setter's own bound.
+    assert parse_footprint_cpu_milli("256000") == 256_000
+    assert parse_footprint_cpu_milli("999999999") == 256_000
+
+
+def test_huge_cpu_override_clamps_at_claim(store: Store) -> None:
+    from precis.workers.executors._common import FOOTPRINT_CPU_MAX_MILLI
+    from precis.workers.job_types.run_slice import work_footprint
+
+    _set_app_state(store, "claim.footprint.slice.cpu_milli", "10000000000")
+    with store.pool.connection() as conn:
+        assert work_footprint(conn, "slice").cpu_milli == FOOTPRINT_CPU_MAX_MILLI
+
+
+def test_launch_refusal_logs_once_per_job_naming_need_and_free(
+    store: Store,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr741695: a refused fresh claim logs host, work class and needed vs
+    free units at INFO — once per job per window, not every pass."""
+    from precis.workers.executors import _common
+
+    monkeypatch.setattr(_common, "_launch_refusal_logged", {})
+    _advertise_all(store)
+    store.sync_host_capacity("h1", {"cpu_milli": 600, "mem_mb": 8192})
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    with caplog.at_level("INFO", logger=_common.log.name):
+        assert _claim(store) == []
+        assert _claim(store) == []
+    lines = [r.getMessage() for r in caplog.records if "spawn ledger" in r.getMessage()]
+    assert lines == [
+        f"claim: hold job {run} on h1 — slice launch does not fit the spawn "
+        "ledger: cpu_milli need 1000 free 600/600; mem_mb need 4096 free 8192/8192"
+    ]
+    # Past the window the same job logs again.
+    monkeypatch.setattr(
+        _common,
+        "_launch_refusal_logged",
+        {run: _common.time.monotonic() - _common._LAUNCH_REFUSAL_LOG_S - 1},
+    )
+    caplog.clear()
+    with caplog.at_level("INFO", logger=_common.log.name):
+        assert _claim(store) == []
+    assert sum("spawn ledger" in r.getMessage() for r in caplog.records) == 1

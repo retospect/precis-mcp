@@ -220,3 +220,99 @@ def test_claim_view_shows_a_stale_override(jobs: JobHandler, store: Store) -> No
 def test_claim_view_takes_no_filters(jobs: JobHandler) -> None:
     with pytest.raises(BadInput, match="no filters"):
         jobs.get(id="/claim?since=1")
+
+
+def test_footprint_cpu_override_round_trip(jobs: JobHandler, store: Store) -> None:
+    """gr741695: the spawn-ledger CPU of a run_slice work class is an
+    audited claim.* setting."""
+    key = "claim.footprint.slice.cpu_milli"
+    _set(jobs, key, 750)
+    assert store.get_setting(key) == "750"
+    _set(jobs, key, 1250.0)
+    assert store.get_setting(key) == "1250"
+    jobs.put(mode="setting", key=key, unset=True, reason="back to default")
+    assert store.get_setting(key) is None
+
+
+@pytest.mark.parametrize("value", [0, -1, "1000", True, 2.5, 256_001])
+def test_footprint_cpu_needs_a_positive_int(jobs: JobHandler, value: Any) -> None:
+    with pytest.raises(BadInput, match="positive int of millicores"):
+        _set(jobs, "claim.footprint.slice.cpu_milli", value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "claim.footprint.no_such_work.cpu_milli",
+        "claim.footprint.slice.mem_mb",
+        "claim.footprint.slice",
+        "claim.footprint.",
+    ],
+)
+def test_footprint_key_must_name_a_work_class_and_cpu(
+    jobs: JobHandler, key: str
+) -> None:
+    with pytest.raises(BadInput, match="run_slice work class"):
+        _set(jobs, key, 1000)
+
+
+def _claim_row(body: str, first: str) -> list[str]:
+    section = body.split("## claim.footprint.<work>.cpu_milli", 1)[1]
+    for line in section.splitlines():
+        cells = line.split("\t")
+        if cells[0] == first:
+            return cells
+    raise AssertionError(f"no {first!r} row in the footprint section")
+
+
+def test_claim_view_shows_the_footprint_rows(jobs: JobHandler, store: Store) -> None:
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+    body = jobs.get(id="/claim").body
+    assert _claim_row(body, "slice")[:4] == ["slice", "-", "1000", "1000"]
+    assert _claim_row(body, "land")[:4] == [
+        "land",
+        "-",
+        str(_WORK_FOOTPRINTS["land"].cpu_milli),
+        str(_WORK_FOOTPRINTS["land"].cpu_milli),
+    ]
+
+    _set(jobs, "claim.footprint.slice.cpu_milli", 750)
+    body = jobs.get(id="/claim").body
+    row = _claim_row(body, "slice")
+    assert row[:4] == ["slice", "750", "1000", "750"]
+    assert row[4] != "-"
+    # A recognised family, not an "unrecognised claim.* keys" entry.
+    assert "claim.footprint.slice.cpu_milli='750'" not in body
+
+
+def test_claim_view_flags_an_unusable_footprint_override(
+    jobs: JobHandler, store: Store
+) -> None:
+    store.set_setting("claim.footprint.slice.cpu_milli", "lots")
+    row = _claim_row(jobs.get(id="/claim").body, "slice")
+    assert row[:4] == ["slice", "lots", "1000", "1000 (override ignored)"]
+
+
+def test_claim_view_footprint_rows_are_cpu_milli_only(
+    jobs: JobHandler, store: Store
+) -> None:
+    """A claim.footprint.* key written around the setter that is not a
+    ``<work>.cpu_milli`` leaf is no table row; it lists as unrecognised."""
+    store.set_setting("claim.footprint.slice.mem_mb", "9999")
+    body = jobs.get(id="/claim").body
+    section = body.split("## claim.footprint.<work>.cpu_milli", 1)[1].split(
+        "unrecognised claim.* keys", 1
+    )[0]
+    assert "9999" not in section
+    assert [c for c in section.splitlines() if c.startswith("slice\t")] == [
+        "slice\t-\t1000\t1000\t-\tclaim probe + spawn"
+    ]
+    assert "claim.footprint.slice.mem_mb='9999'" in body
+
+
+def test_claim_view_marks_where_each_footprint_applies(jobs: JobHandler) -> None:
+    body = jobs.get(id="/claim").body
+    assert _claim_row(body, "dep_check")[5] == "detached launch only"
+    assert _claim_row(body, "boundary_probe")[5] == "detached launch only"
+    assert _claim_row(body, "land")[5] == "spawn"

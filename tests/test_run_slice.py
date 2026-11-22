@@ -3766,6 +3766,65 @@ def test_launch_goes_through_spawn(
     assert calls[-1][1]["job_id"] == 77
 
 
+class _OverridePool:
+    """A pool whose one query answers the ``claim.footprint`` read."""
+
+    def __init__(self, value: str | None) -> None:
+        self.value = value
+        self.keys: list[str] = []
+
+    @contextlib.contextmanager
+    def connection(self) -> Iterator[Any]:
+        pool = self
+
+        class _Conn:
+            def execute(self, sql: str, params: tuple[Any, ...]) -> Any:
+                pool.keys.append(str(params[0]))
+                row = None if pool.value is None else (pool.value,)
+                return types.SimpleNamespace(fetchone=lambda: row)
+
+        yield _Conn()
+
+
+@pytest.mark.parametrize(
+    "stored,want", [("1500", 1500), (None, None), ("-3", None), ("x", None)]
+)
+def test_launch_spawns_with_the_cpu_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored: str | None,
+    want: int | None,
+) -> None:
+    """gr741695: the spawn admits the same live ``claim.footprint`` CPU the
+    claim probed with; unset or bad keeps the code default object."""
+    calls: list[tuple[Any, ...]] = []
+
+    def fake_spawn(*a: Any, **k: Any) -> int:
+        calls.append(a)
+        return 4242
+
+    monkeypatch.setattr(run_slice.admission, "spawn", fake_spawn)
+    pool = _OverridePool(stored)
+    store = types.SimpleNamespace(pool=pool)
+    run_slice._launch(
+        ["devin", "-p"],
+        cwd=tmp_path,
+        stdin=None,
+        log=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        env={},
+        store=store,
+        work_class="slice",
+    )
+    assert pool.keys == ["claim.footprint.slice.cpu_milli"]
+    fp = calls[0][2]
+    base = run_slice._WORK_FOOTPRINTS["slice"]
+    if want is None:
+        assert fp is base
+    else:
+        assert fp == replace(base, cpu_milli=want)
+
+
 def test_launch_without_pooled_store_keeps_the_legacy_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

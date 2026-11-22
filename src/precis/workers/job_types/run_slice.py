@@ -1506,8 +1506,18 @@ def _run(
 #: its tests; the land gate is heavy — ship's checked gate runs pytest
 #: under xdist with container work; the probes are small. Sized so two
 #: slice builds and one land gate coexist on a 32 GiB worker host.
+#:
+#: ``slice`` CPU is 1000 (was 2000, gr741695): a build session mostly
+#: waits on its LLM. The builder box ran load 6-7 on 20 cores with 3
+#: slices, 2 lands and 4 compute jobs live, so 2000 per slice capped the
+#: host at 4 slices beside 2 lands while ~30 queued. The job cards'
+#: ``footprint`` cpu cannot size this: a detached session is never
+#: measured (p90 0.05 cores over 45 cards is the worker's poll thread).
+#: Lands keep 6000: the gate runs pytest under xdist. Every class's
+#: ``cpu_milli`` is live-tunable through ``app_state``
+#: ``claim.footprint.<work>.cpu_milli`` (:func:`work_footprint`).
 _WORK_FOOTPRINTS: dict[str, admission.Footprint] = {
-    "slice": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+    "slice": admission.Footprint(cpu_milli=1000, mem_mb=4096),
     "land": admission.Footprint(cpu_milli=6000, mem_mb=12288),
     "verify": admission.Footprint(cpu_milli=4000, mem_mb=8192),
     "acceptance": admission.Footprint(cpu_milli=2000, mem_mb=4096),
@@ -1515,6 +1525,38 @@ _WORK_FOOTPRINTS: dict[str, admission.Footprint] = {
     "lane_health": admission.Footprint(cpu_milli=1000, mem_mb=2048),
     "boundary_probe": admission.Footprint(cpu_milli=2000, mem_mb=4096),
 }
+
+
+def work_footprint(conn: Any, work_class: str) -> admission.Footprint:
+    """``work_class``'s spawn footprint with the live CPU override applied.
+
+    ``app_state`` ``claim.footprint.<work_class>.cpu_milli`` (a positive
+    int) replaces the code default's ``cpu_milli``; unset or unusable
+    keeps :data:`_WORK_FOOTPRINTS` as is (the same object, no copy)."""
+    from dataclasses import replace
+
+    from precis.workers.executors._common import footprint_cpu_milli_override
+
+    base = _WORK_FOOTPRINTS[work_class]
+    cpu = footprint_cpu_milli_override(conn, work_class)
+    if cpu is None or cpu == base.cpu_milli:
+        return base
+    return replace(base, cpu_milli=cpu)
+
+
+def _launch_footprint(store: Any, work_class: str) -> admission.Footprint:
+    """:func:`work_footprint` on a fresh pooled connection; any read fault
+    keeps the code default — an override must never block a launch."""
+    try:
+        with store.pool.connection() as conn:
+            return work_footprint(conn, work_class)
+    except Exception:
+        log.debug(
+            "run_slice: footprint override read failed for %s; code default",
+            work_class,
+            exc_info=True,
+        )
+        return _WORK_FOOTPRINTS[work_class]
 
 
 def _launch(
@@ -1566,7 +1608,7 @@ def _launch(
         return admission.spawn(
             store,
             admission.local_host(),
-            _WORK_FOOTPRINTS[work_class],
+            _launch_footprint(store, work_class),
             f"{admission.local_host()}:{os.getpid()}",
             argv,
             cwd=cwd,

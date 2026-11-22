@@ -120,7 +120,14 @@ executor — `ssh_node` defaults to 8, absent = uncapped) and
 `claim.reserve.<executor>` (JSON `{"<job_type>": <slots>}` of slots
 inside the cap held back for those job types — a compute may not take
 the last reserved slots; `ssh_node` defaults to
-`{"run_slice": 1, "land_slice": 1}`, gr603792). Set or clear them with
+`{"run_slice": 1, "land_slice": 1}`, gr603792) and
+`claim.footprint.<work>.cpu_milli` (positive int: the millicores one
+factory launch of work class `slice`, `land`, `verify`, … reserves on
+the host's spawn ledger; a bad value falls back to the code default and
+one above 256000 clamps to it, gr741695; `dep_check` / `boundary_probe`
+synchronous steps keep their own reservation). A run_slice claim the ledger refuses logs one INFO line per
+job per 10 min naming host, work class and needed vs free units. Set or
+clear them with
 the audited setter — `reason=` is required and the change (who, old →
 new, why) lands in `worker_logs`:
 

@@ -87,6 +87,8 @@ from precis.workers.executors._common import (
     _EXECUTOR_CAP_KEY_PREFIX,
     _EXECUTOR_RESERVE_DEFAULTS,
     _FACTORY_TYPES_SQL,
+    _FOOTPRINT_CPU_FIELD,
+    _FOOTPRINT_KEY_PREFIX,
     _MAX_RUNNING_DEFAULTS,
     _MAX_RUNNING_KEY_PREFIX,
     _RELEASE_LEG_RANK,
@@ -95,6 +97,7 @@ from precis.workers.executors._common import (
     _SLICING_KEY_PREFIX,
     CLAIMABLE,
     DEFAULT_SLICE_S,
+    FOOTPRINT_CPU_MAX_MILLI,
     QUEUED,
     RUNNING,
     SLICE_S_ENV,
@@ -105,6 +108,7 @@ from precis.workers.executors._common import (
     claim_age_step_s,
     claim_class_age_s,
     claim_class_rank_enabled,
+    parse_footprint_cpu_milli,
     queued_build_hold_reasons,
 )
 from precis.workers.job_describe import job_row_sentence
@@ -563,9 +567,33 @@ _CLAIM_SETTING_NEXT = (
     "put(kind='job', mode='setting', args={'key': "
     "'claim.max_running.<job_type>' | 'claim.slicing.<executor>' | "
     "'claim.slice_s.<executor>' | 'claim.executor_cap.<executor>[.<host>]' | "
-    "'claim.reserve.<executor>[.<host>]', 'value': <v>, 'reason': '<why>'}; "
+    "'claim.reserve.<executor>[.<host>]' | "
+    "'claim.footprint.<work>.cpu_milli', 'value': <v>, 'reason': '<why>'}; "
     "clear with args={'key': ..., 'unset': true, 'reason': ...})"
 )
+
+#: Ceiling on a ``claim.footprint.<work>.cpu_milli`` override — 256 cores;
+#: a bigger number is a typo, not a footprint. Shared with the runtime
+#: read, which clamps to it.
+_CLAIM_FOOTPRINT_CPU_MAX = FOOTPRINT_CPU_MAX_MILLI
+
+#: Where a work class's ``claim.footprint`` override applies (the /claim
+#: ``applies`` column). ``slice`` is read twice: the claim's
+#: ``launch_fits`` probe and the spawn. ``dep_check`` / ``boundary_probe``
+#: also admit synchronous steps with their own constants, which the
+#: override does not touch.
+_FOOTPRINT_APPLIES: dict[str, str] = {
+    "slice": "claim probe + spawn",
+    "dep_check": "detached launch only",
+    "boundary_probe": "detached launch only",
+}
+
+
+def _work_footprint_defaults() -> dict[str, Any]:
+    """The run_slice work-class footprints (lazy: the job module is big)."""
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+    return dict(_WORK_FOOTPRINTS)
 
 
 def _claim_setting_leaf(key: str) -> str:
@@ -574,7 +602,22 @@ def _claim_setting_leaf(key: str) -> str:
     sit inert in ``app_state``. ``claim.executor_cap`` / ``claim.reserve``
     also accept ``<executor>.<host>`` (gr676054: the per-host override the
     claim pass reads before the unsuffixed key); the host part is free-form
-    but never empty."""
+    but never empty. ``claim.footprint`` takes ``<work>.cpu_milli`` with
+    ``<work>`` a run_slice work class (gr741695)."""
+    if key.startswith(_FOOTPRINT_KEY_PREFIX):
+        leaf = key[len(_FOOTPRINT_KEY_PREFIX) :]
+        work, _dot, field_name = leaf.rpartition(".")
+        works = sorted(_work_footprint_defaults())
+        if field_name != _FOOTPRINT_CPU_FIELD or work not in works:
+            raise BadInput(
+                f"{key!r}: expected claim.footprint.<work>.{_FOOTPRINT_CPU_FIELD} "
+                "with a run_slice work class — the override would never be read",
+                options=[
+                    f"{_FOOTPRINT_KEY_PREFIX}{w}.{_FOOTPRINT_CPU_FIELD}" for w in works
+                ],
+                next=_CLAIM_SETTING_NEXT,
+            )
+        return leaf
     for prefix, registry in (
         (_MAX_RUNNING_KEY_PREFIX, "job_type"),
         (_SLICING_KEY_PREFIX, "executor"),
@@ -612,6 +655,7 @@ def _claim_setting_leaf(key: str) -> str:
             f"{_SLICE_S_KEY_PREFIX}<executor>",
             f"{_EXECUTOR_CAP_KEY_PREFIX}<executor>",
             f"{_RESERVE_KEY_PREFIX}<executor>",
+            f"{_FOOTPRINT_KEY_PREFIX}<work>.{_FOOTPRINT_CPU_FIELD}",
         ],
         next=_CLAIM_SETTING_NEXT,
     )
@@ -620,6 +664,21 @@ def _claim_setting_leaf(key: str) -> str:
 def _claim_setting_value(key: str, value: Any) -> str:
     """The canonical ``app_state`` string for ``key``'s typed value, or
     BadInput naming the accepted shape."""
+    if key.startswith(_FOOTPRINT_KEY_PREFIX):
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 < value <= _CLAIM_FOOTPRINT_CPU_MAX
+        ):
+            raise BadInput(
+                f"{key!r} takes a positive int of millicores "
+                f"1..{_CLAIM_FOOTPRINT_CPU_MAX} (1000 = one core reserved per "
+                f"launch), got {value!r}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        return str(value)
     if key.startswith(_MAX_RUNNING_KEY_PREFIX) or key.startswith(
         _EXECUTOR_CAP_KEY_PREFIX
     ):
@@ -2528,7 +2587,9 @@ class JobHandler(NumericRefHandler):
         is uncapped), ``claim.slicing.<executor>`` (the per-lane slicing
         flip — default off unless ``PRECIS_JOB_SLICING``) and
         ``claim.slice_s.<executor>`` (the per-claim wall budget;
-        ``PRECIS_JOB_SLICE_S``, else :data:`DEFAULT_SLICE_S`). Read-only —
+        ``PRECIS_JOB_SLICE_S``, else :data:`DEFAULT_SLICE_S`), plus
+        ``claim.footprint.<work>.cpu_milli`` (a run_slice work class's
+        spawn-ledger CPU, gr741695). Read-only —
         writes go through ``put(kind='job', mode='setting', ...)``, which
         validates the key against the job_type / executor registries and
         audits the change to ``worker_logs``. A row whose leaf names no
@@ -2562,6 +2623,14 @@ class JobHandler(NumericRefHandler):
         budgets = leaves(_SLICE_S_KEY_PREFIX)
         lane_caps = leaves(_EXECUTOR_CAP_KEY_PREFIX)
         reserves = leaves(_RESERVE_KEY_PREFIX)
+        # Only <work>.cpu_milli leaves are the footprint family; any other
+        # claim.footprint.* key (written around the setter) is unrecognised.
+        cpu_suffix = f".{_FOOTPRINT_CPU_FIELD}"
+        footprints = {
+            leaf: v
+            for leaf, v in leaves(_FOOTPRINT_KEY_PREFIX).items()
+            if leaf.endswith(cpu_suffix) and len(leaf) > len(cpu_suffix)
+        }
         other = sorted(
             k
             for k in stored
@@ -2574,6 +2643,10 @@ class JobHandler(NumericRefHandler):
                     _RESERVE_KEY_PREFIX,
                 )
             )
+            and not (
+                k.startswith(_FOOTPRINT_KEY_PREFIX)
+                and k[len(_FOOTPRINT_KEY_PREFIX) :] in footprints
+            )
         )
 
         lines = [
@@ -2584,7 +2657,9 @@ class JobHandler(NumericRefHandler):
             "has a code default). claim.slicing.<executor>: live "
             "slicing flip (default off unless PRECIS_JOB_SLICING). "
             "claim.slice_s.<executor>: per-claim wall budget seconds "
-            f"(PRECIS_JOB_SLICE_S, else {DEFAULT_SLICE_S:g}s). Write: "
+            f"(PRECIS_JOB_SLICE_S, else {DEFAULT_SLICE_S:g}s). "
+            "claim.footprint.<work>.cpu_milli: spawn-ledger CPU one "
+            "factory launch reserves. Write: "
             "put(kind='job', mode='setting', args={'key': ..., "
             "'value': <v>, 'reason': '<why>'}) or args={'key': ..., "
             "'unset': true, 'reason': ...}.",
@@ -2700,6 +2775,58 @@ class JobHandler(NumericRefHandler):
                 lane_rows, schema=["executor", "cap", "reserve", "updated"]
             )
         )
+        lines += [
+            "",
+            f"## claim.footprint.<work>.{_FOOTPRINT_CPU_FIELD}",
+            "",
+            "cpu_milli one run_slice/land_slice launch reserves on the "
+            "launching host's spawn ledger (1000 = one core), read at claim "
+            "and at spawn. A bad stored value falls back to the default; "
+            f"one above {FOOTPRINT_CPU_MAX_MILLI} clamps to it. applies: "
+            "where the override is read (dep_check / boundary_probe "
+            "synchronous steps keep their own reservation).",
+        ]
+        fp_defaults = _work_footprint_defaults()
+        fp_rows = []
+        for leaf in sorted(
+            {f"{w}.{_FOOTPRINT_CPU_FIELD}" for w in fp_defaults} | set(footprints)
+        ):
+            work = leaf.rpartition(".")[0]
+            fp_override, fp_ts = footprints.get(leaf, (None, None))
+            fp_base = fp_defaults.get(work)
+            fp_default = str(fp_base.cpu_milli) if fp_base is not None else "-"
+            fp_parsed = parse_footprint_cpu_milli(fp_override)
+            if fp_override is None:
+                fp_effective = fp_default
+            elif fp_parsed is None or fp_base is None:
+                fp_effective = f"{fp_default} (override ignored)"
+            else:
+                fp_effective = str(fp_parsed)
+            fp_rows.append(
+                {
+                    "work": work,
+                    "override": fp_override if fp_override is not None else "-",
+                    "default": fp_default,
+                    "effective": fp_effective,
+                    "updated": _limits_ts(fp_ts) if fp_override is not None else "-",
+                    "applies": _FOOTPRINT_APPLIES.get(work, "spawn")
+                    if fp_base is not None
+                    else "-",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                fp_rows,
+                schema=[
+                    "work",
+                    "override",
+                    "default",
+                    "effective",
+                    "updated",
+                    "applies",
+                ],
+            )
+        )
         # Per-class occupancy (gr603792): running rows per executor ×
         # job_type across hosts, for the executors that carry a cap or a
         # reservation — the numbers the bands above gate.
@@ -2736,7 +2863,8 @@ class JobHandler(NumericRefHandler):
             result_count=len(cap_rows)
             + len(flag_rows)
             + len(budget_rows)
-            + len(lane_rows),
+            + len(lane_rows)
+            + len(fp_rows),
         )
 
     def _render_throughput_view(self, query_string: str) -> Response:
@@ -4602,12 +4730,14 @@ class JobHandler(NumericRefHandler):
 
         ``put(kind='job', mode='setting', args={'key':
         'claim.max_running.<job_type>' | 'claim.slicing.<executor>' |
-        'claim.slice_s.<executor>', 'value': <v>, 'reason': '<why>'})``;
+        'claim.slice_s.<executor>' | 'claim.footprint.<work>.cpu_milli',
+        'value': <v>, 'reason': '<why>'})``;
         ``args={'key': ..., 'unset': true, 'reason': ...}`` clears the
         override. Mints no job row — every mint kwarg is refused. The key
-        must name a real job_type / executor and the value the family
-        type (max_running int 0..64 — ``0`` suspends the type; slicing
-        bool; slice_s positive seconds). ``reason=`` is required: the
+        must name a real job_type / executor / work class and the value
+        the family type (max_running int 0..64 — ``0`` suspends the type;
+        slicing bool; slice_s positive seconds; footprint cpu_milli a
+        positive int). ``reason=`` is required: the
         change (who, when, old → new, why) lands in ``worker_logs``, the
         same audit row ``precis limits set`` writes. CLI-only —
         :data:`_CLAIM_SETTING_SOURCES` is an explicit allowlist
