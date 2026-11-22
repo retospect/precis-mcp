@@ -5546,6 +5546,50 @@ class TestAutocatpathHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["barrier"] == 0.5
 
+    def test_older_unfinished_job_holds_the_bookmark(self, store: Any) -> None:
+        # gr695327: with two jobs under one candidate the bookmark jumped to
+        # the newer, complete one; the older job then sat below it and its
+        # barrier was skipped for good once it finished.
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        older = self._autocatpath_job(store, sid, {})  # no scalar yet
+        newer = self._autocatpath_job(store, sid, {"result": {"barrier": 0.7}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert int(meta.get("quest_autocatpath_harvested_upto", 0) or 0) < older
+        # the older job now completes — the next harvest lifts its barrier
+        store.stamp_ref_meta(older, {"result": {"barrier": 0.5, "span": 0.9}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["span"] == 0.9  # only the older job carries a span
+        assert meta["barrier"] == 0.7  # oldest-first: the newer job lands last
+        assert meta["quest_autocatpath_harvested_upto"] == newer
+        logs = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        # each job is logged exactly once — holding the bookmark must not
+        # re-harvest the newer job on every pass
+        assert sum("barrier=0.5 eV" in t for t in logs) == 1
+        assert sum("barrier=0.7 eV" in t for t in logs) == 1
+        assert compute_mod.harvest_measures(store, qid).results_harvested == 0
+
+    def test_older_failed_job_does_not_hold_the_bookmark(self, store: Any) -> None:
+        # Only a job that can still finish holds the bookmark (gr695327). A
+        # failed job never yields measures: holding on it would strand the
+        # retry that replaced it.
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        failed = self._autocatpath_job(store, sid, {})
+        store.add_tag(failed, Tag.closed("STATUS", "failed"), set_by="system")
+        retry = self._autocatpath_job(store, sid, {"result": {"barrier": 0.7}})
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.7
+        assert meta["quest_autocatpath_harvested_upto"] == retry
+
     def test_pathway_link_created_when_ref_present(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)

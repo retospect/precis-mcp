@@ -5238,7 +5238,11 @@ def harvest_measures(
     * completed **autocatpath** (`autocatpath_explore`) jobs → barrier (+span)
       lifted onto the candidate's ``meta`` (frontier reads it), evaluating
       pathway linked into the quest graph, logged as `result`, tracked via
-      ``meta.quest_autocatpath_harvested_upto``.
+      ``meta.quest_autocatpath_harvested_upto``. Jobs are read oldest-first
+      and the pass stops at the first one still running (no measures, no
+      terminal ``STATUS``): the bookmark never passes an unresolved job, and
+      a newer finished sibling waits behind it rather than being logged
+      again on every pass. A job that ended without measures holds nothing.
     * latest relax job failed for **genuine non-convergence** → one-shot
       ``ruled-out:relax-failed`` tag + `dead-end` entry.
     * latest relax job failed with ``failure_class="infra"`` (container/
@@ -5303,6 +5307,7 @@ def harvest_measures(
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
+    from precis.workers.executors._common import TERMINAL as _JOB_TERMINAL
 
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     harvested = ruled_out = 0
@@ -5417,7 +5422,13 @@ def harvest_measures(
         for job_id, jmeta in cp_jobs:
             measures = _autocatpath_measures_from_job(jmeta)
             if not measures:
-                continue  # still running — do not advance the bookmark, retry next tick
+                if _job_status(store.tags_for(job_id)) in _JOB_TERMINAL:
+                    continue  # ended without measures — nothing to wait for
+                # Still running: it and every later job retry next tick, so
+                # the bookmark stays below the oldest unresolved job. A
+                # max-id bookmark skipped this job for good once a newer
+                # sibling landed first (gr695327).
+                break
             cp_seen = max(cp_seen, job_id)
             pathway_ref = jmeta.get("pathway_ref")
             pw_meta: dict[str, Any] | None = None
