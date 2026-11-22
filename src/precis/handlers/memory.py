@@ -99,6 +99,9 @@ Shape checks (``handlers/_memory_shape.py``) run alongside attribution on
 agent put/edit, but are always advisory; non-agent puts skip them. Each
 checked code maintains its own system-owned ``AUDIT`` tag; a clean rewrite
 clears it. Hand-set flags retain their owner even on a matching finding.
+A ``link`` write that adds or removes a route edge (``cites`` /
+``derived-from``) re-derives ``missing-route`` alone: the edge feeds that
+check and no body write follows it (gr688899).
 Preview responses
 include proposed titles for grab-bags. Unavailable checks leave flags
 untouched; tag maintenance has a savepoint so failures cannot poison the
@@ -211,7 +214,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store._links_ops import MACHINE_EDGE_META_KEYS
+from precis.store._links_ops import MACHINE_EDGE_META_KEYS, canonical_relation
 from precis.store._search_cut import semantic_fold_distance
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry, search_trace
@@ -230,7 +233,7 @@ from precis.utils.edit_resolve import (
     select_candidates,
     splice_edit,
 )
-from precis.utils.link_tag_ops import merge_link_reason
+from precis.utils.link_tag_ops import merge_link_reason, validate_relation
 from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.memory_fusion import GOTCHAS_TAG, FusionFlags
@@ -272,6 +275,9 @@ if TYPE_CHECKING:
 _SECTION_HEAD_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.M)
 
 log = logging.getLogger(__name__)
+
+#: Outgoing relations the ``missing-route`` shape audit counts as a route.
+_ROUTE_RELATIONS = frozenset({"cites", "derived-from"})
 
 # Batch editing keeps only each child's first receipt line. Collect advisory
 # ids call-locally so its outer receipt retains one processing hint, without
@@ -928,6 +934,41 @@ class MemoryHandler(AuditedRetirementHandler):
         except Exception:
             log.debug("memory link ack hints skipped", exc_info=True)
             return response
+
+    def _link(
+        self,
+        *,
+        id: str | int,
+        target: str | None,
+        mode: str,
+        rel: str | None,
+        meta: dict[str, Any] | None = None,
+    ) -> Response:
+        """A route edge is an audit input: its write re-checks the flag.
+
+        ``AUDIT:missing-route`` used to move only on a body write, so a node
+        fixed by ``link(rel='cites')`` stayed in the audit queue (gr688899).
+        A passive spelling stores the edge on the target; a bare remove can
+        drop either orientation.
+        """
+        response = super()._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
+        try:
+            relation = validate_relation(rel, store=self.store)
+            flipped = canonical_relation(relation)
+            bare_remove = mode == "remove" and rel is None
+            if bare_remove or (flipped or relation) in _ROUTE_RELATIONS:
+                ends = set() if flipped else {self._coerce_id(id)}
+                if flipped or bare_remove:
+                    dst = parse_link_target(
+                        target or "", store=self.store, include_retired=True
+                    )
+                    if dst.kind == self.kind:
+                        ends.add(dst.ref_id)
+                for ref_id in sorted(ends):
+                    self._reaudit_route(ref_id)
+        except Exception:
+            log.warning("memory route re-audit failed open", exc_info=True)
+        return response
 
     # ── list-view filters (id='/<view>') ────────────────────────────
 
@@ -2311,8 +2352,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 body=body,
                 tags=all_tag_strs,
                 meta=meta,
-                has_evidence=target is not None
-                and relation in {"cites", "derived-from"},
+                has_evidence=target is not None and relation in _ROUTE_RELATIONS,
             )
         facts_deferred = 0
 
@@ -2463,7 +2503,7 @@ class MemoryHandler(AuditedRetirementHandler):
             body=text,
             tags=all_tags,
             meta=put_meta,
-            has_evidence=link is not None and rel in {"cites", "derived-from"},
+            has_evidence=link is not None and rel in _ROUTE_RELATIONS,
         )
         return self._with_shape_advisory(ack, shape, dry_run=True)
 
@@ -2590,7 +2630,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 tags=[str(tag) for tag in self.store.tags_for(ref.id)],
                 meta={**(ref.meta or {}), **meta_patch},
                 has_evidence=any(
-                    link.relation in {"cites", "derived-from"}
+                    link.relation in _ROUTE_RELATIONS
                     for link in self.store.links_for(ref.id, direction="out")
                 ),
             )
@@ -2630,6 +2670,16 @@ class MemoryHandler(AuditedRetirementHandler):
                         self.store.remove_tag(ref_id, tag, conn=conn)
         except Exception:
             log.warning("memory shape tags failed open", exc_info=True)
+
+    def _reaudit_route(self, ref_id: int) -> None:
+        """Re-derive ``missing-route`` alone: a link write changes no other input."""
+        with self.store.tx() as conn:
+            shape = self._shape_after_write(ref_id, None, conn=conn)
+            if shape is not None:
+                route_only = replace(
+                    shape, checked_codes=shape.checked_codes & {"missing-route"}
+                )
+                self._apply_shape_tags(ref_id, route_only, conn=conn)
 
     def _shape_after_write(
         self, ref_id: int, prior: ShapeAudit | None, *, conn: Connection

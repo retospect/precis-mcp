@@ -277,6 +277,59 @@ def test_evidence_edge_clears_missing_route(
     assert "AUDIT:missing-route" not in _tags(store, ref_id)
 
 
+def _unrouted_reference(handler: MemoryHandler) -> tuple[int, str]:
+    source = id_of(
+        handler.put(title="Evidence has a stable handle", text="Evidence.").body
+    )
+    ref_id = id_of(
+        handler.put(
+            title=_CLEAN_TITLE,
+            text="Memory writes always retain evidence.",
+            tags=["section:reference"],
+        ).body
+    )
+    return ref_id, f"memory:{source}"
+
+
+@pytest.mark.parametrize("rel", ["cites", "derived-from"])
+def test_route_link_reaudits_missing_route_without_a_body_write(
+    handler: MemoryHandler, store: Store, rel: str
+) -> None:
+    """gr688899: the link door moves the flag; an unrelated rel does not."""
+    ref_id, target = _unrouted_reference(handler)
+    assert "AUDIT:missing-route" in _tags(store, ref_id)
+    handler.link(id=ref_id, target=target, rel="related-to")
+    assert "AUDIT:missing-route" in _tags(store, ref_id)
+    handler.link(id=ref_id, target=target, rel=rel)
+    assert "AUDIT:missing-route" not in _tags(store, ref_id)
+    handler.link(id=ref_id, target=target, mode="remove", rel="related-to")
+    assert "AUDIT:missing-route" not in _tags(store, ref_id)
+    handler.link(id=ref_id, target=target, mode="remove", rel=rel)
+    assert "AUDIT:missing-route" in _tags(store, ref_id)
+
+
+def test_route_link_reaudit_covers_batch_passive_and_bare_remove(
+    handler: MemoryHandler, store: Store
+) -> None:
+    ref_id, target = _unrouted_reference(handler)
+    handler.link(id=[ref_id], target=target, rel="cites")
+    assert "AUDIT:missing-route" not in _tags(store, ref_id)
+    handler.link(id=ref_id, target=target, mode="remove")
+    assert "AUDIT:missing-route" in _tags(store, ref_id)
+    # ``cited-by`` from the evidence side stores the same ``cites`` row.
+    handler.link(id=target.split(":")[1], target=f"memory:{ref_id}", rel="cited-by")
+    assert "AUDIT:missing-route" not in _tags(store, ref_id)
+
+
+def test_route_link_reaudit_keeps_an_author_set_flag(
+    handler: MemoryHandler, store: Store
+) -> None:
+    ref_id, target = _unrouted_reference(handler)
+    store.add_tag(ref_id, Tag.closed("AUDIT", "missing-route"), set_by="agent")
+    handler.link(id=ref_id, target=target, rel="cites")
+    assert "AUDIT:missing-route" in _tags(store, ref_id)
+
+
 def test_shape_tag_failure_rolls_back_only_the_savepoint(
     handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

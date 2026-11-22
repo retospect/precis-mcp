@@ -1090,6 +1090,8 @@ Memory accepts four closed UPPERCASE axes:
   separate reject option above.
 
 A clean rewrite clears only system-set audit flags; hand-set flags stay.
+`missing-route` is also re-checked when `link` adds or removes a
+`cites`/`derived-from` edge, with no body write.
 Unavailable checks preserve their flags, including `old-sha` when Git
 cannot be queried. Preview a grab-bag with `put(..., dry_run=True)` or an
 anchored edit's `dry_run=True` to see proposed atomic titles; these are
