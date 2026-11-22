@@ -303,6 +303,11 @@ search(kind="gripe", tags=["STATUS:user_verify"])  # on main, a human checks it
 search(kind="gripe", tags=["STATUS:needs_spec"])
 ```
 
+Triage parks a size-L or `fix: spec` verdict here only when the gripe
+thread (body or live comments) records no spec. A line starting `spec:`
+or `spec (` counts (so does a retired backlog spec path); one posted while
+triage runs counts too.
+
 ## Find gripes marked won't-fix
 
 ```python
@@ -991,7 +996,7 @@ filters; `/stats` takes neither `q=` nor a detail `view=`.
 | `STATUS:verify`        | Legacy spelling of `auto_verify` (pre-split rows); still accepted |
 | `STATUS:auto_verify`   | On main, waiting for a gated release: needs a newest `resolved: <sha> (main, release pending)` comment (`scripts/ship` writes both for every `grN` ending the squash subject); releases the lease. `scripts/gripe-validate` / the `gripe_validate` job flips it to `done` once the sha is on prod — or back to `triaged` when the release gate is red. The triage worker also parks deployed-pending fixes here (`fix-sha:`) |
 | `STATUS:user_verify`   | Same wait, but a human must check the fix (the lander opts the gripe in at ship time). Each deploy keeps ONE ask-user todo listing the cohort; the gripes close when it's answered |
-| `STATUS:needs_spec`    | Ill-specified — parked until a graph spec names it (the deploy verifier closes it then) or a human sends it back to `open` ("move back to new" on the web detail page — writes a comment) |
+| `STATUS:needs_spec`    | Ill-specified (size L or `fix: spec`, no `spec:` line in the thread) — parked until a graph spec names it (the deploy verifier closes it then) or a human sends it back to `open` ("move back to new" on the web detail page — writes a comment) |
 | `STATUS:parked`        | Waiting on a `meta.until` wake condition (gr/td ref done, sha in prod, a date, or free text) — off every open queue; the `gripe_parked` pass returns it to `open` when met. Requires `until` on the parking call |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
