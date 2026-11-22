@@ -1103,11 +1103,13 @@ class RefsMixin:
             PLACEHOLDER_TITLE,
             _byline_key_word,
             _title_key_word,
+            arxiv_doi_aliases,
             doi_twins,
             is_placeholder_title,
             make_cite_key,
             normalize_doi,
         )
+        from precis.store._identifiers_ops import _normalise_identifier
 
         # Canonicalise DOIs (lowercase, strip doi:/URL prefixes) so both the
         # collapse *probe* and the stored row match the trigger-lowercased form
@@ -1116,9 +1118,24 @@ class RefsMixin:
         for _k, _v in identifiers:
             if not (_v and _v.strip()):
                 continue
-            _val = normalize_doi(_v) if _k == "doi" else _v.strip()
+            if _k == "doi":
+                _val = normalize_doi(_v)
+            elif _k == "arxiv":
+                # Same normalisation ``insert_ref_identifiers`` applies:
+                # strip the arxiv:/URL spelling and any version suffix,
+                # lowercase — probe and mint row match the stored form.
+                _val = _normalise_identifier("arxiv", _v)
+            else:
+                _val = _v.strip()
             if _val:
                 norm.append((_k, _val))
+        # gr711568: ``arxiv:<id>`` and its DataCite DOI
+        # ``10.48550/arxiv.<id>`` spell one preprint in two schemes — the
+        # collapse probe must see (and a mint must register) the derived
+        # alias of each, or a DOI-spelled re-ask of an arXiv-row stub
+        # forks a duplicate.
+        direct_count = len(norm)
+        norm.extend(arxiv_doi_aliases(norm))
 
         def check_title(ref_id: int, held_title: str | None) -> None:
             # An identifier is strong evidence, but cannot make a corrupt
@@ -1143,7 +1160,7 @@ class RefsMixin:
                 )
 
         def _do(c: Connection) -> tuple[int, bool]:
-            for id_kind, id_value in norm:
+            for i, (id_kind, id_value) in enumerate(norm):
                 row = c.execute(
                     "SELECT r.ref_id, r.title FROM ref_identifiers ri "
                     "JOIN refs r ON r.ref_id = ri.ref_id "
@@ -1152,6 +1169,19 @@ class RefsMixin:
                 ).fetchone()
                 if row is not None:
                     check_title(int(row[0]), row[1])
+                    if i >= direct_count:
+                        # The hit came through a derived (cross-scheme)
+                        # alias — fold the asked-for ids onto the held
+                        # row so a same-scheme ask collapses directly
+                        # next time (gr711568).
+                        for _k, _v in norm[:direct_count]:
+                            c.execute(
+                                "INSERT INTO ref_identifiers "
+                                "(id_kind, id_value, ref_id, source) "
+                                "VALUES (%s, %s, %s, %s) "
+                                "ON CONFLICT DO NOTHING",
+                                (_k, _v, int(row[0]), set_by),
+                            )
                     return int(row[0]), False
 
             # Twin DOIs (Wiley anie/ange): one work, two DOIs. A hit
@@ -1263,7 +1293,12 @@ class RefsMixin:
                 meta=initial_meta,
                 conn=c,
             )
-            for id_kind, id_value in norm:
+            # Mint registers only what the caller resolved — the derived
+            # cross-scheme spellings exist for the collapse probe and the
+            # hit-fold, not as rows of their own (a fresh arXiv mint does
+            # not acquire a ``doi`` row; the DOI lands when a DOI-spelled
+            # ask actually converges — gr711568).
+            for id_kind, id_value in norm[:direct_count]:
                 c.execute(
                     "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
                     "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",

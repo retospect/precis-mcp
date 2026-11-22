@@ -1610,7 +1610,8 @@ def _resolve_or_create_stub(
     the existing or freshly-minted ref.
     """
     # Probe existing refs by every identifier we have.
-    from precis.identity import normalize_doi
+    from precis.identity import arxiv_doi_aliases, normalize_doi
+    from precis.store._identifiers_ops import _normalise_identifier
 
     probes: list[tuple[str, str]] = []
     if target.doi:
@@ -1620,18 +1621,39 @@ def _resolve_or_create_stub(
         if norm_doi:
             probes.append(("doi", norm_doi))
     if target.arxiv:
-        probes.append(("arxiv", target.arxiv))
+        # Same normalisation ``insert_ref_identifiers`` applies (strip
+        # arxiv:/version spelling, lowercase) or a mixed-case target
+        # misses the stored row.
+        norm_arxiv = _normalise_identifier("arxiv", target.arxiv)
+        if norm_arxiv:
+            probes.append(("arxiv", norm_arxiv))
     if target.s2_id:
         probes.append(("s2", target.s2_id))
     if not probes:
         return None  # No external ID → no stub (per design).
 
-    for id_kind, id_value in probes:
+    # gr711568: ``arxiv:<id>`` and its DataCite DOI
+    # ``10.48550/arxiv.<id>`` are one preprint — the probe sees the
+    # derived alias of each, and the mint below registers both.
+    direct_count = len(probes)
+    probes.extend(arxiv_doi_aliases(probes))
+
+    for i, (id_kind, id_value) in enumerate(probes):
         row = conn.execute(
             "SELECT ref_id FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
             (id_kind, id_value),
         ).fetchone()
         if row is not None:
+            if i >= direct_count:
+                # Derived-alias hit: fold the asked-for ids onto the
+                # held row so the next pass probes it directly.
+                for _k, _v in probes[:direct_count]:
+                    conn.execute(
+                        "INSERT INTO ref_identifiers "
+                        "(id_kind, id_value, ref_id, source) "
+                        "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                        (_k, _v, int(row[0]), "chase"),
+                    )
             return int(row[0])
 
     # No hit — mint a stub. The chase actor pins set_by='chase' so
@@ -1701,8 +1723,10 @@ def _resolve_or_create_stub(
                 meta=stub_meta,
                 conn=conn,
             )
-    # Register every external ID we have, plus the chase-actor row.
-    for id_kind, id_value in probes:
+    # Register every external ID we have, plus the chase-actor row —
+    # the caller's pairs only; the derived cross-scheme spellings are a
+    # probe/fold device, not rows of their own (gr711568).
+    for id_kind, id_value in probes[:direct_count]:
         conn.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",

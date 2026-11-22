@@ -945,6 +945,76 @@ def normalize_arxiv(s: str | None) -> str | None:
     return raw
 
 
+#: Case-insensitive twin of :data:`_ARXIV_ID_RE`: ``ref_identifiers``
+#: lowercases stored values (``_normalise_identifier``), so a DataCite
+#: DOI suffix like ``cs.lg/0501001`` must still validate when the
+#: canonical subclass casing would be ``cs.LG``.
+_ARXIV_ID_ANY_CASE_RE = re.compile(_ARXIV_ID_RE.pattern, re.IGNORECASE)
+
+#: The arXiv DataCite DOI mint — one such DOI per eprint, its suffix
+#: IS the arXiv id (``10.48550/arXiv.2607.03433`` ↔ ``arxiv:2607.03433``).
+_ARXIV_DATACITE_DOI_RE = re.compile(r"^10\.48550/arxiv\.(.+)$", re.IGNORECASE)
+
+
+def arxiv_id_of_doi(doi: str | None) -> str | None:
+    """Bare arXiv id when ``doi`` is the arXiv DataCite mint, else ``None``.
+
+    Normalised to the lowercase ``ref_identifiers`` form (``normalize_doi``
+    + version-strip): ``10.48550/arXiv.2607.03433v2`` → ``2607.03433``.
+    One preprint, two spellings — collapse probes and mint registrations
+    treat them as the same work (gr711568).
+    """
+    norm = normalize_doi(doi)
+    if not norm:
+        return None
+    m = _ARXIV_DATACITE_DOI_RE.match(norm)
+    if m is None:
+        return None
+    bare = _ARXIV_VERSION_RE.sub("", m.group(1))
+    return bare if _ARXIV_ID_ANY_CASE_RE.match(bare) else None
+
+
+def arxiv_datacite_doi(arxiv_id: str | None) -> str | None:
+    """The arXiv DataCite DOI (``10.48550/arxiv.<id>``) of ``arxiv_id``,
+    else ``None`` when the value is not arXiv-shaped. Version suffix
+    stripped, lowercase — the stored DOI form.
+    """
+    norm = normalize_arxiv(arxiv_id)
+    if norm is None and arxiv_id:
+        raw = _ARXIV_VERSION_RE.sub("", arxiv_id.strip())
+        if raw and _ARXIV_ID_ANY_CASE_RE.match(raw):
+            norm = raw
+    return f"10.48550/arxiv.{norm.lower()}" if norm else None
+
+
+def arxiv_doi_aliases(
+    pairs: Iterable[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Cross-scheme spellings of every arXiv id in ``pairs`` (gr711568).
+
+    ``('doi', '10.48550/arxiv.<id>')`` → ``('arxiv', '<id>')`` and
+    ``('arxiv', '<id>')`` → ``('doi', '10.48550/arxiv.<id>')``. Returns
+    only derived pairs absent from the input — appended to a collapse
+    probe the DOI ask finds the arXiv-row stub (and vice versa), and
+    appended to a mint's registrations the stub carries both spellings
+    from birth.
+    """
+    have = {(k, v) for k, v in pairs}
+    out: list[tuple[str, str]] = []
+    for kind, value in pairs:
+        if kind == "doi":
+            derived = arxiv_id_of_doi(value)
+            pair = ("arxiv", derived) if derived else None
+        elif kind == "arxiv":
+            doi = arxiv_datacite_doi(value)
+            pair = ("doi", doi) if doi else None
+        else:
+            pair = None
+        if pair is not None and pair not in have and pair not in out:
+            out.append(pair)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Hashes
 # ---------------------------------------------------------------------------
@@ -1292,6 +1362,9 @@ def make_node_id(paper_id: str, page: int | None, block_index: int) -> str:
 __all__ = [
     "PLACEHOLDER_TITLE",
     "CiteKeyOverflow",
+    "arxiv_datacite_doi",
+    "arxiv_doi_aliases",
+    "arxiv_id_of_doi",
     "is_junk_cite_key",
     "is_placeholder_title",
     "make_cite_key",

@@ -129,9 +129,12 @@ from precis import settings
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
-from precis.identity import is_placeholder_title
+from precis.identity import (
+    arxiv_id_of_doi,
+    is_placeholder_title,
+)
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
-from precis.store._stub_predicate import stub_predicate_sql
+from precis.store._stub_predicate import arxiv_fallback_sql, stub_predicate_sql
 from precis.utils.http import (
     Policy,
     VendorUnavailable,
@@ -650,6 +653,13 @@ class StubRef:
     arxiv: str | None
     s2_id: str | None
     cite_key: str | None
+    #: ``arxiv`` came from :func:`~precis.store._stub_predicate.
+    #: arxiv_fallback_sql` (meta copy / ``paper_id`` alias) rather than a
+    #: strict ``id_kind='arxiv'`` row — a pre-fixer mint whose id never
+    #: landed in ``ref_identifiers`` (gr711568). ``_run_cascade`` heals
+    #: the row on the pass that claims it so the next claim, collapse
+    #: probe and ``has_external_id`` all see the registered form.
+    arxiv_unregistered: bool = False
     #: Current ``refs.retraction_status`` (``None`` / ``corrected`` /
     #: ``expression_of_concern`` on a claimed stub — a ``retracted`` one is
     #: excluded by the claim predicate so it never reaches here). Lets the
@@ -919,8 +929,9 @@ def claim_stubs_to_fetch(
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
                r.retraction_status                                 AS retraction_status,
-               r.title
-    """
+               r.title,
+               {arxiv_fallback}
+    """.format(arxiv_fallback=arxiv_fallback_sql("r"))
     from_where = f"""
           FROM refs r
           LEFT JOIN LATERAL (
@@ -1074,18 +1085,32 @@ def claim_stubs_to_fetch(
         return []
 
     rows = explored_rows + main_rows
-    return [
-        StubRef(
+
+    def _build(r: Any) -> StubRef:
+        # ``r[7]`` = ``arxiv_fallback_sql``: a meta/paper_id-carried
+        # arXiv id no strict row holds (gr711568). The SQL gate admits
+        # it loose; ``_normalize_arxiv_id`` cleans the ``arxiv:``/URL
+        # spelling before the legs see it. An unnormalisable leftover
+        # still goes through as-is so ``_try_arxiv`` stamps
+        # ``invalid_identifier`` — a visible, backing-off outcome,
+        # rather than a silent reclaim-and-drop loop.
+        arxiv = r[2]
+        unregistered = False
+        if arxiv is None and r[7]:
+            arxiv = _normalize_arxiv_id(r[7]) or str(r[7])
+            unregistered = arxiv is not None
+        return StubRef(
             ref_id=int(r[0]),
             doi=r[1],
-            arxiv=r[2],
+            arxiv=arxiv,
             s2_id=r[3],
             cite_key=r[4],
+            arxiv_unregistered=unregistered,
             retraction_status=r[5],
             title=r[6],
         )
-        for r in rows
-    ]
+
+    return [_build(r) for r in rows]
 
 
 # ── Retraction gate ─────────────────────────────────────────────────
@@ -2274,23 +2299,37 @@ def _query_openalex_arxiv_id(doi: str, *, email: str) -> str | None:
 
 
 def _resolve_arxiv_id(stub: StubRef, *, email: str) -> str | None:
-    """arXiv id for a DOI-only stub, from the DOI itself or OpenAlex metadata.
+    """arXiv id for a stub that doesn't carry one yet.
 
-    A stub registered with only a DOI can still have a free arXiv copy
-    (gr453862: SCAN, closed APS DOI, preprint 1504.03028). arXiv-issued
-    DOIs (``10.48550/arXiv.<id>``) carry the id directly; otherwise ask
-    OpenAlex. Never raises — a lookup failure just leaves the stub as is.
+    Sources, in order: the stub's own arXiv-issued DOI
+    (``10.48550/arXiv.<id>`` — the suffix IS the id), OpenAlex metadata
+    for any other DOI (gr453862: a closed publisher DOI can still have
+    a free arXiv copy — SCAN, APS DOI, preprint 1504.03028), and — for
+    an S2-only stub nobody re-asked since — the S2 record's
+    ``externalIds.ArXiv`` (gr711568). Never raises — a lookup failure
+    just leaves the stub as is.
     """
-    if stub.arxiv or not stub.doi or not _DOI_RE.match(stub.doi):
+    if stub.arxiv:
         return None
-    m = re.match(r"^10\.48550/arxiv\.(.+)$", stub.doi, re.IGNORECASE)
-    if m:
-        return _normalize_arxiv_id(m.group(1))
-    try:
-        return _query_openalex_arxiv_id(stub.doi, email=email)
-    except Exception as exc:
-        log.info("fetch_oa: arxiv id lookup failed for %s: %s", stub.doi, exc)
-        return None
+    if stub.doi and _DOI_RE.match(stub.doi):
+        m = re.match(r"^10\.48550/arxiv\.(.+)$", stub.doi, re.IGNORECASE)
+        if m:
+            return _normalize_arxiv_id(m.group(1))
+        try:
+            return _query_openalex_arxiv_id(stub.doi, email=email)
+        except Exception as exc:
+            log.info("fetch_oa: arxiv id lookup failed for %s: %s", stub.doi, exc)
+            return None
+    if stub.s2_id:
+        try:
+            return _query_s2_arxiv_id(stub.s2_id)
+        except Exception as exc:
+            log.info(
+                "fetch_oa: s2 arxiv lookup failed for ref_id=%s: %s",
+                stub.ref_id,
+                exc,
+            )
+    return None
 
 
 def _try_arxiv(
@@ -3899,16 +3938,53 @@ def _pdf_title_warnings(stub: StubRef, path: Path) -> list[str]:
         return []
 
 
+def _persist_arxiv_alias(
+    store: Store | None, ref_id: int, arxiv_id: str | None
+) -> None:
+    """Best-effort heal: persist an in-band arXiv id as a strict row.
+
+    gr711568 — the id reached the pass from ``meta`` / a ``paper_id``
+    alias (the claim fallback) or a same-pass OpenAlex/S2 resolve;
+    writing the ``id_kind='arxiv'`` row means the next claim, collapse
+    probe and ``has_external_id`` all see the canonical form. Routes
+    through ``insert_ref_identifiers`` so a human-cleared/dropped pair
+    stays cleared. Never raises — a persist failure leaves the
+    fallback doing the same job next pass.
+    """
+    bare = _normalize_arxiv_id(arxiv_id)
+    if store is None or not bare:
+        return
+    try:
+        store.insert_ref_identifiers(ref_id, [("arxiv", bare, "fetch_oa")])
+    except Exception as exc:
+        log.info("fetch_oa: arxiv alias persist failed for ref_id=%s: %s", ref_id, exc)
+
+
 def _with_resolved_arxiv(
-    stub: StubRef, *, email: str, gate: _ProviderGate, stop_at: float | None
+    stub: StubRef,
+    *,
+    email: str,
+    gate: _ProviderGate,
+    stop_at: float | None,
+    store: Store | None = None,
 ) -> StubRef:
-    """Give a DOI-only stub an arXiv fallback while respecting the OpenAlex gate."""
+    """Give an arXiv-less stub an arXiv fallback, behind the lane's gate.
+
+    The DOI path's lookup goes through OpenAlex (``openalex`` lane); an
+    S2-only stub's goes through Semantic Scholar (``s2`` lane) — both
+    lanes sit behind their provider gate/circuit so a saturated or
+    refusing service defers this pass rather than stalling it. A
+    resolved id is persisted as a strict ``arxiv`` row so the next
+    claim sees it in-band (gr711568).
+    """
     if stub.arxiv:
         return stub
-    if not gate.acquire("openalex", deadline=_meta_wait_deadline(stop_at)):
+    lane = "openalex" if (stub.doi and _DOI_RE.match(stub.doi)) else "s2"
+    if not gate.acquire(lane, deadline=_meta_wait_deadline(stop_at)):
         log.info(
-            "fetch_oa: arxiv id resolve deferred for ref_id=%s — openalex lane busy",
+            "fetch_oa: arxiv id resolve deferred for ref_id=%s — %s lane busy",
             stub.ref_id,
+            lane,
         )
         return stub
 
@@ -3916,12 +3992,13 @@ def _with_resolved_arxiv(
     try:
         resolved_arxiv = _resolve_arxiv_id(stub, email=email)
     finally:
-        gate.release("openalex")
+        gate.release(lane)
     if resolved_arxiv:
-        gate.healthy("openalex")
+        gate.healthy(lane)
+        _persist_arxiv_alias(store, stub.ref_id, resolved_arxiv)
         return dataclasses.replace(stub, arxiv=resolved_arxiv)
     if _ms(arxiv_t0) >= _SLOW_FAIL_MS:
-        gate.fail("openalex")
+        gate.fail(lane)
     # A fast None can be either a miss or a fast error, so leave health alone.
     return stub
 
@@ -3976,6 +4053,19 @@ def _run_cascade(
         last so it only spends after every free leg fails. A low-balance alert
         (:func:`check_openalex_balance`) warns before the runway runs out.
 
+    **arXiv-first exception (gr711568):** a stub that *carried* an arXiv
+    id at claim — a strict row or the meta/paper_id fallback — and no
+    publisher DOI to prefer runs the ``arxiv`` leg FIRST: an arXiv
+    eprint has no version of record, so walking thirteen VoR legs
+    before the deterministic preprint hit burned a dozen events per
+    retry and left preprints stranded on the S2 leg for months. A stub
+    holding a real publisher DOI alongside the arXiv id keeps the
+    VoR-first order (the published version is the better body), as does
+    a stub that only *resolves* an arXiv id this pass (OpenAlex/S2
+    lookup on a DOI/S2-only row) — there the preprint genuinely is the
+    fallback. A ``10.48550/arXiv.<id>`` DOI is the preprint's own mint,
+    not a publisher DOI — it doesn't count as a VoR to prefer.
+
     ``gate`` is the pass provider gate: a leg the gate can't admit
     before its wall defers with a ``provider_wait`` event — never a
     provider miss — and the stub is retried on its next claim; a healthy
@@ -3985,11 +4075,24 @@ def _run_cascade(
     """
     if gate is None:
         gate = _ProviderGate()
+    # arXiv-first when the stub carried the id in AND has no publisher
+    # DOI to prefer (see the docstring exception). A ``10.48550`` mint
+    # DOI is the preprint's own spelling — not a VoR.
+    arxiv_first = bool(stub.arxiv) and (
+        not stub.doi or arxiv_id_of_doi(stub.doi) is not None
+    )
     # Zenodo has its own PDF files, so give it a turn before asking
     # OpenAlex for an arXiv ID. Other DOIs keep their early lookup.
     defer_arxiv_lookup = _ZENODO_DOI_RE.fullmatch(stub.doi or "") is not None
     if not defer_arxiv_lookup:
-        stub = _with_resolved_arxiv(stub, email=email, gate=gate, stop_at=stop_at)
+        stub = _with_resolved_arxiv(
+            stub, email=email, gate=gate, stop_at=stop_at, store=store
+        )
+    if stub.arxiv_unregistered:
+        # Claim-fallback id (meta/paper_id, never a strict row) — heal it
+        # into ``ref_identifiers`` so the next claim, collapse probe and
+        # ``has_external_id`` see the canonical form (gr711568).
+        _persist_arxiv_alias(store, stub.ref_id, stub.arxiv)
     providers: list[tuple[str, Any]] = [
         (
             _SOURCE_PUBLISHER,
@@ -4097,11 +4200,19 @@ def _run_cascade(
             )
         )
 
+    if arxiv_first:
+        # gr711568: a stub that carried its arXiv id into the pass leads
+        # with the deterministic preprint leg — ``sort`` is stable, so
+        # this moves ``arxiv`` to the front without shuffling the rest.
+        providers.sort(key=lambda p: p[0] != _SOURCE_ARXIV)
+
     for source, runner in providers:
         if stop_at is not None and time.perf_counter() >= stop_at:
             break
         if defer_arxiv_lookup and source == _SOURCE_OPENALEX:
-            stub = _with_resolved_arxiv(stub, email=email, gate=gate, stop_at=stop_at)
+            stub = _with_resolved_arxiv(
+                stub, email=email, gate=gate, stop_at=stop_at, store=store
+            )
             if stop_at is not None and time.perf_counter() >= stop_at:
                 break
         trace = _current_ref_timing()
@@ -4846,6 +4957,29 @@ def _query_s2_openaccess(paper_id: str) -> str | None:
     else:
         url = getattr(oa, "url", None)
     return str(url) if url else None
+
+
+def _query_s2_arxiv_id(s2_id: str) -> str | None:
+    """arXiv id from S2's ``externalIds`` for one S2 paper id.
+
+    The fetch-time mirror of the acquire enrichment: an S2-only stub
+    nobody re-asks since minting can still learn its arXiv alias and
+    reach the arXiv leg (gr711568). Same ``semanticscholar`` client and
+    ``s2`` rate limiter as :func:`_query_s2_openaccess`. Returns the
+    validated bare id or ``None``.
+    """
+    from precis.ingest.semantic_scholar import _client
+    from precis.utils.rate_limit import acquire as acquire_rate_limit
+
+    sch = _client()
+    acquire_rate_limit("s2")
+    paper = sch.get_paper(s2_id, fields=["externalIds"])
+    if not paper:
+        return None
+    ext = getattr(paper, "externalIds", None) or {}
+    if not isinstance(ext, dict):
+        return None
+    return _normalize_arxiv_id(str(ext.get("ArXiv") or ""))
 
 
 __all__ = [

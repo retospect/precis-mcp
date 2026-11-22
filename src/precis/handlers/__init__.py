@@ -22,7 +22,13 @@ arXiv DataCite DOIs can use stored arXiv aliases. On an alias miss,
 paper reads check the DOI itself before considering acquisition.
 An acquire that lands on a tracked paper registers the identifiers it
 resolved there: a stub known only by its S2 id needs the arXiv id on its
-row before ``fetch_oa`` can try arXiv.
+row before ``fetch_oa`` can try arXiv. One preprint, two spellings —
+``arxiv:<id>`` and its DataCite DOI ``10.48550/arXiv.<id>`` collapse
+onto the same row at mint, put and chase probe
+(:func:`precis.identity.arxiv_doi_aliases`), and ``fetch_oa`` claims a
+stub whose arXiv id only lives in ``refs.meta`` / a ``paper_id`` alias,
+heals the strict row on the pass, and runs the arXiv leg first for any
+stub that carried the id in.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace

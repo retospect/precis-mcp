@@ -18,6 +18,9 @@ import pytest
 
 from precis.identity import (
     PLACEHOLDER_TITLE,
+    arxiv_datacite_doi,
+    arxiv_doi_aliases,
+    arxiv_id_of_doi,
     doi_twins,
     is_placeholder_title,
     make_cite_key,
@@ -96,6 +99,63 @@ def test_normalize_doi(raw: str | None, expected: str | None) -> None:
 )
 def test_normalize_arxiv(raw: str | None, expected: str | None) -> None:
     assert normalize_arxiv(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# arXiv ↔ DataCite DOI spelling (gr711568)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("10.48550/arXiv.2607.03433", "2607.03433"),
+        ("10.48550/arXiv.2607.03433v2", "2607.03433"),
+        ("doi:10.48550/arXiv.2401.00077", "2401.00077"),
+        ("https://doi.org/10.48550/arXiv.2401.00077", "2401.00077"),
+        # Old-style suffix lowercases to the stored-id form.
+        ("10.48550/arXiv.cs.LG/0501001", "cs.lg/0501001"),
+        ("10.1038/nature10352", None),
+        ("10.48550/arXiv.notanid", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_arxiv_id_of_doi(raw: str | None, expected: str | None) -> None:
+    assert arxiv_id_of_doi(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("2607.03433", "10.48550/arxiv.2607.03433"),
+        ("arxiv:2401.00077v2", "10.48550/arxiv.2401.00077"),
+        ("cs.LG/0501001", "10.48550/arxiv.cs.lg/0501001"),
+        ("notanid", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_arxiv_datacite_doi(raw: str | None, expected: str | None) -> None:
+    assert arxiv_datacite_doi(raw) == expected
+
+
+def test_arxiv_doi_aliases() -> None:
+    # Both directions derive the cross-scheme spelling; pairs already in
+    # the input are not re-derived, and non-arXiv ids pass through.
+    assert arxiv_doi_aliases([("arxiv", "2401.00077")]) == [
+        ("doi", "10.48550/arxiv.2401.00077")
+    ]
+    assert arxiv_doi_aliases([("doi", "10.48550/arxiv.2401.00077")]) == [
+        ("arxiv", "2401.00077")
+    ]
+    assert (
+        arxiv_doi_aliases(
+            [("arxiv", "2401.00077"), ("doi", "10.48550/arxiv.2401.00077")]
+        )
+        == []
+    )
+    assert arxiv_doi_aliases([("s2", "abc"), ("doi", "10.1/x")]) == []
 
 
 # ---------------------------------------------------------------------------

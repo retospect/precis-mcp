@@ -2400,9 +2400,18 @@ class PaperHandler(Handler):
                 # minted from a citation list); register the others this
                 # ask resolved. fetch_oa reads the arXiv id from
                 # ref_identifiers, so without it the arXiv leg never runs
-                # for that stub (gr711568).
+                # for that stub (gr711568). The derived cross-scheme
+                # spelling lands too — a DOI-spelled ask still leaves the
+                # bare arXiv alias fetch_oa's claim reads.
+                from precis.identity import arxiv_doi_aliases
+
                 self.store.insert_ref_identifiers(
-                    ref_id, [(k, v, "dream") for k, v in identifiers], conn=conn
+                    ref_id,
+                    [
+                        (k, v, "dream")
+                        for k, v in [*identifiers, *arxiv_doi_aliases(identifiers)]
+                    ],
+                    conn=conn,
                 )
             # Tag the provenance only on a fresh stub — never slap
             # DREAM:acquire onto a paper the corpus already holds in full.

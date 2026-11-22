@@ -139,6 +139,52 @@ def fetchable_id_exists_sql(
     )
 
 
+#: ``refs.meta`` keys a paper's arXiv id can hide in when the
+#: ``id_kind='arxiv'`` row is missing — the ``meta.arxiv`` display copy
+#: ``_identifiers_ops`` maintains, plus the ``arxiv_id`` spelling older
+#: mints used. See :func:`arxiv_fallback_sql`.
+_META_ARXIV_KEYS: tuple[str, ...] = ("arxiv", "arxiv_id")
+
+#: Loose arXiv-id shape the meta fallback accepts before a stub counts
+#: as fetchable — new-style ``NNNN.NNNN[N][vN]``, old-style
+#: ``archive[.sub]/NNNNNNN``, ``arxiv:``-prefixed, bare, or an abs/pdf
+#: URL (meta edits have stored all of these). Deliberately wider than
+#: ``identity._ARXIV_ID_RE``: a stub that slips through is tried once,
+#: gets ``invalid_identifier``, and backs off — the fetcher
+#: re-validates before any leg spends a request on the value.
+_META_ARXIV_VALUE_RE = (
+    r"^(?:arxiv:|https?://arxiv\.org/(?:abs|pdf)/)?"
+    r"(?:\d{4}\.\d{4,5}|[a-z][a-z\-.]*/\d{7})(?:v\d+)?$"
+)
+
+
+def arxiv_fallback_sql(alias: str = "r") -> str:
+    """COALESCE fragment: the ref's arXiv id when no ``id_kind='arxiv'``
+    row carries it.
+
+    Fallback order: an ``arxiv:<id>``-shaped ``paper_id`` alias
+    (``make_paper_id`` keys preprints by arXiv id, and a dedup merge can
+    orphan the strict ``arxiv`` row), then the ``meta.arxiv`` /
+    ``meta.arxiv_id`` copies — shape-checked because ``refs.meta`` is
+    free-form, unlike the normalised identifier rows. Used by
+    ``claim_stubs_to_fetch`` to populate ``StubRef.arxiv`` and by
+    :func:`stub_predicate_sql` to keep a meta/paper-id-only arXiv stub
+    fetch-eligible; both are gr711568 (old mints whose arXiv id never
+    made it into ``ref_identifiers`` were stranded on the S2 leg).
+    """
+    meta_cases = " ".join(
+        f"WHEN {alias}.meta->>'{key}' ~* '{_META_ARXIV_VALUE_RE}' "
+        f"THEN {alias}.meta->>'{key}'"
+        for key in _META_ARXIV_KEYS
+    )
+    return (
+        "COALESCE((SELECT min(substr(pi.id_value, 7)) FROM ref_identifiers pi "
+        f"WHERE pi.ref_id = {alias}.ref_id AND pi.id_kind = 'paper_id' "
+        "AND starts_with(pi.id_value, 'arxiv:')), "
+        f"CASE {meta_cases} END)"
+    )
+
+
 #: ``kind`` is spliced into the SQL fragment as a literal — a lowercase
 #: ``refs.kind`` slug only, validated before interpolation (the same
 #: injection-guard posture as ``id_kinds``'s whitelist walk, which never
@@ -215,7 +261,14 @@ def stub_predicate_sql(
         f"{alias}.kind = '{kind}' AND {pdf_clause} AND {alias}.retired_at IS NULL"
     )
     if kind == "paper":
-        predicate += f" AND {fetchable_id_exists_sql(alias, id_kinds=id_kinds)}"
+        fetchable = fetchable_id_exists_sql(alias, id_kinds=id_kinds)
+        if "arxiv" in set(id_kinds):
+            # gr711568: pre-fixer mints parked the arXiv id in meta (or
+            # left it stranded on a paper_id alias) instead of the
+            # strict row — without this OR the claim gate drops them
+            # before any leg can run.
+            fetchable = f"({fetchable} OR ({arxiv_fallback_sql(alias)}) IS NOT NULL)"
+        predicate += f" AND {fetchable}"
     if exclude_retracted:
         # IS DISTINCT FROM (not <>): NULL — unchecked, the default state
         # every stub starts in — must stay eligible so it gets checked at

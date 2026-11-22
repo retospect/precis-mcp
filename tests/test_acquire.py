@@ -624,6 +624,25 @@ def test_reacquire_by_arxiv_gives_an_s2_only_stub_its_arxiv_id(
     assert outcome.payload["url"] == "https://arxiv.org/pdf/2401.00077.pdf"
 
 
+def test_datacite_doi_acquire_converges_on_arxiv_stub(
+    handler: PaperHandler, store: Store
+) -> None:
+    # gr711568 second symptom: put(kind='paper', doi='10.48550/arXiv.X')
+    # forked a duplicate stub next to the arXiv-row stub of the same
+    # preprint (pa711567 beside pa159949). The cross-scheme probe must
+    # collapse the ask onto the held stub and leave the DOI spelling on
+    # its row.
+    rid, _ = store.upsert_stub_paper(
+        identifiers=[("arxiv", "2401.00077")], title="t", set_by="chase"
+    )
+    r = handler.acquire(identifier="doi:10.48550/arXiv.2401.00077")
+    assert "already tracked" in r.body
+    assert _ref_id(r.body) == rid
+    ids = _identifiers(store, rid)
+    assert ("arxiv", "2401.00077") in ids
+    assert ("doi", "10.48550/arxiv.2401.00077") in ids
+
+
 def test_reacquire_guarded_path_keeps_restamp_guard(
     handler: PaperHandler, store: Store
 ) -> None:

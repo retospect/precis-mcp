@@ -756,6 +756,178 @@ class TestClaimStubs:
 
 
 # ---------------------------------------------------------------------------
+# gr711568 — meta/paper_id-carried arXiv ids and the S2-only resolve
+# ---------------------------------------------------------------------------
+
+
+def _seed_meta_arxiv_stub(store: Store, *, arxiv_meta: str) -> int:
+    """An 'old-style' stub whose arXiv id lives only in ``refs.meta`` —
+    the mint wrote no ``id_kind='arxiv'`` row, so the strict claim gate
+    used to drop it before any leg could run (gr711568: stranded on
+    ``fetcher:s2 no_oa_version`` for months)."""
+    ref_id = _seed_paper_stub(
+        store, cite_key="metastub2026", doi=None, arxiv=None, s2_id=None
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || "
+            "jsonb_build_object('arxiv', %s::text) WHERE ref_id = %s",
+            (arxiv_meta, ref_id),
+        )
+        conn.commit()
+    return ref_id
+
+
+class TestArxivFallback:
+    """Old mints parked the arXiv id outside ``ref_identifiers``; the
+    claim fallback + self-heal put them back on the arXiv leg."""
+
+    def test_meta_arxiv_stub_claims_with_arxiv(self, store: Store) -> None:
+        ref_id = _seed_meta_arxiv_stub(store, arxiv_meta="2607.03433")
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        got = [s for s in stubs if s.ref_id == ref_id]
+        assert len(got) == 1
+        assert got[0].arxiv == "2607.03433"
+        assert got[0].arxiv_unregistered is True
+
+    def test_paper_id_alias_arxiv_claims(self, store: Store) -> None:
+        """``make_paper_id`` keys a preprint ``arxiv:<id>`` — a merge can
+        leave that as the only arXiv carrier, so it counts too."""
+        ref_id = _seed_paper_stub(
+            store, cite_key="paperid2026", doi=None, arxiv=None, s2_id=None
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers "
+                "(ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'paper_id', 'arxiv:2606.12704', 'manual')",
+                (ref_id,),
+            )
+            conn.commit()
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        got = [s for s in stubs if s.ref_id == ref_id]
+        assert len(got) == 1
+        assert got[0].arxiv == "2606.12704"
+        assert got[0].arxiv_unregistered is True
+
+    def test_junk_meta_arxiv_is_not_a_fetchable_id(self, store: Store) -> None:
+        """The meta gate is loose but not a free pass: a value that can't
+        be an arXiv id keeps the stub unfetchable rather than churning
+        claims on legs that all skip it."""
+        ref_id = _seed_meta_arxiv_stub(store, arxiv_meta="see fig 3")
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert ref_id not in [s.ref_id for s in stubs]
+
+    def test_cascade_runs_arxiv_first_and_heals_the_row(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Spec (gr711568): a stub carrying an arXiv id runs
+        ``fetcher:arxiv`` FIRST on every pass — and the pass that claims
+        it via the fallback writes the strict ``arxiv`` row back."""
+        ref_id = _seed_meta_arxiv_stub(store, arxiv_meta="2607.03433")
+        with store.pool.connection() as conn:
+            stub = next(
+                s for s in claim_stubs_to_fetch(conn, limit=10) if s.ref_id == ref_id
+            )
+            conn.commit()
+        urls: list[str] = []
+
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
+            urls.append(url)
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        # Every leg that could fire before arxiv under the old VoR-first
+        # order: refuse loudly so running before arxiv fails the test.
+        for name in (
+            "_try_publisher",
+            "_try_unpaywall",
+            "_try_crossref",
+            "_try_acl",
+            "_try_zenodo",
+            "_try_openalex",
+            "_try_europepmc",
+        ):
+            monkeypatch.setattr(
+                fetch_oa,
+                name,
+                lambda *a, **k: pytest.fail(
+                    "a version-of-record leg ran before the arXiv leg"
+                ),
+            )
+        path = fetch_oa._run_cascade(
+            store,
+            stub,
+            tmp_path,
+            email="a@b.c",
+            api_key="",
+            wiley_token="",
+            core_key="",
+        )
+        assert path is not None
+        assert urls == ["https://arxiv.org/pdf/2607.03433.pdf"]
+        # The pass healed the strict row — the next claim and every
+        # collapse probe see the canonical alias.
+        assert (
+            store.find_ref_by_identifier("arxiv", "2607.03433", kind="paper") == ref_id
+        )
+
+    def test_s2_only_stub_resolves_arxiv_and_fetches_it(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr711568: an S2-only stub nobody re-asks still reaches the
+        arXiv leg — ``_resolve_arxiv_id`` consults the S2 record's
+        ``externalIds.ArXiv`` and the resolved id lands as a strict row."""
+        s2_id = "0123456789abcdef0123456789abcdef01234567"
+        ref_id = _seed_paper_stub(
+            store, cite_key="s2only2026", doi=None, arxiv=None, s2_id=s2_id
+        )
+        monkeypatch.setattr(fetch_oa, "_query_s2_arxiv_id", lambda s2: "1504.03028")
+        urls: list[str] = []
+
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
+            urls.append(url)
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        # DOI-driven legs have nothing to do on an S2-only stub.
+        for name in (
+            "_try_publisher",
+            "_try_unpaywall",
+            "_try_crossref",
+            "_try_acl",
+            "_try_zenodo",
+            "_try_openalex",
+            "_try_europepmc",
+        ):
+            monkeypatch.setattr(
+                fetch_oa,
+                name,
+                lambda *a, **k: fetch_oa.FetchOutcome("no_oa_version", {}, 0),
+            )
+        stub = _stub(ref_id=ref_id, doi=None, s2_id=s2_id)
+        path = fetch_oa._run_cascade(
+            store,
+            stub,
+            tmp_path,
+            email="a@b.c",
+            api_key="",
+            wiley_token="",
+            core_key="",
+        )
+        assert path is not None
+        assert urls == ["https://arxiv.org/pdf/1504.03028.pdf"]
+        assert (
+            store.find_ref_by_identifier("arxiv", "1504.03028", kind="paper") == ref_id
+        )
+
+
+# ---------------------------------------------------------------------------
 # _try_unpaywall — per-leg outcomes
 # ---------------------------------------------------------------------------
 
