@@ -11,6 +11,10 @@ claim text + its setup context + the chain of `derived-from` links
 from the agent's initial citation down to the primary source. It is
 the agent's *answer* to "what evidence do we have for X?".
 
+Bare reads of retired findings return a labelled read-only tombstone so
+stale citations remain identifiable without treating retired claims as
+live evidence. Specialized views and writes still require a live ref.
+
 This handler owns the **write door** for findings:
 
 - ``put(title, body, scope, cited_in)`` creates a new finding, the
@@ -100,7 +104,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import psycopg
 from psycopg.errors import UniqueViolation
 
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers import (
     _finding_acquire,
@@ -1257,7 +1261,36 @@ class FindingHandler(AuditedRetirementHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_merge.render_merge_plan_view(self.store, int(ref.id), loser)
-        return super().get(id=id, view=view, q=q, since=since, **_kw)
+        try:
+            return super().get(id=id, view=view, q=q, since=since, **_kw)
+        except Gone as exc:
+            # Stale citations must remain identifiable without presenting a
+            # retired claim as live evidence (gr702041). Keep mutation and
+            # specialized views behind the ordinary live-ref guard.
+            if view is not None or id is None:
+                raise
+            ref_id = self._coerce_id(id)
+            tombstone = self.store.get_ref(
+                kind=self.kind, id=ref_id, include_deleted=True
+            )
+            if tombstone is None:
+                raise
+            statuses = [
+                str(t)
+                for t in self.store.tags_for(ref_id)
+                if str(t).startswith("STATUS:")
+            ]
+            return Response(
+                body="\n".join(
+                    [
+                        f"finding id={ref_id} [soft-deleted, read-only]",
+                        f"title: {tombstone.title}",
+                        f"last status: {', '.join(statuses) or '(none)'}",
+                        "This retired claim is not live evidence. Do not retry this id.",
+                        f"next: {exc.next}",
+                    ]
+                )
+            )
 
     def eye(
         self,

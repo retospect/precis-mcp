@@ -14,7 +14,7 @@ import pytest
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Unsupported, Upstream
+from precis.errors import BadInput, Gone, NotFound, Unsupported, Upstream
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.store import Store
@@ -34,6 +34,26 @@ def _search(pattern: str, text: str) -> re.Match[str]:
 def _make_handler(store):
     """Build a FindingHandler bound to a fresh store."""
     return FindingHandler(hub=Hub(store=store))
+
+
+def test_retired_finding_bare_read_is_tombstone(store: Store) -> None:
+    """gr702041: stale ids remain readable without reviving their claims."""
+    h = _make_handler(store)
+    ref = store.insert_ref(kind="finding", slug=None, title="Retired claim", meta={})
+    h.delete(id=ref.id)
+    body = h.get(id=ref.id).body
+    assert "[soft-deleted, read-only]" in body
+    assert "title: Retired claim" in body
+    assert "last status: (none)" in body
+    assert "not live evidence" in body
+    assert "search(kind='finding', q='Retired claim')" in body
+    assert store.get_ref(kind="finding", id=ref.id) is None
+    with pytest.raises(Gone):
+        h.get(id=ref.id, view="evidence")
+    with pytest.raises(Gone):
+        h.tag(id=ref.id, add=["STATUS:established"])
+    with pytest.raises(NotFound):
+        h.get(id=99999999)
 
 
 def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
