@@ -1626,6 +1626,7 @@ def _results_table_section(
     return (
         "\n## Results so far (one row per evaluated candidate — read this "
         "BEFORE proposing)\n"
+        "band: frontier|beaten|provisional|awaiting\n"
         f"{RESULTS_TRUST_NOTE}\n"
         "The blocker column names the first fatal on-route trust check.\n"
         f"{table}\n"

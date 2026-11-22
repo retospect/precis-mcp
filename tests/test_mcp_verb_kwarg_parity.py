@@ -308,6 +308,11 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # spelling). A verb-level merge_into would be promoted out of
         # args= for every kind and miss paper's args-dict door.
         ("finding", "edit", "merge_into"),
+        # -- edit: published-claim reopen / successor doors, args= by
+        # design (precis-nanopub-help: args={'reopen': True, 'reason': …},
+        # args={'supersede': True, 'reason': …}); finding-only flags.
+        ("finding", "edit", "reopen"),
+        ("finding", "edit", "supersede"),
         # -- edit: memory D3-shortcut argument-graph kwargs ---------------
         ("memory", "edit", "rule"),
         ("memory", "edit", "warrant"),
