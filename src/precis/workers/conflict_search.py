@@ -46,11 +46,19 @@ Per hub:
 4. **Verify** — the sanctioned shared seam,
    ``workers._chase_llm._verify_support_with_caveats`` (never forked;
    the closed claim-conflict-search spec's "Boundary with hub_refine").
-   A dispatch failure consumes the budget slot and counts toward
-   ``llm_errors`` — never an edge.
-5. **File** — a confirmed ``contradicts`` verdict on a candidate never
+   The verifier is handed the passage the claim itself rests on
+   (:func:`_claim_passage`), so it reads the claim's system and
+   observable off evidence rather than off the bare sentence. A dispatch
+   failure consumes the budget slot and counts toward ``llm_errors`` —
+   never an edge.
+5. **File** — a ``contradicts`` verdict that the verifier also pinned to
+   the same system and observable (``same_setup is True``,
+   :func:`_dispute_allowed`; gr723734: a different system or observable
+   is a different finding, never a dispute, and the rule is enforced in
+   code because a verdict can break its prompt) on a candidate never
    previously attached to this hub becomes a plain, non-blocking
-   ``disputes`` link (Part 1 of
+   ``disputes`` link carrying both sides' passage handles and setups
+   (Part 1 of
    docs/backlog/disputes-edge-nonblocking-disagreement.md shipped +
    deployed 2026-09-03, so slice 1 files directly rather than parking
    verdicts). Idempotent on ``links``' endpoint+relation unique index —
@@ -191,7 +199,7 @@ from precis.taproot.directed import (
     directed_mint,
     qualify_claim,
 )
-from precis.taproot.hub import HUB_ROLES, link_claims
+from precis.taproot.hub import HUB_ROLES, judgement_fields, link_claims
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.env import env_float
@@ -958,6 +966,60 @@ def _opposing_seeds(cand: _Candidate, paraphrases: list[str]) -> list[str]:
     return out
 
 
+def _dispute_allowed(verdict: dict[str, Any]) -> bool:
+    """The deterministic write gate for a ``disputes`` filing (gr723734):
+    the verifier must say ``contradicts`` AND that claim and passage are
+    the same system and observable (``same_setup is True``; ``"unclear"``
+    or a missing field do not count). A different system or observable is
+    a different finding, never a dispute — the prompt says so, but a
+    verdict that breaks its own rule must not reach the graph."""
+    return verdict.get("contradicts") is True and verdict.get("same_setup") is True
+
+
+#: Evidence roles whose passage states what the claim was measured on,
+#: tried in this order by :func:`_claim_passage`.
+_CLAIM_PASSAGE_ROLES: tuple[str, ...] = ("establishes", "corroborates")
+
+
+def _claim_passage(store: Store, hub_ref_id: int) -> tuple[str | None, str | None]:
+    """``(handle, text)`` of the passage the claim itself rests on — the
+    chunk behind its earliest ``establishes`` link, else its earliest
+    ``corroborates`` link, full support first (most hubs carry no
+    ``establishes``) — or ``(None, None)``. The verifier reads
+    the claim's system and observable
+    off it; without it ``same_setup`` is judged from the sentence alone.
+
+    Resolved like ``hub_refine._claim_source_passage`` (re-derived, not
+    imported): the link's ``meta.source_handle``, then ``src_chunk_id``;
+    retired or empty chunks are skipped."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta->>'source_handle', src_chunk_id FROM links "
+            "WHERE dst_ref_id = %s AND relation = ANY(%s) "
+            "ORDER BY array_position(%s, relation), "
+            "(meta->>'support' IS DISTINCT FROM 'yes'), created_at, link_id",
+            (hub_ref_id, list(_CLAIM_PASSAGE_ROLES), list(_CLAIM_PASSAGE_ROLES)),
+        ).fetchall()
+        for source_handle, src_chunk_id in rows:
+            chunk_ids: list[int] = []
+            parsed = handle_registry.parse(source_handle) if source_handle else None
+            if parsed is not None and parsed[1]:
+                chunk_ids.append(parsed[2])
+            if src_chunk_id is not None and int(src_chunk_id) not in chunk_ids:
+                chunk_ids.append(int(src_chunk_id))
+            for chunk_id in chunk_ids:
+                row = conn.execute(
+                    "SELECT c.text, r.kind FROM chunks c "
+                    "JOIN refs r ON r.ref_id = c.ref_id "
+                    "WHERE c.chunk_id = %s AND c.retired_at IS NULL",
+                    (chunk_id,),
+                ).fetchone()
+                if row and (row[0] or "").strip():
+                    handle = handle_registry.try_format(row[1], chunk_id, chunk=True)
+                    return handle, str(row[0])
+    return None, None
+
+
 def _sweep_hub(
     store: Store,
     embedder: Any,
@@ -1013,6 +1075,9 @@ def _sweep_hub(
     skipped_covered = len(candidates) - len(fresh_candidates)
     _attach_read_first(store, fresh_candidates)
     selected = _select_for_verify(fresh_candidates, verify_budget)
+    claim_handle, claim_text = (
+        _claim_passage(store, hub_ref_id) if selected else (None, None)
+    )
 
     checked = 0
     disputes_filed = 0
@@ -1027,6 +1092,7 @@ def _sweep_hub(
                 target_chunk_ord=cand.chunk_ord,
                 target_chunk_text=cand.chunk_text,
                 source_kind=cand.ref_kind,
+                claim_source_text=claim_text,
             )
         except Exception:
             log.warning(
@@ -1040,7 +1106,7 @@ def _sweep_hub(
             llm_errors += 1
             continue
         handle = handle_registry.try_format(cand.ref_kind, cand.chunk_id, chunk=True)
-        contradicts = verdict.get("contradicts") is True
+        contradicts = _dispute_allowed(verdict)
         row: dict[str, Any] = {
             "ref_id": cand.ref_id,
             "kind": cand.ref_kind,
@@ -1048,6 +1114,10 @@ def _sweep_hub(
             "handle": handle,
             "verdict": "disputes" if contradicts else "no-conflict",
         }
+        if verdict.get("contradicts") is True:
+            # Kept on the row either way, so a contradiction withheld for
+            # a different or unclear setup stays visible in the ledger.
+            row.update(judgement_fields(same_setup=verdict.get("same_setup")))
         # The negated paraphrase(s) that surfaced this chunk — the review
         # sitting's counter-claim seed (:func:`mint_counter_claim` item 1).
         opposing = _opposing_seeds(cand, paraphrases)
@@ -1073,6 +1143,15 @@ def _sweep_hub(
                     "caveats": verdict.get("caveats") or [],
                     "source_handle": handle,
                     "via": "conflict_search",
+                    # Both sides of the comparison (gr723734): the passage
+                    # the claim rests on and the two setups the verifier
+                    # judged to be the same.
+                    **({"claim_source_handle": claim_handle} if claim_handle else {}),
+                    **judgement_fields(
+                        claim_setup=verdict.get("claim_setup"),
+                        passage_setup=verdict.get("passage_setup"),
+                        same_setup=verdict.get("same_setup"),
+                    ),
                 },
             )
             disputes_filed += 1

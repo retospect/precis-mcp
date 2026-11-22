@@ -263,6 +263,7 @@ def test_confirmed_contradicts_files_a_disputes_link(store: Any) -> None:
         "supports": "partial",
         "support_reason": "reports the opposite outcome",
         "caveats": ["only tested at RT"],
+        "same_setup": True,
         "contradicts": True,
     }
     calls: list[dict[str, Any]] = []
@@ -302,6 +303,103 @@ def test_confirmed_contradicts_files_a_disputes_link(store: Any) -> None:
 
     meta2 = _hub_meta(store, hub)
     assert meta2["conflict_search"]["disputes_filed"] == 0
+
+
+# ── (3b) gr723734: a dispute needs the same system and observable ────────
+
+
+@pytest.mark.parametrize("same_setup", [False, "unclear", None])
+def test_contradicts_on_a_different_setup_files_no_dispute(
+    store: Any, same_setup: Any
+) -> None:
+    """A ``contradicts`` verdict the verifier did not pin to the claim's own
+    system and observable (``same_setup`` false, unclear or absent) is a
+    different finding, never a dispute: no edge, a ``no-conflict`` row."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    paper, chunk_id = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="other-system",
+        text="Pd/C does NOT catalyze Suzuki coupling of aryl chlorides in water.",
+    )
+    verdict: dict[str, Any] = {
+        "supports": "no",
+        "support_reason": "reports no coupling",
+        "caveats": [],
+        "claim_setup": "Pd/C, aryl bromides, room temperature",
+        "passage_setup": "Pd/C, aryl chlorides, water",
+        "contradicts": True,
+    }
+    if same_setup is not None:
+        verdict["same_setup"] = same_setup
+
+    result = run_conflict_search_pass(
+        store, embedder=embedder, negate_fn=_no_negate, verify_fn=lambda **kw: verdict
+    )
+    assert result["hubs_swept"] == 1
+    assert result["disputes_filed"] == 0
+    assert _links_between(store, paper, hub) == []
+
+    cs = _hub_meta(store, hub)["conflict_search"]
+    assert cs["disputes_filed"] == 0
+    (row,) = cs["covered"]
+    assert int(row["chunk_id"]) == chunk_id
+    assert row["verdict"] == "no-conflict"
+
+
+def test_dispute_pins_the_claim_passage_and_both_setups(store: Any) -> None:
+    """The verifier is handed the passage the claim itself rests on, so it
+    can tell which system the claim is about, and a filed dispute carries
+    the evidence on both sides: the claim passage, the opposing passage
+    and the two setups the verifier compared."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    origin_text = "Pd/C coupled aryl bromides with phenylboronic acid at 25 C."
+    origin, origin_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="origin", text=origin_text
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=origin,
+        role="establishes",
+        meta={"source_handle": f"pc{origin_chunk}"},
+        set_by="system",
+        check_retraction=False,
+    )
+    paper, chunk_id = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="opposer",
+        text="Pd/C does NOT catalyze Suzuki coupling at room temperature.",
+    )
+    verdict = {
+        "supports": "no",
+        "support_reason": "reports the opposite outcome",
+        "caveats": [],
+        "claim_setup": "Pd/C, aryl bromides, 25 C",
+        "passage_setup": "Pd/C, aryl bromides, room temperature",
+        "same_setup": True,
+        "contradicts": True,
+    }
+    calls: list[dict[str, Any]] = []
+    result = run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        negate_fn=_no_negate,
+        verify_fn=_recording_verify(calls, verdict),
+    )
+    assert result["disputes_filed"] == 1
+    assert [c["claim_source_text"] for c in calls] == [origin_text]
+
+    (link,) = _links_between(store, paper, hub)
+    assert link["relation"] == "disputes"
+    assert link["source_handle"] == f"pc{chunk_id}"
+    assert link["claim_source_handle"] == f"pc{origin_chunk}"
+    assert link["same_setup"] is True
+    assert link["claim_setup"] == "Pd/C, aryl bromides, 25 C"
+    assert link["passage_setup"] == "Pd/C, aryl bromides, room temperature"
 
 
 # ── (4) floor rule: a below-median candidate still gets verify spend ────
@@ -557,6 +655,7 @@ def test_ledger_records_every_verified_passage_with_its_verdict(store: Any) -> N
     def verify(**kw: Any) -> dict[str, Any]:
         return {
             "supports": "no",
+            "same_setup": True,
             "contradicts": kw["target_cite_key"] == f"paper:{opposer}",
             "caveats": [],
         }
@@ -1025,6 +1124,7 @@ def _confirm_opposer(
             "supports": "no",
             "support_reason": "reports the opposite outcome",
             "caveats": [],
+            "same_setup": True,
             "contradicts": True,
         },
     )
@@ -1337,6 +1437,7 @@ def test_counter_mint_on_a_finding_covered_row_links_the_existing_hub(
         negate_fn=_no_negate,
         verify_fn=lambda **kw: {
             "supports": "no",
+            "same_setup": True,
             "contradicts": True,
             "caveats": [],
         },
@@ -1373,7 +1474,12 @@ def test_counter_mint_uses_the_stored_paraphrase_seed(store: Any) -> None:
         store,
         embedder=rigged,
         negate_fn=lambda s, sc: {"paraphrases": [paraphrase]},
-        verify_fn=lambda **kw: {"supports": "no", "contradicts": True, "caveats": []},
+        verify_fn=lambda **kw: {
+            "supports": "no",
+            "same_setup": True,
+            "contradicts": True,
+            "caveats": [],
+        },
     )
     assert _covered_row(store, hub, chunk_id)["opposing"] == [paraphrase]
 
