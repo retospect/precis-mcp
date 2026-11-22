@@ -13,9 +13,15 @@ declared, not duplicated:
   non-citable by construction; the flag formalises it for the planner
   prompt and the reader chrome, and keeps CFPs out of
   ``search(kind='paper', …)`` (a different kind entirely).
-* No ``put`` — a CFP is acquired by ingesting a PDF, not by minting a
-  stub from a DOI/arXiv backlog. ``supports_put=False`` ⇒ the base
-  handler raises ``Unsupported``.
+* ``put`` is URL intake only (gr690299) — ``put(args={'url': …})`` mints
+  a bodiless ``cfp`` ref with ``meta.source_url`` set, for a call that
+  is a web page, so a ``WATCH:*`` tag has a page to re-check. It never
+  takes the inherited paper stub path (the DOI/arXiv/title backlog
+  would mint a *paper*) and it fetches nothing: the watcher fetches the
+  page later through ``safe_get``, and a body still arrives only by PDF
+  ingest. The URL is stored as given, like ``edit(args={'source_url':
+  …})`` stores it, and a second put of the same URL returns the ref
+  that already tracks it.
 * Restricted view enum — citation-export views (``bibtex`` / ``ris`` /
   ``endnote`` / ``bibliography``) are dropped; a spec is not a
   bibliographic entry.
@@ -42,11 +48,27 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.protocol import ArgsSpec, KindSpec
+from precis.response import Response
+from precis.utils import handle_registry
+from precis.utils.idem import idem_lock_key
+from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.match_all import fold_match_all_q
+from precis.utils.url import slug_from_url
 
 if TYPE_CHECKING:
-    from precis.response import Response
     from precis.store import Ref
+
+_PUT_EXAMPLE = "put(kind='cfp', args={'url': 'https://example.org/call'})"
+
+
+def _source_url(raw: Any, *, next: str) -> str:
+    """The one ``meta.source_url`` check, shared by ``put`` and ``edit``:
+    an http(s) URL, stored stripped and otherwise as given."""
+    url = str(raw).strip()
+    if not re.match(r"https?://[^\s/]+", url):
+        raise BadInput("source_url must be an http(s) URL", next=next)
+    return url
+
 
 # Views a spec-role document supports. Mirrors paper's enum minus the
 # citation-export formats (a CFP is never cited, so bibtex/ris/endnote/
@@ -62,15 +84,18 @@ _CFP_VIEWS: tuple[str, ...] = (
 
 
 class CfpHandler(PaperHandler):
-    """Read-only call-for-proposal / requirements document (spec role)."""
+    """Call-for-proposal / requirements document (spec role); put mints
+    one from its URL, never a paper stub."""
 
     # A CFP isn't acquired via `precis jobs ingest-bundles` (that's the
-    # paper backlog) — it's dropped into `inbox/cfp/` or added directly
-    # with `precis add --as cfp`; the empty-listing hint says so instead
-    # of leaking paper-pipeline phrasing (gr311347 #12).
+    # paper backlog) — it's dropped into `inbox/cfp/`, added directly
+    # with `precis add --as cfp`, or minted from its URL; the
+    # empty-listing hint says so instead of leaking paper-pipeline
+    # phrasing (gr311347 #12).
     _empty_corpus_message: ClassVar[str] = (
-        "no CFPs cached yet - drop a PDF into `inbox/cfp/` or run "
-        "`precis add --as cfp <file>` to add one"
+        "no CFPs cached yet - drop a PDF into `inbox/cfp/`, run "
+        "`precis add --as cfp <file>`, or mint a call that is a web page "
+        f"with {_PUT_EXAMPLE}"
     )
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -79,7 +104,9 @@ class CfpHandler(PaperHandler):
         description=(
             "Call-for-proposal / requirements document. A read-only "
             "ingested PDF (via `precis add --as cfp` or the inbox/cfp/ "
-            "watch dir) that a proposal draft must satisfy. Addressable "
+            "watch dir) that a proposal draft must satisfy; a call that "
+            "is a web page is minted with put(args={'url': 'https://…'}) "
+            "(no body; sets meta.source_url for WATCH:*). Addressable "
             "by slug; one ref per document, blocks per chunk — gets "
             "search / TOC / keywords like a paper. Spec role: NEVER "
             "citable evidence (it is the requirements, not a source). "
@@ -90,9 +117,10 @@ class CfpHandler(PaperHandler):
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # No stub minting — a CFP is acquired by ingesting a PDF, not
-        # by requesting one into a fetch backlog.
-        supports_put=False,
+        # URL intake only (gr690299): ``put`` mints a bodiless cfp from
+        # the call's web page — never a paper stub into the fetch
+        # backlog. A body still arrives only by PDF ingest.
+        supports_put=True,
         # Metadata repair (title / year / abstract) reuses paper's edit;
         # useful for the web meta editor.
         supports_edit=True,
@@ -112,8 +140,10 @@ class CfpHandler(PaperHandler):
     # ``source_url`` is the page the WATCH re-check fetches
     # (workers/cfp_watch.py); ``deadline``/``opens_on`` are the typed
     # dates the kind exists for (gr462088 slice 1). All live in
-    # ``refs.meta``.
+    # ``refs.meta``. ``put`` reads only ``url`` — the page a new cfp is
+    # minted for, stored as ``meta.source_url`` (gr690299).
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "put": ArgsSpec({"url"}),
         "edit": ArgsSpec({"source_url", "deadline", "opens_on"}),
     }
 
@@ -124,6 +154,102 @@ class CfpHandler(PaperHandler):
     #: The browse sorts are handler-owned; declare them so the surface
     #: sort check lets them through (gr481617).
     EXTRA_SORTS: ClassVar[frozenset[str]] = frozenset(PaperHandler._BROWSE_SORTS)
+
+    def put(
+        self,
+        *,
+        title: str | None = None,
+        tags: list[str] | None = None,
+        args: dict[str, Any] | None = None,
+        **kw: Any,
+    ) -> Response:
+        """URL intake (gr690299): mint a cfp for a call that is a web page.
+
+        ``put(kind='cfp', args={'url': 'https://example.org/call'})`` mints
+        a bodiless ``cfp`` ref — never a paper — with ``meta.source_url``
+        set, the page a ``WATCH:*`` tag has ``workers/cfp_watch.py``
+        re-check. ``title=`` names it (default: the URL) and ``tags=``
+        tags it in the same transaction, so a refused tag mints nothing.
+        Nothing is fetched here: the watcher fetches the page, and a body
+        arrives only by PDF ingest. A URL a live cfp already tracks
+        returns that ref (``reused``) and still applies ``tags=``.
+
+        ``url`` is the only door: every paper put field (``doi=``,
+        ``text=``, ``mode=``, …) is refused, so no call lands on the
+        inherited stub path that would mint a paper.
+        """
+        from precis.ingest.db_writer import resolve_slug
+
+        extras = args or {}
+        raw = extras.get("url")
+        if raw is None:
+            raw = kw.get("url")
+        unknown = sorted(k for k in kw if k != "url")
+        if unknown:
+            raise BadInput(
+                f"put(kind='cfp') mints a call from its url= (plus title=, "
+                f"tags=); it does not accept {unknown!r}",
+                next=_PUT_EXAMPLE,
+            )
+        if raw is None:
+            raise BadInput(
+                "put(kind='cfp') needs url= — the call's web page; a PDF "
+                "call is ingested with `precis add --as cfp <file>`",
+                next=_PUT_EXAMPLE,
+            )
+        url = _source_url(raw, next=_PUT_EXAMPLE)
+        name = str(title).strip() if title is not None else ""
+        with self.store.tx() as conn:
+            # Two puts of one URL serialise here, so the second sees the
+            # first's ref instead of minting a twin.
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (idem_lock_key(f"cfp-url:{url}"),),
+            )
+            row = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'cfp' "
+                "AND retired_at IS NULL AND meta->>'source_url' = %s "
+                "ORDER BY ref_id LIMIT 1",
+                (url,),
+            ).fetchone()
+            created = row is None
+            if row is None:
+                slug = resolve_slug(slug_from_url(url) or "cfp", conn=conn)
+                ref_id = self.store.insert_ref(
+                    kind="cfp",
+                    slug=slug,
+                    title=name or url,
+                    meta={"source_url": url},
+                    conn=conn,
+                ).id
+            else:
+                ref_id = int(row[0])
+            if tags:
+                apply_tag_ops(
+                    self.store, "cfp", ref_id, tags=tags, untags=None, conn=conn
+                )
+        ref = self.store.get_ref(kind="cfp", id=ref_id)
+        ident = (ref.slug if ref is not None else None) or ref_id
+        handle = handle_registry.format_handle("cfp", ref_id)
+        lines = [
+            f"cfp {handle} [{ident}] minted for {url} — meta.source_url set; "
+            "no body (the page is not fetched at put time)."
+            if created
+            else f"cfp {handle} [{ident}] already tracks {url} — nothing minted."
+        ]
+        if tags:
+            lines.append(f"tagged: {', '.join(str(t).strip() for t in tags)}")
+        if not any(str(t).strip().upper().startswith("WATCH:") for t in tags or ()):
+            lines.append(
+                "Watch the page for changes: "
+                f"tag(kind='cfp', id={ident!r}, add=['WATCH:weekly'])"
+            )
+        if created:
+            lines.append(
+                f"Set the call's dates: edit(kind='cfp', id={ident!r}, "
+                "args={'deadline': 'YYYY-MM-DD'})"
+            )
+        return Response(body="\n".join(lines), ref_id=ref_id, reused=not created)
 
     def _edit_args(
         self, ref_id: int, args: dict[str, Any] | None, *, dry: bool
@@ -136,13 +262,11 @@ class CfpHandler(PaperHandler):
         labels: list[str] = []
         url = args.get("source_url")
         if url is not None:
-            url = str(url).strip()
-            if not re.match(r"https?://[^\s/]+", url):
-                raise BadInput(
-                    "source_url must be an http(s) URL",
-                    next="edit(kind='cfp', id=<slug|id>, "
-                    "args={'source_url': 'https://example.org/call'})",
-                )
+            url = _source_url(
+                url,
+                next="edit(kind='cfp', id=<slug|id>, "
+                "args={'source_url': 'https://example.org/call'})",
+            )
             if not dry:
                 self.store.stamp_ref_meta(ref_id, {"source_url": url})
             labels.append(f"source_url={url}")
@@ -176,7 +300,13 @@ class CfpHandler(PaperHandler):
         meta = ref.meta or {}
         return [
             f"{label}: {meta[key]}"
-            for key, label in (("deadline", "deadline"), ("opens_on", "opens on"))
+            for key, label in (
+                ("deadline", "deadline"),
+                ("opens_on", "opens on"),
+                # The page a URL-minted call came from and WATCH:*
+                # re-checks — the only content a bodiless cfp has.
+                ("source_url", "source"),
+            )
             if meta.get(key)
         ]
 

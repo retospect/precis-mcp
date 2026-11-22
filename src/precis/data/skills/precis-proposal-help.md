@@ -7,7 +7,8 @@ answers:
   - how do I start a proposal project against a call-for-proposal (cfp)?
   - what does the planner do automatically on each proposal tick?
   - why is a cfp its own kind instead of just a paper?
-applies-to: kind='cfp' (get/search), kind='draft' (put/edit get view='wordcount'), kind='todo' (meta.llm_tier project), link rel='has-requirement'
+  - how do I add a call that is a web page, with no PDF to ingest?
+applies-to: kind='cfp' (get/search/put), kind='draft' (put/edit get view='wordcount'), kind='todo' (meta.llm_tier project), link rel='has-requirement'
 tags: workflow, drafting
 kinds: cfp, draft, todo
 status: active
@@ -38,6 +39,10 @@ the call's word limits.
 $ precis add --as cfp ./nsf-25-501.pdf      # → cfp slug, e.g. nsf-25-501
 #    (or drop it in the watch inbox under  inbox/cfp/)
 #    read it at  /cfp/<slug>  (the paper-style two-pane reader)
+#    A call that is a web page with no PDF: mint it from its URL instead.
+#    This creates a cfp (never a paper) with no body; the URL is stored
+#    as meta.source_url and nothing is fetched.
+put(kind='cfp', args={'url': 'https://example.org/call'}, title='NSF 25-501 call')
 
 # 2. Create the proposal project (strategic todo) carrying the idea +
 #    personnel as the workspace brief, with meta.llm_tier='opus' so it ticks.
@@ -127,7 +132,11 @@ text hash and any dates on deadline/submission/opens lines are compared
 with the last snapshot in `meta.cfp_watch`; a change raises an open
 `cfp_watch` alert (`search(kind='alert')`, subject = the cfp) and keeps
 the last 5 changes in `meta.cfp_watch.history`. The first check only
-records a baseline. Set the page with
+records a baseline. A cfp minted with
+`put(kind='cfp', args={'url': 'https://…'})` already has its page;
+add `tags=['WATCH:weekly']` to that put to watch it from the start. A
+second put of the same URL returns the existing cfp. On an ingested PDF
+call, set or change the page with
 `edit(kind='cfp', id='<slug>', args={'source_url': 'https://…'})` (http or
 https); a tagged cfp without one is skipped. At most 25
 fetches per run.

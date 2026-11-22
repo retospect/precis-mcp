@@ -1,15 +1,18 @@
 """CfpHandler — the spec-role sibling of PaperHandler (proposal writing).
 
-Verifies the *declared* differences from paper (corpus_role, no put,
-restricted views, handle code) without ingesting a real PDF. The shared
-get/search machinery is exercised by the paper handler tests; here we
-only assert the cfp-specific spec + a registration smoke test."""
+Verifies the *declared* differences from paper (corpus_role, URL-only
+put, restricted views, handle code) without ingesting a real PDF. The
+shared get/search machinery is exercised by the paper handler tests; here
+we only assert the cfp-specific spec + a registration smoke test."""
 
 from __future__ import annotations
 
 import inspect
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
+from mcp.types import CallToolResult
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
@@ -17,7 +20,10 @@ from precis.handlers.cfp import CfpHandler
 from precis.handlers.paper import PaperHandler
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store, Tag
+from precis.tools import core as tools_core
+from precis.tools.mcp_slim import make_slim_verb
 from precis.utils import handle_registry
+from precis.workers.cfp_watch import META_KEY, run_cfp_watch_pass
 
 
 def test_cfp_is_a_spec_role_document() -> None:
@@ -31,9 +37,10 @@ def test_cfp_subclasses_paper_for_dry_reuse() -> None:
     assert issubclass(CfpHandler, PaperHandler)
 
 
-def test_cfp_has_no_put_and_no_citation_export_views(hub: Hub) -> None:
-    # A CFP is acquired by ingesting a PDF, not by minting a stub.
-    assert CfpHandler.spec.supports_put is False
+def test_cfp_put_is_url_intake_and_no_citation_export_views(hub: Hub) -> None:
+    # gr690299: put is the URL intake door (TestUrlIntake) — it was
+    # ``False`` while a cfp could only enter as an ingested PDF.
+    assert CfpHandler.spec.supports_put is True
     # Reading verbs are inherited.
     assert CfpHandler.spec.supports_get is True
     assert CfpHandler.spec.supports_search is True
@@ -267,3 +274,137 @@ def test_cfp_browse_via_dispatch_extras(
         "search", {"kind": "paper", "__extras__": {"sort": "deadline"}}
     )
     assert "BadInput" in paper
+
+
+def _tool_body(out: Any) -> str:
+    """The text of an MCP tool result (a bare string, or a
+    ``CallToolResult`` once a deprecation note is appended)."""
+    if isinstance(out, CallToolResult):
+        return str(out.content[0].text)  # type: ignore[union-attr]
+    return str(out)
+
+
+class TestUrlIntake:
+    """gr690299 (gr462088 slice 2) — ``put(kind='cfp', url=…)`` mints a
+    cfp ref, never a paper, with ``meta.source_url`` set: the page
+    ``workers/cfp_watch.py`` re-checks. Nothing is fetched at put time."""
+
+    URL = "https://example.org/call"
+
+    def _only_cfp(self, store: Store) -> Any:
+        refs = store.list_refs(kind="cfp")
+        assert len(refs) == 1, refs
+        return refs[0]
+
+    def test_put_url_mints_a_cfp_not_a_paper(self, store: Store) -> None:
+        h = CfpHandler(hub=Hub(store=store))
+        resp = h.put(url=self.URL)
+        ref = self._only_cfp(store)
+        assert ref.kind == "cfp"
+        assert resp.ref_id == ref.id and resp.reused is False
+        assert handle_registry.format_handle("cfp", ref.id) == f"cf{ref.id}"
+        assert f"cf{ref.id}" in resp.body
+        assert ref.meta["source_url"] == self.URL
+        assert store.list_refs(kind="paper") == []
+        # The minted ref reads back like any cfp and names its page.
+        assert ref.slug
+        assert f"source: {self.URL}" in h.get(id=ref.slug).body
+
+    def test_put_url_through_dispatch_args(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """``put(kind='cfp', args={'url': …})`` — the slim-schema spelling."""
+        out = runtime_with_store.dispatch(
+            "put", {"kind": "cfp", "__extras__": {"url": self.URL}}
+        )
+        ref = self._only_cfp(store)
+        assert f"cf{ref.id}" in out, out
+        assert ref.meta["source_url"] == self.URL
+        assert store.list_refs(kind="paper") == []
+
+    def test_put_url_over_the_slim_mcp_verb(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """The gripe's literal call, through the callable FastMCP wires up:
+        a top-level ``url=`` rides ``args=`` on the slim verb."""
+        tools_core._runtime = runtime_with_store
+        try:
+            slim_put = make_slim_verb("put", tools_core.put)
+            top = _tool_body(slim_put(kind="cfp", url=self.URL))
+            nested = _tool_body(
+                slim_put(
+                    kind="cfp", args={"url": f"{self.URL}-two", "title": "Call Two"}
+                )
+            )
+        finally:
+            tools_core._runtime = None
+        by_url = {r.meta["source_url"]: r for r in store.list_refs(kind="cfp")}
+        assert set(by_url) == {self.URL, f"{self.URL}-two"}, (top, nested)
+        assert f"cf{by_url[self.URL].id}" in top
+        assert f"cf{by_url[f'{self.URL}-two'].id}" in nested
+        assert by_url[f"{self.URL}-two"].title == "Call Two"
+        assert store.list_refs(kind="paper") == []
+
+    def test_put_refuses_a_non_http_url_with_the_edit_message(
+        self, store: Store
+    ) -> None:
+        store.insert_ref(kind="cfp", slug="editurl0", title="Call")
+        h = CfpHandler(hub=Hub(store=store))
+        with pytest.raises(BadInput) as edit_err:
+            h.edit(id="editurl0", args={"source_url": "ftp://example.org/call"})
+        assert edit_err.value.cause == "source_url must be an http(s) URL"
+        for bad in ("ftp://example.org/call", "example.org/call", "  "):
+            with pytest.raises(BadInput) as put_err:
+                h.put(url=bad)
+            assert put_err.value.cause == edit_err.value.cause
+        # Only the seeded ref: a refused put mints nothing.
+        assert [r.slug for r in store.list_refs(kind="cfp")] == ["editurl0"]
+        assert store.list_refs(kind="paper") == []
+
+    def test_put_same_url_is_idempotent(self, store: Store) -> None:
+        h = CfpHandler(hub=Hub(store=store))
+        first = h.put(url=self.URL)
+        again = h.put(url=self.URL)
+        assert again.ref_id == first.ref_id and again.reused is True
+        self._only_cfp(store)
+
+    def test_put_without_url_or_with_paper_fields_mints_nothing(
+        self, store: Store
+    ) -> None:
+        h = CfpHandler(hub=Hub(store=store))
+        # On the inherited paper path a bare title= minted a title-only
+        # *paper* stub.
+        with pytest.raises(BadInput, match="url"):
+            h.put(title="Call X")
+        with pytest.raises(BadInput, match="doi"):
+            h.put(url=self.URL, doi="10.1234/not-a-call")
+        assert store.list_refs(kind="cfp") == []
+        assert store.list_refs(kind="paper") == []
+
+    def test_paper_doors_are_refused_through_dispatch(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        out = runtime_with_store.dispatch(
+            "put", {"kind": "cfp", "doi": "10.1234/not-a-call"}
+        )
+        assert "[error:" in out, out
+        assert store.list_refs(kind="cfp") == []
+        assert store.list_refs(kind="paper") == []
+
+    def test_put_with_watch_tag_is_picked_up_by_cfp_watch(self, store: Store) -> None:
+        h = CfpHandler(hub=Hub(store=store))
+        resp = h.put(url=self.URL, tags=["WATCH:weekly"])
+        assert resp.ref_id is not None
+        assert "tagged: WATCH:weekly" in resp.body
+        fetched: list[str] = []
+
+        def fetch(url: str) -> str:
+            fetched.append(url)
+            return "<p>Submission deadline: 15 March 2027</p>"
+
+        result = run_cfp_watch_pass(store, fetch=fetch, now=datetime.now(UTC))
+        assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
+        assert fetched == [self.URL]
+        ref = store.get_ref(kind="cfp", id=resp.ref_id)
+        assert ref is not None
+        assert ref.meta[META_KEY]["dates"] == ["15 march 2027"]
