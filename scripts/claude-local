@@ -64,11 +64,17 @@ unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
 
 # gr506125: pin the lane to its task tree. The re-pilot aimed every Edit at
 # the MAIN checkout's absolute path and stalled on refusals. Two layers:
-# PRECIS_CASTOR_LANE tells guard-worktree-path.py to deny file-tool paths
+# PRECIS_LOCAL_LANE tells guard-worktree-path.py to deny file-tool paths
 # outside the session's tree (instead of leaving them to the classifier),
 # and --append-system-prompt states the root so the model aims inside it
 # from the first turn. `-w NAME` resolves to <main>/.claude/worktrees/NAME
 # (the same convention `claude -w` and scripts/devin-tree share).
+#
+# gr732374: PRECIS_LOCAL_LANE is the approved name. PRECIS_CASTOR_LANE is
+# still exported alongside because the globally installed
+# guard-worktree-path.py (via scripts/hook-sync) reads the legacy name; drop
+# the legacy export once every installed hook accepts the new name.
+export PRECIS_LOCAL_LANE=1
 export PRECIS_CASTOR_LANE=1
 pin_tree=""
 common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
@@ -94,7 +100,7 @@ extra=()
 if [ -n "$pin_tree" ] && [[ "$*" != *--append-system-prompt* ]]; then
     extra+=(
         --append-system-prompt
-        "You run in the castor lane. Your task tree is $pin_tree — use absolute paths under it only; file tools refuse paths outside it."
+        "You run in the local lane. Your task tree is $pin_tree — use absolute paths under it only; file tools refuse paths outside it."
     )
 fi
 # mcp-token-env fills PRECIS_MCP_TOKEN from the client token file (gr515184):

@@ -1,8 +1,10 @@
-"""``scripts/claude-local`` castor-lane tree pinning (gr506125).
+"""``scripts/claude-local`` local-lane tree pinning (gr506125).
 
 The gpt-oss re-pilot aimed every Edit at the main checkout's absolute path.
-The launcher now exports ``PRECIS_CASTOR_LANE`` (the worktree-path hook's
-strict mode) and pins the task tree in the system prompt: ``-w NAME``
+The launcher now exports ``PRECIS_LOCAL_LANE`` (the worktree-path hook's
+strict mode; the legacy ``PRECIS_CASTOR_LANE`` rides along until the
+globally installed hook reads the new name, gr732374) and pins the task
+tree in the system prompt: ``-w NAME``
 resolves to ``<main>/.claude/worktrees/NAME``; without ``-w`` the session's
 own toplevel is used. Tested end-to-end with stub ``claude``/``curl`` on a
 throwaway git repo and a fixture overlay — no serving-node contact.
@@ -121,7 +123,7 @@ class TestTreePinning:
         i = argv.index("--append-system-prompt")
         pin = argv[i + 1]
         assert f"{repo}/.claude/worktrees/mytree" in pin
-        assert "castor lane" in pin
+        assert "local lane" in pin
         # the caller's own argv survives untouched after the injected flag
         assert argv[-4:] == ["-w", "mytree", "-p", "do the task"]
 
@@ -145,13 +147,14 @@ class TestTreePinning:
         assert argv.count("--append-system-prompt") == 1
         assert "caller text" in argv
 
-    def test_castor_lane_env_marker_exported(self, tmp_path: Path) -> None:
+    def test_local_lane_env_markers_exported(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         _stub(
             bin_dir,
             "claude",
-            '#!/usr/bin/env bash\necho "lane=$PRECIS_CASTOR_LANE"\n',
+            "#!/usr/bin/env bash\n"
+            'echo "lane=$PRECIS_LOCAL_LANE legacy=$PRECIS_CASTOR_LANE"\n',
         )
         _stub(bin_dir, "curl", "#!/usr/bin/env bash\nexit 0\n")
         repo = _repo(tmp_path)
@@ -171,6 +174,7 @@ class TestTreePinning:
         )
         assert proc.returncode == 0, proc.stderr
         assert "lane=1" in proc.stdout
+        assert "legacy=1" in proc.stdout
 
     def test_empty_sglang_serving_group_fails_clearly(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"

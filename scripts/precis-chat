@@ -62,7 +62,7 @@ HELP = (
 )
 
 
-def castor_base() -> str:
+def local_serving_base() -> str:
     # The serving node is the first host of the overlay's sglang_serving group.
     script = (
         f". '{REPO}/scripts/lib/node-host.sh'; "
@@ -101,7 +101,7 @@ class Chat:
     ) -> None:
         self.session, self.tools = session, tools
         self.show, self.think = show, think
-        self.http = httpx.AsyncClient(base_url=castor_base(), timeout=600)
+        self.http = httpx.AsyncClient(base_url=local_serving_base(), timeout=600)
         # No system message: on SGLang's gpt-oss path a system turn makes the
         # model stop without emitting tool calls. The guidance rides the first
         # user turn instead.

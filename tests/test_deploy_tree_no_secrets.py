@@ -20,8 +20,8 @@ they have deliberately different scopes:
   memory. The failure message names ``path:line`` only. Two file lists
   narrow the scan: :data:`_HOSTNAME_EXEMPT` (permanent: a sealed migration's
   comment, a data file where the word is the domain term) and
-  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: files that carry the castor
-  lane name until its rename, and a byte-matched pathway fixture). Tests use
+  :data:`_HOSTNAME_PENDING_CLEANUP` (temporary: the file that still carries
+  the castor lane name until its rename). Tests use
   made-up host names (``maple``, ``birch``).
 
 ``deploy/inventory/`` is the LIVE per-cluster overlay (real ``hosts.yml``,
@@ -190,20 +190,17 @@ _HOSTNAME_EXEMPT: dict[str, str] = {
 }
 
 _LANE_RENAME = "carries the castor lane name; renamed in a later landing"
-_PACKAGED_CASE = "byte-matches the packaged pathway repro case"
 
 #: TEMPORARY expected-failure list: files whose hostname hits are known and
 #: not yet cleaned. path -> why. Hits in a listed file are not reported;
 #: ``test_hostname_file_lists_have_no_stale_entries`` fails once the file is
 #: clean. Remove when the file is clean.
 _HOSTNAME_PENDING_CLEANUP: dict[str, str] = {
-    # The two serving backlog files left on 2026-11-15 with the rest of the
-    # specs (me568215); their graph roots me695333 and me695510 carry the
-    # lane names as roles, so the rename no longer waits on a file here.
-    "scripts/claude-local": _LANE_RENAME,
+    # The hook is installed globally via scripts/hook-sync: it accepts the
+    # new PRECIS_LOCAL_LANE name only after the next hook-sync rolls it out,
+    # and scripts/claude-local exports the legacy PRECIS_CASTOR_LANE until
+    # then (gr732374).
     "scripts/hooks/guard-worktree-path.py": _LANE_RENAME,
-    "tests/fixtures/pathway/repro_case.json": _PACKAGED_CASE,
-    "tests/test_claude_local.py": _LANE_RENAME,
 }
 
 #: A line the hostname check must flag (also the self-test's planted sample).
