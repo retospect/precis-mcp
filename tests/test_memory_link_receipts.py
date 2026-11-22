@@ -11,6 +11,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers._memory_link_receipt import MentionSync
 from precis.handlers.memory import MemoryHandler
+from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.revision_context import revision_context
 from precis.utils.link_target import parse_link_target
@@ -30,6 +31,72 @@ def _body(handler: MemoryHandler, store: Store, ref_id: int) -> str:
     ref = store.get_ref(kind="memory", id=ref_id)
     assert ref is not None
     return handler._body_text(ref)
+
+
+def test_mention_chain_from_target_side(handler: MemoryHandler, store: Store) -> None:
+    """gr702998: edits reconcile outgoing mentions without losing incoming ones."""
+    first = _memory(handler, "I am 11")
+    second = _memory(handler, "I am 12")
+    source = _memory(handler, f"I am 13 and [me{first}] and [me{second}]")
+
+    def assert_inbound(target: int, sources: set[int]) -> None:
+        links = store.links_for(target, direction="in")
+        assert {link.src_ref_id for link in links} == sources
+        assert all(link.relation == "related-to" for link in links)
+        assert all(link.meta.get("auto") == "mention" for link in links)
+        view = handler.get(id=target, view="links", direction="in")
+        assert view.result_count == len(sources)
+        for ref_id in sources:
+            assert f"me{ref_id}" in view.body
+        if sources:
+            assert "## inbound" in view.body
+            assert "related-to" in view.body
+
+    assert_inbound(first, {source})
+    assert_inbound(second, {source})
+    assert_inbound(source, set())
+
+    handler.edit(id=second, mode="append", text=f" and [me{source}]")
+    assert_inbound(first, {source})
+    assert_inbound(second, {source})
+    assert_inbound(source, {second})
+
+    handler.edit(id=source, mode="replace", text="I am 13")
+    assert_inbound(first, set())
+    assert_inbound(second, set())
+    assert_inbound(source, {second})
+    assert handler.get(id=first, view="links").result_count == 0
+    assert not store.links_for(source, direction="out")
+
+    # Use a guaranteed absent handle rather than a fixture-dependent me123.
+    text = f"I am 13 and [{_DEAD_HANDLE}]"
+    receipt = handler.edit(id=source, mode="replace", text=text).body
+    assert f"Mention [{_DEAD_HANDLE}] does not resolve to a live ref" in receipt
+    assert _body(handler, store, source) == text
+    assert not store.links_for(source, direction="out")
+    assert_inbound(first, set())
+    assert_inbound(second, set())
+    assert_inbound(source, {second})
+
+
+def test_memory_mention_visible_on_todo_target(
+    handler: MemoryHandler, hub: Hub, store: Store
+) -> None:
+    """Cross-kind mentions appear in the target handler's inbound view."""
+    todo = TodoHandler(hub=hub)
+    target = id_of(todo.put(text="Mention target").body)
+    source = _memory(handler, f"I am 13 and [td{target}]")
+
+    links = store.links_for(target, direction="in")
+    assert len(links) == 1
+    assert links[0].src_ref_id == source
+    assert links[0].relation == "related-to"
+    assert links[0].meta.get("auto") == "mention"
+    view = todo.get(id=target, view="links", direction="in")
+    assert view.result_count == 1
+    assert "## inbound" in view.body
+    assert "related-to" in view.body
+    assert f"me{source}" in view.body
 
 
 @pytest.mark.parametrize("dry_run", [True, "full"])
