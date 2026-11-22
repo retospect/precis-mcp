@@ -471,6 +471,7 @@ def update_hypothesis(
     hub_ref_id: int,
     testable_by: str | None,
     motivation: str | None,
+    dry_run: bool = False,
 ) -> Response:
     """Edit unsigned falsification prose with history and atomic consumer review.
 
@@ -480,9 +481,10 @@ def update_hypothesis(
     """
     from precis.taproot import consumer_review
 
-    with store.tx() as conn:
-        users = consumer_review.lock_users(conn, hub_ref_id)
-        consumer_review.require_unsigned(conn, hub_ref_id)
+    connection = store.pool.connection() if dry_run else store.tx()
+    with connection as conn:
+        users = [] if dry_run else consumer_review.lock_users(conn, hub_ref_id)
+        consumer_review.require_unsigned(conn, hub_ref_id, lock=not dry_run)
         row = conn.execute(
             "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
             (hub_ref_id,),
@@ -496,9 +498,7 @@ def update_hypothesis(
         meta = dict(row[0] or {})
         payload = dict(meta.get(META_PROPOSED_PAYLOAD) or {})
 
-        now = datetime.now(UTC).isoformat()
-        meta_patch: dict[str, Any] = {}
-        changed: list[str] = []
+        changes: dict[str, tuple[str, str]] = {}
 
         if testable_by is not None:
             stripped = testable_by.strip()
@@ -511,11 +511,7 @@ def update_hypothesis(
                 )
             prior = str(payload.get("testable_by") or "").strip()
             if prior != stripped:
-                history = list(meta.get("testable_by_history") or [])
-                history.append({"value": prior, "replaced_at": now})
-                meta_patch["testable_by_history"] = history
-                payload["testable_by"] = stripped
-                changed.append("testable_by")
+                changes["testable_by"] = (prior, stripped)
 
         if motivation is not None:
             stripped = motivation.strip()
@@ -528,20 +524,39 @@ def update_hypothesis(
                 )
             prior = str(payload.get("motivation") or "").strip()
             if prior != stripped:
-                history = list(meta.get("motivation_history") or [])
-                history.append({"value": prior, "replaced_at": now})
-                meta_patch["motivation_history"] = history
-                payload["motivation"] = stripped
-                changed.append("motivation")
+                changes["motivation"] = (prior, stripped)
 
         handle = handle_registry.format_handle("finding", hub_ref_id)
-        if not changed:
+        if dry_run:
+            lines = [f"dry-run: would sharpen hypothesis {handle} (nothing written)"]
+            if changes:
+                lines.extend(
+                    f"{field}: {prior!r} -> {new!r} (prior saved in meta.{field}_history)"
+                    for field, (prior, new) in changes.items()
+                )
+                lines.append("would reopen any unsigned reviews")
+            else:
+                lines.append(
+                    "no change — the given value(s) already match the live payload"
+                )
+            return Response(body="\n".join(lines))
+
+        if not changes:
             return Response(
                 body=(
                     f"no change on hypothesis {handle} — the given value(s) "
                     "already match the live payload"
                 )
             )
+
+        now = datetime.now(UTC).isoformat()
+        meta_patch: dict[str, Any] = {}
+        for field, (prior, new) in changes.items():
+            history_key = f"{field}_history"
+            history = list(meta.get(history_key) or [])
+            history.append({"value": prior, "replaced_at": now})
+            meta_patch[history_key] = history
+            payload[field] = new
 
         meta_patch[META_PROPOSED_PAYLOAD] = payload
         consumer_review.reopen_unsigned(conn, hub_ref_id)
@@ -550,9 +565,9 @@ def update_hypothesis(
 
     return Response(
         body=(
-            f"sharpened {handle}: {', '.join(changed)}\n"
+            f"sharpened {handle}: {', '.join(changes)}\n"
             f"prior value(s) preserved in "
-            f"meta.{'/meta.'.join(f'{f}_history' for f in changed)}\n"
+            f"meta.{'/meta.'.join(f'{f}_history' for f in changes)}\n"
             f"check it before leaving it: get(kind='finding', id='{handle}', "
             "view='mint-preflight')" + consumer_review.render_users(users)
         )

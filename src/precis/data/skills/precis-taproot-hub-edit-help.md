@@ -78,8 +78,9 @@ supported. Candidate/reviewed claims edit in place; unsigned approval reopens
 and the response lists consumers flagged for re-review. Do not retitle a
 frozen or signed hub — a signed (anchored, published) nanopub freezes the
 wording and the retitle refuses: see `precis-nanopub-help`'s correction boundary.
-Rejects a non-hub finding and `dry_run` (no preview; the
-write is direct). If the new wording's `pub_id` already belongs to a
+Rejects a non-hub finding. `dry_run=True` previews the retitle —
+old/new sentence and the `pub_id` change — and writes nothing; drop
+`dry_run` to apply. If the new wording's `pub_id` already belongs to a
 *different* live ref, that's a duplicate-hub signal — the call raises
 naming that ref rather than silently fusing it; see "Merge duplicate
 hubs" below.

@@ -2732,14 +2732,6 @@ class TestRetitleHub:
         assert ref.title == new_sentence
         assert self._finding_body(store, hub) == new_sentence
 
-    def test_retitle_dry_run_rejected(self, store) -> None:
-        sentence = "Pd/C catalyzes Suzuki coupling at RT."
-        hub = mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
-        h = _make_handler(store)
-        with pytest.raises(BadInput, match="does not support dry_run"):
-            h.edit(id=hub, title="A reworded claim sentence.", dry_run=True)
-        assert store.get_ref(kind="finding", id=hub).title == sentence
-
     @pytest.mark.parametrize("rescope", [False, True])
     def test_retitle_with_writer_attribution(self, store: Store, rescope: bool) -> None:
         """gr715597: title attribution must pass the scope-only edit door."""
@@ -3283,12 +3275,6 @@ class TestUnacquirableOverride:
         h = _make_handler(store)
         with pytest.raises(BadInput, match="exactly one of"):
             h.edit(id=finding_id, pick_candidate="x", unacquirable_note="why")
-
-    def test_dry_run_rejected(self, store) -> None:
-        finding_id = self._seed_finding(store)
-        h = _make_handler(store)
-        with pytest.raises(BadInput, match="does not support dry_run"):
-            h.edit(id=finding_id, unacquirable_note="why", dry_run=True)
 
     def test_render_shows_override(self, store) -> None:
         finding_id = self._seed_finding(store)

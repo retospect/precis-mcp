@@ -555,10 +555,17 @@ and the `pub_id` in sync.
 (above) | `title=` | `meta={'scope': {...}}` | `unacquirable_note=` |
 `testable_by=`/`motivation=` — passing more than one errors
 (`testable_by=`/`motivation=` may combine with each other, and
-`meta={'scope': …}` with `title=`). `title=` retitles a `TAPROOT:claim`
+`meta={'scope': …}` with `title=`). Every op previews with
+`dry_run=True` and writes nothing: the body edit shows the diff, a
+candidate pick names the dropped candidates and the status flip, a
+retitle shows old/new sentence and `pub_id`, rescoping shows old/new
+scope and `pub_id`, a sharpening shows the prior → new payload, and an
+unacquirable override shows the mode, note and any override it would
+replace. `pick_candidate='self'` is the one op with no preview — it
+rejects `dry_run`. `title=` retitles a `TAPROOT:claim`
 hub in place (rejects a plain finding); see `precis-taproot-mint-help`'s
 "Reword a hub in place". `meta={'scope': {...}}` replaces a hub's scope
-(`{}` clears it and `dry_run=True` previews). Scope is part of the hub's
+(`{}` clears it). Scope is part of the hub's
 identity, so a scope change re-derives the
 `pub_id` and keeps the old one as an alias, like a retitle; see
 `precis-taproot-hub-edit-help`'s "Rescope a hub". `testable_by=`/`motivation=`

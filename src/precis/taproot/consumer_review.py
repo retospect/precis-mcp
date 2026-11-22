@@ -31,7 +31,7 @@ _FINDING_RELATIONS = (
 )
 
 
-def _users(conn: Any, hub_ref_id: int) -> list[dict[str, Any]]:
+def find_users(conn: Any, hub_ref_id: int) -> list[dict[str, Any]]:
     """Resolve live direct graph users and exact prose references."""
     rows = conn.execute(
         "SELECT DISTINCT r.ref_id, r.kind, r.title, l.relation "
@@ -141,7 +141,7 @@ def lock_users(conn: Any, hub_ref_id: int) -> list[dict[str, Any]]:
     from precis.errors import BadInput
 
     for _ in range(3):
-        users = _users(conn, hub_ref_id)
+        users = find_users(conn, hub_ref_id)
         locked = {hub_ref_id, *(u["ref_id"] for u in users)}
         try:
             with conn.transaction():  # savepoint releases locks on retry
@@ -150,7 +150,7 @@ def lock_users(conn: Any, hub_ref_id: int) -> list[dict[str, Any]]:
                     "AND retired_at IS NULL ORDER BY ref_id FOR NO KEY UPDATE",
                     (sorted(locked),),
                 ).fetchall()
-                refreshed = _users(conn, hub_ref_id)
+                refreshed = find_users(conn, hub_ref_id)
                 if any(u["ref_id"] not in locked for u in refreshed):
                     raise _MembershipChanged
                 return refreshed
@@ -159,13 +159,15 @@ def lock_users(conn: Any, hub_ref_id: int) -> list[dict[str, Any]]:
     raise BadInput("claim users changed during edit; retry the unchanged request")
 
 
-def require_unsigned(conn: Any, hub_ref_id: int) -> None:
-    """Serialize with signing, then inspect artifacts using a fresh snapshot."""
+def require_unsigned(conn: Any, hub_ref_id: int, *, lock: bool = True) -> None:
+    """Guard against signed bytes, locking publish rows only for an apply."""
     from precis.taproot.hub import HubFrozenError
+
+    locking_clause = " FOR UPDATE OF p" if lock else ""
 
     rows = conn.execute(
         "SELECT p.id, p.state FROM nanopub_publish p "
-        "WHERE p.claim_ref_id = %s ORDER BY p.id FOR UPDATE OF p",
+        "WHERE p.claim_ref_id = %s ORDER BY p.id" + locking_clause,
         (hub_ref_id,),
     ).fetchall()
     # Do not combine this with SELECT FOR UPDATE: an artifact FK insert can

@@ -23,7 +23,7 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
 from precis.store.pool import connection_is_pinned
 from precis.store.types import Tag
-from precis.taproot import authoring, hub
+from precis.taproot import authoring, consumer_review, hub
 from precis.taproot.consumer_review import render_users
 from precis.taproot.seniority import is_claim_hub
 from precis.taproot.sentence_lint import lint_scope
@@ -251,11 +251,14 @@ def edit(
     An unsigned review is reopened atomically because its grounding froze
     the old prose; signed/anchored/published content refuses correction here.
 
-    ``dry_run`` previews the body edit, the ``meta={'scope': …}`` door and
-    a candidate pick (see above). ``title=``, ``unacquirable_note=``,
-    ``testable_by=``/``motivation=`` and ``pick_candidate='self'`` reject
-    it — none has a faithful preview.
+    ``dry_run`` previews body edits, candidate picks, retitles, rescoping,
+    hypothesis sharpening and unacquirable-source overrides without writing.
+    ``pick_candidate='self'`` still requires an apply call.
     """
+    # Normalize once so every op (previews included) refuses a non-mode
+    # truthy dry_run with the documented BadInput instead of silently
+    # previewing on a bool() coercion.
+    dry = normalize_dry_run(dry_run) is not None
     # Attribution accompanies a title edit; it is not a separate mutation.
     attribution: dict[str, str] = {}
     scope_meta = meta
@@ -390,25 +393,14 @@ def edit(
             id=id,
             title=title,
             scope=meta_scope,
-            dry_run=bool(dry_run),
+            dry_run=dry,
             attribution=attribution,
         )
     if title is not None:
-        if dry_run:
-            raise BadInput(
-                "edit(kind='finding', title=…) does not support dry_run — "
-                "the retitle has no preview; omit dry_run to apply",
-                next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
-            )
-        return _retitle_hub(store, id=id, title=title, attribution=attribution)
+        return _retitle_hub(
+            store, id=id, title=title, attribution=attribution, dry_run=dry
+        )
     if sharpening:
-        if dry_run:
-            raise BadInput(
-                "edit(kind='finding', testable_by=…/motivation=…) does not "
-                "support dry_run — the sharpen has no preview; omit dry_run "
-                "to apply",
-                next="edit(kind='finding', id='fi<N>', testable_by='<experiment>')",
-            )
         if id is None:
             raise BadInput(
                 "edit(kind='finding', testable_by=…/motivation=…) requires "
@@ -421,17 +413,9 @@ def edit(
             raw_id=id,
             testable_by=testable_by,
             motivation=motivation,
+            dry_run=dry,
         )
-    if dry_run and unacquirable_note is not None:
-        # No preview: unacquirable_note writes a server-stamped
-        # audit-trail meta patch. Reject loudly rather than silently
-        # apply on dry_run (a data-loss footgun).
-        raise BadInput(
-            "edit(kind='finding', unacquirable_note=…) does not support "
-            "dry_run — the override has no preview; omit dry_run to apply",
-            next="edit(kind='finding', id=<N>, unacquirable_note='<why>')",
-        )
-    if dry_run and is_self_pick:
+    if dry and is_self_pick:
         # No preview either: the close-out's result (primary/via cite
         # keys, caveats, the status flip) comes out of the chase's
         # chain-snapshot pass, known only by running it. A candidate
@@ -455,7 +439,12 @@ def edit(
         )
     if unacquirable_note is not None:
         return _set_unacquirable_override(
-            store, kind=kind, raw_id=id, note=unacquirable_note, mode=unacquirable_mode
+            store,
+            kind=kind,
+            raw_id=id,
+            note=unacquirable_note,
+            mode=unacquirable_mode,
+            dry_run=dry,
         )
     if pick_candidate is None or (
         isinstance(pick_candidate, str) and not pick_candidate.strip()
@@ -500,7 +489,7 @@ def edit(
         store, candidates, pick_candidate=pick_candidate
     )
 
-    if normalize_dry_run(dry_run) is not None:
+    if dry:
         return _preview_pick(
             store,
             kind=kind,
@@ -666,20 +655,8 @@ def _rescope_hub(
                 next="edit(kind='finding', id='fi<N>', title='<non-empty claim "
                 "sentence>', meta={'scope': {...}}, dry_run=True)",
             )
-        new_pub_id = make_pub_id(make_taproot_hub_paper_id(new_title, scope))
         with store.pool.connection() as conn:
-            owner = conn.execute(
-                "SELECT ref_id FROM ref_identifiers "
-                "WHERE id_kind = 'pub_id' AND id_value = %s",
-                (new_pub_id,),
-            ).fetchone()
-        if owner is not None and int(owner[0]) != hub_ref_id:
-            raise BadInput(
-                f"dry-run: new pub_id={new_pub_id} already belongs to "
-                f"ref_id={int(owner[0])} — this looks like a dedup/merge "
-                "candidate; the real edit would refuse",
-                next="pick a different scope/title, or resolve the dup by hand",
-            )
+            new_pub_id = _preview_pub_id(conn, hub_ref_id, new_title, scope)
         return Response(
             body=_rescope_body(
                 f"dry-run: would rescope claim hub fi{hub_ref_id} (nothing written)",
@@ -752,8 +729,31 @@ def _rescope_body(
     return "\n".join(lines)
 
 
+def _preview_pub_id(
+    conn: Any, hub_ref_id: int, new_title: str, scope: dict[str, Any]
+) -> str:
+    new_pub_id = make_pub_id(make_taproot_hub_paper_id(new_title, scope))
+    owner = conn.execute(
+        "SELECT ref_id FROM ref_identifiers WHERE id_kind = 'pub_id' AND id_value = %s",
+        (new_pub_id,),
+    ).fetchone()
+    if owner is not None and int(owner[0]) != hub_ref_id:
+        raise BadInput(
+            f"dry-run: new pub_id={new_pub_id} already belongs to "
+            f"ref_id={int(owner[0])} — this looks like a dedup/merge "
+            "candidate; the real edit would refuse",
+            next="pick a different scope/title, or resolve the dup by hand",
+        )
+    return new_pub_id
+
+
 def _retitle_hub(
-    store: Store, *, id: int | str | None, title: str, attribution: dict[str, str]
+    store: Store,
+    *,
+    id: int | str | None,
+    title: str,
+    attribution: dict[str, str],
+    dry_run: bool,
 ) -> Response:
     """``edit(kind='finding', title=…)`` — reword a claim hub's sentence.
 
@@ -779,6 +779,38 @@ def _retitle_hub(
             ),
         )
     try:
+        if dry_run:
+            new_title = title.strip()
+            if not new_title:
+                raise ValueError("refine_claim_sentence requires a non-empty sentence")
+            with store.pool.connection() as conn:
+                consumer_review.require_unsigned(conn, hub_ref_id, lock=False)
+                row = conn.execute(
+                    "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                    (hub_ref_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"ref_id={hub_ref_id} not found")
+                old_title = str(row[0] or "")
+                scope = dict((row[1] or {}).get("scope") or {})
+                old_pub_id = make_pub_id(make_taproot_hub_paper_id(old_title, scope))
+                new_pub_id = old_pub_id
+                if new_title != old_title:
+                    hub.require_rewordable_chunks(
+                        conn, hub_ref_id, consumer_review.find_users(conn, hub_ref_id)
+                    )
+                    new_pub_id = _preview_pub_id(conn, hub_ref_id, new_title, scope)
+            apply = f"edit(kind='finding', id='fi{hub_ref_id}', title={title!r}"
+            if attribution:
+                apply += f", meta={attribution!r}"
+            return Response(
+                body=(
+                    f"dry-run: would retitle claim hub fi{hub_ref_id} (nothing written)\n"
+                    f"old: {old_title}\nnew: {new_title}\n"
+                    f"pub_id: {old_pub_id} -> {new_pub_id}\n"
+                    f"apply: {apply})"
+                )
+            )
         result = _refine_retried(
             store,
             hub_ref_id=hub_ref_id,
@@ -883,6 +915,7 @@ def _sharpen_hypothesis(
     raw_id: int | str,
     testable_by: str | None,
     motivation: str | None,
+    dry_run: bool,
 ) -> Response:
     """``edit(kind='finding', testable_by=…/motivation=…)`` — sharpen a
     live hypothesis's falsification terms (gr263258).
@@ -914,27 +947,13 @@ def _sharpen_hypothesis(
             hub_ref_id=finding_ref_id,
             testable_by=testable_by,
             motivation=motivation,
+            dry_run=dry_run,
         )
     except hub.HubFrozenError as exc:
         raise BadInput(str(exc), next=_FROZEN_NEXT) from exc
 
 
-def _set_unacquirable_override(
-    store: Store,
-    *,
-    kind: str,
-    raw_id: int | str,
-    note: str,
-    mode: str | None = None,
-) -> Response:
-    """Write ``meta.unacquirable_override`` — the write path behind
-    ``edit(kind='finding', unacquirable_note=…)`` (the trust-surfaces
-    override door, claim-level — never inherited from the source paper).
-    ``note`` required non-empty; the override is otherwise settable on
-    any finding regardless of its current lifecycle status. ``mode``
-    must be ``'abstract'`` or ``'vouched'`` when given; ``None`` defaults
-    to ``'vouched'`` (matches how a legacy no-``mode`` override reads on
-    the way in)."""
+def _validate_unacquirable_override(note: str, mode: str | None) -> tuple[str, str]:
     if not note.strip():
         raise BadInput(
             "edit(kind='finding') requires a non-empty unacquirable_note "
@@ -953,16 +972,49 @@ def _set_unacquirable_override(
                 "unacquirable_mode='abstract')"
             ),
         )
-    resolved_mode = mode or "vouched"
+    return note.strip(), mode or "vouched"
+
+
+def _set_unacquirable_override(
+    store: Store,
+    *,
+    kind: str,
+    raw_id: int | str,
+    note: str,
+    mode: str | None,
+    dry_run: bool,
+) -> Response:
+    """Write ``meta.unacquirable_override`` — the write path behind
+    ``edit(kind='finding', unacquirable_note=…)`` (the trust-surfaces
+    override door, claim-level — never inherited from the source paper).
+    ``note`` required non-empty; the override is otherwise settable on
+    any finding regardless of its current lifecycle status. ``mode``
+    must be ``'abstract'`` or ``'vouched'`` when given; ``None`` defaults
+    to ``'vouched'`` (matches how a legacy no-``mode`` override reads on
+    the way in)."""
+    note, resolved_mode = _validate_unacquirable_override(note, mode)
     finding_ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=raw_id)
+    mark = "Ⓐ abstract-backs-it" if resolved_mode == "abstract" else "✍ author-vouched"
+    if dry_run:
+        ref = store.get_ref(kind=kind, id=finding_ref_id)
+        prior = (ref.meta or {}).get("unacquirable_override") if ref else None
+        lines = [
+            f"dry-run: would record unacquirable override on finding id={finding_ref_id} "
+            "(nothing written)",
+            f"mode: {resolved_mode}",
+            f"note: {note}",
+        ]
+        if prior is not None:
+            lines.append(f"would replace: {prior!r}")
+        lines.append(f"trust mark: {mark} (subject to terminal verification)")
+        return Response(body="\n".join(lines))
     override = {
         "mode": resolved_mode,
         "by": "agent",
         "at": datetime.now(UTC).isoformat(),
-        "note": note.strip(),
+        "note": note,
     }
     store.update_ref(finding_ref_id, meta_patch={"unacquirable_override": override})
-    mark = "Ⓐ abstract-backs-it" if resolved_mode == "abstract" else "✍ author-vouched"
     return Response(
         body=(
             f"recorded unacquirable override on finding id={finding_ref_id}\n"

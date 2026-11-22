@@ -148,6 +148,11 @@ Queryless workflow sorts, live defaults and exact terminal counts share
 :mod:`precis.handlers._numeric_ref`. Empty ``PRIO:`` results suggest a fresh
 priority browse because only resolved filters reach the renderer.
 
+Finding edit previews validate against current data without taking the
+apply path's review locks or reopening reviews. Taproot shares the signed
+artifact and chunk-user guards across preview and apply.
+See :mod:`precis.handlers._finding_edit`.
+
 The todo tree
 =============
 

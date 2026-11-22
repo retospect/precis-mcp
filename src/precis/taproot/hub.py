@@ -713,6 +713,26 @@ class HubFrozenError(ValueError):
     """
 
 
+def require_rewordable_chunks(
+    conn: Any, hub_ref_id: int, users: list[dict[str, Any]]
+) -> None:
+    """Refuse if replacing a claim's chunks would orphan their users."""
+    # Body replacement deletes old chunk rows and FK-cascades their
+    # links. Until retargeting is supported, refuse rather than silently
+    # orphan a chunk-level user. Ref-level citations remain supported.
+    chunk_links = conn.execute(
+        "SELECT 1 FROM links l JOIN chunks ch ON "
+        "(l.src_chunk_id = ch.chunk_id OR l.dst_chunk_id = ch.chunk_id) "
+        "WHERE ch.ref_id = %s AND (ch.chunk_kind = 'finding_body' OR ch.ord < 0) LIMIT 1",
+        (hub_ref_id,),
+    ).fetchone()
+    if chunk_links or any("chunk-reference" in u["relations"] for u in users):
+        raise BadInput(
+            f"fi{hub_ref_id} has chunk-level users; an in-place edit would orphan them",
+            next="chunk-linked claim edits need reference retargeting support; no changes made",
+        )
+
+
 @trust_door("generated")
 def refine_claim_sentence(
     store: Store,
@@ -823,20 +843,7 @@ def refine_claim_sentence(
                 "notation": lint_notation(new_title),
                 "needs_review": [],
             }
-        # Body replacement deletes old chunk rows and FK-cascades their
-        # links. Until retargeting is supported, refuse rather than silently
-        # orphan a chunk-level user. Ref-level citations remain supported.
-        chunk_links = c.execute(
-            "SELECT 1 FROM links l JOIN chunks ch ON "
-            "(l.src_chunk_id = ch.chunk_id OR l.dst_chunk_id = ch.chunk_id) "
-            "WHERE ch.ref_id = %s AND (ch.chunk_kind = 'finding_body' OR ch.ord < 0) LIMIT 1",
-            (hub_ref_id,),
-        ).fetchone()
-        if chunk_links or any("chunk-reference" in u["relations"] for u in users):
-            raise BadInput(
-                f"fi{hub_ref_id} has chunk-level users; an in-place edit would orphan them",
-                next="chunk-linked claim edits need reference retargeting support; no changes made",
-            )
+        require_rewordable_chunks(c, hub_ref_id, users)
         # Invalidate an unsigned approval without creating a version row.
         # Keeping the same transaction prevents a signer from winning a stale
         # reviewed→signed CAS after the edit has committed.

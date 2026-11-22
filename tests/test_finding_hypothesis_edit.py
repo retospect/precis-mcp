@@ -204,12 +204,6 @@ def test_sharpen_and_other_ops_are_mutually_exclusive(store: Store) -> None:
         _handler(store).edit(id=hub_id, testable_by="x", pick_candidate="miller23a")
 
 
-def test_sharpen_does_not_support_dry_run(store: Store) -> None:
-    hub_id = _mint_hypothesis(store)
-    with pytest.raises(BadInput, match="dry_run"):
-        _handler(store).edit(id=hub_id, testable_by="x", dry_run=True)
-
-
 def _approved_row(store: Store, hub_id: int) -> Any:
     payload = store.fetch_refs_by_ids([hub_id])[hub_id].meta[META_PROPOSED_PAYLOAD]
     row = store.nanopub_create_publish_row(hub_id, artifact_type="hypothesis")
