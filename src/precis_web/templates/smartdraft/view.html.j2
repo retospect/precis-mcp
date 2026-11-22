@@ -1071,7 +1071,6 @@
                if (this.citations === 'endnote') e.notes = this.notesOn() ? '1' : '0';
                return e;
              },
-             overrideRetraction: false,
              placeholderFigures: false,
              submissionCopy: false,
              retractionScope: 'stale',
@@ -1095,12 +1094,8 @@
              },
              // The citation-health summary line, broken into segments —
              // same wording/order as the server's DraftRetractionReport.
-             // summary() (precis.export.retraction), but four segments
-             // (papers / missing_doi / unchecked / doi_unvalidated) are
-             // click-toggles that expand their paper list below; the rest
-             // (retracted / with-notices / DOI-invalid) stay plain text —
-             // retracted already gets its own blocking box below, and the
-             // others have no dedicated list in this pane.
+             // summary() (precis.export.retraction). Each expandable
+             // segment opens the corresponding list of cited papers.
              retractionSegments() {
                const r = this.retraction;
                if (!r) return [];
@@ -1109,8 +1104,8 @@
                  { key, label, n: n(key), clickable }
                );
                const bits = [
-                 mk('retracted', 'retracted', false),
-                 mk('soft', 'with notices', false),
+                 mk('retracted', 'retracted', true),
+                 mk('soft', 'with notices', true),
                  mk('missing_doi', 'missing DOI', true),
                  mk('doi_invalid', 'DOI invalid', false),
                  mk('unchecked', 'never checked', true),
@@ -1170,9 +1165,8 @@
                }
              },
              // Shared query for every GET export download (docx + PDF): the
-             // export gates are draft-level, not per-format, so all three
-             // overrides ride on all of them — sources appendix, retraction
-             // override, and the image-less-figure placeholder waiver.
+             // preflight is shared by both formats, including source
+             // appendices and the figure placeholder waiver.
              // Slow downloads (.docx, PDF) build in a background job so the
              // page shows a progress bar instead of a hung link
              // (precis_web/export_jobs.py). A gated export ('blocked') or a
@@ -1222,7 +1216,6 @@
                p.set('audience', this.audience);
                p.set('retraction_check', this.retractionScope);
                if (this.withSources) p.set('sources', '1');
-               if (this.overrideRetraction) p.set('ignore_retractions', '1');
                if (this.placeholderFigures) p.set('placeholder_figures', '1');
                // Submission copy: no inline doi / library link runs after
                // the cite marks and no claim-artifact appendix.
@@ -1297,19 +1290,7 @@
                 </template>
               </div>
             </template>
-            <template x-if="retraction.blocks_export">
-              <div class="rounded border border-danger bg-danger-subtle px-2 py-1 text-danger-strong">
-                <p class="font-semibold">
-                  ⚠ export blocked — retracted citation(s):
-                  <span x-text="retraction.retracted.map(p => p.slug).join(', ')"></span>
-                </p>
-                <label class="mt-1 flex items-center gap-1">
-                  <input type="checkbox" x-model="overrideRetraction" class="h-3 w-3">
-                  <span>I've reviewed it — export anyway</span>
-                </label>
-              </div>
-            </template>
-            <template x-if="!retraction.blocks_export && retraction.unchecked.length > 0">
+            <template x-if="retraction.unchecked.length > 0">
               <p class="text-warning">
                 <span x-text="retraction.unchecked.length"></span> of
                 <span x-text="retraction.total"></span> cited papers have never been
@@ -1373,7 +1354,6 @@
             <input type="hidden" name="audience" :value="audience">
             <input type="hidden" name="retraction_check" :value="retractionScope">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
-            <input type="hidden" name="ignore_retractions" :value="overrideRetraction ? '1' : ''">
             <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">
             <button type="submit" class="text-fg-subtle underline hover:text-fg"
                     title="start a background job that persists the PDF into the project workspace">export →project</button>

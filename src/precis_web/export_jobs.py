@@ -22,7 +22,7 @@ the cap waits with a ``queued`` stage instead of spawning unbounded
 threads.
 
 Why re-run the route rather than a parallel builder: the route owns the
-export gates (retraction block, figure clearance, overrides, sources
+export preflight (retraction coverage, figure clearance, overrides, sources
 bundle, filename). A gated or failed export comes back as a non-file
 response; the job reports ``blocked`` and the page navigates to the plain
 GET URL, which renders that same page.

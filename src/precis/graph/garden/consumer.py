@@ -154,6 +154,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg import OperationalError
 
 from precis.errors import BadInput, NotFound
+from precis.graph.garden import retraction
 from precis.graph.garden.candidates import (
     _MEMORY_HANDLE,
     HISTORY_KINDS,
@@ -560,6 +561,12 @@ def _prompt_for(prop: GardenProposal, excerpts: dict[str, str]) -> str:
         "excerpts": excerpts,
     }
     head = _PROMPT_HEAD
+    if prop.action == retraction.ACTION:
+        head += (
+            "\nJudge the proposed effect of this specific notice on the cited claim. "
+            "Approve only when the notice analysis and cited passage support the "
+            "proposed verdict and its rationale."
+        )
     if uses_memory_policy(prop.detector, prop.evidence, prop.payload):
         head += "\n" + memory_reconciliation_policy()
     if is_memory_action(prop.action, prop.detector):
@@ -724,6 +731,42 @@ def _apply_approved(
     report: ConsumeReport,
     identity: PaperIdentity | None = None,
 ) -> None:
+    if prop.action == retraction.ACTION:
+        if prop.payload["verdict"] == "affects":
+            _hold_for_human(
+                store,
+                prop,
+                reason="human",
+                why="This notice affects the cited claim.",
+                identity=None,
+                apply=f"precis garden accept {prop.review_id}",
+                verdict=v,
+            )
+            report.held += 1
+            return
+        try:
+            retraction.apply(
+                store,
+                prop,
+                actor=CONSUMER_ACTOR,
+                model=v.model,
+                extra=decision_record(
+                    prop, outcome="applied", why=v.why, model=v.model
+                ),
+            )
+        except retraction.RetractionApplyRefused as exc:
+            _close(
+                store,
+                prop,
+                actor=CONSUMER_ACTOR,
+                reason="apply_refused",
+                why=str(exc),
+                model=v.model,
+                report=report,
+            )
+        else:
+            report.applied += 1
+        return
     if is_memory_action(prop.action, prop.detector):
         if env_flag("PRECIS_GARDEN_MEMORY_APPLY"):
             _apply_memory(store, prop, v, report)
@@ -1529,6 +1572,8 @@ def _reviewable(prop: GardenProposal) -> bool:
     ``sibling_confusion`` rows are merge-shaped but propose options
     (merge/sharpen/re-axis), not a pair to fold; without loser/winner
     they can only die as ``apply_refused`` noise."""
+    if prop.action == retraction.ACTION:
+        return retraction.eligible(prop)
     if prop.action == "merge":
         return isinstance(prop.payload.get("loser"), int) and isinstance(
             prop.payload.get("winner"), int

@@ -44,9 +44,16 @@ Pull the same lists any time without exporting:
 
 The export pane offers `retraction_check`: `stale` (default; check citations
 older than 30 days or never checked), `all` (ignore the persisted TTL), or
-`none` (read stored state only). PDF jobs check the whole draft, then block
-retracted citations unless `ignore_retractions=True` explicitly waives the
-gate. The pane button has a per-press cap; PDF jobs do not. Progress and the
+`none` (read stored state only). PDF jobs check the whole draft; retractions
+never block an export. Each found notice (retraction, correction, expression
+of concern) is its own record, keyed on the source's id. An open notice shows
+as a mark at the citation in the viewer, LaTeX and docx; a full retraction
+keeps "(retracted <year>)" in the reference list. Work a notice on
+`/drafts/{ident}/retractions/{dc}`: analyse it once, then give a verdict per
+citing block ("does not touch this" or "affects this claim"); closing it
+removes the in-text mark. A paper marked retracted with no recorded notice
+shows a mark too: run a forced check to record the notice. The pane button
+has a per-press cap; PDF jobs do not. Progress and the
 pane show "N of M checked within 30 d". Word exports never contact Crossref.
 The pane's **fetch missing DOIs** button looks up cited papers that have
 an arXiv, PubMed or Semantic Scholar id but no DOI and saves the matches

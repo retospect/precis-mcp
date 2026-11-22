@@ -104,6 +104,7 @@ from precis.store._pdf_ops import PdfMixin
 from precis.store._receipt_ops import ReceiptsMixin
 from precis.store._refs_ops import RefsMixin
 from precis.store._resource_slots_ops import ResourceSlotsMixin
+from precis.store._retraction_ops import RetractionMixin
 from precis.store._review_ops import ReviewsMixin
 from precis.store._rxn_ops import RxnMixin
 from precis.store._scheduler_ops import SchedulerLeasesMixin
@@ -143,6 +144,7 @@ class Store(
     IdentifiersMixin,
     IntegrationLedgerMixin,
     ReviewsMixin,
+    RetractionMixin,
     GroundingsMixin,
     HeartbeatMixin,
     ResourceSlotsMixin,

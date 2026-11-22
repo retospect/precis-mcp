@@ -1142,11 +1142,8 @@ def _check_stub_retraction(stub: StubRef, *, mailto: str) -> Any:
     ``check_doi``/``_fetch_crossref_message`` themselves already use,
     for the same reason).
 
-    Runs the ``store=None`` (classification-only) path deliberately: no
-    notice-ref ingestion, no ``STATUS:*`` tag, no link write. That
-    heavier write-through is an explicit-check concern (a manual
-    ``precis provenance check-doi`` run), not something a background OA
-    chase should trigger as a side effect on every claimed stub.
+    Runs the classification-only path. The cascade persists the returned
+    notices after it releases the Crossref lane.
     """
     if not stub.doi or not _DOI_RE.match(stub.doi):
         return None
@@ -1259,13 +1256,18 @@ def _apply_retraction_gate(
     if result is None:
         return False
 
-    from precis.ingest.provenance import dominant_status
+    from precis.ingest.provenance import dominant_status, persist_retraction_notices
 
     statuses = [n.status for n in result.notices if n.status is not None]
     status = dominant_status(statuses)
     if status is None:
         return False
 
+    if stub.cite_key:
+        with store.tx() as conn:
+            persist_retraction_notices(
+                conn, store, stub.ref_id, stub.cite_key, result.notices
+            )
     retracted = status == "retracted"
     if status != stub.retraction_status:
         notices = [n for n in result.notices if n.status == status]

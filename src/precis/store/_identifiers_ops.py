@@ -439,6 +439,7 @@ class IdentifiersMixin:
         value: str,
         *,
         kind: str | None = None,
+        conn: Connection | None = None,
     ) -> int | None:
         """Look up a ref id by ``(scheme, value)``.
 
@@ -467,7 +468,10 @@ class IdentifiersMixin:
             sql += " AND r.kind = %s"
             params.append(kind)
         sql += " LIMIT 1"
-        with self.pool.connection() as conn:
+        if conn is None:
+            with self.pool.connection() as own_conn:
+                row = own_conn.execute(sql, params).fetchone()
+        else:
             row = conn.execute(sql, params).fetchone()
         return int(row[0]) if row is not None else None
 

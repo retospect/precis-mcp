@@ -2524,10 +2524,7 @@ def test_export_draft_include_sources_bundles_appendix(hub, tmp_path, monkeypatc
 def test_export_draft_records_retraction_override_in_appendix(
     hub, tmp_path, monkeypatch
 ):
-    """``retraction_override`` reaches the compiled PDF's sources appendix —
-    the trace ``docs/backlog/retraction-override-appendix-trace.md`` shipped
-    for (a ``ignore_retractions=1`` override otherwise leaves no mark on the
-    artifact itself)."""
+    """The legacy retraction audit reaches the PDF's sources appendix."""
     from precis.export import sources as src
     from precis.export.retraction import CitedPaper
     from precis.handlers.draft import DraftHandler
@@ -2553,7 +2550,7 @@ def test_export_draft_records_retraction_override_in_appendix(
         retraction_override=override,
     )
     main = result.main_tex.read_text(encoding="utf-8")
-    assert "Retraction override" in main
+    assert r"\subsection*{Retracted citations}" in main
     assert "smith2024" in main
 
 

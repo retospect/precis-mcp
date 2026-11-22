@@ -57,6 +57,7 @@ class _RWCacheRow:
     retraction_date: datetime | None
     paper_title: str | None
     journal: str | None
+    record_id: int | None = None
 
 
 def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
@@ -79,8 +80,8 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
     """
     sql = (
         "SELECT notice_doi, notice_nature, reasons, "
-        "       retraction_date, paper_title, journal "
-        "FROM provenance_rw_cache WHERE paper_doi = %s"
+        "       retraction_date, paper_title, journal, record_id "
+        "FROM provenance_rw_cache WHERE paper_doi = %s ORDER BY record_id"
     )
     try:
         with store.pool.connection() as conn:
@@ -105,6 +106,7 @@ def _lookup_rw_cache(store: Store, paper_doi: str) -> list[_RWCacheRow]:
                 retraction_date=date_as_dt,
                 paper_title=(r[4] or None),
                 journal=(r[5] or None),
+                record_id=r[6],
             )
         )
     return out
@@ -177,6 +179,7 @@ def _rw_row_to_notice(row: _RWCacheRow) -> Notice | None:
         persisted_ref_id=None,
         rw_reasons=list(row.reasons),
         rw_notice_nature=row.notice_nature or None,
+        rw_record_id=row.record_id,
     )
 
 
@@ -208,7 +211,7 @@ def _merge_crossref_and_rw_notices(
     Returns ``(merged_notices, consumed_row_indices)``:
 
     - Every Crossref notice is preserved. If the RW cache has a matching
-      row (exact ``notice_doi`` match or single-nature fallback), the
+      row (exact ``notice_doi`` match or legacy rows lacking a Record ID may fall back by nature), the
       Crossref notice is enriched with the RW reasons + nature string.
     - When ``_synthesize_rw_only=True`` (the default), RW cache rows
       that did not match any Crossref notice are converted into
@@ -232,7 +235,7 @@ def _merge_crossref_and_rw_notices(
     by_doi: dict[str, tuple[int, _RWCacheRow]] = {}
     for i, r in enumerate(cache_rows):
         if r.notice_doi:
-            by_doi[r.notice_doi.lower()] = (i, r)
+            by_doi.setdefault(r.notice_doi.lower(), (i, r))
 
     # Build a nature → [(index, row), …] map for the fallback. Lowercase
     # + collapse whitespace so "Expression of Concern" matches
@@ -256,7 +259,7 @@ def _merge_crossref_and_rw_notices(
         match: tuple[int, _RWCacheRow] | None = by_doi.get(n.notice_doi)
         if match is None and n.status is not None:
             candidates = by_nature.get(nature_for_status.get(n.status, ""), [])
-            if len(candidates) == 1:
+            if len(candidates) == 1 and candidates[0][1].record_id is None:
                 match = candidates[0]
         if match is None:
             merged.append(n)
@@ -270,13 +273,14 @@ def _merge_crossref_and_rw_notices(
                 status=n.status,
                 relation=n.relation,
                 notice_doi=n.notice_doi,
-                notice_date=n.notice_date,
+                notice_date=n.notice_date or row.retraction_date,
                 notice_title=n.notice_title,
                 notice_authors=n.notice_authors,
                 notice_year=n.notice_year,
                 persisted_ref_id=n.persisted_ref_id,
                 rw_reasons=list(row.reasons),
                 rw_notice_nature=row.notice_nature or None,
+                rw_record_id=row.record_id,
             )
         )
 

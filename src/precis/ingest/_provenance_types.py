@@ -49,6 +49,7 @@ class Notice:
     # Crossref but kept for cross-reference when the two disagree
     # (rare, but informative when investigating discrepancies).
     rw_notice_nature: str | None = None
+    rw_record_id: int | None = None
 
 
 __all__ = [

@@ -7,7 +7,7 @@ threaded), :func:`check_ref_retraction`/:func:`check_ref_doi_validity`
 
 Fetches Crossref ``/works/{doi}``, merges the local Retraction Watch
 cache (``_lookup_rw_cache``), classifies any notice by severity, and
-for each retraction/expression-of-concern: auto-ingests the notice as a
+for each status-bearing notice: auto-ingests the notice as a
 paper ref *when the parent is in the local store* (else informational
 only, no writes); writes a ``retracted-by``/``corrected-by``/
 ``concern-raised-by`` link; sets ``refs.retraction_status`` +
@@ -74,6 +74,8 @@ def validate_doi(raw: str) -> str | None:
 # can share them without a circular import. Re-exported below for
 # back-compat — existing ``from precis.ingest.provenance import
 # Notice`` works unchanged.
+from psycopg import Connection
+
 from precis.ingest._provenance_rw import (
     _classify_rw_nature,  # noqa: F401  re-exported for tests
     _enrich_notices_with_rw,  # noqa: F401  re-exported for tests
@@ -751,7 +753,7 @@ def candidate_search(
 # ---------------------------------------------------------------------------
 
 
-def _next_notice_seq(store: Store, parent_slug: str, relation: LinkRelation) -> int:
+def _next_notice_seq(conn: Connection, parent_slug: str, relation: LinkRelation) -> int:
     """Return the next 1-based sequence number for a notice family.
 
     Probes ``ref_identifiers`` for existing ``<parent>-<letter><n>``
@@ -762,13 +764,12 @@ def _next_notice_seq(store: Store, parent_slug: str, relation: LinkRelation) -> 
     letter = _NOTICE_LETTER[relation]
     prefix = f"{parent_slug}-{letter}"
     pattern = f"{prefix}%"
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT id_value FROM ref_identifiers "
-            "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
-            "AND id_value LIKE %s",
-            (pattern,),
-        ).fetchall()
+    rows = conn.execute(
+        "SELECT id_value FROM ref_identifiers "
+        "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+        "AND id_value LIKE %s",
+        (pattern,),
+    ).fetchall()
     nums: list[int] = []
     suffix_re = re.compile(rf"^{re.escape(prefix)}(\d+)$")
     for (slug,) in rows:
@@ -900,6 +901,30 @@ def _parse_update_entry(
 # ---------------------------------------------------------------------------
 
 
+def crossref_update_notices(msg: dict[str, Any]) -> list[Notice]:
+    """Read notices with an upstream identity from a Crossref response."""
+    crossref_notices: list[Notice] = []
+    for entry in msg.get("update-to") or []:
+        parsed = _parse_update_entry(entry)
+        if parsed is None:
+            continue
+        relation, severity, status, notice_doi, notice_date = parsed
+        crossref_notices.append(
+            Notice(
+                update_type=str(entry.get("type") or ""),
+                severity=severity,
+                status=status,
+                relation=relation,
+                notice_doi=notice_doi,
+                notice_date=notice_date,
+                notice_title=entry.get("label") or None,
+                notice_authors=None,
+                notice_year=None,
+            )
+        )
+    return crossref_notices
+
+
 def _status_tag_value(status: RetractionStatus) -> str:
     """Map the schema-enum status to the ``STATUS:*`` tag value."""
     if status == "retracted":
@@ -909,69 +934,110 @@ def _status_tag_value(status: RetractionStatus) -> str:
     return "corrected"
 
 
-def _ingest_notice_ref(
-    store: Store,
-    *,
-    parent_slug: str,
-    relation: LinkRelation,
-    notice_doi: str,
-    notice_msg: dict[str, Any] | None,
-    seq: int,
-) -> int:
-    """Auto-ingest a notice DOI as a minimal paper ref.
-
-    Returns the new ``ref_id``. ``notice_msg`` is the Crossref
-    response for the notice DOI (may be ``None`` if the notice
-    itself 404s, in which case we still create the ref with a
-    synthetic title so the link target exists).
-    """
-    notice_slug = make_notice_slug(parent_slug, relation, seq)
-
-    title = (
-        _extract_title(notice_msg) if notice_msg else None
-    ) or f"Notice for {parent_slug}"
-
-    authors = _extract_authors(notice_msg) if notice_msg else None
-    year = _extract_year(notice_msg) if notice_msg else None
-
-    meta: dict[str, Any] = {
-        "doi": notice_doi,
-        "is_notice": True,
-        "notice_relation": relation,
-        "notice_parent_slug": parent_slug,
-    }
-    if authors is not None:
-        meta["authors"] = authors
-    if year is not None:
-        meta["year"] = year
-
-    with store.pool.connection() as conn:
-        with conn.transaction():
-            ref = store.insert_ref(
-                kind="paper",
-                slug=notice_slug,
-                title=title,
-                provider="crossref",
-                meta=meta,
-                conn=conn,
-            )
+def _persist_notice(
+    conn: Connection, store: Store, paper_id: int, paper_slug: str, notice: Notice
+) -> Notice:
+    """Reuse the ordinary paper handle and index each upstream identity."""
+    relation = notice.relation
+    if relation is None or notice.status is None:
+        return notice
+    doi = notice.notice_doi
+    if not doi and notice.rw_record_id is None:
+        return notice
+    rw_id = str(notice.rw_record_id) if notice.rw_record_id is not None else None
+    row = conn.execute(
+        """SELECT s.notice_id, s.source,
+                  EXISTS (SELECT 1 FROM retraction_notice_sources rw
+                          WHERE rw.notice_id = s.notice_id AND rw.source = 'retraction-watch')
+           FROM retraction_notice_sources s
+           WHERE (source = 'retraction-watch' AND source_id = %s)
+              OR (source = 'crossref' AND source_id = %s)
+           ORDER BY (source = 'retraction-watch') DESC LIMIT 1""",
+        (rw_id, doi or None),
+    ).fetchone()
+    other_rw_notice = bool(row and rw_id and row[1] == "crossref" and row[2])
+    notice_id = int(row[0]) if row and not other_rw_notice else None
+    if notice_id is None and doi and not other_rw_notice:
+        notice_id = store.find_ref_by_identifier("doi", doi, kind="paper", conn=conn)
+    if notice_id == paper_id:
+        return notice
+    if notice_id is None:
+        slug = make_notice_slug(
+            paper_slug, relation, _next_notice_seq(conn, paper_slug, relation)
+        )
+        ref = store.insert_ref(
+            kind="paper",
+            slug=slug,
+            title=notice.notice_title or f"Notice for {paper_slug}",
+            provider="crossref" if doi else "retraction_watch",
+            meta={
+                "is_notice": True,
+                "notice_relation": relation,
+                "notice_parent_slug": paper_slug,
+            },
+            authors=notice.notice_authors,
+            year=notice.notice_year,
+            conn=conn,
+        )
+        notice_id = ref.id
+        if doi and not other_rw_notice:
             store.insert_ref_identifiers(
-                ref.id,
-                [("doi", notice_doi, "crossref")],
-                conn=conn,
+                notice_id, [("doi", doi, "crossref")], conn=conn
             )
-            # STATUS:notice — flag the ref as a notice rather than a
-            # primary paper, so future search calls can suppress it
-            # if asked (out of scope for Phase 1 wiring; the tag is
-            # the contract).
-            store.add_tag(
-                ref.id,
-                Tag.closed("STATUS", "notice"),
-                set_by="system",
-                replace_prefix=True,
-                conn=conn,
+        store.add_tag(
+            notice_id,
+            Tag.closed("STATUS", "notice"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+    conn.execute(
+        """INSERT INTO retraction_notices (notice_id, notice_date, nature, notice_doi, source_summary)
+           VALUES (%s, %s, %s, %s, %s)
+           ON CONFLICT (notice_id) DO UPDATE
+           SET notice_date = coalesce(EXCLUDED.notice_date, retraction_notices.notice_date),
+               nature = coalesce(nullif(retraction_notices.nature, ''), EXCLUDED.nature),
+               notice_doi = coalesce(EXCLUDED.notice_doi, retraction_notices.notice_doi),
+               source_summary = coalesce(EXCLUDED.source_summary, retraction_notices.source_summary)""",
+        (
+            notice_id,
+            notice.notice_date,
+            notice.update_type or notice.rw_notice_nature or notice.status,
+            doi or None,
+            "; ".join(notice.rw_reasons) or None,
+        ),
+    )
+    for source, key in (("retraction-watch", rw_id), ("crossref", doi)):
+        if key:
+            conn.execute(
+                """INSERT INTO retraction_notice_sources (source, source_id, notice_id)
+                   VALUES (%s, %s, %s) ON CONFLICT (source, source_id) DO NOTHING""",
+                (source, key, notice_id),
             )
-    return ref.id
+    store.add_link(
+        src_ref_id=paper_id,
+        dst_ref_id=notice_id,
+        relation=relation,
+        set_by="system",
+        conn=conn,
+    )
+    return replace(notice, persisted_ref_id=notice_id)
+
+
+def persist_retraction_notices(
+    conn: Connection,
+    store: Store,
+    paper_id: int,
+    paper_slug: str,
+    notices: list[Notice],
+) -> list[Notice]:
+    """Write notice records atomically with their source identities and paper links."""
+    if not notices:
+        return notices
+    # Serialize discovery across papers and both sources, including the
+    # transition from a DOI-only record to a known RW Record ID.
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext('precis retraction notices'))")
+    return [_persist_notice(conn, store, paper_id, paper_slug, n) for n in notices]
 
 
 def _write_through(
@@ -983,8 +1049,7 @@ def _write_through(
 ) -> tuple[RetractionStatus | None, list[Notice]]:
     """Apply the parent-paper write-through.
 
-    For each 🔴/🟠 notice: ingest the notice ref if not present, add the
-    link. Set the dominant retraction_status, STATUS tag, and touch
+    For each status-bearing notice, reuse or create its ref and link it. Set the dominant retraction_status, STATUS tag, and touch
     retraction_checked_at. Returns ``(applied_status, notices_with_ids)``
     where the notice list is rewritten with ``persisted_ref_id``
     populated for the ones we actually wrote.
@@ -998,75 +1063,16 @@ def _write_through(
         # cite_key in ref_identifiers — but guard anyway.
         return None, notices
 
-    applied_statuses: list[RetractionStatus] = []
-    rewritten: list[Notice] = []
-
-    for notice in notices:
-        if notice.status is not None:
-            applied_statuses.append(notice.status)
-
-        if notice.severity not in ("blocker", "review"):
-            # Phase 1: only ingest 🔴/🟠 notices. Plain corrections
-            # (🟡) and informational (🟢) entries are reported but
-            # not persisted as separate refs.
-            rewritten.append(notice)
-            continue
-
-        if notice.relation is None:
-            rewritten.append(notice)
-            continue
-
-        # Check if we've already ingested this notice DOI (e.g. from a
-        # previous provenance check on the same paper).
-        existing_id = store.find_ref_by_identifier(
-            "doi", notice.notice_doi, kind="paper"
-        )
-
-        if existing_id is None:
-            seq = _next_notice_seq(store, paper_slug, notice.relation)
-            notice_msg: dict[str, Any] = {
-                "title": [notice.notice_title] if notice.notice_title else [],
-                "author": notice.notice_authors or [],
-            }
-            if notice.notice_year is not None:
-                notice_msg["issued"] = {"date-parts": [[notice.notice_year]]}
-            notice_ref_id = _ingest_notice_ref(
-                store,
-                parent_slug=paper_slug,
-                relation=notice.relation,
-                notice_doi=notice.notice_doi,
-                notice_msg=notice_msg,
-                seq=seq,
+    rewritten = notices
+    if notices:
+        with store.pool.connection() as conn, conn.transaction():
+            rewritten = persist_retraction_notices(
+                conn, store, paper_ref_id, paper_slug, notices
             )
-        else:
-            notice_ref_id = existing_id
 
-        # Link parent → notice (idempotent on the unique tuple).
-        store.add_link(
-            src_ref_id=paper_ref_id,
-            dst_ref_id=notice_ref_id,
-            relation=notice.relation,
-            set_by="system",
-        )
-
-        # Re-pack notice with persisted ref id so the renderer can
-        # show the local slug.
-        rewritten.append(
-            Notice(
-                update_type=notice.update_type,
-                severity=notice.severity,
-                status=notice.status,
-                relation=notice.relation,
-                notice_doi=notice.notice_doi,
-                notice_date=notice.notice_date,
-                notice_title=notice.notice_title,
-                notice_authors=notice.notice_authors,
-                notice_year=notice.notice_year,
-                persisted_ref_id=notice_ref_id,
-            )
-        )
-
-    applied = dominant_status(applied_statuses)
+    applied = dominant_status([n.status for n in notices if n.status is not None])
+    if applied is None:
+        return None, rewritten
 
     # Earliest retraction date among status-bearing notices, for the
     # ``refs.retracted_at`` column. Phase 1 stores the earliest known
@@ -1082,7 +1088,9 @@ def _write_through(
     # Build the retraction_reason summary string — Phase 1 is just the
     # notice DOIs joined; Phase 3 (RW reasons) replaces this with the
     # human-readable reason taxonomy.
-    notice_dois = [n.notice_doi for n in rewritten if n.status is not None]
+    notice_dois = [
+        n.notice_doi for n in rewritten if n.status is not None and n.notice_doi
+    ]
     reason = "; ".join(notice_dois) if notice_dois else None
     url = None
     if notice_dois:
@@ -1126,8 +1134,8 @@ def check_doi(
 
     ``store`` optional: ``None`` (or the DOI isn't in the store) makes
     the result informational only — no rows written. When the parent
-    paper *is* in the store, writes through: notice refs created for
-    🔴/🟠 notices, links attached, ``refs.retraction_*`` updated, a
+    paper *is* in the store, writes through: refs for notices with a
+    status, links attached, ``refs.retraction_*`` updated, a
     closed-namespace ``STATUS:*`` tag applied.
 
     ``bib_entry`` is the Phase 2.5 metadata-verification hook: when
@@ -1195,27 +1203,7 @@ def check_doi(
     if msg is not None and bib_entry is not None:
         verification = verify_against_crossref(msg, bib_entry)
 
-    # Parse Crossref's update-to entries when present.
-    crossref_notices: list[Notice] = []
-    if msg is not None:
-        for entry in msg.get("update-to") or []:
-            parsed = _parse_update_entry(entry)
-            if parsed is None:
-                continue
-            relation, severity, status, notice_doi, notice_date = parsed
-            crossref_notices.append(
-                Notice(
-                    update_type=str(entry.get("type") or ""),
-                    severity=severity,
-                    status=status,
-                    relation=relation,
-                    notice_doi=notice_doi,
-                    notice_date=notice_date,
-                    notice_title=entry.get("label") or None,
-                    notice_authors=None,
-                    notice_year=None,
-                )
-            )
+    crossref_notices = crossref_update_notices(msg) if msg is not None else []
 
     # Phase 6.1: merge Crossref notices with the RW cache. RW rows that
     # match a Crossref notice contribute their reason codes; RW rows

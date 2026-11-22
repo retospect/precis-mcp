@@ -47,10 +47,8 @@ from here:
   export path runs one shared draft-level preflight
   (``precis.export.preflight.draft_export_preflight``), so the same draft in
   the same state blocks (or ships) identically whichever button is pressed.
-  Two gates: a ``retracted`` cite hard-blocks (override
-  ``?ignore_retractions=1``, reading stored state only — never a live
-  Crossref check — ``_retraction_blocked_response``), and an uncleared figure
-  hard-blocks (``precis.utils.figure_clearance``); ``?placeholder_figures=1``
+  Open notices appear next to citations. An uncleared figure hard-blocks
+  export (``precis.utils.figure_clearance``); ``?placeholder_figures=1``
   waives it (``_figure_clearance_blocked_response``): an image-less figure
   ships as a visible placeholder, an uncleared third-party image ships
   WITHHELD (caption kept, image replaced by a box naming publisher and
@@ -58,7 +56,7 @@ from here:
   form fields on the PDF-job POST.
   ``POST .../export/start`` is the progress-bar path: it returns the job
   token with **no** draft work in the request (the job's reported stage 1
-  is the preflight — draft resolution + both gates — then the handler
+  is the preflight — draft resolution and figure clearance — then the handler
   builds), and the page polls
   ``GET .../export/status/<token>`` then downloads from
   ``GET .../export/download/<token>`` (``precis_web.export_jobs``). The
@@ -91,7 +89,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -126,6 +124,7 @@ from precis.store._draft_ops import (
     content_sha,
 )
 from precis.store._draft_review_ops import REVIEW_STALE_THRESHOLD
+from precis.store._retraction_ops import Verdict
 
 # The taproot backfill cascade fns (item 5b, "convert to living cites"),
 # referenced through THIS module's own names (not ``backfill.``/``canon.``
@@ -1339,7 +1338,7 @@ def _retraction_paper_json(paper: Any) -> dict[str, Any]:
         "slug": paper.slug,
         # gr515227: rendered via Alpine x-text / :title — plain view, so
         # a markup-carrying paper title shows words, not raw <sub>/<sup>.
-        "title": title_plain(paper.title),
+        "title": title_plain(paper.title) + paper.reference_label,
         "status": paper.status,
         "label": paper.label,
         "blocks": paper.blocks,
@@ -1375,6 +1374,8 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
         "summary": report.summary(),
         "coverage": report.coverage_summary(),
         "recent_count": report.recent_count,
+        # Always False now (retractions are marked, not blocked); kept so
+        # older pane scripts reading the key keep working.
         "blocks_export": report.blocks_export,
         "total": len(report.papers),
         # The full cited-paper set — the export pane's citation-health
@@ -1387,62 +1388,20 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
         "unchecked": [_retraction_paper_json(p) for p in report.unchecked],
         "unresolved": report.unresolved,
         # DOI completeness/validity — advisory only, never affects
-        # blocks_export. See gr690484.
+        # any export block. See gr690484.
         "missing_doi": [_retraction_paper_json(p) for p in report.missing_doi],
         "doi_invalid": [_retraction_paper_json(p) for p in report.doi_invalid],
         "doi_unvalidated": [_retraction_paper_json(p) for p in report.doi_unvalidated],
     }
 
 
-def _retraction_blocked_response(request: Request, report: Any) -> Response:
-    """The shared "export blocked — retracted citation" page for both
-    export routes (the docx GET and the pdf-job POST) — one wording, so
-    the two surfaces can't drift on what they tell the user or how to get
-    past it.
-
-    Renders ``error.html.j2`` directly rather than a bare redirect: it is
-    the idiom this same file already uses for a blocking, explain-why
-    validation failure on a GET download (see the ``/pdf`` route's
-    no-latexmk / compile-error branches), and it is the only place that
-    can carry the retracted slugs and the override instructions where a
-    plain 303 to the reader cannot.
-
-    The override (``ignore_retractions=1`` / form field) is deliberate by
-    design — a retracted citation making it into a published artifact is
-    the exact failure mode this whole feature exists to catch, so the
-    default is a hard stop; bypassing it always requires an explicit,
-    separately-typed act, never a header or a default-on flag."""
-    slugs = ", ".join(p.slug for p in report.retracted)
-    return templates.TemplateResponse(
-        request,
-        "error.html.j2",
-        {
-            "title": "Export blocked — retracted citation",
-            "status": 409,
-            "detail": (
-                f"This draft cites {len(report.retracted)} retracted "
-                f"paper(s): {slugs}. Exporting a retracted citation into a "
-                "finished document is the exact failure mode this check "
-                "exists to catch, so it hard-stops by default.\n\n"
-                "To export anyway: use the override checkbox in the "
-                "export panel, or add ignore_retractions=1 to this "
-                "request (docx: query param; PDF: form field)."
-            ),
-        },
-        status_code=409,
-    )
-
-
 def _figure_clearance_blocked_response(
     request: Request, blocked: list[Any], total: int
 ) -> Response:
     """The shared "export blocked — uncleared figure" page for every export
-    path (the ``/pdf`` GET, the ``.docx`` GET, the PDF-job POST), the figure
-    twin of ``_retraction_blocked_response``: one wording so no surface can
-    drift on what it tells the user or how to get past it.
+    path (the ``/pdf`` GET, the ``.docx`` GET, the PDF-job POST).
 
-    Like the retraction block this is a hard stop by default — an uncleared
-    figure (no image yet, or a third-party image whose permission isn't
+    An uncleared figure (no image yet, or a third-party image whose permission isn't
     granted / has expired) must not ship in a finished artifact. The only
     way past is per-check and explicit: ``placeholder_figures=1`` (query on
     the GET downloads, form field on the PDF job) lets an *image-less* figure
@@ -1535,14 +1494,9 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     (Word can't inline-embed PDF pages the way compiled-PDF export can),
     with a ``manifest.txt`` for anything not located.
 
-    ``?ignore_retractions=1`` overrides a retraction block
-    (``_retraction_blocked_response``). The gate only *reads* stored
-    retraction state (``check=False``, no network) — see
-    ``precis.export.retraction``'s docstring for the read/check split;
-    live re-check is the watch button (``retraction_check_route``).
-    Override + ``?sources=1`` records the overridden cite(s) in the
-    sources appendix manifest (``precis.export.sources.write_manifest``);
-    without ``?sources=1`` only the server log line records it."""
+    Retraction labels use stored notice decisions. Legacy clients may pass
+    ``?ignore_retractions=1`` to include the historic audit entry in a source bundle.
+    """
     from precis.export.docx import export_docx
 
     # Under the async export job the runner resolved the draft on a
@@ -1576,8 +1530,6 @@ async def export_docx_route(request: Request, ident: str) -> Response:
             ignore_retractions=ignore_retractions,
             placeholder_figures=placeholder_figures,
         )
-    if pf.retraction_blocked:
-        return _retraction_blocked_response(request, pf.retraction_report)
     if pf.figures_blocked:
         return _figure_clearance_blocked_response(
             request, pf.figures_blocked, pf.clearance_total
@@ -1695,15 +1647,10 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     A ``sources=1`` form field additionally bundles every cited
     paper/datasheet PDF the worker holds as a ``pdfpages`` appendix.
 
-    A ``ignore_retractions=1`` form field overrides a retraction block —
-    see ``_retraction_blocked_response``. The gate here is the same
-    stored-state-only read (``check=False``, no network) as the docx
-    route: enqueuing a job must not itself wait on Crossref. Taking the
-    override — combined with ``sources=1`` — is passed to the job so the
-    compiled PDF's sources appendix records which cite(s) were overridden.
     ``retraction_check=stale`` (default) refreshes citations older than 30
-    days in the worker; ``all`` forces every citation and ``none`` skips
-    network checks. The worker reapplies the gate after checking."""
+    days in the worker. ``all`` forces every citation and ``none`` reads stored
+    state. The document shows any open notice at its citation.
+    """
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -1736,8 +1683,6 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
         ignore_retractions=ignore_retractions,
         placeholder_figures=placeholder_figures,
     )
-    if pf.retraction_blocked:
-        return _retraction_blocked_response(request, pf.retraction_report)
     if pf.figures_blocked:
         return _figure_clearance_blocked_response(
             request, pf.figures_blocked, pf.clearance_total
@@ -1788,15 +1733,135 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
     )
 
 
+@router.get("/drafts/{ident}/retractions/{dc}")
+async def retraction_review_page(request: Request, ident: str, dc: str) -> Response:
+    """Show notice decisions for the cited papers in this block."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    chunk = store.drafts.get_draft_chunk(dc) if ref is not None else None
+    if chunk is None or chunk.ref_id != ref.id or chunk.retired:
+        return JSONResponse({"error": "Draft block not found"}, status_code=404)
+    sha = content_sha(chunk.text)
+    verdicts = store.retraction_verdicts(chunk.chunk_id, sha)
+    papers = {
+        paper.id: paper
+        for _, paper in smartdraft.retraction_targets(store, chunk.text, {})
+    }
+    rows = [
+        (paper, notice, verdicts.get((paper.id, notice.id)))
+        for paper in papers.values()
+        for notice in store.retraction_notices(paper.id)
+    ]
+    return templates.TemplateResponse(
+        request,
+        "smartdraft/retractions.html.j2",
+        {
+            "ident": ident,
+            "chunk": chunk,
+            "sha": sha,
+            "rows": rows,
+            "can_judge": current_user(request) is not None,
+        },
+    )
+
+
+@router.post("/drafts/{ident}/retractions/{dc}")
+async def record_retraction_review(
+    request: Request,
+    ident: str,
+    dc: str,
+    paper_id: int = Form(...),
+    notice_id: int = Form(...),
+    sha: str = Form(...),
+    action: str = Form(...),
+    note: str = Form(...),
+    proposed_verdict: str = Form(""),
+) -> Response:
+    """Analyse, judge, propose or close a notice for a live citation."""
+    from precis.graph.garden import retraction
+
+    user = current_user(request)
+    if user is None:
+        return JSONResponse({"error": "Sign in to record a decision"}, status_code=401)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    chunk = store.drafts.get_draft_chunk(dc) if ref is not None else None
+    if chunk is None or chunk.ref_id != ref.id or chunk.retired:
+        return JSONResponse({"error": "Draft block not found"}, status_code=404)
+    if content_sha(chunk.text) != sha:
+        return JSONResponse(
+            {"error": "The block changed. Reload the review."}, status_code=409
+        )
+    if not note.strip():
+        return JSONResponse({"error": "Enter a reason or analysis"}, status_code=422)
+    papers = {
+        paper.id for _, paper in smartdraft.retraction_targets(store, chunk.text, {})
+    }
+    notice = next(
+        (n for n in store.retraction_notices(paper_id) if n.id == notice_id), None
+    )
+    if paper_id not in papers or notice is None:
+        return JSONResponse(
+            {"error": "Notice is not attached to this citation"}, status_code=404
+        )
+    if action == "analyse":
+        store.analyse_retraction(notice_id, note.strip(), user.login)
+    elif action in ("judge", "propose") and proposed_verdict in (
+        "unaffected",
+        "affects",
+    ):
+        verdict = cast(Verdict, proposed_verdict)
+        if not notice.analysis:
+            return JSONResponse(
+                {"error": "Record an analysis before judging"}, status_code=409
+            )
+        if action == "propose":
+            proposal_id = retraction.propose(
+                store,
+                chunk,
+                paper_id,
+                notice,
+                verdict,
+                note.strip(),
+                user.login,
+            )
+            return JSONResponse(
+                {"proposal_id": proposal_id}, status_code=201 if proposal_id else 409
+            )
+        if not store.judge_retraction_use(
+            notice_id,
+            paper_id,
+            chunk.chunk_id,
+            sha,
+            verdict,
+            note.strip(),
+            user.login,
+        ):
+            return JSONResponse(
+                {"error": "Citation changed or already judged"}, status_code=409
+            )
+    elif action == "close":
+        if not store.close_retraction_use(
+            notice_id, paper_id, chunk.chunk_id, sha, note.strip(), user.login
+        ):
+            return JSONResponse(
+                {"error": "No affecting verdict to close"}, status_code=409
+            )
+    else:
+        return JSONResponse(
+            {"error": "Invalid review action or verdict"}, status_code=422
+        )
+    return RedirectResponse(url=str(request.url.path), status_code=303)
+
+
 @router.get("/drafts/{ident}/retraction-status")
 async def retraction_status_route(request: Request, ident: str) -> Response:
     """Read-only retraction state of everything this draft cites — the
-    exact same no-network read the export gate uses
-    (``draft_retraction_report(check=False)``). Backs the export pane's
-    passive "N of M cited papers have never been checked" warning: the
-    pane fetches this on load, so the warning (and the override checkbox,
-    when a cite is already known-retracted) is visible before the user
-    ever presses "check retractions"."""
+    same no-network read the export
+    preflight uses (``draft_retraction_report(check=False)``). Backs the
+    export pane's passive "N of M cited papers have never been checked"
+    warning: the pane fetches this on load, so the warning is visible
+    before the user ever presses "check retractions"."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     if ref is None:
@@ -2438,10 +2503,8 @@ async def pdf(request: Request, ident: str) -> Response:
 
     # Draft-level export gate — the same shared preflight the ``.docx`` and
     # PDF-job routes run, applied here too so the most-pressed export control
-    # (the "download PDF" link) can't ship what the others block. Gate before
-    # the version cache so a stored PDF compiled while clean can't serve after
-    # a cite is retracted / a figure's permission lapses. Overrides are query
-    # params on this GET: ``ignore_retractions=1`` / ``placeholder_figures=1``.
+    # (the "download PDF" link) can't ship what the others refuse. Gate before
+    # the version cache so a figure permission lapse or new notice is visible.
     ignore_retractions = _flag(request, "ignore_retractions")
     placeholder_figures = _flag(request, "placeholder_figures")
     # Same reason as the .docx route: keep the gate walks off the loop —
@@ -2455,8 +2518,6 @@ async def pdf(request: Request, ident: str) -> Response:
             ignore_retractions=ignore_retractions,
             placeholder_figures=placeholder_figures,
         )
-    if pf.retraction_blocked:
-        return _retraction_blocked_response(request, pf.retraction_report)
     if pf.figures_blocked:
         return _figure_clearance_blocked_response(
             request, pf.figures_blocked, pf.clearance_total
@@ -2474,7 +2535,11 @@ async def pdf(request: Request, ident: str) -> Response:
     claims = _claims_wanted(request)
     from precis.export.audience import web_base_url
 
-    if audience == "external" or request.scope.get("retraction_report") is not None:
+    report = getattr(pf, "retraction_report", None)
+    ephemeral = request.scope.get("retraction_report") is not None or bool(
+        report and (report.retracted or report.soft)
+    )
+    if audience == "external" or ephemeral:
         cache_dir = Path(tempfile.mkdtemp(prefix="precis-draft-external-"))
     else:
         base_url = await asyncio.to_thread(web_base_url, store)
@@ -2502,11 +2567,7 @@ async def pdf(request: Request, ident: str) -> Response:
         )
         filename = f"{base}{suffix}.pdf"
 
-        if (
-            audience == "external"
-            or request.scope.get("retraction_report") is not None
-            or not pdf_path.exists()
-        ):
+        if audience == "external" or ephemeral or not pdf_path.exists():
             if not have_latexmk():
                 return templates.TemplateResponse(
                     request,
@@ -2580,7 +2641,6 @@ async def pdf(request: Request, ident: str) -> Response:
             # download route creates a fresh response and TTL expiry cleans up.
             handed_off = True
             return response
-        ephemeral = request.scope.get("retraction_report") is not None
         handed_off = True
         return FileResponse(
             pdf_path,
@@ -2591,9 +2651,7 @@ async def pdf(request: Request, ident: str) -> Response:
             else None,
         )
     finally:
-        if (
-            audience == "external" or request.scope.get("retraction_report") is not None
-        ) and not handed_off:
+        if (audience == "external" or ephemeral) and not handed_off:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
 

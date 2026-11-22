@@ -232,6 +232,9 @@
 {% endif %}
 {%- if review.issues -%}
 <span class="sd-issue-mark text-warning" data-issue-kinds="{{ review.issues | map(attribute='kind') | join(' ') }}" title="{% for i in review.issues %}⚠ {{ i.kind }}: {{ i.text }}{{ '\n' if not loop.last }}{% endfor %}" aria-label="{{ review.issues | length }} issue(s) on this paragraph">⚠</span>
+{% if review.issues | selectattr('kind', 'equalto', 'retracted-citation') | list %}
+<a class="sd-review text-warning underline" href="/drafts/{{ ident }}/retractions/{{ n.dc }}">Review notices</a>
+{% endif %}
 {% endif -%}
 <span class="relative inline-block" x-data="{ open: false }" @click.outside="open = false">
   <button type="button" @click="open = !open"

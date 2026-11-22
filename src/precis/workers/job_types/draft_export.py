@@ -68,9 +68,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # Bundle cited paper/datasheet PDFs into a pdfpages appendix so the
         # compiled PDF is self-contained (report + its sources).
         "include_sources": {"type": "boolean"},
-        # Set by the export route when the retraction gate was bypassed via
-        # ?ignore_retractions=1 — the sources appendix records which cited
-        # papers were overridden (see precis.export.retraction).
+        # Legacy source-appendix audit flag. Notice marks are unconditional.
         "ignore_retractions": {"type": "boolean"},
         "retraction_check": {"type": "string", "enum": ["none", "stale", "all"]},
         # Opt-in: export even when figures are uncleared — image-less ones
@@ -458,11 +456,6 @@ def _export_and_compile(
     )
     progress.report(report.coverage_summary())
     ctx.append_chunk("job_event", report.coverage_summary())
-    if report.blocks_export and not params.get("ignore_retractions"):
-        ctx.record_failure(
-            "draft_export: retracted citations block export: " + report.summary()
-        )
-        return
     retraction_override = report.retracted if params.get("ignore_retractions") else []
     audience_name = str(params.get("audience") or "dev")
     try:

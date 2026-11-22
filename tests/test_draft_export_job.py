@@ -218,10 +218,9 @@ def test_dispatch_records_retraction_override_when_flagged(
     hub: Hub, monkeypatch: Any
 ) -> None:
     """``params.ignore_retractions`` (set by the route once the user has
-    already bypassed the export-gate block) makes the job re-derive the
-    retraction report, enforce its gate, and thread its ``retracted`` list into
-    the sources appendix — ``docs/backlog/retraction-override-appendix-
-    trace.md``'s trace. A newly discovered retraction also blocks the job."""
+    requests a legacy audit) makes the job re-derive the report and thread its
+    ``retracted`` list into
+    the sources appendix for legacy callers that still send the flag."""
     import precis.export.retraction as retraction_mod
     from precis.export.retraction import CitedPaper, DraftRetractionReport
 
@@ -230,7 +229,7 @@ def test_dispatch_records_retraction_override_when_flagged(
         id=slug, chunk_kind="paragraph", text="Some prose.", at={"last": True}
     )
 
-    def fake_report(store, ref, **kw):
+    def fake_report(store: Any, ref: Any, **kw: Any) -> DraftRetractionReport:
         return DraftRetractionReport(
             papers=[
                 CitedPaper(
@@ -249,9 +248,7 @@ def test_dispatch_records_retraction_override_when_flagged(
         meta={"params": {"draft": slug, "include_sources": True}},
     )
     spec.dispatch(ctx, spec)
-    assert any(
-        "retracted citations block export" in failure for failure in ctx.failures
-    )
+    assert not ctx.failures, ctx.failures
 
     ctx_override = _FakeCtx(
         store=hub.store,
@@ -831,8 +828,8 @@ def test_lock_timeout_stamps_infra_lock_timeout_tag(hub: Hub, monkeypatch: Any) 
     assert f"child-failed:{jid}" not in parent_tags
 
 
-def test_export_job_checks_and_reapplies_retraction_gate(monkeypatch: Any) -> None:
-    """A retraction discovered after enqueue blocks rendering unless waived."""
+def test_export_job_checks_retractions_before_rendering(monkeypatch: Any) -> None:
+    """A retraction discovered after enqueue reaches the renderer."""
     from types import SimpleNamespace
 
     import precis.export.retraction as retraction_mod
@@ -869,9 +866,7 @@ def test_export_job_checks_and_reapplies_retraction_gate(monkeypatch: Any) -> No
             "force": scope == "all",
             "mailto": "ops@example.org",
         }
-        assert any(
-            "retracted citations block export" in failure for failure in ctx.failures
-        )
+        assert ctx.failures == ["draft_export: reached rendering setup"]
     ctx = _FakeCtx(store=object(), meta={})
     job._export_and_compile(
         ctx,

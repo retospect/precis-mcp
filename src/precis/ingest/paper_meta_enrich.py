@@ -158,7 +158,9 @@ from precis.ingest.openalex_meta import fetch_openalex_work
 from precis.ingest.provenance import (
     RetractionStatus,
     classify_update_type,
+    crossref_update_notices,
     dominant_status,
+    persist_retraction_notices,
 )
 from precis.store import Store
 from precis.utils.authors import author_display, author_names, normalize_authors
@@ -857,6 +859,10 @@ def enrich_paper(
             )
         if retraction is not None:
             status, reason, url = retraction
+            if ref.slug and msg is not None:
+                persist_retraction_notices(
+                    conn, store, ref_id, ref.slug, crossref_update_notices(msg)
+                )
             store.set_retraction_status(
                 ref_id, status=status, reason=reason, url=url, conn=conn
             )

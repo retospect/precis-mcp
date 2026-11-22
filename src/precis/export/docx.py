@@ -84,6 +84,7 @@ from precis.export._provenance_strip import (
     short_title as _short_title,
 )
 from precis.export._ref_cache import RefLookupMemo
+from precis.export._retraction_marks import RetractionMarks
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -653,6 +654,7 @@ class _Ctx:
     xref_names: dict[str, str] = field(default_factory=dict)
     _xref_run: _XrefRun | None = field(default=None, repr=False)
     cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
+    retraction_marks: RetractionMarks = field(default_factory=RetractionMarks)
     #: every live ``dc`` handle (cross-ref liveness) and legacy ``¶`` handle →
     #: ``dc`` — mirrors ``export/latex.py``'s ``known_handles``/``legacy_to_dc``.
     dc_handles: set[str] = field(default_factory=set)
@@ -2155,6 +2157,14 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
     DocxRenderer(ctx).xref(paragraph, xref)
 
 
+def _add_retraction_mark(ctx: _Ctx, sink: Any, keys: tuple[str, ...]) -> None:
+    labels = ctx.retraction_marks.citation_labels(
+        ctx.store, keys, ctx.cursor.dc, ctx.cursor.text
+    )
+    if labels:
+        sink.add_run(" [" + "; ".join(labels) + "]").bold = True
+
+
 def _inline_source_cite(
     tgt: str, kind: str, surface: str | None, ctx: _Ctx, paragraph: Any
 ) -> None:
@@ -2164,10 +2174,12 @@ def _inline_source_cite(
     to a light ``(Author, Year)``. See `me690333`."""
     ctx.cite_run.interrupt()
     _flush_cites(ctx, paragraph)
+    hit = _handle_cite_key(tgt, ctx)
     if surface:
         paragraph.add_run(surface)
+        if hit:
+            _add_retraction_mark(ctx, paragraph, (hit[0],))
         return
-    hit = _handle_cite_key(tgt, ctx)
     if not hit:
         return
     slug = hit[0]
@@ -2181,6 +2193,7 @@ def _inline_source_cite(
         else render_paper_inline_citation(ref)
     )
     paragraph.add_run(text)
+    _add_retraction_mark(ctx, paragraph, (slug,))
 
 
 #: Font size (pt) for the doi/UL cite-link runs — small enough to read as
@@ -2288,6 +2301,7 @@ def _cite(
         paragraph.add_run(
             render_paper_inline_citation(ref) if ref is not None else slug
         )
+        _add_retraction_mark(ctx, paragraph, (slug,))
         return
     # A supplementary-information record cites as its parent paper; the
     # marker gains " (SI)" (an EndNote field carries it as <Suffix>).
@@ -2510,6 +2524,7 @@ class DocxRenderer:
             # separator ("(SI)[4]" — gr491600's nit).
             sink.add_run(" ")
         _emit_mark(ctx, sink, group, si=si, mixed=mixed)
+        _add_retraction_mark(ctx, sink, group.keys)
         if si and not mixed:
             ctx._si_mark = (sink, len(sink.runs))
 
@@ -2706,6 +2721,7 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         venue = meta.get("container_title") or meta.get("journal") or meta.get("venue")
     else:
         venue = meta.get("journal") or meta.get("venue") or meta.get("container_title")
+    title = (pref.title or slug) + RetractionMarks().reference_label(store, pref)
     return {
         "kind": pref.kind,
         "tag": slug,
@@ -2713,9 +2729,9 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         "bib_type": bib_type,
         "authors": pref.authors,
         "editors": meta.get("editors"),
-        "title": pref.title or slug,
+        "title": title,
         # The title and venue with their markup, as Zotero's CSL fields take it.
-        "title_csl": csl_markup(_bib_markup_runs(pref.title or slug)),
+        "title_csl": csl_markup(_bib_markup_runs(title)),
         "venue_csl": csl_markup(_bib_markup_runs(str(venue or ""))),
         "year": pref.year,
         "journal": venue,
@@ -3099,7 +3115,8 @@ def _reference_runs(
     runs: list[_RefRun] = []
     if head:
         runs.append((head + ". ", none))
-    runs += _sentence(_bib_markup_runs(pref.title or slug))
+    label = RetractionMarks().reference_label(store, pref)
+    runs += _sentence(_bib_markup_runs((pref.title or slug) + label))
     if kind == "datasheet":
         runs.append((f" [{datasheet_pub_label(meta)}]", none))
         part = str(meta.get("part_lcsc") or "").strip()

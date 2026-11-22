@@ -121,8 +121,10 @@ def _format_notice_line(notice: Notice) -> str:
         parts.append(notice.notice_date.strftime("%Y-%m-%d"))
     if notice.notice_doi:
         parts.append(f"notice DOI: `{notice.notice_doi}`")
+    if notice.rw_record_id is not None:
+        parts.append(f"Retraction Watch Record ID: {notice.rw_record_id}")
     if notice.persisted_ref_id is not None:
-        parts.append(f"ingested as ref id={notice.persisted_ref_id}")
+        parts.append(f"notice: pa{notice.persisted_ref_id}")
     main = "- " + " · ".join(parts)
     if notice.rw_reasons:
         # Indent the reasons under the main bullet so multi-reason

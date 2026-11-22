@@ -1,7 +1,7 @@
 """Retraction state — and DOI completeness/validity — of the papers a
 draft cites.
 
-One walk, two consumers — the export gate (`precis_web/routes/drafts.py`)
+One walk, two consumers — the export preflight (`precis_web/routes/drafts.py`)
 and the draft's retraction-watch button — so the two can never disagree
 about what a draft cites or how bad it is.
 
@@ -22,12 +22,13 @@ whether the DOI resolves (``RetractionCheck.doi_signal``), and
 only runs for cites the retraction check itself skipped this press (its own
 TTL still fresh), so the two checks never both fetch the same DOI. Both DOI
 signals are advisory only — see :attr:`CitedPaper.doi_fetchable` /
-:attr:`DraftRetractionReport.missing_doi` — never :attr:`blocks_export`.
+:attr:`DraftRetractionReport.missing_doi` — never an export block.
 
 PDF export jobs deliberately check stale citations before rendering, using the
 persisted 30-day TTL; callers can request all citations or stored state only.
 Word exports remain read-only. The pane button offers a bounded check for
-interactive use; export jobs check the full draft before applying the gate.
+interactive use; export jobs check the full draft before rendering. Nothing here blocks an
+export: open notices are marked in the document instead.
 
 A caller that can't afford to walk every cite in one press narrows the
 network side with ``check_slugs`` — :func:`select_for_check` picks the
@@ -48,6 +49,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis.export._retraction_marks import RetractionMarks
 from precis.ingest.provenance import (
     DOI_VALIDATION_TTL_DAYS,
     RETRACTION_TTL_DAYS,
@@ -56,19 +58,15 @@ from precis.ingest.provenance import (
     check_refs_retraction,
 )
 
-#: Statuses that block an export outright. Narrow on purpose: a
-#: corrigendum fixing an affiliation is not a reason to refuse to
-#: produce a PDF.
-BLOCKING_STATUSES = frozenset({"retracted"})
-
-#: Statuses that annotate but never block.
+#: Statuses for notices that are not a full retraction. No status blocks an
+#: export; open notices are marked at the citation.
 SOFT_STATUSES = frozenset({"corrected", "expression_of_concern"})
 
 #: Human-facing labels, keyed by ``refs.retraction_status``.
 STATUS_LABELS = {
     "retracted": "RETRACTED",
-    "corrected": "corrected",
     "expression_of_concern": "expression of concern",
+    "corrected": "corrected",
 }
 
 #: Non-DOI identifier schemes a missing DOI can plausibly be resolved
@@ -173,6 +171,7 @@ class CitedPaper:
     #: state, not rounded down to "valid" (mirrors ``checked_at``).
     doi_validated_at: Any = None
     doi_entry_type_note: str | None = None
+    reference_label: str = ""
 
     @property
     def label(self) -> str:
@@ -181,7 +180,8 @@ class CitedPaper:
 
     @property
     def blocks(self) -> bool:
-        return (self.status or "") in BLOCKING_STATUSES
+        """Always False; kept for callers written when retractions blocked."""
+        return False
 
     @property
     def never_checked(self) -> bool:
@@ -255,7 +255,7 @@ class DraftRetractionReport:
 
     @property
     def retracted(self) -> list[CitedPaper]:
-        return [p for p in self.papers if p.blocks]
+        return [p for p in self.papers if p.status == "retracted"]
 
     @property
     def soft(self) -> list[CitedPaper]:
@@ -301,13 +301,15 @@ class DraftRetractionReport:
 
     @property
     def blocks_export(self) -> bool:
-        return bool(self.retracted)
+        """Always False; kept for callers written when retractions blocked
+        an export. Open notices are marked in the document instead."""
+        return False
 
     def summary(self) -> str:
         """One line for a flash message / job log.
 
         Missing/invalid/unvalidated DOI bits are advisory — they never
-        affect :attr:`blocks_export` — but are still surfaced here (never
+        block an export — but are still surfaced here (never
         rounded into "all clean") for the same reason ``unchecked`` is:
         the sparse coverage model means silence is not evidence of
         cleanliness.
@@ -513,21 +515,28 @@ def draft_retraction_report(
     identifiers = store.identifiers_for_refs([r.id for r in refs]) if refs else {}
 
     papers: list[CitedPaper] = []
+    marks = RetractionMarks()
     for r in refs:
         checked = results.get(r.id)
         doi_checked = doi_results.get(r.id)
         ids = identifiers.get(r.id, {})
         doi = ids.get("doi") or None
+        statuses = {n.status for n in marks.for_paper(store, r)}
+        stored_status = (
+            checked.status
+            if checked is not None
+            else getattr(r, "retraction_status", None)
+        )
+        if stored_status:
+            statuses.add(stored_status)
+        status = next((v for v in STATUS_LABELS if v in statuses), None)
         papers.append(
             CitedPaper(
                 ref_id=r.id,
                 slug=getattr(r, "slug", "") or "",
                 title=getattr(r, "title", "") or "",
-                status=(
-                    checked.status
-                    if checked is not None
-                    else getattr(r, "retraction_status", None)
-                ),
+                status=status,
+                reference_label=marks.reference_label(store, r),
                 outcome=checked.outcome if checked is not None else None,
                 checked_at=(
                     checked.checked_at
@@ -573,7 +582,6 @@ def retraction_coverage_entries(
 
 
 __all__ = [
-    "BLOCKING_STATUSES",
     "SOFT_STATUSES",
     "STATUS_LABELS",
     "CitedPaper",

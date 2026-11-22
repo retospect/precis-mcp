@@ -1,0 +1,57 @@
+{% extends "base.html.j2" %}
+{% block title %}Retraction review · {{ chunk.dc }}{% endblock %}
+{% block content %}
+<a class="underline" href="/drafts/{{ ident }}">Back to draft</a>
+<h1 class="my-3 text-xl font-semibold">Retraction review · {{ chunk.dc }}</h1>
+<p class="whitespace-pre-wrap">{{ chunk.text }}</p>
+{% for paper, notice, verdict in rows %}
+<section class="my-4 space-y-3 rounded border border-line p-4">
+  <h2 class="font-semibold">{{ paper.title }}</h2>
+  <p>{{ notice.status | replace('_', ' ') | capitalize }}{% if notice.date %} · {{ notice.date }}{% endif %} ·
+    <a class="underline" href="/r/paper/pa{{ notice.id }}">{{ notice.title }} (pa{{ notice.id }})</a>
+  </p>
+  {% if notice.doi %}<p><a class="underline" href="https://doi.org/{{ notice.doi }}">Notice DOI · {{ notice.doi }}</a></p>{% endif %}
+  {% if notice.source_summary %}<p>{{ notice.source_summary }}</p>{% endif %}
+  {% if notice.analysis %}
+  <p class="whitespace-pre-wrap">{{ notice.analysis }} · {{ notice.analysed_by }}</p>
+  {% endif %}
+  {% if verdict %}
+  <p>{{ 'Closed' if verdict.closed else 'Open' }} · {{ 'Affects this claim' if verdict.verdict == 'affects' else 'Does not affect this claim' }}
+    · {{ verdict.reason }} · {{ verdict.judged_by }}</p>
+  {% if verdict.resolution %}<p>{{ verdict.resolution }} · {{ verdict.closed_by }}</p>{% endif %}
+  {% endif %}
+  {% if can_judge and (not verdict or not verdict.closed) %}
+  <form method="post" class="space-y-2">
+    <input type="hidden" name="paper_id" value="{{ paper.id }}">
+    <input type="hidden" name="notice_id" value="{{ notice.id }}">
+    <input type="hidden" name="sha" value="{{ sha }}">
+    {% if not notice.analysis %}
+    <label class="block">What changed in the paper?
+      <textarea class="block w-full rounded border border-line p-2" name="note" required></textarea>
+    </label>
+    <button class="rounded border border-line px-3 py-1" name="action" value="analyse">Save analysis</button>
+    {% elif not verdict %}
+    <label class="block">Effect on this claim
+      <select class="rounded border border-line p-1" name="proposed_verdict">
+        <option value="unaffected">Does not affect this claim</option>
+        <option value="affects">Affects this claim</option>
+      </select>
+    </label>
+    <label class="block">Reason
+      <textarea class="block w-full rounded border border-line p-2" name="note" required></textarea>
+    </label>
+    <button class="rounded border border-line px-3 py-1" name="action" value="judge">Record verdict</button>
+    <button class="rounded border border-line px-3 py-1" name="action" value="propose">Submit for judging</button>
+    {% else %}
+    <label class="block">How was the issue addressed?
+      <textarea class="block w-full rounded border border-line p-2" name="note" required></textarea>
+    </label>
+    <button class="rounded border border-line px-3 py-1" name="action" value="close">Close notice for this block</button>
+    {% endif %}
+  </form>
+  {% endif %}
+</section>
+{% else %}
+<p class="my-3">No recorded notices for this block. If the paper is marked retracted elsewhere, run a forced retraction check from the export pane to record its notice so it can be judged and closed.</p>
+{% endfor %}
+{% endblock %}

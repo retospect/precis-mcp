@@ -13,7 +13,8 @@ rounded down to "clean".
    from `src/precis_web/routes/drafts.py`.
 
 Around them: a 30-day TTL gate (`ingest.provenance::check_ref_retraction`);
-export blocks on `retracted` with an `ignore_retractions=1` override; search
+export no longer blocks: open notices are marked at the citation and a full
+retraction keeps "(retracted <year>)" in the reference list; search
 **downranks (never excludes)** and annotates with `⚠`.
 
 ## Verification state
@@ -62,6 +63,5 @@ cause of the one observed 90s blowout. Setting it is the fix.
 
 ## Known limitation
 
-The export override (`ignore_retractions=1`) leaves only a server
-`log.warning` — it is **not** traced in the exported artifact itself, though
-the sources appendix does record the override.
+`ignore_retractions=1` is a legacy flag: it only adds an audit entry to the
+sources appendix and manifest. Nothing blocks, so nothing needs waiving.

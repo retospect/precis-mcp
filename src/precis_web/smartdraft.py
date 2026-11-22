@@ -1465,42 +1465,30 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
     return True
 
 
-def retraction_issues_in(
+def retraction_targets(
     store: Any, text: str, cache: dict[Any, Any]
-) -> list[dict[str, str]]:
-    """``{"kind", "text"}`` issues for the retraction state of the papers
-    ``text`` cites — :func:`chunk_issues`'s citation source. A set
-    ``refs.retraction_status`` (retracted / corrected /
-    expression of concern) → kind ``retracted-citation``; a NULL
-    ``refs.retraction_checked_at`` → kind ``unchecked-citation``: "never
-    checked" is a first-class state the retraction pane's ``unchecked``
-    bucket and ``retraction_coverage_entries``'s red warning both surface,
-    never a silent clean (gr725269). A missing ref earns no issue here —
-    a dead cite is :func:`cite_integrity_ok`'s flag. Read-time, like that
-    function.
+) -> list[tuple[str, Any]]:
+    """Resolve the papers cited in the block using the export grammar.
 
-    Citation mining and resolution are the export's own, so the marker
-    flags exactly what the export retraction report counts: the
-    ``_COMBINED_BODY`` grammar (bracketed ``[pa5]``/``[pc9]``, display
-    links ``[source](pa5)``, bare ``pa<id>`` handles, ``[§slug~n]``,
-    ``paper:slug~n``, bare cite keys, pasted rawcite lines) resolved via
-    :func:`precis.export.walker.resolve_cite_handle` (merge redirects and
-    SI parents included) plus :func:`~precis.export.walker.resolve_si_slug`
-    + :func:`precis.export.sources._resolve_source_ref` — the same
-    two-step ``cited_paper_refs`` runs. A ``[fi]`` claim-hub cite is NOT
-    mined: its evidence papers' state is the collated report's view, and
-    its trust is ``claim_trust_for_block``'s lane.
+    Reads the LaTeX exporter's citation grammar (``_COMBINED_BODY`` via
+    ``_iter_refs``, which skips bare ``pa<id>`` tokens inside verbatim
+    spans: code, not a cite, td607394). A ``[fi]`` claim-hub or finding
+    cite is mined through its evidence papers (``finding_retraction_keys``),
+    so a retraction on a paper the finding rests on shows at the finding.
 
-    ``cache`` is shared across the rendered window
-    (:func:`review_payloads_for`); it memoises all three resolution
-    stages so a token/slug cited from several blocks costs one lookup
-    each — ``("h", token)`` → cite key (or ``None``), ``("r", key)`` →
-    resolved ref (or ``None``), plus the ``"si_slug"`` / ``"si_target"``
-    sub-dicts ``resolve_si_slug``/``cite_target_for`` memoise through."""
+    The cache is shared across the rendered window so repeated handles and
+    cite keys resolve once. Finding citations use the same derived and pinned
+    evidence as the LaTeX renderer.
+    """
     if not text:
         return []
     from precis.export import walker
-    from precis.export.latex import _COMBINED_BODY, _RAWCITE_HANDLE, _iter_refs
+    from precis.export.latex import (
+        _COMBINED_BODY,
+        _RAWCITE_HANDLE,
+        _iter_refs,
+        finding_retraction_keys,
+    )
     from precis.export.sources import _resolve_source_ref
     from precis.utils import mentions
 
@@ -1534,13 +1522,6 @@ def retraction_issues_in(
             cache[k] = _resolve_source_ref(store, key)
         return cache[k]
 
-    # (label, ref) per citation the export would resolve, in appearance
-    # order. Dispatch mirrors ``latex._render_reference``'s cite arms;
-    # authoring links, conv handles, non-paper ``kind:id`` mentions and
-    # ``fi`` findings never reach here. ``_iter_refs`` — the same scan
-    # ``_render_inline`` runs — keeps the bare-handle and pasted-rawcite
-    # arms prose-only: inside inline code or plausible math those tokens
-    # are literal content the export cites nothing for (td607394).
     targets: list[tuple[str, Any]] = []
     for m in _iter_refs(text, _COMBINED_BODY):
         label: str | None = None
@@ -1592,27 +1573,66 @@ def retraction_issues_in(
                 label = token
                 key = _handle_key(token)
         if key is None or label is None:
+            finding = (
+                (m.group("tgt") or "").strip()
+                if m.group("disp")
+                else (m.group("bare") or m.group("bcite") or "")
+            )
+            parsed = handle_registry.parse(finding)
+            if parsed is not None and parsed[0] == "finding" and not parsed[1]:
+                pin = m.groupdict().get("pin")
+                cache_key = ("finding", finding, pin)
+                if cache_key not in cache:
+                    cache[cache_key] = (
+                        finding_retraction_keys(store, finding, pin)
+                        if store.resolve_handle(finding) is not None
+                        else []
+                    )
+                for finding_key in cache[cache_key]:
+                    ref = _ref_for(_slug_key(finding_key))
+                    if ref is not None:
+                        targets.append((finding, ref))
             continue
         ref = _ref_for(key)
         if ref is not None:
             targets.append((label, ref))
 
+    return targets
+
+
+def retraction_issues_in(
+    store: Any, text: str, cache: dict[Any, Any], *, dc: str = ""
+) -> list[dict[str, str]]:
+    """Issues for the papers this block cites, one per distinct message.
+
+    ``retracted-citation``: some notice on a cited paper is open for this
+    block revision (unjudged, or judged "affects"; a closed verdict
+    suppresses it). ``unchecked-citation`` (gr725269: never checked is not
+    clean): only when the paper has no recorded notice and was never
+    checked. Cites are resolved by :func:`retraction_targets`.
+    """
+    from precis.export._retraction_marks import RetractionMarks
+
+    marks = cache.setdefault("retraction_marks", RetractionMarks())
     out: list[dict[str, str]] = []
     seen: set[str] = set()
-    for label, ref in targets:
+    for label, ref in retraction_targets(store, text, cache):
         cited_kind = str(getattr(ref, "kind", "") or "paper")
-        status = getattr(ref, "retraction_status", None)
-        if status:
+        open_labels = marks.open_at(store, ref, dc, text)
+        if open_labels:
             kind = "retracted-citation"
-            text = f"cited {cited_kind} [{label}] is {status.replace('_', ' ')}"
-        elif getattr(ref, "retraction_checked_at", None) is None:
+            message = f"cited {cited_kind} [{label}] is " + "; ".join(open_labels)
+        elif (
+            not marks.for_paper(store, ref)
+            and getattr(ref, "retraction_checked_at", None) is None
+        ):
             kind = "unchecked-citation"
-            text = f"cited {cited_kind} [{label}] was never checked for retraction"
+            message = f"cited {cited_kind} [{label}] was never checked for retraction"
         else:
             continue
-        if text not in seen:
-            seen.add(text)
-            out.append({"kind": kind, "text": text})
+        if message not in seen:
+            seen.add(message)
+            out.append({"kind": kind, "text": message})
     return out
 
 
@@ -1816,7 +1836,7 @@ def review_payloads_for(
         ind["issues"] = chunk_issues(
             ind["integrity_ok"],
             ind["claim_trust"],
-            retraction_issues_in(cite_store, n.text, retraction_cache),
+            retraction_issues_in(cite_store, n.text, retraction_cache, dc=n.dc),
         )
         out[n.dc] = ind
     return out

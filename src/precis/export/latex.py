@@ -78,6 +78,7 @@ from precis.export._provenance_strip import (
     record_title,
     strip_provenance_handles,
 )
+from precis.export._retraction_marks import RetractionMarks
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -1029,6 +1030,7 @@ class _Ctx:
     #: ``\cref`` mark, so the reader finds the section by page (gr690475).
     page_xrefs: set[str] = field(default_factory=set)
     cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
+    retraction_marks: RetractionMarks = field(default_factory=RetractionMarks)
     #: Memo for :func:`walker.dead_xref` — a dead cross-ref handle maps to
     #: ``(replacement dc | None, neutral text)`` (gr493181).
     _dead_xref_cache: dict[str, tuple[str | None, str]] = field(
@@ -1373,6 +1375,46 @@ def _conjunct_cite_keys(store: Any, hub_ref_id: int) -> list[str]:
     return keys
 
 
+def _finding_keys(
+    store: Any, pk: int, tgt: str, pin: str | None, warnings: list[str]
+) -> tuple[list[str], Any, str | None]:
+    from precis.taproot.cite import apply_pin, finding_cite_keys
+
+    fc = finding_cite_keys(store, pk)
+    keys = fc.cite_keys
+    if not keys:
+        keys = _conjunct_cite_keys(store, pk)
+    op, handles = mentions.parse_pin_suffix(pin)
+    if op is not None:
+        if fc.is_hub and fc.evidence is not None:
+            result = apply_pin(
+                store,
+                label=tgt,
+                op=op,
+                handles=handles,
+                derived_cite_keys=keys,
+                evidence=fc.evidence,
+            )
+            keys = result.cite_keys
+            warnings.extend(detail for _status, detail in result.warnings)
+            if result.diverged and result.divergence:
+                warnings.append(result.divergence)
+        else:
+            warnings.append(
+                f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
+            )
+    return keys, fc, op
+
+
+def finding_retraction_keys(store: Any, handle: str, pin: str | None) -> list[str]:
+    """Resolve sources of a finding at a citation site."""
+    parsed = handle_registry.parse(handle)
+    if parsed is None:
+        return []
+    keys, _, _ = _finding_keys(store, parsed[2], handle, pin, [])
+    return keys
+
+
 def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
     """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
     the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`,
@@ -1398,31 +1440,7 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
     if parsed is None:
         return ""
     _kind, _is_chunk, pk = parsed
-    from precis.taproot.cite import apply_pin, finding_cite_keys
-
-    fc = finding_cite_keys(ctx.store, pk)
-    keys = fc.cite_keys
-    if not keys:
-        keys = _conjunct_cite_keys(ctx.store, pk)
-    op, handles = mentions.parse_pin_suffix(pin)
-    if op is not None:
-        if fc.is_hub and fc.evidence is not None:
-            result = apply_pin(
-                ctx.store,
-                label=tgt,
-                op=op,
-                handles=handles,
-                derived_cite_keys=keys,
-                evidence=fc.evidence,
-            )
-            keys = result.cite_keys
-            ctx.warnings.extend(detail for _status, detail in result.warnings)
-            if result.diverged and result.divergence:
-                ctx.warnings.append(result.divergence)
-        else:
-            ctx.warnings.append(
-                f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
-            )
+    keys, fc, op = _finding_keys(ctx.store, pk, tgt, pin, ctx.warnings)
     seen = ctx.claim_cites.setdefault(pk, [])
     rendered_keys = keys
     if ctx.footnote_refs and fc.is_hub and fc.evidence is not None:
@@ -1433,7 +1451,7 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
         # the *citation* keys above; the footnote deliberately still lists
         # the hub's full derived evidence — a pin overrides what gets
         # cited, never what the evidence graph holds.
-        return _hub_footnote(pk, fc.evidence, ctx)
+        return _hub_footnote(pk, fc.evidence, ctx) + _retraction_tex(ctx, tuple(keys))
     trust = _trust_mark_latex(ctx, pk)
     # \x05 tells :func:`_merge_adjacent_cites` the mark carries a trust mark
     # (never dropped as a repeat); it strips the sentinel.
@@ -1601,9 +1619,10 @@ def _inline_source_cite(tgt: str, kind: str, surface: str | None, ctx: _Ctx) -> 
     (WYSIWYG — what you proofread is what compiles); otherwise a patent
     formats to its citation string ("U.S. Patent No. …") and a paper to a
     light ``(Author, Year)``."""
-    if surface:
-        return _encode_unicode(_latex_escape(surface))
     slug = _handle_cite_key(tgt, ctx)
+    if surface:
+        mark = _retraction_tex(ctx, (slug,)) if slug else ""
+        return _encode_unicode(_latex_escape(surface)) + mark
     if not slug or ctx.store is None:
         return ""
     ref = ctx.store.get_ref(kind=kind, id=slug)
@@ -1613,7 +1632,7 @@ def _inline_source_cite(tgt: str, kind: str, surface: str | None, ctx: _Ctx) -> 
         text = render_patent_citation(getattr(ref, "meta", None), slug)
     else:
         text = render_paper_inline_citation(ref)
-    return _encode_unicode(_latex_escape(text))
+    return _encode_unicode(_latex_escape(text)) + _retraction_tex(ctx, (slug,))
 
 
 def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
@@ -1624,7 +1643,7 @@ def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
         return _encode_unicode(_latex_escape(slug))
     ref = ctx.store.get_ref(kind="paper", id=slug)
     text = render_paper_inline_citation(ref) if ref is not None else slug
-    return _encode_unicode(_latex_escape(text))
+    return _encode_unicode(_latex_escape(text)) + _retraction_tex(ctx, (slug,))
 
 
 def _cite_urls(
@@ -1730,6 +1749,13 @@ def _lstlisting_language(chunk: Any) -> str:
     return f"[language={name}]" if name else ""
 
 
+def _retraction_tex(ctx: _Ctx, keys: tuple[str, ...]) -> str:
+    labels = ctx.retraction_marks.citation_labels(
+        ctx.store, keys, ctx.cursor.dc, ctx.cursor.text
+    )
+    return r" \textbf{[" + _tex("; ".join(labels)) + "]}" if labels else ""
+
+
 class LatexRenderer:
     """The LaTeX :class:`walker.Renderer`: formats resolved values as TeX
     into a ``list[str]`` sink."""
@@ -1738,7 +1764,7 @@ class LatexRenderer:
         self.ctx = ctx
 
     def cite_group(self, sink: list[str], group: walker.CiteGroup) -> None:
-        sink.append(_cite_tex(group))
+        sink.append(_cite_tex(group) + _retraction_tex(self.ctx, group.keys))
 
     def term(self, sink: list[str], use: _abbrev.Use) -> None:
         """The glossary call (:func:`_gls_use`). A bare heading use is
@@ -2010,7 +2036,7 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
         line = (
             _tex(render_paper_inline_citation(ref)) if ref is not None else _tex(base)
         )
-    body = f"{line}~\\cite{{{base}}}"
+    body = f"{line}~\\cite{{{base}}}" + _retraction_tex(ctx, (base,))
     exc = _footnote_excerpt(excerpt, ctx)
     if exc:
         body += f"\\\\ {exc}"
@@ -3203,8 +3229,10 @@ def build_bib(
         entry_type_by_slug[slug] = entry_type
         ids.append(pref.id)
     aliases = store.identifiers_for_refs(ids) if ids else {}
+    marks = RetractionMarks()
     for slug, pref in ref_by_slug.items():
-        fields = [f"  title = {{{_bib_text(pref.title or slug, protect=True)}}}"]
+        title = (pref.title or slug) + marks.reference_label(store, pref)
+        fields = [f"  title = {{{_bib_text(title, protect=True)}}}"]
         authors = _encode_unicode(_bibtex_authors(pref.authors))
         pmeta = pref.meta or {}
         editors = _encode_unicode(_bibtex_authors(pmeta.get("editors")))
@@ -3509,12 +3537,9 @@ def build_source_appendix(
     sources become a ``% not bundled`` comment + a warning, recording
     the gap without breaking the build.
 
-    ``retraction_override`` — the ``CitedPaper``s
-    (``precis.export.retraction``) the export gate let through via
-    ``ignore_retractions=1`` — adds a "Retraction override" subsection
-    naming each, the trace the override must leave in the compiled PDF.
-    Forces the appendix to render even with no PDFs present, so the
-    override is never silently dropped alongside an empty source list.
+    ``retraction_override`` is the legacy audit list of retracted cited
+    papers requested by ``ignore_retractions=1``. A non-empty list adds
+    a "Retracted citations" subsection even when no source PDFs are bundled.
     """
     present = bundle.present
     override = list(retraction_override or [])
@@ -3539,12 +3564,8 @@ def build_source_appendix(
         lines.append(f"% not bundled: {e.kind or 'source'}:{e.slug} — {e.reason}")
     if override:
         lines += [
-            "\\subsection*{Retraction override}",
-            (
-                "This export was produced with a retraction block "
-                "overridden (\\texttt{ignore\\_retractions=1}). The "
-                "following cited paper(s) are retracted:"
-            ),
+            "\\subsection*{Retracted citations}",
+            "The following cited paper(s) are retracted:",
             "\\begin{itemize}",
         ]
         for p in override:

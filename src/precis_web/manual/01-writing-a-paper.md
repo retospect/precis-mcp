@@ -78,12 +78,14 @@ a section — that queues work, it does not sign anything off.
   is named in the manifest instead, so an incomplete bundle tells you
   what is missing rather than quietly omitting it.
 
-Both exports run a **retraction gate** first: if the draft cites a paper
-that has been retracted, the export is blocked. The status shown is read
-from stored state and costs nothing; the **re-check** button goes out and
-asks the source live. You can override the block deliberately, which is
-the right call for a paper that *discusses* a retraction — but it has to
-be deliberate.
+Open retraction notices appear beside their citations in the draft and
+its exports. Use **Review notices** beside the paragraph to record what
+changed in the source, then judge its effect on that paragraph. A verdict
+of **Does not affect this claim** closes the notice for that paragraph.
+An affecting notice stays visible until you record how you addressed it
+or remove the citation. The reference list retains the retraction year
+for a fully retracted paper. Use **Check retractions** in the export pane
+to refresh the stored notices.
 
 In the export pane, **fetch missing DOIs** looks up cited papers with
 an arXiv, PubMed or Semantic Scholar identifier and saves matched DOIs

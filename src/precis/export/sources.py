@@ -246,13 +246,9 @@ def write_manifest(
     """A plaintext ``manifest.txt`` — a numbered bibliography of the bundled
     sources plus a "not bundled" section explaining every gap.
 
-    ``retraction_override`` — the ``CitedPaper``s (``precis.export.retraction``)
-    the export gate let through via ``ignore_retractions=1`` — adds an
-    "== Retraction override ==" section naming each one. This is the trace
-    the override is supposed to leave *in the artifact*: the gate itself only
-    logs server-side, which is gone by the time anyone reads the export.
-    Empty/``None`` (the common case — no override happened) leaves the
-    manifest unchanged."""
+    ``retraction_override`` is the legacy audit list of retracted cited
+    papers requested by ``ignore_retractions=1``. A non-empty list adds a
+    "== Retracted citations ==" section naming each paper."""
     title = str(getattr(ref, "title", None) or getattr(ref, "slug", None) or "draft")
     lines: list[str] = [
         f"Referenced sources for: {title}",
@@ -280,12 +276,8 @@ def write_manifest(
             lines.append(f"    {why}")
         lines.append("")
     if retraction_override:
-        lines.append("== Retraction override ==")
-        lines.append(
-            "This export was produced with a retraction block overridden "
-            "(ignore_retractions=1). The following cited paper(s) are "
-            "retracted:"
-        )
+        lines.append("== Retracted citations ==")
+        lines.append("The following cited paper(s) are retracted:")
         for p in retraction_override:
             status = getattr(p, "label", "") or getattr(p, "status", "") or "retracted"
             lines.append(f"- {p.slug} — {p.title} ({status})")

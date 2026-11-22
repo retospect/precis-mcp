@@ -81,8 +81,8 @@ _BROAD_LEG_CAP = 8
 # Multiplicative penalty applied to a hit's fused ``score`` (the
 # store's ts_rank/cosine-distance blend), keyed by
 # ``refs.retraction_status``. The severity split mirrors
-# ``precis.export.retraction``'s ``BLOCKING_STATUSES`` /
-# ``SOFT_STATUSES`` (keep the two in step): hard downrank for
+# ``precis.export.retraction.SOFT_STATUSES`` (keep the two in step):
+# hard downrank for
 # ``retracted`` (never excluded — a retracted paper is
 # often exactly what a search is looking for; silent exclusion would
 # be indistinguishable from a broken index), mild for the soft

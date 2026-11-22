@@ -242,6 +242,7 @@ def _accept(args: argparse.Namespace, store: Store) -> None:
     """Rule on one held decision proposal: record the human ruling and
     apply the proposal through its reviewed door (gr739890)."""
     from precis.graph.garden import apply as doors
+    from precis.graph.garden import retraction
     from precis.graph.garden.consumer import decision_record
     from precis.graph.garden.digest import DECISION_HOLDS
     from precis.graph.garden.proposals import (
@@ -278,6 +279,14 @@ def _accept(args: argparse.Namespace, store: Store) -> None:
         prop, outcome="applied", why=f"human ruling by {actor}: {why}", model=None
     )
     try:
+        if prop.action == retraction.ACTION:
+            try:
+                retraction.apply(store, prop, actor=actor, model=None, extra=extra)
+            except retraction.RetractionApplyRefused as exc:
+                print(str(exc), file=sys.stderr)
+                sys.exit(2)
+            print(f"Recorded retraction verdict for dc{prop.target_id}")
+            return
         if prop.action == "rewrite":
             rec = doors.apply_rewrite(
                 store, review_id, actor=actor, verdict_extra=extra

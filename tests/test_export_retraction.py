@@ -91,7 +91,7 @@ def test_read_mode_uses_stored_status_and_never_checks(patched_walk, monkeypatch
     assert called is False
     assert report.checked is False
     assert [p.ref_id for p in report.papers] == [1]
-    assert report.blocks_export is True
+    assert report.blocks_export is False
     assert [p.slug for p in report.retracted] == ["smith2024"]
 
 

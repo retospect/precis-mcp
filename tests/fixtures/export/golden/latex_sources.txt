@@ -291,8 +291,8 @@ B     -0.4
 % not bundled: paper:parent24 — no pdf
 % not bundled: paper:nobody99 — no pdf
 % not bundled: paper:us123 — no pdf
-\subsection*{Retraction override}
-This export was produced with a retraction block overridden (\texttt{ignore\_retractions=1}). The following cited paper(s) are retracted:
+\subsection*{Retracted citations}
+The following cited paper(s) are retracted:
 \begin{itemize}
 \item Retracted work (lee22) --- retracted
 \end{itemize}

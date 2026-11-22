@@ -301,6 +301,9 @@ def _build_rows(
 ) -> tuple[dict[str, list[dict[str, str]]], str, str]:
     paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
     finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
+    from precis.export._retraction_marks import RetractionMarks
+
+    marks = RetractionMarks()
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
     dois = store.identifiers_for_refs(list(paper_ids))
     block_counts = {rid: store.chunks.count_usable_chunks(rid) for rid in paper_ids}
@@ -314,6 +317,8 @@ def _build_rows(
         handle = handle_registry.format_handle(c.kind, c.ref_id)
         found_ref = refs_by_id.get(c.ref_id)
         title = _title_of(found_ref.title if found_ref else None, handle)
+        if found_ref is not None and c.kind == "paper":
+            title += marks.reference_label(store, found_ref)
         if c.kind == "finding":
             partition = "done"
             doi = ""
@@ -357,6 +362,8 @@ def _build_rows(
                 handle = handle_registry.format_handle("paper", pid)
                 ev_ref = ev_refs_by_id.get(pid)
                 title = _title_of(ev_ref.title if ev_ref else None, handle)
+                if ev_ref is not None:
+                    title += marks.reference_label(store, ev_ref)
                 buckets["to-fetch"].append(
                     {
                         "dc": c.dc,

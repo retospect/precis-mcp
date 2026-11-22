@@ -1086,6 +1086,7 @@ class XrefCursor:
     cross-ref deep in a chunk's inline text knows its citing chunk."""
 
     dc: str = ""
+    text: str = ""
 
 
 def dead_xref(
@@ -1500,6 +1501,7 @@ def walk_body(
             on_chunk(n_done)
         if cursor is not None:
             cursor.dc = c.dc
+            cursor.text = c.text or ""
         depth = depth_of(c)
         while open_lists and depth <= open_lists[-1][1]:
             renderer.list_close(sink, open_lists.pop()[0])

@@ -995,27 +995,6 @@ def _cited(
     )
 
 
-def test_export_docx_blocked_when_cite_retracted(
-    draft_client: TestClient, monkeypatch
-) -> None:
-    """A ``retracted`` cite hard-blocks the docx download (409), naming the
-    offending paper, and the block is a pure read — no network, so the fake
-    ``draft_retraction_report`` here need not (and must not) touch Crossref."""
-
-    def fake_report(store, ref, **kw):
-        assert kw.get("check", False) is False  # export never live-checks
-        return DraftRetractionReport(
-            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
-        )
-
-    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
-    r = draft_client.get("/drafts/nt/export.docx")
-    assert r.status_code == 409
-    assert "smith2024" in r.text
-    assert "retracted" in r.text.lower()
-    assert "ignore_retractions" in r.text  # tells the user the override name
-
-
 def test_crossref_mailto_falls_back_to_unpaywall_email(monkeypatch) -> None:
     """The retraction walk must reach Crossref's *polite* pool. Without any
     mailto a ``_RETRACTION_CHECK_CAP``-wide walk hits the throttled anonymous
@@ -1034,11 +1013,10 @@ def test_crossref_mailto_falls_back_to_unpaywall_email(monkeypatch) -> None:
     assert drafts_mod._crossref_mailto() == "crossref@example.org"  # specific wins
 
 
-def test_export_docx_override_bypasses_block(
+def test_export_docx_proceeds_with_retracted_citation(
     draft_client: TestClient, monkeypatch
 ) -> None:
-    """``?ignore_retractions=1`` overrides the block and the export proceeds
-    — a deliberate, explicit act, never a default."""
+    """A retracted citation reaches the renderer that annotates it."""
     import precis.export.docx as docx_mod
 
     def fake_report(store, ref, **kw):
@@ -1052,7 +1030,7 @@ def test_export_docx_override_bypasses_block(
 
     monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
     monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
-    r = draft_client.get("/drafts/nt/export.docx?ignore_retractions=1")
+    r = draft_client.get("/drafts/nt/export.docx")
     assert r.status_code == 200
     assert r.content.startswith(b"PK")
 
@@ -1290,11 +1268,10 @@ def test_export_docx_override_records_trace_in_sources_appendix(
     assert [p.slug for p in captured["retraction_override"]] == ["smith2024"]
 
 
-def test_export_pdf_blocked_when_cite_retracted(
+def test_export_pdf_dispatches_with_retracted_citation(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
-    """The PDF-job POST gates the same way: blocked, and — since the block
-    fires before dispatch — no job is enqueued."""
+    """A retracted citation is carried into the PDF export job."""
 
     def fake_report(store, ref, **kw):
         assert kw.get("check", False) is False
@@ -1304,9 +1281,10 @@ def test_export_pdf_blocked_when_cite_retracted(
 
     monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
     r = draft_client.post("/drafts/nt/export.pdf", follow_redirects=False)
-    assert r.status_code == 409
-    assert "smith2024" in r.text
-    assert draft_runtime.calls == []  # never reached the dispatch
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "draft_export"
+    assert "ignore_retractions" not in args["params"]
 
 
 def test_export_pdf_override_dispatches_job(
@@ -1406,12 +1384,13 @@ def _uncleared_fig(dc: str, *, assetless: bool) -> FigureClear:
     )
 
 
-def test_pdf_download_blocked_when_cite_retracted(
+def test_pdf_download_reaches_compiler_with_retracted_citation(
     draft_client: TestClient, monkeypatch
 ) -> None:
-    """The "download PDF" GET — previously ungated — now hard-blocks a
-    retracted cite exactly like its ``.docx`` / PDF-job siblings (409, no
-    live check)."""
+    """The download can compile a retracted citation from stored state."""
+    import precis.export.compile as compile_mod
+
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: False)
 
     def fake_report(store, ref, **kw):
         assert kw.get("check", False) is False
@@ -1421,8 +1400,8 @@ def test_pdf_download_blocked_when_cite_retracted(
 
     monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
     r = draft_client.get("/drafts/nt/pdf")
-    assert r.status_code == 409
-    assert "smith2024" in r.text
+    assert r.status_code == 503
+    assert "latexmk" in r.text
 
 
 def test_pdf_download_blocked_when_figure_uncleared(
@@ -1630,7 +1609,7 @@ def test_retraction_status_route_reads_only_no_network(
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert data["blocks_export"] is True
+    assert data["blocks_export"] is False
     assert data["total"] == 2
     assert [p["slug"] for p in data["retracted"]] == ["smith2024"]
     assert [p["slug"] for p in data["unchecked"]] == ["ghost404"]

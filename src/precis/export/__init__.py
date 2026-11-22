@@ -13,10 +13,11 @@ PDF exports allow five minutes by default for large drafts and their
 bibliography/glossary passes (gr684953); ``PRECIS_LATEXMK_TIMEOUT_S`` or
 an explicit compile timeout can override that budget.
 
-PDF jobs optionally refresh persisted retraction checks (30-day TTL) before
-reapplying the retracted-citation gate. Word stays read-only; both formats
-place shared coverage warnings after Unverified claims so an unchecked
-citation cannot silently read as clean.
+PDF jobs optionally refresh persisted retraction checks (30-day TTL).
+Word reads stored decisions. Both render an open notice beside its citation
+and retain the retraction year in the reference list for full retractions.
+A verdict is scoped to the notice, cited paper and exact revision of its
+citing block. Edits require the revised claim to be judged again.
 
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published
