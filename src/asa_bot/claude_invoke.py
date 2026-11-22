@@ -69,9 +69,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import json
 import logging
 import os
 import re
+import shlex
 import threading
 import time
 from collections.abc import Callable
@@ -152,10 +154,48 @@ _ASA_DISALLOWED_TOOLS: tuple[str, ...] = (
 _ASA_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep", "Agent")
 _ASA_EXTRA_ARGS: tuple[str, ...] = ("--tools", ",".join(_ASA_TOOLS))
 
+_DISCORD_REPO_GUIDANCE = (
+    "This Discord session and its subagents have no shell or filesystem editing tools. "
+    "For a requested repo code fix, file a precis gripe with the repro and expected "
+    "behaviour, then report its handle. The factory builds the fix. "
+    "Do not dispatch a coder or another agent to do the repo work. "
+    "Before delegating other work, check that the required tools are available."
+)
+
+# Claude starts subagents with their own prompts. Inject this at each start
+# so it reaches the recipient even when the parent omits it from the brief.
+# The command emits fixed JSON and never interprets hook input.
+_SUBAGENT_START_CONTEXT = json.dumps(
+    {
+        "hookSpecificOutput": {
+            "hookEventName": "SubagentStart",
+            "additionalContext": (
+                "You are a subagent of a Discord session. Bash, gh, Write and Edit "
+                "are unavailable throughout this session tree. Before doing any work, "
+                "check the brief's required tools against the tools actually available "
+                "to you. If any required tool is unavailable, immediately return "
+                "a blocker naming it to your caller. Do not delegate the task."
+            ),
+        },
+    }
+)
+
 # Top-level ``--settings`` keys (context hygiene, see module docstring).
 _ASA_SETTINGS: dict[str, Any] = {
     "autoMemoryEnabled": False,
     "disableBundledSkills": True,
+    "hooks": {
+        "SubagentStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"printf '%s\\n' {shlex.quote(_SUBAGENT_START_CONTEXT)}",
+                    }
+                ]
+            }
+        ]
+    },
 }
 
 # Chain-lane turns hold a thread for the WHOLE turn (sync route, up to
@@ -537,6 +577,7 @@ async def invoke(
     subprocess path: bot.py's per-turn queue consumer has no fallback reply
     if this raised rather than returning a gracefully-errored result.
     """
+    system_prompt = f"{_DISCORD_REPO_GUIDANCE}\n\n{system_prompt}"
     model = _flag_value(cfg.command, "--model", resolve_model(Tier.FRONTIER))
     max_turns_str = _flag_value(cfg.command, "--max-turns", "100")
     try:

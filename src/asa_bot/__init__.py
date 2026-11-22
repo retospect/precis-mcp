@@ -22,6 +22,12 @@ and, with precis down, spools to a fallback JSONL replayed on recovery.
 Text-prefix slash commands (:mod:`asa_bot.slash`) are intercepted before any
 LLM call.
 
+**Repo fixes.** Discord turns have no shell or filesystem editing tools.
+The invocation guidance routes fix requests through a precis gripe so the
+factory can build them. Claude's subagent-start hook gives each child a
+tool check before it starts work because a parent's brief can assume tools
+the child lacks.
+
 **Speaker identity.** :mod:`asa_bot.identity` maps ``message.author.id`` to
 the precis account that set that numeric id on ``/account``
 (``web_users.discord_user_id``); the account ``abbrev`` becomes the conv

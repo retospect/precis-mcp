@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import shlex
 from types import SimpleNamespace
 from typing import Any
 
@@ -350,6 +351,18 @@ def test_invoke_denies_bash_and_write_tools_in_real_settings_json(
     deny = settings_payload["permissions"]["deny"]
     assert settings_payload["autoMemoryEnabled"] is False
     assert settings_payload["disableBundledSkills"] is True
+    prompt = captured_argv[captured_argv.index("--append-system-prompt") + 1]
+    assert "file a precis gripe" in prompt
+    assert "Do not dispatch a coder" in prompt
+
+    hook = settings_payload["hooks"]["SubagentStart"][0]["hooks"][0]
+    assert hook["type"] == "command"
+    printf, _, payload = shlex.split(hook["command"])
+    assert printf == "printf"
+    context = json.loads(payload)["hookSpecificOutput"]
+    assert context["hookEventName"] == "SubagentStart"
+    assert "immediately return a blocker" in context["additionalContext"]
+    assert "Do not delegate" in context["additionalContext"]
 
     # Advertised built-in tool set: exactly the four pre-approved tools.
     assert captured_argv.count("--tools") == 1
@@ -497,7 +510,9 @@ def test_model_local_routes_via_chain_dispatch(
     assert req.model is None
     assert req.tools_needed is True
     assert req.prompt == "hi"
-    assert req.system_prompt == "sys prompt"
+    assert req.system_prompt is not None
+    assert "file a precis gripe" in req.system_prompt
+    assert req.system_prompt.endswith("\n\nsys prompt")
     assert req.mcp_config == cfg.mcp_config_path
     assert req.source == "asa_bot"
 
