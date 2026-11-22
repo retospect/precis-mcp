@@ -66,7 +66,8 @@ trust acts retain the original model string.
    ``polysemy`` (split signals), ``sibling_confusion`` (exclusive-axis
    siblings one classification run can't tell apart).
    The ``memory`` pass adds ``dangling_mention`` (a handle naming a
-   retired ref), ``grab_bag`` (one memory carrying many independent
+   retired ref outside the consolidation log and archive, where historical
+   handles document past actions), ``grab_bag`` (one memory carrying many independent
    claims — a split candidate), ``thread_shape`` (a thread ``Left:``
    missing or done, or a Left-line sha confirmed on ``origin/prod``),
    ``anchor_rot`` (a cited file/symbol, path, section or sha anchor no

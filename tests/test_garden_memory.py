@@ -107,6 +107,32 @@ def test_mentions_ignore_live_wrong_kind_retired_body_and_dream(store: Store) ->
     assert cand.dangling_mention_candidates(store) == []
 
 
+def test_mentions_keep_retired_handles_in_consolidation_history(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    successor = _memory(store, "Current facts")
+    replaced = _memory(store, "Old facts", meta={"superseded_by": successor})
+    retired = _memory(store, "Former scope")
+    store.retire_ref(replaced)
+    store.retire_ref(retired)
+    body = f"2026-11-05: moved me{replaced}; both now qualify me{retired}."
+    log = _memory(store, body)
+    archive = _memory(store, "Consolidation log archive")
+    year = _memory(store, "2026 entries")
+    entry = _memory(store, body)
+    store.add_link(src_ref_id=year, dst_ref_id=archive, relation="part-of")
+    store.add_link(src_ref_id=entry, dst_ref_id=year, relation="part-of")
+    monkeypatch.setattr(cand, "_CONSOLIDATION_LOG_ROOTS", (log, archive))
+    reference = _memory(store, f"Current scope: me{replaced} and me{retired}.")
+    for rid in (entry, reference):
+        store.add_tag(rid, Tag.open("section:reference"), set_by="system")
+    store.add_link(src_ref_id=reference, dst_ref_id=archive, relation="cites")
+
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == reference
+    assert [op["text"] for op in candidate.payload["ops"]] == [f"me{successor}", None]
+
+
 @pytest.mark.parametrize("as_handle", [False, True])
 @pytest.mark.parametrize("live_end", [False, True])
 def test_successor_chain_only_rewrites_to_live_end(

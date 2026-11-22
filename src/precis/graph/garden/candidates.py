@@ -869,7 +869,13 @@ def anchor_rot_candidates(
     return out
 
 
-def _memory_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
+# The reconsolidate skill names the active log and the archive parent.
+_CONSOLIDATION_LOG_ROOTS = (474383, 489908)
+
+
+def _memory_bodies(
+    store: Store, ids: list[int], *, exclude_subtrees: tuple[int, ...] = ()
+) -> list[tuple[int, str, str]]:
     """Live body text and target SHA in one snapshot, excluding DREAMs.
 
     Joining chunks in body order makes spans independent of chunk boundaries.
@@ -879,16 +885,22 @@ def _memory_bodies(store: Store, ids: list[int]) -> list[tuple[int, str, str]]:
         return []
     with store.pool.connection() as conn:
         rows = conn.execute(
+            "WITH RECURSIVE excluded(ref_id) AS ("
+            "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) AND kind = 'memory' "
+            "UNION SELECT r.ref_id FROM excluded e "
+            "JOIN links l ON l.dst_ref_id = e.ref_id AND l.relation = 'part-of' "
+            "JOIN refs r ON r.ref_id = l.src_ref_id AND r.kind = 'memory') "
             "SELECT r.ref_id, coalesce((SELECT string_agg(c.text, E'\\n' "
             "ORDER BY c.ord, c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
             "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
             "AND c.retired_at IS NULL), ''), precis_target_sha('ref', r.ref_id) "
             "FROM refs r WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND NOT EXISTS (SELECT 1 FROM excluded e WHERE e.ref_id = r.ref_id) "
             "AND r.retired_at IS NULL AND NOT EXISTS ("
             "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
             "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') "
             "ORDER BY r.ref_id",
-            (ids,),
+            (list(exclude_subtrees), ids),
         ).fetchall()
     return [(int(rid), str(body), str(sha)) for rid, body, sha in rows]
 
@@ -1033,6 +1045,9 @@ def dangling_mention_candidates(
 ) -> list[GardenCandidate]:
     """Propose anchored rewrites of retired handles in live memory bodies.
 
+    The consolidation log and its archive record point-in-time actions.
+    Their handles remain as written when the referenced nodes retire.
+
     One proposal per memory carries at most ``MENTION_MATCH_CAP`` matching
     spans (zero-based, end exclusive), with ``matches_capped`` in its payload
     when more remain. Missing successors leave ``text=None`` for the evaluator;
@@ -1049,7 +1064,7 @@ def dangling_mention_candidates(
     window, nxt = _scan_window(
         store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
     )
-    bodies = _memory_bodies(store, window)
+    bodies = _memory_bodies(store, window, exclude_subtrees=_CONSOLIDATION_LOG_ROOTS)
     matches = {rid: list(_MEMORY_HANDLE.finditer(body)) for rid, body, _ in bodies}
     retired = _retired_mentions(
         store, {m.group() for spans in matches.values() for m in spans}
