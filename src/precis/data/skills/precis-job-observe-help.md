@@ -61,11 +61,17 @@ way (`put(kind='job', parent_id=…, job_type=…, params=…)`).
 
 ## How does a quest get surface-coverage anchors?
 
-Flag the quest `meta.surface_anchors: true`. Each tick then mints one
+Flag the quest `meta.surface_anchors: true`. The lane runs only on
+`meta.quest_type` `"slab"` quests (the default; an edit may also set
+`"molecular"`) — a flagged molecular quest silently mints nothing.
+Each tick then mints one
 `surface_coverage_scan` per live candidate that reached the `neb` rung
 of the fidelity levels or sits on the merged Pareto front
-(`precis.quest.surface_anchors`), its exported slab injected as
-`slab_extxyz`; the harvest stamps `anchors_job_id`, `anchor_key`,
+(`precis.quest.surface_anchors`), submitting the candidate's
+`structure_ref` through the job's own submit gate: the gate exports the
+slab with its frozen bottom layers and refuses a non-(111) or unfrozen
+seed, leaving a skip note and no job — fix the seed (freeze its bottom
+layers) and the next tick retries. The harvest stamps `anchors_job_id`, `anchor_key`,
 `anchors_footing`, `resting_termination_at_point`, `needs_anchor_top`
 and a deferred `theta0_check` onto the candidate meta. `U_RHE`/`pH`/
 `window.U_RHE` come from `meta.operating_conditions` when set; a

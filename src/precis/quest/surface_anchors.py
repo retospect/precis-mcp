@@ -6,14 +6,19 @@ one ``surface_coverage_scan`` job per live candidate structure — and
 harvests the pooled sweep onto the candidate's meta
 (`me692414`, wave B).
 
-Opt-in: the quest declares ``meta.surface_anchors: true`` (default off,
-so existing quests are unchanged) and carries the usual
+Opt-in: a slab quest declares ``meta.surface_anchors: true`` (default off)
+and carries the usual
 ``meta.reaction_config`` (the catpath config the scan runs; its
 ``coverage`` block defaults are filled by
 :mod:`precis_pathway.coverage_job`). Operating inputs come from
 ``meta.operating_conditions`` when set — ``U_RHE`` → ``point_U_RHE``,
 ``pH`` → ``pH``, ``window.U_RHE`` → ``window_U_RHE`` — else the job's own
 module defaults apply.
+
+``meta.quest_type`` selects the quest's geometry policy. Surface scans
+apply to ``"slab"`` quests. An omitted type retains the slab default for
+legacy quests that opt in. Molecular and other explicitly typed quests
+skip this lane even if they carry surface settings.
 
 Dispatch mirrors the Part A pattern: content-addressed on the candidate
 geometry (``geom_hash_c``), the reaction config, the engine token and the
@@ -41,13 +46,16 @@ as ``params.proposal`` provenance. A proposal that adds no representable
 θ and no new adsorbate is skipped rather than re-keyed onto a duplicate
 footing.
 
-The candidate's own exported slab — ``export.to_extxyz(scene,
-constraints=True)``, the same export ``dispatch_autocatpath`` hands the
-seed fan-out — is injected as ``slab_extxyz``: on autocatpath ≥ 0.25.0
+The scan is submitted with the candidate's ``structure_ref``. The job
+submit gate checks for a (111) slab with frozen atoms and exports it with
+constraints as ``slab_extxyz``: on autocatpath ≥ 0.25.0
 the scan relaxes anchors on the real candidate geometry rather than the
 config's label slab, and the job's ``anchor_key`` folds a digest of those
 bytes (:func:`precis_pathway.runner.coverage_anchor_key`'s ``slab_key``)
-so distinct slabs sharing the label never pool.
+so distinct slabs sharing the label never pool. A refused submission
+leaves a dispatch note and creates no job. Correcting the seed, including
+freezing its bottom layers if needed, lets the next tick try again
+without spending a scan retry.
 
 Harvest stamps onto the candidate structure: ``anchors_job_id``,
 ``anchor_key``, ``anchors_footing`` (``{model, engine_version,
@@ -72,6 +80,8 @@ import json
 import logging
 import math
 from typing import Any
+
+from precis.errors import BadInput
 
 log = logging.getLogger(__name__)
 
@@ -265,9 +275,10 @@ def dispatch_surface_anchors(store: Any, quest_id: int, *, hub: Any) -> list[str
     from precis.quest.gaps import _live_servers
 
     quest = store.fetch_refs_by_ids({quest_id}).get(quest_id)
-    if quest is None or not (quest.meta or {}).get("surface_anchors"):
+    meta = (quest.meta or {}) if quest is not None else {}
+    if not meta.get("surface_anchors") or meta.get("quest_type", "slab") != "slab":
         return []
-    if not isinstance((quest.meta or {}).get("reaction_config"), dict):
+    if not isinstance(meta.get("reaction_config"), dict):
         return ["surface anchors skipped: quest has no reaction_config"]
     job_handler = hub.handler_for("job")
     if job_handler is None:
@@ -278,7 +289,7 @@ def dispatch_surface_anchors(store: Any, quest_id: int, *, hub: Any) -> list[str
     for candidate in _live_servers(store, quest_id):
         if candidate.kind != "structure":
             continue
-        built = _request(quest.meta, candidate)
+        built = _request(meta, candidate)
         if built is None:
             notes.append(
                 f"surface anchors skipped: structure {candidate.id} "
@@ -319,10 +330,8 @@ def dispatch_surface_anchors(store: Any, quest_id: int, *, hub: Any) -> list[str
     # tick, each idempotent by the same idem_key convention.
     from precis.quest.window_objectives import window_objectives_enabled
 
-    if window_objectives_enabled(quest.meta or {}):
-        notes.extend(
-            _dispatch_anchor_proposals(store, quest_id, quest.meta or {}, job_handler)
-        )
+    if window_objectives_enabled(meta):
+        notes.extend(_dispatch_anchor_proposals(store, quest_id, meta, job_handler))
     return notes
 
 
@@ -334,32 +343,17 @@ def _mint_scan_job(
     params: dict[str, Any],
     idem_key: str,
 ) -> str | None:
-    """Export the slab and mint one ``surface_coverage_scan`` job;
-    returns the dispatch/skip note, ``None`` only never."""
-    try:
-        from precis.structure import export
-
-        scene, _handles = store.structure_load(candidate.id)
-        # constraints=True → the frozen bottom layers ride along as a
-        # FixAtoms (same export the seed fan-out consumes).
-        slab_extxyz = export.to_extxyz(scene, constraints=True)
-    except Exception as exc:
-        log.warning(
-            "surface anchors: slab export failed for %s",
-            candidate.id,
-            exc_info=True,
-        )
-        return f"surface anchors skipped for structure {candidate.id}: export ({exc})"
+    """Submit one scan through the job's slab validation and export gate."""
     try:
         response = job_handler.put(
             parent_id=candidate.id,
             job_type=SCAN_JOB_TYPE,
             executor="ssh_node",
-            # parent_id is the provenance: the put refuses slab_extxyz
-            # and structure_ref together.
-            params={**params, "slab_extxyz": slab_extxyz},
+            params={**params, "structure_ref": candidate.id},
             idem_key=idem_key,
         )
+    except BadInput as exc:
+        return f"surface anchors skipped for structure {candidate.id}: {exc}"
     except Exception as exc:
         log.warning(
             "surface_coverage_scan dispatch failed for structure %s",

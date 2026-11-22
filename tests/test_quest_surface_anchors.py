@@ -7,17 +7,24 @@ harvest stamp — the precis-side glue around ``surface_coverage_scan``.
 from __future__ import annotations
 
 import re
+from math import sqrt
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
+from precis.handlers.job import JobHandler
 from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
 from precis.quest import surface_anchors as anchors
 from precis.store import Store
 from precis.store.types import Tag
+from precis.structure.scene import FIX_ALL, Atom, Cell, Scene
+from precis_pathway.coverage_job import SPEC as COVERAGE_SPEC
+from precis_pathway.coverage_job import validate_submit
 
 #: Minimal structure spec for the DB-backed harvest test.
 SPEC: dict[str, Any] = {
@@ -97,10 +104,13 @@ def test_request_fails_closed_without_flag_config_or_geometry() -> None:
 
 
 class _JobHandler:
-    def __init__(self) -> None:
+    def __init__(self, store: Any) -> None:
+        self.store = store
         self.puts: list[dict[str, Any]] = []
 
     def put(self, **kwargs: Any) -> Any:
+        if reason := validate_submit(self.store, params=kwargs["params"]):
+            raise BadInput(reason)
         self.puts.append(kwargs)
         return SimpleNamespace(
             body=f"created job id={700 + len(self.puts)} (STATUS:queued)",
@@ -114,18 +124,30 @@ def _harness(
     candidates: list[Any],
     *,
     frontier: set[int] | None = None,
+    bulk: bool = False,
+    frozen: bool = True,
 ) -> tuple[Any, _JobHandler, set[str], list[dict[str, Any]]]:
     quest = SimpleNamespace(id=9, meta=quest_meta)
     links: list[dict[str, Any]] = []
     by_id = {c.id: c for c in candidates}
+    scene = Scene(
+        cell=Cell(
+            np.array([[4, 0, 0], [2, 2 * sqrt(3), 0], [0, 0, 3 if bulk else 20]]),
+            (True, True, True),
+        )
+    )
+    scene.atoms["aPd"] = Atom(
+        label="aPd", element="Pd", frac=np.zeros(3), fixed=FIX_ALL if frozen else 0
+    )
     store = SimpleNamespace(
         fetch_refs_by_ids=lambda ids: {
             i: (quest if i == 9 else by_id[i]) for i in ids if i == 9 or i in by_id
         },
-        structure_load=lambda sid: (f"scene-{sid}", None),
+        get_ref=lambda *, kind, id: by_id.get(id),
+        structure_load=lambda sid: (scene, None),
         add_link=lambda **kw: links.append(kw),
     )
-    handler = _JobHandler()
+    handler = _JobHandler(store)
     hub = SimpleNamespace(handler_for=lambda _kind: handler)
     existing: set[str] = set()
 
@@ -136,7 +158,7 @@ def _harness(
     monkeypatch.setattr("precis.quest.compute._find_job_by_idem_key", find_job)
     monkeypatch.setattr(
         "precis.structure.export.to_extxyz",
-        lambda scene, constraints=True: f"extxyz({scene})",
+        lambda scene, constraints=True: "extxyz with frozen atoms",
     )
     monkeypatch.setattr(anchors, "_frontier_ids", lambda *_: frontier or set())
     return store, handler, existing, links
@@ -162,8 +184,8 @@ def test_dispatch_mints_one_scan_per_neb_candidate_and_skips_retick(
     assert put["parent_id"] == 42
     assert put["job_type"] == "surface_coverage_scan"
     assert put["executor"] == "ssh_node"
-    assert put["params"]["slab_extxyz"] == "extxyz(scene-42)"
-    assert "structure_ref" not in put["params"], "one-of: parent_id is provenance"
+    assert put["params"]["slab_extxyz"] == "extxyz with frozen atoms"
+    assert put["params"]["structure_ref"] == 42
     assert put["params"]["point_U_RHE"] == -0.3
     assert notes == ["created job id=701 (STATUS:queued)"]
     assert links == [{"src_ref_id": 701, "dst_ref_id": 9, "relation": "part-of"}]
@@ -327,6 +349,8 @@ def test_dispatch_mints_anchor_proposals(monkeypatch: pytest.MonkeyPatch) -> Non
     assert pcov["coverages"] == [pytest.approx(n / 9) for n in (1, 2, 3, 4, 5, 7, 9)]
     assert pcov["adsorbates"] == ["H", "O", "OH"]
     assert prop["params"]["point_U_RHE"] == -0.1
+    assert prop["params"]["structure_ref"] == 42
+    assert "structure_ref" not in prop["params"]["proposal"]
     assert prop["params"]["proposal"]["band_propagated_V"] == 0.11
     assert prop["idem_key"] != baseline["idem_key"]
     assert any(n.startswith("anchor proposal") for n in notes)
@@ -367,7 +391,7 @@ def test_dispatch_proposal_adding_nothing_is_skipped(
     assert len(handler.puts) == 1  # baseline only
 
 
-def test_dispatch_flag_off_mints_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatch_flag_off_mints_nothing() -> None:
     quest = SimpleNamespace(id=9, meta={"reaction_config": REACTION})
     store = SimpleNamespace(fetch_refs_by_ids=lambda ids: {9: quest})
     hub = SimpleNamespace(
@@ -376,6 +400,44 @@ def test_dispatch_flag_off_mints_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
         )
     )
     assert anchors.dispatch_surface_anchors(store, 9, hub=hub) == []
+
+
+@pytest.mark.parametrize(
+    ("quest_type", "bulk", "reason"),
+    [
+        ("molecular", True, None),
+        ("slab", True, "a bulk cell, not a slab"),
+        ("slab", False, "the structure pins no atoms"),
+    ],
+)
+def test_surface_anchor_submit_gate_by_quest_type(
+    monkeypatch: pytest.MonkeyPatch,
+    quest_type: str,
+    bulk: bool,
+    reason: str | None,
+) -> None:
+    candidate = _candidate(meta={"geom_hash_c": "g", "tier": "neb"})
+    config = (
+        {"name": "azobenzene_linear_motor"} if quest_type == "molecular" else REACTION
+    )
+    store, _handler, _existing, links = _harness(
+        monkeypatch,
+        {**FLAGGED, "quest_type": quest_type, "reaction_config": config},
+        [candidate],
+        bulk=bulk,
+        frozen=bulk,
+    )
+    monkeypatch.setattr("precis.handlers.job.get_job_type", lambda _name: COVERAGE_SPEC)
+    handler = JobHandler(hub=Hub(store=store))
+    hub = SimpleNamespace(handler_for=lambda _kind: handler)
+
+    notes = anchors.dispatch_surface_anchors(store, 9, hub=hub)
+
+    if reason is None:
+        assert notes == []
+    else:
+        assert len(notes) == 1 and reason in notes[0]
+    assert links == []
 
 
 def test_dispatch_skips_missing_geometry_and_refused_configs(
@@ -733,6 +795,17 @@ def test_theta0_check_default_uses_newest_pathway(
     )
     assert check is None
     assert note == "no pathway ref for this candidate"
+
+
+@pytest.mark.db
+def test_edit_quest_type(hub: Hub) -> None:
+    handler = QuestHandler(hub=hub)
+    quest_id = handler.put(text="Azobenzene linear motor").ref_id
+    assert quest_id is not None
+    handler.edit(id=quest_id, meta={"quest_type": "molecular"})
+    assert 'quest_type: "molecular"' in handler.get(id=quest_id, view="meta").body
+    with pytest.raises(BadInput, match="meta.quest_type"):
+        handler.edit(id=quest_id, meta={"quest_type": "slba"})
 
 
 @pytest.mark.db

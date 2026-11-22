@@ -280,8 +280,8 @@ def structure_slab_extxyz(
     store: Any, structure_ref: Any
 ) -> tuple[str | None, str | None]:
     """``(slab_extxyz, None)`` or ``(None, reason)`` — resolve
-    ``params.structure_ref`` to the candidate's exported slab the way the
-    quest-minted scans do (``export.to_extxyz(scene, constraints=True)``,
+    ``params.structure_ref`` to the candidate's exported slab for both
+    manual and quest-minted scans (``export.to_extxyz(scene, constraints=True)``,
     the frozen bottom layers riding as a ``FixAtoms``).
 
     Refusals name the problem: not a structure ref id, no such live

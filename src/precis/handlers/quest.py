@@ -161,6 +161,7 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 _META_ALLOWED_KEYS: frozenset[str] = frozenset(
     {
         "compute_lane",
+        "quest_type",
         "lit_lane",
         "quest_body",
         "rubric_objectives",
@@ -1880,7 +1881,7 @@ class QuestHandler(NumericRefHandler):
         keep everything else" verb (gripe 169979).
 
         ``meta=`` is a **closed allowlist**
-        (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
+        (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_type``/``quest_body``/
         ``rubric_objectives``/``demand``/``supply``/
         ``operating_conditions``/``environment_space``/``reaction_config``),
         patch-merged via
@@ -1964,6 +1965,11 @@ class QuestHandler(NumericRefHandler):
             _check_reaction_config(meta)
             _check_lit_gate(meta)
             _check_fidelity_meta(meta)
+            if "quest_type" in meta and meta["quest_type"] not in ("slab", "molecular"):
+                raise BadInput(
+                    "meta.quest_type must be 'slab' or 'molecular'",
+                    options=["slab", "molecular"],
+                )
             patch = dict(meta)
             # ``reaction_config`` is itself a dict: merge the patch into the
             # stored config rather than clobbering its sibling keys — a
