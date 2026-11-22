@@ -36,3 +36,8 @@ secrets/
 
 # Logs
 *.log
+
+# Per-checkout agent state and scratch (gr696402). .claude/worktrees/ holds a
+# full copy of the repo per session; no build stage reads either directory.
+.claude/
+scratch/
