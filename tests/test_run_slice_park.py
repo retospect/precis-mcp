@@ -513,6 +513,28 @@ def test_the_host_sweep_leaves_a_running_job_or_an_unreadable_row_alone(
     assert "finalize" not in _names(seams)
 
 
+def test_the_host_sweep_stops_a_terminal_jobs_slice_scope(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr762463: the executor's deadline and cancel skip ``kill`` once the
+    session's group is gone, but processes its shell tool put in groups of
+    their own live on in the scope. The sweep stops a terminal job's scope,
+    group or no group, and leaves a running job's alone."""
+    stopped: list[object] = []
+    monkeypatch.setattr(
+        run_slice._slice_limits, "stop_scope", lambda unit: stopped.append(unit)
+    )
+    tree = _job_tree(tmp_path, 42, 70)
+    handle = {"pid": 4242, "pgid": 4242, "slice_scope": "precis-slice-td42-j70-a.scope"}
+    _settle_row(monkeypatch, "running", {"compute_handle": handle})
+    assert _settle(_Store(), tree) is None
+    assert stopped == []
+    seams["alive"] = False
+    _settle_row(monkeypatch, "failed", {"compute_handle": handle})
+    _settle(_Store(), tree)
+    assert stopped == ["precis-slice-td42-j70-a.scope"]
+
+
 def test_the_host_sweep_kills_a_group_once_the_job_has_been_terminal_for_30s(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

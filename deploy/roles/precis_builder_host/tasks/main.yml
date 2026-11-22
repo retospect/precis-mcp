@@ -344,7 +344,14 @@
              'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
              'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
                | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),
+             'PRECIS_SLICE_SCOPE': precis_builder_slice_scope | string,
+             'PRECIS_SLICE_TASKS_MAX': precis_builder_slice_tasks_max | string,
+             'PRECIS_SLICE_MEMORY_MAX': precis_builder_slice_memory_max | string,
            })
+         | combine(
+             {'PRECIS_SLICE_NPROC': precis_builder_slice_nproc | string}
+             if ((precis_builder_slice_nproc | default('') | string) | length > 0) else {}
+           )
          | combine({'DOCKER_HOST': 'unix://' + precis_builder_home + '/.colima/docker.sock'}
              if os_family == 'darwin' else {})
          | combine({'DOCKER_HOST': _builder_docker_host,

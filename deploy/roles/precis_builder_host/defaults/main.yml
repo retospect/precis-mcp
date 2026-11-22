@@ -99,6 +99,51 @@ precis_builder_slots_host: "{{ ((precis_shared_env | default({})).PRECIS_HOST_NA
 precis_builder_idle_seconds: 5
 precis_builder_batch_size: 4
 
+# Per-slice bounds (gr762463; the code is
+# src/precis/workers/job_types/_slice_limits.py). A build session's shell
+# tool starts its commands in process groups of their own, so the session's
+# group never held them: one builder's pytest-xdist experiment in /tmp forked
+# 5604 processes, 1040 orphaned to pid 1, and starved the host until sshd died.
+#
+# Every one of these is off in code: only this role turns them on, for the
+# builder worker unit. Other lanes that run run_slice (the deploy-user
+# compute lane of play 43, the gateway's slices lane of 20g) keep their old
+# launch: they have no lingering user manager, and a scope there would take
+# the session out of their unit's MemoryMax.
+#
+# Linux: each session runs in a transient `systemd-run --user --scope` with
+# these limits; every descendant, orphans included, stays in it, and the
+# run's end, timeout or cancel stops the whole scope. That needs the builder
+# account's user manager to linger: a managed user has lingering on
+# (docker_rootless.yml). Before each launch the worker checks lingering and
+# runs a probe scope with the same limits (cached 10 min); when either
+# fails it launches with the process group only and logs why. A session
+# that dies of systemd-run's own bus error drops the cached probe and is
+# parked as a host failure, not counted against the task.
+#
+# auto | off. off launches without a scope. auto on Linux; macOS has no
+# cgroups and gets RLIMIT_NPROC instead (below).
+precis_builder_slice_scope: "{{ 'auto' if os_family == 'linux' else 'off' }}"
+# The scope's TasksMax: processes AND threads of one slice (a python with
+# numpy holds one thread per core). 0 or off drops the limit.
+precis_builder_slice_tasks_max: 2048
+# The scope's MemoryMax (MemorySwapMax=0 comes with it): a systemd size
+# (16G) or a percentage of host RAM. A scope leaves the worker unit's
+# cgroup, so slice memory is NOT counted against the unit's MemoryMax or
+# the host memory budget (worker_limits / precis_lane_memory). The 25%
+# default only stops one runaway slice from taking more than a quarter of
+# the host, whatever the slice concurrency (the executor cap, up to 8 per
+# host). Partition per host instead: set it to RAM / <concurrent slices>,
+# minus what the host's other services need. off drops the limit.
+precis_builder_slice_memory_max: "25%"
+# RLIMIT_NPROC (soft and hard) for a session launched without a scope. It
+# counts every process of the builder account (the worker, colima, every
+# slice), so it must leave room for the host's concurrent slices. On by
+# default only for a managed macOS builder user (its own account); empty
+# sets none: Linux counts threads against it across the whole account, and
+# a deploy-account builder shares that count with every deploy service.
+precis_builder_slice_nproc: "{{ 2048 if (os_family == 'darwin' and (precis_builder_manage_user | bool)) else '' }}"
+
 # A second repository's clone on this host, as a dict of repo name -> absolute
 # clone path (PRECIS_SLICE_REPOS, run_slice.slice_root_for); NO default. Set it
 # in the overlay for the host and run_slice / land_slice for that repo place

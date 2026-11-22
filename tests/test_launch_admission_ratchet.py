@@ -83,7 +83,11 @@ PROBES: dict[str, str] = {
     "sysctl": "kernel parameter read",
     "memory_pressure": "macOS memory-pressure read",
     "nvidia-smi": "GPU state query or reset",
-    "systemctl": "unit state query/restart; the unit is a declared daemon",
+    "systemctl": "unit state query/restart/stop; the unit is a declared daemon "
+    "or a run_slice slice scope (`--user stop --no-block`, returns at once)",
+    "systemd-run": "run_slice's sub-second scope probe (`--user --scope -- true`); "
+    "the slice session itself is wrapped inside the admitted launch",
+    "loginctl": "logind lingering read (`show-user -p Linger`)",
     "security": "macOS keychain item read",
     "exiftool": "PDF metadata read",
     "chktex": "LaTeX lint of one file",

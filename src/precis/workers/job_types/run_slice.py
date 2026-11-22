@@ -429,6 +429,7 @@ from precis.workers.job_types import (
     Reconcile,
     _lane_decide,
     _run_features,
+    _slice_limits,
     _slice_park,
     _slice_ws,
 )
@@ -1528,6 +1529,7 @@ def _launch(
     store: Any = None,
     work_class: str = "slice",
     pid_file: Path | None = None,
+    contain: _slice_limits.Containment | None = None,
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
@@ -1541,6 +1543,10 @@ def _launch(
     tests die over the ceiling instead of wedging the host into swap; no
     cap configured ⇒ ``preexec_fn=None``). Returns the process group pid.
 
+    ``contain`` (gr762463, :mod:`._slice_limits`) bounds a build session:
+    its argv runs inside a transient systemd scope with a task and memory
+    ceiling, or, with no scope, the child gets an ``RLIMIT_NPROC`` too.
+
     With a ``store`` (a real Store — fakes without a pool keep the legacy
     unheld path) the launch is admitted first: :func:`admission.spawn`
     takes the work class's footprint on this host, launches, and babysits
@@ -1548,6 +1554,10 @@ def _launch(
     :class:`admission.Refused` — the caller retries attempt-free, never
     treating capacity as the build's failure (review td702053).
     """
+    preexec: Callable[[], object] | None = mem_limit_preexec()
+    if contain is not None:
+        argv = contain.wrap(argv)
+        preexec = contain.preexec(preexec)
     if store is not None and getattr(store, "pool", None) is not None:
         return admission.spawn(
             store,
@@ -1562,7 +1572,7 @@ def _launch(
             exit_file=exit_file,
             pid_file=pid_file,
             pass_fds=pass_fds,
-            preexec_fn=mem_limit_preexec(),
+            preexec_fn=preexec,
         )
     full_env = {
         **env,
@@ -1587,7 +1597,7 @@ def _launch(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
         pass_fds=pass_fds,
-        preexec_fn=mem_limit_preexec(),
+        preexec_fn=preexec,
     )
     return int(proc.pid)
 
@@ -3579,6 +3589,18 @@ _BUILDER_HANDOFF_TEXT = (
     "(gr674030)."
 )
 
+#: Defence in depth for gr762463 (the bound itself is the session's scope,
+#: :mod:`._slice_limits`): a builder's pytest-xdist experiment in ``/tmp``
+#: forked 5604 processes and took the build host down.
+_SCRATCH_RULE_TEXT = (
+    "Run tests through `scripts/test`. A host-side pytest (the named-file "
+    "lint steps) that uses xdist keeps `-n` at 4 or below, never `-n auto`. "
+    "Never run an experiment (a scratch conftest, a throwaway test run) "
+    "outside this worktree: not in `/tmp`, not in your home. This session "
+    "runs under a process and memory ceiling; a run past it fails or is "
+    "killed."
+)
+
 #: The builder's ``tests:`` line instruction (:func:`tests_ran` reads it).
 _TESTS_MARKER_TEXT = (
     "Fix every report and re-run until all are clean — do not commit "
@@ -4024,6 +4046,8 @@ def render_brief(
         "and its own `-- NNNN_name.sql` header) and refuses only an edited, "
         "duplicated or already-landed one; a merge commit on the branch is "
         "fine too, the land squashes it away.",
+        "",
+        _SCRATCH_RULE_TEXT,
         "",
         _TESTS_MARKER_TEXT,
         "",
@@ -6158,6 +6182,11 @@ def _settle(
     if status not in JOB_TERMINAL_STATUSES:
         return None
     row_handle = meta.get("compute_handle")
+    if isinstance(row_handle, dict):
+        # gr762463: a terminal job's scope goes, whatever its process group
+        # says — the executor's deadline and cancel skip ``kill`` once the
+        # group is gone, and the scope's escaped processes are not in it.
+        _slice_limits.stop_scope(row_handle.get("slice_scope"))
     # A live process in the folder keeps it: the row's handle, or — a handle
     # that was never saved (a launch that raised, a relaunch whose handle save
     # failed, a parked relaunch) leaves the row naming a dead one — the session
@@ -8164,6 +8193,15 @@ def submit(ctx: Any, spec: Any) -> Any:
             handle["review"] = {"head": review_head}
         if atif_path is not None:
             handle["atif"] = str(atif_path)
+        # gr762463: the session's processes and memory are bounded — a
+        # transient scope on Linux (named on the handle, so every end of the
+        # run can stop it, orphans included), an rlimit elsewhere.
+        contain = _slice_limits.containment(
+            f"td{todo_id}-j{getattr(ctx, 'ref_id', None) or 0}"
+        )
+        log.info("run_slice: td%d session bounds: %s", todo_id, contain.note)
+        if contain.scope is not None:
+            handle["slice_scope"] = contain.scope
         if adapter.name == "devin_tree" and not is_generator:
             handle["acceptance_tests"] = acceptance_tests
             handle["acceptance_tests_missing"] = missing_tests
@@ -8187,6 +8225,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             env=env,
             store=store,
             work_class="slice",
+            contain=contain,
         )
         _record_launched_process(handle, pid, attempt_dir)
     except _HostRefusal as exc:
@@ -9949,6 +9988,10 @@ OUTAGE_BACKOFF = timedelta(hours=2)
 #: as a failed attempt (BUILDER on 5ce9e5d69: an unbounded park never
 #: reaches the retry cap or the ask).
 OUTAGE_PARK_CAP = 3
+#: The park class of a session that died of systemd-run itself before the
+#: agent ran (gr762463, :func:`_slice_limits.scope_launch_failed`): the
+#: host's failure, parked attempt-free like a window and relaunched at once.
+HOST_FAILURE_CLASS = "host"
 _NOT_BEFORE_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -10206,15 +10249,24 @@ def _park_outage(
     for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
         handle.pop(key, None)
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+    # A ``host`` class (gr762463: the slice scope did not start) is neither
+    # the lane's nor the vendor's: no lane move, no vendor switch, and the
+    # relaunch is due now — the scope probe runs again before it.
+    host = cls == HOST_FAILURE_CLASS
     # gr761723: a reviewer carries the lane its dispatch would pick without
     # this one — the window moves the review there now, never parks it.
-    moved = _move_review_to_fallback(
+    moved = not host and _move_review_to_fallback(
         ctx, dict(params), f"lane {lane} {cls} window closed", lane_table
     )
-    switch = not moved and _outage_alternative(
-        ctx.store, todo_id, params, vendor, lane_table
+    switch = (
+        not host
+        and not moved
+        and _outage_alternative(ctx.store, todo_id, params, vendor, lane_table)
     )
-    if moved:
+    if host:
+        due = now
+        where = "this host once the slice scope probe has run again"
+    elif moved:
         due = now
         where = "the review's fallback lane"
     elif switch:
@@ -10237,11 +10289,12 @@ def _park_outage(
         outage_parks=parks,
         own_folder=True,
     )
-    what = (
-        f"auth failure (auth:{phrase or 'unclassified'}); lane parked"
-        if cls == "auth"
-        else f"{cls} window closed"
-    )
+    if cls == "auth":
+        what = f"auth failure (auth:{phrase or 'unclassified'}); lane parked"
+    elif host:
+        what = "host failure (the slice scope did not start)"
+    else:
+        what = f"{cls} window closed"
     ctx.append_chunk(
         "job_event",
         f"run_slice: lane {lane} {what} on td{todo_id}; lease back "
@@ -11011,6 +11064,11 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         # gone — never finalize and drop a folder a child still writes in.
         _stop_session_group(ctx, handle)
         return False
+    # gr762463: the session and its group are gone, but a process its shell
+    # tool started in a group of its own (an orphaned xdist worker) is not
+    # in that group; it is in the scope, which is stopped here before
+    # anything judges or drops the folder.
+    _slice_limits.stop_scope(handle.get("slice_scope"))
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = (ctx.meta or {}).get("lane")
@@ -11070,6 +11128,30 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 f"(usage ${float(budget_kill.get('usd') or 0):.2f} ≥ "
                 f"${float(budget_kill.get('budget_usd') or 0):.2f})"
             )
+    if (
+        not vanished
+        and budget_note is None
+        and _slice_limits.scope_launch_failed(
+            handle.get("slice_scope"), log_text, exit_code
+        )
+    ):
+        # gr762463: systemd-run could not start the slice scope (the user
+        # manager's bus went away after the probe), so the agent never ran.
+        # The host's failure, not the task's: drop the cached probe and park
+        # attempt-free; the relaunch probes again and falls back if it must.
+        _slice_limits.forget_probe()
+        parks = int(handle.get("outage_parks") or 0)
+        if parks < OUTAGE_PARK_CAP:
+            if adopted is None:
+                _save_before_park(ctx, handle, todo_id, tree)
+            return _park_outage(
+                ctx, handle, todo_id, lane, HOST_FAILURE_CLASS, None, "slice-scope"
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: the slice scope failed to start again after {parks} "
+            f"parks on td{todo_id}; counting it as a failed attempt",
+        )
     if is_error and not vanished and budget_note is None:
         outage = _lane_outage(
             result, log_text, adapter=adapter.name, exit_code=exit_code
@@ -12337,6 +12419,9 @@ def kill(ctx: Any, handle: Any) -> None:
             _revoke_slice_grant(ctx, int(params.get("todo_id") or 0), grant, "aborted")
         except Exception:  # pragma: no cover — the signal still goes
             log.warning("run_slice: slice-token revoke on kill failed")
+    # gr762463: the scope holds every process the session started, the
+    # ones its shell tool put in groups of their own included.
+    _slice_limits.stop_scope(handle.get("slice_scope"))
     pgid = _handle_pgid(handle)
     if not pgid:
         return

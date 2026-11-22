@@ -301,6 +301,47 @@ def test_unit_env_for_deploy_and_macos_is_what_it_was() -> None:
     assert "XDG_RUNTIME_DIR" not in mac
 
 
+def _slice_knobs(os_family: str, managed: bool) -> dict[str, Any]:
+    """The role's per-slice defaults rendered for one host shape."""
+    d = _defaults()
+    return {
+        k: _eval(str(d[k]), os_family=os_family, precis_builder_manage_user=managed)
+        for k in (
+            "precis_builder_slice_scope",
+            "precis_builder_slice_tasks_max",
+            "precis_builder_slice_memory_max",
+            "precis_builder_slice_nproc",
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    ("os_family", "managed", "scope", "nproc"),
+    [
+        ("linux", True, "auto", None),
+        ("linux", False, "auto", None),
+        ("darwin", True, "off", "2048"),
+        ("darwin", False, "off", None),
+    ],
+)
+def test_unit_env_carries_the_per_slice_bounds(
+    os_family: str, managed: bool, scope: str, nproc: str | None
+) -> None:
+    """gr762463: the code keeps every slice bound off; this role turns them
+    on for the builder unit — the scope on Linux, the nproc rlimit for a
+    managed macOS user (its own account) and nowhere else."""
+    home = ("/Users/" if os_family == "darwin" else "/home/") + "coder"
+    env = _unit_env(
+        os_family=os_family,
+        precis_builder_home=home,
+        **_slice_knobs(os_family, managed),
+    )
+    assert env["PRECIS_SLICE_SCOPE"] == scope
+    assert env["PRECIS_SLICE_TASKS_MAX"] == "2048"
+    assert env["PRECIS_SLICE_MEMORY_MAX"] == "25%"
+    assert env.get("PRECIS_SLICE_NPROC") == nproc
+
+
 def test_rootless_socket_parent_is_granted_to_the_codex_sandbox() -> None:
     """run_slice grants the DOCKER_HOST socket's parent as a writable root
     unless it is $HOME or an ancestor; /run/user/<uid> is neither."""

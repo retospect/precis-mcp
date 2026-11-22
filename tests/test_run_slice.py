@@ -8649,6 +8649,110 @@ def test_kill_sigterms_the_group(seams: dict[str, Any]) -> None:
     assert seams["signals"] == [(4242, signal.SIGTERM)]
 
 
+def _scoped(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Launches get a fixed scope; ``stop_scope`` calls are recorded."""
+    stopped: list[object] = []
+    monkeypatch.setattr(
+        run_slice._slice_limits,
+        "containment",
+        lambda label: run_slice._slice_limits.Containment(
+            "precis-slice-x.scope", ("systemd-run", "--"), None, "scope"
+        ),
+    )
+    monkeypatch.setattr(
+        run_slice._slice_limits, "stop_scope", lambda unit: stopped.append(unit)
+    )
+    return stopped
+
+
+def test_kill_stops_the_slice_scope(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762463: the timeout/cancel kill stops the session's whole scope —
+    the processes its shell tool put in groups of their own included — as
+    well as TERMing the group; a handle without a group still stops it."""
+    stopped = _scoped(monkeypatch)
+    handle = {"pid": 4242, "pgid": 4242, "slice_scope": "precis-slice-x.scope"}
+    run_slice.kill(None, handle)
+    assert stopped == ["precis-slice-x.scope"]
+    assert seams["signals"] == [(4242, signal.SIGTERM)]
+    run_slice.kill(None, {"pid": 1, "slice_scope": "precis-slice-x.scope"})
+    assert stopped == ["precis-slice-x.scope"] * 2
+    assert seams["signals"] == [(4242, signal.SIGTERM)]
+
+
+def test_submit_launches_in_the_slice_scope_and_poll_stops_it(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762463: the launch carries the containment and the handle names its
+    scope; once the session has ended the poll stops the scope (orphans in
+    other process groups) before it judges the folder."""
+    stopped = _scoped(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle["slice_scope"] == "precis-slice-x.scope"
+    [(_argv, kw)] = seams["launch"]
+    assert kw["contain"].scope == "precis-slice-x.scope"
+    assert stopped == []
+    _finish(handle, 0, json.dumps({"is_error": True, "result": "refused"}) + "\n")
+    assert run_slice.poll(_poll_ctx(store, ctx), handle) is True
+    assert stopped == ["precis-slice-x.scope"]
+
+
+def test_poll_parks_a_scope_that_never_started_as_the_hosts_failure(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762463: systemd-run lost the user manager's bus after the probe said
+    yes, so the agent never ran. The host's failure, not the task's: no
+    attempt, lease back, no vendor switch, relaunch now — and the cached
+    probe is dropped so the relaunch probes again."""
+    _scoped(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    monkeypatch.setattr(
+        run_slice._slice_limits,
+        "_probe",
+        (time.monotonic(), "/usr/bin/systemd-run", "ok"),
+    )
+    _finish(handle, 1, "Failed to connect to bus: No such file or directory\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert "pid" not in handle and handle["outage"] == "host"
+    assert handle["not_before"] <= datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert pctx.meta_set["exclude_vendor"] is None
+    assert run_slice._slice_limits._probe is None
+    [event] = [t for k, t in pctx.chunks if k == "job_event"]
+    assert "host failure" in event and "no attempt burned" in event
+
+
+def test_poll_counts_a_scope_failure_past_the_park_cap(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parked OUTAGE_PARK_CAP times already: the next scope failure is a
+    failed attempt, so a host that never starts scopes still reaches the
+    retry cap and the ask."""
+    _scoped(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    handle["outage_parks"] = run_slice.OUTAGE_PARK_CAP
+    _finish(handle, 1, "Failed to connect to bus: No such file or directory\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert any(
+        "counting it as a failed attempt" in t
+        for k, t in pctx.chunks
+        if k == "job_event"
+    )
+
+
 def test_parse_result_takes_last_result_object() -> None:
     log = (
         '{"type":"x"}\n{"result":"one"}\ntrailing\n{"result":"two","is_error":false}\n'
