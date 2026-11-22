@@ -21,6 +21,10 @@ non-skipped graph_garden job with recorded results in the same window.
 ``/garden/proposals`` is the pending queue itself and
 ``put(mode='garden-reject')`` the agent's rejection door (gr681311);
 apply and undo stay operator-held because they repoint the live graph.
+
+``/settings`` separates factory schedule arming from kill controls: recurring
+todos are shared DB state, but the environment kill switch is process-local.
+An MCP read cannot attest the environment of a different worker process.
 """
 
 from __future__ import annotations
@@ -2375,7 +2379,9 @@ class JobHandler(NumericRefHandler):
     def _render_settings_view(self, query_string: str) -> Response:
         """``id='/settings'`` — the live DB switches, read-only (gr538186).
 
-        Agent flags show their effective DB/env/default value. An
+        Agent flags show their effective DB/env/default value. Factory
+        arming separates recurring schedules from shared holds and
+        process-local kill-switch evidence. An
         ``app_settings`` row is an override (an absent key falls back to env/compiled defaults —
         ``precis.settings``' typed registry and
         ``precis.budget.settings``' generic KV both read it).
@@ -2510,6 +2516,10 @@ class JobHandler(NumericRefHandler):
             lines.append(f"- {key}: {effective} ({layer})")
         lines += [
             "",
+        ]
+        lines.extend(self._factory_settings_lines(svc_rows))
+        lines += [
+            "",
             f"## app_settings ({len(display)} shown, {withheld_keys} withheld)",
         ]
         if display:
@@ -2581,6 +2591,64 @@ class JobHandler(NumericRefHandler):
             body="\n".join(lines),
             result_count=len(flags) + len(display) + len(svc_rows),
         )
+
+    def _factory_settings_lines(self, svc_rows: list[dict[str, Any]]) -> list[str]:
+        """Shared arming evidence, without exporting operator text or hosts."""
+        lanes = (
+            "plan_dispatch",
+            "release_poll",
+            "ci_watch",
+            "pr_poll",
+            "gripe_validate",
+        )
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id, r.meta->>'job_type', "
+                "COALESCE((SELECT t.value FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1), "
+                "'open') FROM refs r "
+                "WHERE r.kind = 'todo' AND r.retired_at IS NULL "
+                "AND r.meta->>'job_type' = ANY(%s) "
+                "AND jsonb_typeof(r.meta->'schedule') = 'object' "
+                "AND (r.meta->'schedule' ? 'cron' OR r.meta->'schedule' ? 'every') "
+                "AND NOT (r.meta->'schedule' ? 'at') "
+                "AND COALESCE(r.meta->>'builtin', '') <> 'watches-root' "
+                "AND COALESCE(r.meta->>'executor', '') = 'job_inproc' "
+                "ORDER BY r.ref_id",
+                (list(lanes),),
+            ).fetchall()
+        env_off = os.environ.get("PRECIS_FACTORY", "").strip().lower() == "off"
+        shared_off = any(
+            r["service"] == "plan_dispatch" and r["prio"] == 0 for r in svc_rows
+        )
+        lines = [
+            "## Factory arming",
+            f"kill switch: shared plan_dispatch prio-zero hold={'on' if shared_off else 'off'}; "
+            f"PRECIS_FACTORY=off in this MCP process={'yes' if env_off else 'no'}.",
+            "Worker environment kill switch: unknown (process-local; this read cannot "
+            "attest other processes).",
+        ]
+        for lane in lanes:
+            armed = [
+                f"td{rid}"
+                for rid, op, status in rows
+                if op == lane and status != "paused"
+            ]
+            paused = sum(op == lane and status == "paused" for _, op, status in rows)
+            lines.append(
+                f"{lane}: recurring schedule={'armed' if armed else 'not armed'}; "
+                f"todos={', '.join(armed) or '-'}; paused={paused}"
+            )
+        lines.append(
+            "Armed means an unpaused recurring job_inproc todo exists, not proof of ticks. "
+            "The scheduler skips paused recurring todos; a done tag alone does not disarm cron. "
+            "A dedicated plan_tick worker can also dispatch without a recurring todo. "
+            "Read /logs?handler=plan_tick&level=INFO and /throughput for activity. "
+            "The shared hold makes plan_dispatch and ci_watch read-only; release_poll "
+            "and pr_poll may still mint plans; gripe_validate is not kill-switched."
+        )
+        return lines
 
     def _render_claim_view(self, query_string: str) -> Response:
         """``id='/claim'`` — the ``claim.*`` override knobs vs their code

@@ -23,8 +23,15 @@ the PR intake — the release pass and release-fix lanes live in
 [[precis-job-release-help]]. Submitting a plan (the recipe an
 agent normally wants) lives in [[precis-factory-submit-help]]; the
 generic submit shape and dispatch recipes in [[precis-job-help]].
-The ticks and watchers below run only while an operator has armed them,
-and are read-only or refused while the factory kill switch is on.
+Check arming before submitting work or diagnosing a stalled plan:
+
+```python
+get(kind="job", id="/settings")  # Factory arming: schedules and kill controls
+```
+
+The `Factory arming` section names `plan_dispatch`, `release_poll`,
+`ci_watch`, `pr_poll` and `gripe_validate`; interpretation and activity
+reads live in [[precis-job-observe-help]].
 
 ## Dispatch an existing todo to a lane now
 

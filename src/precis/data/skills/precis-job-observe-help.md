@@ -293,7 +293,24 @@ worker may claim it).
 ## Is a live switch set? — /settings
 
 ```python
-get(kind="job", id="/settings")   # effective flags and allowlisted live settings
+get(kind="job", id="/settings")   # factory arming, effective flags, allowlisted live settings
+```
+
+`Factory arming` reports recurring schedules for `plan_dispatch`,
+`release_poll`, `ci_watch`, `pr_poll` and `gripe_validate`, with their
+`td<id>` handles and paused counts. `armed` means an unpaused recurring
+todo exists, not proof that ticks run; a done tag alone does not disarm
+cron. A dedicated plan tick can dispatch without a recurring todo.
+
+The kill-switch line separates the shared dispatch hold from the switch
+in the serving MCP process; worker environment state remains `unknown`.
+The shared hold makes `plan_dispatch` and `ci_watch` read-only;
+`release_poll` and `pr_poll` may still mint plans, and `gripe_validate`
+is not kill-switched. Check activity:
+
+```python
+get(kind="job", id="/logs?handler=plan_tick&level=INFO")
+get(kind="job", id="/throughput")
 ```
 
 `app_settings` is the generic non-secret KV (a row IS a non-default

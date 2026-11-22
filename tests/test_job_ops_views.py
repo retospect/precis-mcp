@@ -19,6 +19,7 @@ from precis.alerts import raise_alert
 from precis.dispatch import Hub
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.job import JobHandler
+from precis.handlers.todo import TodoHandler
 from precis.store import Store, Tag
 
 
@@ -284,6 +285,61 @@ def test_delta_bad_since_raises(jobs: JobHandler) -> None:
 
 
 # ── /settings (gr538186) ────────────────────────────────────────────
+
+
+def test_settings_factory_arming(
+    jobs: JobHandler, hub: Hub, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Factory read distinguishes schedule arming, shared hold and local env."""
+    from precis.workers.service_config import clear_service_config, set_service_prio
+
+    todos = TodoHandler(hub=hub)
+    armed = todos.put(
+        text="private operator text",
+        meta={
+            "schedule": {"every": "5m"},
+            "executor": "job_inproc",
+            "job_type": "plan_dispatch",
+        },
+    )
+    paused = todos.put(
+        text="private watcher text",
+        meta={
+            "schedule": {"every": "5m"},
+            "executor": "job_inproc",
+            "job_type": "ci_watch",
+        },
+    )
+    assert armed.ref_id is not None
+    assert paused.ref_id is not None
+    store.add_tag(armed.ref_id, Tag.closed("STATUS", "done"), replace_prefix=True)
+    store.add_tag(
+        paused.ref_id,
+        Tag.closed("STATUS", "paused"),
+        replace_prefix=True,
+    )
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    body = jobs.get(id="/settings").body
+    assert f"plan_dispatch: recurring schedule=armed; todos=td{armed.ref_id}" in body
+    assert "ci_watch: recurring schedule=not armed; todos=-; paused=1" in body
+    assert "release_poll: recurring schedule=not armed" in body
+    assert "pr_poll: recurring schedule=not armed" in body
+    assert "gripe_validate: recurring schedule=not armed" in body
+    assert "private operator text" not in body
+    assert "private watcher text" not in body
+    assert "prio-zero hold=off" in body
+    assert "MCP process=no" in body
+    assert "Worker environment kill switch: unknown" in body
+    monkeypatch.setenv("PRECIS_FACTORY", " OFF ")
+    set_service_prio(store, "*", "plan_dispatch", 0, actor="test")
+    try:
+        body = jobs.get(id="/settings").body
+        assert "prio-zero hold=on" in body
+        assert "MCP process=yes" in body
+        assert "plan_dispatch: recurring schedule=armed" in body
+    finally:
+        clear_service_config(store, "*", "plan_dispatch")
+
 
 # Fake values for the redaction tests — one marked constant so the
 # secret-gate marker stays rare. Every literal that trips the tree gate

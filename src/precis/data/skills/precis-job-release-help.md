@@ -20,9 +20,16 @@ plan's cut/poll/deploy/confirm nodes, the `merge_back` mode, the
 release-fix loop's digest and rerun, and the `release_poll` starter
 that mints a pass only when its gates pass. Slice/land and plan ticks
 live in [[precis-job-factory-help]]; the generic submit shape and the
-dispatch recipe in [[precis-job-help]]. The lanes run only while an
-operator has armed them, and are refused while the factory kill switch
-is on.
+dispatch recipe in [[precis-job-help]]. Check the starter's arming and
+kill controls before diagnosing a stalled release:
+
+```python
+get(kind="job", id="/settings")  # Factory arming includes release_poll
+```
+
+An armed schedule is not proof of activity. The shared hold can stop
+plan dispatch while `release_poll` still mints plans; interpret the
+controls with [[precis-job-observe-help]].
 
 ## Dark release-pass job types — the cut/poll/deploy lanes
 
