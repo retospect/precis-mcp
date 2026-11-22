@@ -158,8 +158,10 @@ def add_parser(subparsers: Any) -> None:
 
     su = lsub.add_parser(
         "suitability",
-        help="Recompute the suitability ledger and print the posteriors; "
-        "writes them to model cards unless --dry-run. No LLM call.",
+        help="Recompute the suitability ledger and print the posteriors, "
+        "then the factory lane-model table (builds, exploration share, "
+        "outcomes by task kind); writes the posteriors to model cards "
+        "unless --dry-run. No LLM call.",
     )
     su.add_argument(
         "--model", default=None, help="Restrict the rollup to one model id."
@@ -593,6 +595,40 @@ def _cmd_suitability(store: Store, args: argparse.Namespace) -> None:
     else:
         written = len({r.model for r in rows if r.written})
         print(f"suitability: {len(rows)} posteriors, {written} cards written")
+    try:
+        lane_lines = _lane_model_lines(store, window_days=args.days)
+    except Exception as exc:
+        # The posteriors above already printed; the table is a second read.
+        lane_lines = [f"# lane models: unreadable ({type(exc).__name__}: {exc})"]
+    for line in lane_lines:
+        print(line)
+
+
+def _lane_model_lines(store: Store, *, window_days: int) -> list[str]:
+    """The factory build table (gr761723): per lane model, its build runs,
+    the share that were exploration picks, and validated outcomes by task
+    kind (``ok`` = review LAND or landed, ``fail`` = FIX/REVERT, land red
+    or a mechanical gate failure; runs with no signal yet count in
+    ``builds`` only)."""
+    from precis.utils.llm.suitability import lane_model_outcomes, offering_key
+
+    rows = lane_model_outcomes(store, window_days=window_days)
+    by_model: dict[tuple[str, str, str], list[Any]] = {}
+    for r in rows:
+        by_model.setdefault((r.lane, r.model, r.adapter), []).append(r)
+    lines = [f"# lane models ({len(by_model)} lane models, {window_days} d of builds)"]
+    for (lane, model, adapter), kinds in by_model.items():
+        runs = sum(k.runs for k in kinds)
+        explored = sum(k.explored for k in kinds)
+        share = 100 * explored / runs if runs else 0.0
+        per_kind = "; ".join(
+            f"{k.task_kind} ok={k.success} fail={k.failure}" for k in kinds
+        )
+        lines.append(
+            f"  {lane} {offering_key(model, adapter)}: builds={runs} "
+            f"explored={explored} ({share:.0f}%) — {per_kind}"
+        )
+    return lines
 
 
 _DECIDE_MODE_USAGE = (

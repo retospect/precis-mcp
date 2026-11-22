@@ -594,6 +594,14 @@ REGISTRY: dict[str, SettingSpec] = {
             "immediately, a negative value reads as 0.",
         ),
         SettingSpec(
+            key="factory.explore.share",
+            type="float",
+            env_var="PRECIS_FACTORY_EXPLORE_SHARE",
+            default=0.2,
+            doc="Share of code builds on a multi-model lane that run the "
+            "lane's least-observed model instead of its default (gr761723).",
+        ),
+        SettingSpec(
             key="factory.overlap_hold_max_runs",
             type="int",
             env_var="PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS",

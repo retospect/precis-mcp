@@ -4629,6 +4629,68 @@ def test_a_review_mint_carries_the_shadow_decision(
     )
 
 
+def test_a_review_mint_carries_its_fallback_lane(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr761723: the review job records the lane the same pick makes
+    without the chosen one — where a quota window or a launch hold on the
+    chosen lane moves the review instead of parking it."""
+    use_lanes(monkeypatch)
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, review)[-1][1]
+    # The builder is anthropic: devin (rank 10) reviews, codex is the
+    # next lane of another vendor.
+    assert job["params"]["lane"] == "devin"
+    assert job["review_fallback"] == "codex"
+
+
+def _review_job_after_claude_build(store: Store) -> dict[str, Any]:
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    assert pd.run_pass(store).dispatched == 1
+    return _jobs_under(store, review)[-1][1]
+
+
+def test_a_review_fallback_is_never_the_builder_s_vendor(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Builder claude-sub, review lanes codex and claude-sub: codex
+    reviews and there is NO fallback — the only other lane is the
+    builder's own vendor, which a codex window must not hand the review
+    to (it parks for the reset instead, as before)."""
+    codex = replace(seed_lane("codex"), cap=8)
+    use_lanes(monkeypatch, codex, seed_lane("claude-sub"))
+    job = _review_job_after_claude_build(store)
+    assert job["params"]["lane"] == "codex"
+    assert "review_fallback" not in job
+
+
+def test_a_review_fallback_is_never_metered(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paid = L.Lane(
+        name="paid",
+        adapter="kimi_tree",
+        credential_pool="metered",
+        cap=1,
+        task_classes=frozenset({"review"}),
+        vendor="moonshot",
+    )
+    use_lanes(monkeypatch, seed_lane("codex"), seed_lane("claude-sub"), paid)
+    job = _review_job_after_claude_build(store)
+    assert job["params"]["lane"] == "codex"
+    assert "review_fallback" not in job
+
+
 def test_escalate_never_drops_below_the_last_attempt(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8025,6 +8087,43 @@ def test_preland_review_fix_sends_the_branch_back_to_the_builder(
     assert _children(store, mint.root_id) == [build, review]
     assert _status(store, review) == "open"
     assert not any(v.startswith("claimed-by:") for v in _open_tags(store, build))
+
+
+def _build_signal(store: Store, job_id: int) -> dict[str, Any]:
+    ref = store.get_ref(kind="job", id=job_id)
+    assert ref is not None
+    return dict((ref.meta or {}).get("build_signal") or {})
+
+
+def test_preland_review_verdict_is_the_build_job_s_signal(store: Store) -> None:
+    """gr761723: the verdict lands on the build job it judged — the
+    suitability ledger's validated outcome for that run's model. The
+    reviewer's own job carries none."""
+    mint = _reviewed_pending(store, "review: LAND")
+    build, review = mint.ids["build"], mint.ids["review"]
+    (build_job, _m) = _jobs_under(store, build)[0]
+    review_job = _jobs_under(store, review)[-1][0]
+    pd.run_pass(store)
+    signal = _build_signal(store, build_job)
+    assert signal["review"]["verdict"] == "LAND"
+    assert signal["review"]["job"] == review_job
+    assert _build_signal(store, review_job) == {}
+
+
+def test_preland_review_signal_follows_the_held_attempt_ref(store: Store) -> None:
+    """The held land's attempt ref names the judged build job — it wins
+    over the newest-build-before-the-review fallback — and a FIX is its
+    failure."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build = mint.ids["build"]
+    (newest_before, _m) = _jobs_under(store, build)[0]
+    named = _job(store, build, lane="devin")
+    held = dict(_meta(store, build)["pending_land"])
+    held["ref"] = f"refs/factory/build/{build}/{named}"
+    store.stamp_ref_meta(build, {"pending_land": held})
+    pd.run_pass(store)
+    assert _build_signal(store, named)["review"]["verdict"] == "FIX"
+    assert _build_signal(store, newest_before) == {}
 
 
 def test_preland_review_revert_sends_the_branch_back_to_the_builder(

@@ -147,6 +147,21 @@ writes `meta.suitability` on each model card plus one
 `observed-telemetry` review, both idempotent. decide() never
 reads the ledger — it is reviewer-facing evidence, not routing input.
 
+Factory builds count too: each build run adds one outcome for its
+`model@adapter` — the newest of its review verdict (`LAND`
+success, `FIX`/`REVERT` failure) and its land (landed success, red on
+the diff failure), else a mechanical gate failure; an empty run is no
+outcome. A build on a flat-rate lane listing several models runs,
+with probability `factory.explore.share` (default 0.2; the job carries
+`meta.explore`), the least-observed model other than its default —
+cheaper ones included — while that model has under 5 outcomes and
+fewer than 10 exploration tries for the task kind and band. Never
+explored: metered lanes, model or lane pins (retry ladder, rescue, top
+rung, conflict try), a `PRECIS_RUN_SLICE_MODEL` host pin, release-band
+or release-branch builds, and a model the run's test session ran.
+`precis llm suitability` ends with the lane-model table: builds,
+exploration share and outcomes per task kind.
+
 ## Add a hosted OpenAI-compatible provider
 ## How do I add or enable an llm provider account or profile?
 

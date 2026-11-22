@@ -7,6 +7,7 @@ declared scipy version, not transcribed by hand.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -496,6 +497,188 @@ def test_window_aggregate_filters_on_the_ts_index(store: Any) -> None:
         finally:
             conn.execute("RESET enable_seqscan")
     assert "llm_call_log_ts_idx" in plan
+
+
+# ---------------------------------------------------------------------------
+# factory build runs (gr761723)
+# ---------------------------------------------------------------------------
+
+
+def _build(
+    store: Any,
+    model: str | None,
+    *,
+    lane: str = "devin",
+    adapter: str = "devin_tree",
+    review: str | None = None,
+    land: str | None = None,
+    gate_pass: bool | None = None,
+    explore: bool = False,
+    task_class: str = "code",
+    run_outcome: str | None = None,
+) -> int:
+    """One build: a todo plus its ``run_slice`` job carrying the submit's
+    stamps, then the review / land signals the tick and the lander write."""
+    from precis.plans import outcome
+    from precis.workers._mint import mint_background_job
+
+    todo = store.insert_ref(
+        kind="todo", slug=None, title="build", meta={"task_class": task_class}
+    )
+    extra: dict[str, Any] = {"lane": lane, "adapter": adapter}
+    if model is not None:
+        extra["model"] = model
+    if explore:
+        extra["explore"] = True
+    if gate_pass is not None:
+        extra["outcome"] = {"gate_pass": gate_pass}
+        if run_outcome is not None:
+            extra["outcome"]["outcome"] = run_outcome
+    with store.tx() as conn:
+        job = mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="ssh_node",
+            title="run_slice",
+            params={"todo_id": int(todo.id)},
+            parent_id=int(todo.id),
+            status="succeeded",
+            meta_extra=extra,
+        )
+    if review:
+        outcome.record_build_signal(store, int(job.id), "review", review, by_job=1)
+    if land:
+        outcome.record_build_signal(store, int(job.id), "land", land, by_job=2)
+    return int(job.id)
+
+
+def test_rollup_counts_review_and_land_once_per_build(store: Any) -> None:
+    """Each build adds ONE outcome for its model: LAND then landed is one
+    success, FIX one failure, LAND then a red land one failure, a gate
+    failure one failure, a gate pass alone nothing; a re-review rewrites
+    the run's signal instead of adding a second outcome."""
+    from precis.plans import outcome
+    from precis.utils.llm.suitability import rollup
+
+    model = f"swe-x-{uuid4().hex[:8]}"
+    landed = _build(store, model, review="LAND", land="landed")
+    _build(store, model, review="FIX")
+    _build(store, model, review="LAND", land="red")
+    _build(store, model, gate_pass=False)
+    _build(store, model, gate_pass=True)
+    _build(store, model, task_class="docs", gate_pass=False)  # not a build
+    outcome.record_build_signal(store, landed, "review", "LAND", by_job=3)
+    [row] = rollup(store, write=False, model=model)
+    assert (row.adapter, row.n) == ("devin_tree", 4)
+    # Beta(1, 1) prior + 1 success, 3 failures.
+    assert (row.alpha, row.beta) == (pytest.approx(2.0), pytest.approx(4.0))
+    assert row.label == "unqualified"  # 4 outcomes, under MIN_OBS
+
+
+def test_build_explore_counts_feed_the_exploration_pick(store: Any) -> None:
+    """The pick's counts: validated build outcomes per model on one
+    adapter and task kind; a run with no signal and an unrecorded model
+    key as documented."""
+    from precis.utils.llm.suitability import UNNAMED_MODEL, build_explore_counts
+
+    tag = uuid4().hex[:8]
+    adapter = f"adapter_{tag}"
+    a, b = f"m-a-{tag}", f"m-b-{tag}"
+    job = _build(store, a, adapter=adapter, review="LAND")
+    _build(store, a, adapter=adapter, land="red")
+    _build(store, b, adapter=adapter, gate_pass=True)  # no signal yet
+    _build(store, None, adapter=adapter, review="FIX")
+    kind = str(store.get_ref(kind="job", id=job).meta["task_kind"])
+    counts, tried = build_explore_counts(
+        store, adapter=adapter, task_kind=kind, source="code"
+    )
+    assert counts == {a: 2, UNNAMED_MODEL: 1}
+    assert tried == {}
+
+
+def test_build_runs_scan_is_bounded_on_the_primary_key(store: Any) -> None:
+    """The build-run read is a ``refs_pkey`` range above the window's id
+    floor (the floor itself a backward ``refs_pkey`` walk), not a scan
+    of every run_slice job ever. With seq scans off the plan names the
+    primary key."""
+    from precis.utils.llm import suitability
+
+    sql = suitability._BUILD_RUNS_SQL.format(filters="")
+    with store.pool.connection() as conn:
+        try:
+            conn.execute("SET enable_seqscan = off")
+            plan = "\n".join(
+                str(r[0])
+                for r in conn.execute(
+                    f"EXPLAIN {sql}", ("default", "build_signal", 30, 30)
+                ).fetchall()
+            )
+        finally:
+            conn.execute("RESET enable_seqscan")
+    # The floor: a backward walk of a ref_id-leading btree (refs_pkey or
+    # its twin refs_ref_id_kind_key) that stops at the window's edge.
+    assert re.search(
+        r"Index Scan Backward using (refs_pkey|refs_ref_id_kind_key) on refs f", plan
+    ), plan
+    # The outer scan: the floor is an index condition on ref_id, not a
+    # heap filter over every run_slice job.
+    cond = [ln for ln in plan.splitlines() if "Index Cond" in ln and "ref_id >" in ln]
+    assert cond, plan
+
+
+def test_explore_counts_count_tries_without_outcomes(store: Any) -> None:
+    """The pick's try bound reads explored runs whether or not they
+    yielded an outcome: ten explored runs that ended empty (gates passed,
+    no review, no land) are ten tries and zero outcomes — an empty run is
+    not a failure."""
+    from precis.utils.llm.suitability import build_explore_counts
+
+    tag = uuid4().hex[:8]
+    adapter, m = f"adapter_{tag}", f"m-{tag}"
+    jobs = [
+        _build(
+            store,
+            m,
+            adapter=adapter,
+            explore=True,
+            gate_pass=True,
+            run_outcome="completed_empty",
+        )
+        for _ in range(10)
+    ]
+    _build(store, m, adapter=adapter, review="LAND")  # not an exploration
+    kind = str(store.get_ref(kind="job", id=jobs[0]).meta["task_kind"])
+    outcomes, tried = build_explore_counts(
+        store, adapter=adapter, task_kind=kind, source="code"
+    )
+    assert tried == {m: 10}
+    assert outcomes == {m: 1}
+
+
+def test_lane_model_table_shows_counts_and_the_exploration_share(
+    store: Any,
+) -> None:
+    from precis.cli.llm import _lane_model_lines
+    from precis.utils.llm.suitability import lane_model_outcomes
+
+    tag = uuid4().hex[:8]
+    lane, m = f"lane-{tag}", f"m-{tag}"
+    _build(store, m, lane=lane, review="LAND", explore=True)
+    _build(store, m, lane=lane, review="FIX")
+    _build(store, m, lane=lane, gate_pass=True)
+    _build(store, m, lane=lane, land="landed")
+    [row] = [r for r in lane_model_outcomes(store) if r.lane == lane]
+    assert (row.model, row.runs, row.explored, row.success, row.failure) == (
+        m,
+        4,
+        1,
+        2,
+        1,
+    )
+    [line] = [ln for ln in _lane_model_lines(store, window_days=30) if lane in ln]
+    assert f"{lane} {m}@devin_tree: builds=4 explored=1 (25%)" in line
+    assert f"{row.task_kind} ok=2 fail=1" in line
 
 
 def test_run_llm_suitability_and_cadence(store: Any) -> None:

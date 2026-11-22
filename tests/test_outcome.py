@@ -1606,3 +1606,54 @@ def test_candidates_skips_minted_and_judge_runs() -> None:
 def test_run_quality_pass_dark_when_unlit() -> None:
     store = _Store()
     assert run_quality.run_run_quality_pass(cast(Store, store)).claimed == 0
+
+
+# ── the build run's validated signal (gr761723) ────────────────────
+
+
+def test_build_job_of_ref_reads_the_attempt_ref() -> None:
+    assert outcome.build_job_of_ref("refs/factory/build/42/900") == 900
+    assert outcome.build_job_of_ref("refs/factory/build/42/0") is None
+    assert outcome.build_job_of_ref("refs/factory/slice/42") is None
+    assert outcome.build_job_of_ref(None) is None
+
+
+def _sig(review: str | None = None, land: str | None = None, **at: str) -> dict:
+    rec: dict[str, Any] = {}
+    if review:
+        rec["review"] = {"verdict": review, "job": 1, "at": at.get("r", "")}
+    if land:
+        rec["land"] = {"result": land, "job": 2, "at": at.get("l", "")}
+    return rec
+
+
+def test_build_signal_outcome_is_one_outcome_per_run() -> None:
+    """LAND / landed succeed, FIX / REVERT / red fail; with both, the
+    newest decides — a red land after a LAND review is a failure, a
+    REVERT after a land a failure too; one value either way."""
+    t1, t2 = "2026-11-22T10:00:00Z", "2026-11-22T11:00:00Z"
+    fold = outcome.build_signal_outcome
+    assert fold(_sig(review="LAND")) is True
+    assert fold(_sig(review="FIX")) is False
+    assert fold(_sig(review="REVERT")) is False
+    assert fold(_sig(land="landed")) is True
+    assert fold(_sig(land="red")) is False
+    assert fold(_sig(review="LAND", land="red", r=t1, l=t2)) is False
+    assert fold(_sig(review="LAND", land="landed", r=t1, l=t2)) is True
+    assert fold(_sig(review="REVERT", land="landed", r=t2, l=t1)) is False
+    # No signal: a mechanical gate failure counts, a gate pass does not;
+    # an attempt-free failure (infra, a lane wait) is no outcome.
+    assert fold(None, gate_pass=False) is False
+    assert fold(None, gate_pass=True) is None
+    assert fold({}, gate_pass=False, attempt_free="lane-wait") is None
+    # A signal outranks the gates.
+    assert fold(_sig(review="LAND"), gate_pass=False) is True
+    # Unknown values are no signal.
+    assert fold({"review": {"verdict": "MAYBE"}}) is None
+
+
+def test_record_build_signal_refuses_unknown_values() -> None:
+    with pytest.raises(ValueError):
+        outcome.record_build_signal(cast(Store, _Store()), 1, "review", "landed")
+    with pytest.raises(ValueError):
+        outcome.record_build_signal(cast(Store, _Store()), 1, "verdict", "LAND")

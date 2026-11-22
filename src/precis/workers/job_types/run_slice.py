@@ -744,6 +744,209 @@ def resolve_model(
     return _router_model(Tier.FRONTIER)
 
 
+def _usable_fallback(
+    store: Any,
+    name: str,
+    lane_table: tuple[_lanes.Lane, ...],
+    backoffs: Mapping[str, datetime] | None = None,
+) -> bool:
+    """``True`` when the review's fallback lane can take it now (gr761723):
+    known, enabled, not health-parked, not backed off and not metered — a
+    closed subscription window never buys paid compute. Anything else
+    leaves the review where it is, parked as without a fallback."""
+    lane = next((ln for ln in lane_table if ln.name == name), None)
+    if lane is None or not lane.enabled or lane.parked:
+        return False
+    if lane.cost_class == _lanes.COST_METERED:
+        return False
+    held = _lanes.lane_backoffs(store) if backoffs is None else backoffs
+    return name not in held
+
+
+def _move_review_to_fallback(
+    ctx: Any,
+    params: dict[str, Any],
+    why: str,
+    lane_table: tuple[_lanes.Lane, ...] | None = None,
+) -> bool:
+    """Rewrite a reviewer job's ``params.lane`` to its
+    ``meta.review_fallback`` lane (gr761723) and drop the mark so the
+    move happens once. ``False`` (nothing moved) without a fallback, when
+    the job already runs on it, or when the fallback is not usable now
+    (:func:`_usable_fallback`)."""
+    from precis.plans.templates import REVIEW_FALLBACK_KEY
+
+    fallback = (ctx.meta or {}).get(REVIEW_FALLBACK_KEY)
+    if not isinstance(fallback, str) or not fallback:
+        return False
+    if params.get("lane") == fallback:
+        return False
+    table = _lanes.load_lanes(ctx.store) if lane_table is None else lane_table
+    if not _usable_fallback(ctx.store, fallback, table):
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: review fallback lane {fallback!r} is disabled, "
+            "parked, backed off or metered; the review stays on its lane",
+        )
+        return False
+    was = params.get("lane")
+    params["lane"] = fallback
+    ctx.set_meta(params=dict(params), **{REVIEW_FALLBACK_KEY: None})
+    ctx.append_chunk(
+        "job_event",
+        f"run_slice: review moved from lane {was!r} to its fallback lane "
+        f"{fallback!r} — {why}",
+    )
+    return True
+
+
+def _review_fallback_params(
+    ctx: Any, params: dict[str, Any], lane_table: tuple[_lanes.Lane, ...]
+) -> dict[str, Any]:
+    """``params``, with a reviewer's lane pin moved to its fallback when
+    the pinned lane went dead between dispatch and submit (gr761723):
+    unknown, disabled, health-parked or backed off. A pin at its cap or
+    unrunnable on this host is NOT moved — a full lane is waited for, not
+    bypassed (:func:`~precis.plans.lanes.pick_lane`'s rule), and another
+    host can run it. A job without ``meta.review_fallback`` is returned
+    unchanged (no read)."""
+    from precis.plans.templates import REVIEW_FALLBACK_KEY
+
+    fallback = (ctx.meta or {}).get(REVIEW_FALLBACK_KEY)
+    name = params.get("lane")
+    if not fallback or not name or name == fallback:
+        return params
+    lane = next((ln for ln in lane_table if ln.name == str(name)), None)
+    why: str | None = None
+    if lane is None or not lane.enabled or lane.parked:
+        why = "the pinned lane is unknown, disabled or parked"
+    elif lane.name in _lanes.lane_backoffs(ctx.store):
+        why = "the pinned lane is backed off"
+    if why is None:
+        return params
+    moved = dict(params)
+    if not _move_review_to_fallback(ctx, moved, why, lane_table):
+        return params
+    return moved
+
+
+#: ``factory.explore.share`` when the setting is unparsable (gr761723).
+EXPLORE_SHARE_DEFAULT = 0.2
+
+
+def _explore_share(store: Any) -> float:
+    """``factory.explore.share`` clamped to ``[0, 1]``; unparsable reads
+    :data:`EXPLORE_SHARE_DEFAULT`."""
+    from precis import settings
+
+    share = settings.get_float("factory.explore.share", store=store)
+    if share is None or not math.isfinite(share):
+        return EXPLORE_SHARE_DEFAULT
+    return min(1.0, max(0.0, share))
+
+
+def _explore_pick(
+    ctx: Any,
+    *,
+    lane: _lanes.Lane,
+    model: str | None,
+    task_class: str,
+    params: dict[str, Any],
+    todo: Any,
+    left_pin: bool,
+) -> tuple[str, str] | None:
+    """``(model, note)`` when this build explores an under-observed lane
+    model instead of ``model`` (gr761723, Reto 2026-11-22: "a slight
+    propensity to explore models, because new models show up all the
+    time"), else ``None``.
+
+    Only an unpinned code build on a flat-rate lane explores: never a
+    metered lane, never a node or job carrying a ``model`` or ``lane``
+    pin (the escalation ladder, a rescue, a top-rung fix and a conflict
+    try all pin), never a ``claude_p`` launch under the host's
+    ``PRECIS_RUN_SLICE_MODEL`` pin, never a pin a quota park left
+    (``left_pin``), never a release-band job (``meta.claim_band``,
+    the waiver chain) or a build landing on a release branch. The draw
+    is :func:`~precis.plans.lanes.explore_draw` of the job id against
+    ``factory.explore.share``, so a relaunch of the same job draws the
+    same; a job that already explored repeats its model while the lane
+    still lists it. The candidate is
+    :func:`~precis.plans.lanes.explore_model` over the lane's listed
+    models with the validated-outcome counts for the job's task kind and
+    band (:func:`precis.utils.llm.suitability.build_explore_counts`);
+    no outcome yet reads as 0, so a newly listed model is explored
+    first, and a model already explored
+    :data:`~precis.plans.lanes.EXPLORE_MAX_TRIES` times there is out —
+    one whose runs never yield a signal stops costing builds. A model
+    one of the run's test sessions already ran is skipped — the
+    different-model rule binds that pair. Any read failure is no
+    exploration: the default pick stands."""
+    if task_class != _outcome.CODE_TASK_CLASS or left_pin or len(lane.models) < 2:
+        return None
+    if params.get("lane") or params.get("model"):
+        return None
+    if lane.cost_class == _lanes.COST_METERED:
+        return None  # never a pricier model at metered cost
+    if (
+        lane.adapter == "claude_p"
+        and os.environ.get("PRECIS_RUN_SLICE_MODEL", "").strip()
+    ):
+        return None  # the host's env pin is a pin (resolve_model's order)
+    meta = ctx.meta or {}
+    op = (todo.meta or {}).get("op")
+    op_params = (op.get("params") or {}) if isinstance(op, dict) else {}
+    if op_params.get("lane") or op_params.get("model"):
+        return None
+    if meta.get(_CLAIM_BAND_KEY) == _RELEASE_CLAIM_BAND:
+        return None
+    job_id = getattr(ctx, "ref_id", None)
+    if not isinstance(job_id, int):
+        return None
+    store = ctx.store
+    try:
+        if _lanes.explore_draw(job_id) >= _explore_share(store):
+            return None
+        body, latest, _ord = _brief_parts(store, int(params["todo_id"]))
+        if _release.land_target_of(todo.meta, body, latest) is not None:
+            return None
+        prior = meta.get("model")
+        if (
+            meta.get("explore") is True
+            and isinstance(prior, str)
+            and prior in lane.models
+        ):
+            return prior, f"run_slice: exploring {prior!r} on lane {lane.name!r} again"
+        avoid = frozenset(
+            p.model
+            for p in _outcome.prior_picks(store, int(params["todo_id"]), strict=True)
+            if p.task_class == _outcome.TEST_TASK_CLASS and p.model
+        )
+        from precis.utils.llm import suitability
+
+        kind = str(meta.get("task_kind") or f"unknown.{task_class}")
+        counts, tried = suitability.build_explore_counts(
+            store, adapter=lane.adapter, task_kind=kind, source=task_class
+        )
+    except Exception:
+        log.warning("run_slice: exploration read failed; default pick", exc_info=True)
+        return None
+    pick = _lanes.explore_model(
+        lane,
+        current=model,
+        counts=counts,
+        min_obs=suitability.MIN_OBS,
+        avoid=avoid,
+        tried=tried,
+    )
+    if pick is None:
+        return None
+    return pick, (
+        f"run_slice: exploring {pick!r} on lane {lane.name!r} instead of "
+        f"{model or 'the account default'} — {counts.get(pick, 0)} validated "
+        f"{kind} outcome(s), under {suitability.MIN_OBS} (factory.explore.share)"
+    )
+
+
 def _remote_diversity_lanes(ctx: Any, lanes: tuple[_lanes.Lane, ...]) -> frozenset[str]:
     """Find lanes another live host advertises for this job's repository."""
     from precis.workers.executors._common import advertised_by_host, placement_gap
@@ -7182,6 +7385,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"known capabilities: {sorted(_LANE_CAPABILITIES)}"
         )
         return None
+    params = _review_fallback_params(ctx, params, lane_table)
     pinned = (
         next((ln for ln in lane_table if ln.name == str(params["lane"])), None)
         if params.get("lane")
@@ -7427,6 +7631,20 @@ def submit(ctx: Any, spec: Any) -> Any:
     model = resolve_model(
         {k: v for k, v in params.items() if k != "model"} if left_pin else params, lane
     )
+    # gr761723: a share of unpinned code builds runs the lane's least
+    # observed model, so the suitability ledger learns new models.
+    explored = _explore_pick(
+        ctx,
+        lane=lane,
+        model=model,
+        task_class=task_class,
+        params=params,
+        todo=todo,
+        left_pin=left_pin,
+    )
+    if explored is not None:
+        model = explored[0]
+        ctx.append_chunk("job_event", explored[1])
     # gr595545: the run's test session never re-runs its code session's
     # model — ``pick_lane`` gets the run's prior picks here, at the
     # caller (``plans/lanes.py`` is deny-listed): another model on the
@@ -7543,6 +7761,11 @@ def submit(ctx: Any, spec: Any) -> Any:
         lane_wait=None,
         lane_woken=False,
     )
+    if explored is not None:
+        ctx.set_meta(explore=True)
+    elif (ctx.meta or {}).get("explore"):
+        # A relaunch that no longer explores (another lane) drops the mark.
+        ctx.set_meta(explore=None)
     # td572552 S4b: the decide() shadow beside the pick — read-only
     # telemetry on ``meta.decision``, never an input to this launch. A
     # dispatch-time record (``plan_dispatch``'s review/escalate pick)
@@ -9983,8 +10206,18 @@ def _park_outage(
     for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
         handle.pop(key, None)
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-    switch = _outage_alternative(ctx.store, todo_id, params, vendor, lane_table)
-    if switch:
+    # gr761723: a reviewer carries the lane its dispatch would pick without
+    # this one — the window moves the review there now, never parks it.
+    moved = _move_review_to_fallback(
+        ctx, dict(params), f"lane {lane} {cls} window closed", lane_table
+    )
+    switch = not moved and _outage_alternative(
+        ctx.store, todo_id, params, vendor, lane_table
+    )
+    if moved:
+        due = now
+        where = "the review's fallback lane"
+    elif switch:
         due = now
         where = f"another vendor's lane (not {vendor})"
     else:

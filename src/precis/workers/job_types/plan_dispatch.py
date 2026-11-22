@@ -3973,6 +3973,9 @@ def _step_reviews(
             continue
         kind, rest = verdict
         record["verdict"] = kind
+        # gr761723: the build run(s) the verdict judged, read before the
+        # verdict's handling clears the held land that names them.
+        judged_builds = _reviewed_build_jobs(plan, n, newest.id)
         marker = _templates.REVIEW_READONLY_MARKER
         pending = _pending_targets(plan, n)
         preland = bool(pending) and len(pending) == len(_review_targets(plan, n))
@@ -4100,8 +4103,59 @@ def _step_reviews(
                     f"minted td{revert_id}, "
                     "reviewer stays open for the rebuild"
                 )
+        if not w.dry_run:
+            _stamp_review_signal(store, judged_builds, kind, newest.id)
         w.stamp_meta(n, {"review": record})
         res.reviews += 1
+
+
+def _reviewed_build_jobs(plan: _Plan, n: _Node, review_job: int) -> list[int]:
+    """The build job each of ``n``'s targets was judged on (gr761723):
+    the job a held land's attempt ref names
+    (``refs/factory/build/<todo>/<job>``, :func:`outcome.build_job_of_ref`),
+    else the target's newest ``run_slice`` job before the review that
+    left commits (``meta.branch_commits``), else its newest laned one."""
+    from precis.plans import outcome as _outcome
+
+    out: list[int] = []
+    for t in _review_targets(plan, n):
+        job: int | None = None
+        for key in (_templates.PENDING_LAND_KEY, _templates.PRELAND_HELD_KEY):
+            held = t.meta.get(key)
+            held = held.get("params", held) if isinstance(held, dict) else None
+            if isinstance(held, dict):
+                job = _outcome.build_job_of_ref(held.get("ref"))
+            if job is not None:
+                break
+        if job is None:
+            builds = [
+                j
+                for j in plan.jobs(t)
+                if j.meta.get("job_type") == DEFAULT_OP
+                and j.meta.get("lane")
+                and j.id < review_job
+            ]
+            pick = [j for j in builds if j.meta.get("branch_commits")] or builds
+            job = max((j.id for j in pick), default=None)
+        if job is not None:
+            out.append(job)
+    return out
+
+
+def _stamp_review_signal(store: Any, jobs: list[int], verdict: str, by: int) -> None:
+    """Record a review verdict on the build jobs it judged — the
+    suitability ledger's validated signal for their model (gr761723).
+    Best-effort: a failed stamp loses one ledger outcome, never the
+    verdict's handling."""
+    from precis.plans import outcome as _outcome
+
+    for job in jobs:
+        try:
+            _outcome.record_build_signal(store, job, "review", verdict, by_job=by)
+        except Exception:
+            log.warning(
+                "plan_dispatch: review signal on job %d failed", job, exc_info=True
+            )
 
 
 # ── (2b) todo briefs ───────────────────────────────────────────────
@@ -7690,15 +7744,41 @@ def _review_lane_tables(
         yield excluded, tuple(ln for ln in lane_table if ln.vendor not in excluded)
 
 
+def _review_fallback_lane(
+    store: Any,
+    cls: str,
+    lane_table: tuple[_lanes.Lane, ...],
+    vendors: tuple[str, ...],
+    chosen: str,
+    backoff: dict[str, datetime],
+) -> str | None:
+    """The lane a review moves to when its chosen lane closes a window
+    (gr761723), or ``None``: :func:`~precis.plans.lanes.pick_lane` over
+    the lanes of a vendor that built none of the reviewed work — never
+    the full-table step, so the move never hands the review to a
+    builder's vendor — and never a metered lane (a closed subscription
+    window must not buy paid compute). Capacity-blind: a full fallback
+    is a slot wait, still sooner than the chosen lane's reset."""
+    rest = tuple(
+        ln
+        for ln in lane_table
+        if ln.name != chosen
+        and ln.vendor not in vendors
+        and ln.cost_class != _lanes.COST_METERED
+    )
+    alt = _lanes.pick_lane(store, cls, lanes=rest, counts={}, backoff=backoff)
+    return alt.name if alt is not None else None
+
+
 def _review_lane(
     plan: _Plan,
     w: _Writer,
     res: PassResult,
     n: _Node,
     lane_table: tuple[_lanes.Lane, ...],
-) -> tuple[bool, str | None, dict[str, Any] | None]:
-    """``(go, lane name, stamp)`` for a reviewer's ``run_slice``: a lane of
-    a vendor that did not build what it reviews, when available;
+) -> tuple[bool, str | None, dict[str, Any] | None, str | None]:
+    """``(go, lane name, stamp, fallback)`` for a reviewer's ``run_slice``:
+    a lane of a vendor that did not build what it reviews, when available;
     ``go=False`` when no lane can take the review. ``stamp`` is the decide()
     shadow record for the pick on the minted job (td572552 S4b; ``None``
     under the default legacy mode).
@@ -7707,7 +7787,24 @@ def _review_lane(
     ``exclude_vendor``, whose own fallback could hand back an excluded
     vendor): first exclude every build vendor, then only the original
     builder's vendor, then try the full table. Advance whenever the picker
-    finds no available lane under the current exclusion (gr730165)."""
+    finds no available lane under the current exclusion (gr730165).
+
+    There is no per-lane review preference: inside a step the pick is
+    :func:`~precis.plans.lanes.pick_lane`'s ``(tier, live / cap, live)``
+    with ties in ``lane_rank`` order. That is why codex takes most
+    reviews (gr761723, 761 of 1,212 verdicts in the week to 2026-11-22):
+    devin and codex — the two cap-8 flat-rate lanes, devin ranked first —
+    build most work, so the builder's vendor step usually leaves codex
+    (cap 8, rank 20) beside claude-sub (cap 3, rank 30), and codex's
+    larger cap keeps its load fraction lower.
+
+    ``fallback`` is :func:`_review_fallback_lane` — another flat-rate
+    lane of a vendor that built none of the work — or ``None``. The
+    minted job carries it as
+    :data:`~precis.plans.templates.REVIEW_FALLBACK_KEY`: a quota, rate or
+    auth window on the chosen lane, or the pin going dead, moves the
+    review there instead of parking it (``run_slice``); a full chosen
+    lane is still waited for."""
     cls = _templates.REVIEW_TASK_CLASS
     vendors = _builder_vendors(plan, n, lane_table)
     counts = _lanes.live_lane_counts(w.store)
@@ -7718,6 +7815,9 @@ def _review_lane(
         )
         if lane is None:
             continue
+        fallback = _review_fallback_lane(
+            w.store, cls, lane_table, vendors, lane.name, backoff
+        )
         if vendors and lane.vendor == vendors[0]:
             # Step three only: the original builder's own vendor reviews.
             res.notes.append(
@@ -7735,9 +7835,9 @@ def _review_lane(
             picked=(lane.name, lane.default_model),
             exclude_vendor=sorted(excluded) or None,
         )
-        return True, lane.name, stamp
+        return True, lane.name, stamp, fallback
     res.dispatch_hold(n, f"review not dispatched — no available lane fits {cls!r}")
-    return False, None, None
+    return False, None, None, None
 
 
 # ── (4a) the validated non-repro rerun (gr588028) ──────────────────
@@ -9424,8 +9524,11 @@ def _step_dispatch(
             if cstate == "try":
                 conflict_try = ctry
         decision_stamp: dict[str, Any] | None = None
+        review_fallback: str | None = None
         if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
-            go, lane_name, decision_stamp = _review_lane(plan, w, res, n, lane_table)
+            go, lane_name, decision_stamp, review_fallback = _review_lane(
+                plan, w, res, n, lane_table
+            )
             if not go:
                 continue
             params["lane"] = lane_name
@@ -9609,6 +9712,11 @@ def _step_dispatch(
                         else {}
                     ),
                     **({"conflict_try": conflict_try} if conflict_try else {}),
+                    **(
+                        {_templates.REVIEW_FALLBACK_KEY: review_fallback}
+                        if review_fallback is not None
+                        else {}
+                    ),
                 },
             )
             if conflict_try:

@@ -78,3 +78,48 @@ def test_suitability_cli_reports_cards_written(
     out = capsys.readouterr().out
     assert seen == {"window_days": 30, "write": True, "model": None}
     assert "suitability: 2 posteriors, 1 cards written" in out
+
+
+def test_suitability_cli_ends_with_the_lane_model_table(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr761723: per lane model — builds, the exploration share and the
+    validated outcomes by task kind."""
+    monkeypatch.setattr(suitability, "rollup", lambda store, **kw: [_row()])
+    rows = [
+        suitability.LaneModelRow(
+            "devin", "swe-2-high", "devin_tree", "code.build", 40, 4, 12, 20
+        ),
+        suitability.LaneModelRow(
+            "devin", "swe-2-high", "devin_tree", "code.fix", 10, 1, 5, 2
+        ),
+        suitability.LaneModelRow(
+            "devin", "swe-2-medium", "devin_tree", "code.build", 3, 3, 1, 1
+        ),
+    ]
+    seen: dict[str, Any] = {}
+
+    def fake_table(store: Any, **kw: Any) -> list[suitability.LaneModelRow]:
+        seen.update(kw)
+        return rows
+
+    monkeypatch.setattr(suitability, "lane_model_outcomes", fake_table)
+    llm_cli._cmd_suitability(cast("Any", object()), _parse("--days", "7"))
+    out = capsys.readouterr().out
+    assert seen == {"window_days": 7}
+    assert "# lane models (2 lane models, 7 d of builds)" in out
+    assert (
+        "  devin swe-2-high@devin_tree: builds=50 explored=5 (10%) — "
+        "code.build ok=12 fail=20; code.fix ok=5 fail=2"
+    ) in out
+    assert "  devin swe-2-medium@devin_tree: builds=3 explored=3 (100%)" in out
+
+
+def test_suitability_cli_survives_an_unreadable_lane_table(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(suitability, "rollup", lambda store, **kw: [_row()])
+    llm_cli._cmd_suitability(cast("Any", object()), _parse())
+    out = capsys.readouterr().out
+    assert "suitability: 1 posteriors" in out
+    assert "# lane models: unreadable" in out

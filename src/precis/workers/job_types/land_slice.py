@@ -6858,6 +6858,9 @@ def poll(ctx: Any, handle: Any) -> bool:
             _stamp_conflict(
                 ctx, todo_id, tree, params, onto=land_target(ctx.store, params, todo_id)
             )
+        elif side is None and red_class is None:
+            # Red on the diff: the build's validated failure (gr761723).
+            _stamp_land_signal(ctx, params, "red")
         _fail(
             ctx,
             todo_id,
@@ -7031,6 +7034,26 @@ def _mint_skill_edit(store: Any, todo_id: int, sha: str) -> str:
     return f"skills: minted td{ref.id} for {', '.join(ids)}"
 
 
+def _stamp_land_signal(ctx: Any, params: dict[str, Any], result: str) -> None:
+    """Record this land's ``result`` (``landed`` / ``red``) on the build
+    job whose attempt ref it shipped — ``params.ref`` is
+    ``refs/factory/build/<todo>/<job>`` (gr761723) — as that run's
+    validated signal for the suitability ledger. No ref (a land minted
+    before gr741695, a PR land) records nothing; a failed write only
+    logs."""
+    from precis.plans import outcome as _outcome
+
+    job = _outcome.build_job_of_ref(params.get("ref"))
+    if job is None:
+        return
+    try:
+        _outcome.record_build_signal(
+            ctx.store, job, "land", result, by_job=getattr(ctx, "ref_id", None)
+        )
+    except Exception:
+        log.warning("land_slice: land signal on job %d failed", job, exc_info=True)
+
+
 def _landed_finish(
     ctx: Any,
     handle: dict[str, Any],
@@ -7078,6 +7101,10 @@ def _landed_finish(
             )
             summary.append(f"build floor: stamp FAILED ({exc})")
     if sha is not None:
+        # The build's validated success (gr761723), after the floor — the
+        # first write after the land; a no-diff land says nothing about
+        # the build's work.
+        _stamp_land_signal(ctx, params, "landed")
         try:
             skill_note = _mint_skill_edit(store, todo_id, sha)
             summary.append(skill_note)

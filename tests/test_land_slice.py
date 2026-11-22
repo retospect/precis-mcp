@@ -9752,3 +9752,119 @@ def test_launch_notify_hold_is_what_poll_uses(
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
     assert "STATUS:done" in store.tag_strings(55)
+
+
+def _land_signals(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Capture ``outcome.record_build_signal`` as ``(job, kind, value)``."""
+    from precis.plans import outcome
+
+    calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        outcome,
+        "record_build_signal",
+        lambda store, job, kind, value, *, by_job=None: calls.append(
+            (job, kind, value)
+        ),
+    )
+    return calls
+
+
+def _ref_params(seams: dict[str, Any]) -> dict[str, Any]:
+    return {**_params(seams), "head": HEAD, "ref": REF}
+
+
+def test_a_green_land_stamps_landed_on_the_build_job(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr761723 end to end: ship green with a sha — the build job the
+    attempt ref names (``refs/factory/build/42/7``) gets ``landed``."""
+    calls = _land_signals(monkeypatch)
+    _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = land_slice.submit(_Ctx(store, _ref_params(seams)), None)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _ref_params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert calls == [(7, "land", "landed")]
+
+
+def test_a_red_on_the_diff_stamps_red_on_the_build_job(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _land_signals(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = land_slice.submit(_Ctx(store, _ref_params(seams)), None)
+    _finish(handle, 1, "x\n\x1b[31m✖ ruff: 1 error\x1b[0m\n")
+    pctx = _Ctx(store, _ref_params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and "attempt:1" in store.tag_strings(42)
+    assert calls == [(7, "land", "red")]
+
+
+def test_a_conflict_red_stamps_no_land_signal(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _land_signals(monkeypatch)
+    _conflict_git(seams, monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = land_slice.submit(_Ctx(store, _ref_params(seams)), None)
+    _finish(handle, 1, REBASE_CONFLICT_LOG)
+    pctx = _Ctx(store, _ref_params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert calls == []
+
+
+def test_an_infra_red_stamps_no_land_signal(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate kill past its retries fails the land attempt-free as gate
+    infrastructure — not the build's red, so no signal."""
+    calls = _land_signals(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = land_slice.submit(_Ctx(store, _ref_params(seams)), None)
+    handle["gate_kills"] = land_slice.MAX_GATE_KILL_RETRIES
+    _finish(handle, 137, "pytest -n3 --impacted\nKilled\n")
+    pctx = _Ctx(store, _ref_params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert calls == []
+
+
+def test_land_signal_lands_on_the_build_job_its_ref_names(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr761723: the land's result is the validated signal of the build
+    job whose attempt ref it shipped; no ref records nothing, and a
+    failed write only logs."""
+    from precis.plans import outcome
+
+    calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        outcome,
+        "record_build_signal",
+        lambda store, job, kind, value, *, by_job=None: calls.append(
+            (job, kind, value, by_job)
+        ),
+    )
+    ctx = _Ctx(_Store(), {"todo_id": 42})
+    land_slice._stamp_land_signal(
+        ctx, {"todo_id": 42, "ref": "refs/factory/build/42/900"}, "landed"
+    )
+    land_slice._stamp_land_signal(ctx, {"todo_id": 42}, "red")
+    assert calls == [(900, "land", "landed", ctx.ref_id)]
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(outcome, "record_build_signal", boom)
+    land_slice._stamp_land_signal(
+        ctx, {"todo_id": 42, "ref": "refs/factory/build/42/901"}, "red"
+    )
+    assert "land signal on job 901 failed" in caplog.text

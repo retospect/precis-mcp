@@ -9,7 +9,10 @@ never prose on a todo. The lane pins the model ids its adapter accepts
 the pick lands in ``meta.op.params.model``, gr549046) and the model an
 unpinned job gets (``Lane.default_model``: the cheapest of ``models``
 that can still write code, so an unpinned child never drifts to the
-frontier pin).
+frontier pin). The models below the default stay listed and are in the
+exploration set (see Explore below): the default is the floor for
+unattended work, and a share of explored builds is how a cheaper model
+earns the evidence to move it.
 
 The table derives from ``llm_account`` rows at call time (td568401 S1c:
 :func:`load_lanes` → :func:`derive_lanes`; ``lane_rank`` carries the
@@ -57,6 +60,21 @@ another vendor's lane before it climbs a model on the same one
 (gr685753; the old chain ran devin's models, then the Claude
 subscription's, and reached kimi last).
 
+Explore (gr761723, Reto 2026-11-22: "a slight propensity to explore
+models, because new models show up all the time"): a code build whose
+picked lane lists more than one model runs, with probability
+``factory.explore.share``, the lane model with the fewest validated
+outcomes for its task kind and band — while that count is under the
+suitability ledger's ``MIN_OBS`` and it was explored fewer than
+:data:`EXPLORE_MAX_TRIES` times — instead of the lane default.
+:func:`explore_draw` is the job-seeded draw and :func:`explore_model`
+the choice; ``run_slice.submit`` owns the exclusions (pins, release
+builds, escalations) and the counts. Why: first-round review LAND rates
+in the week to 2026-11-22 ran codex 51%, opus 43%, kimi 34%, devin
+swe-2-high 31%, swe-2-max 25%, sonnet 18% — the lane defaults are not
+the best builders, and only outcomes on the other models can show
+which are.
+
 Park (gr588221): the account row's ``parked_reason`` set holds the lane
 out of every pick — ``pick_lane``, ``ladder`` and a ``params.lane`` pin
 skip it exactly like ``enabled=False`` — while ``enabled`` stays the
@@ -68,6 +86,7 @@ green result unparks it (:func:`unpark_lane`) — the lane self-heals.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -1065,6 +1084,64 @@ def top_rung(
     return per_lane[-1][-1] if per_lane else None
 
 
+def explore_draw(job_id: int) -> float:
+    """The exploration draw for one ``run_slice`` job: uniform on
+    ``[0, 1)`` from a stable hash of the job id (gr761723), so the same
+    job — a relaunch after a park, a resubmit — draws the same value on
+    every worker. Not ``job_id % n``: sequential ids are not a random
+    sample (``outcome._sample_hit``'s rule)."""
+    digest = hashlib.sha256(f"explore:{int(job_id)}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") / float(1 << 64)
+
+
+#: Exploration tries per lane model, task kind and band before the pick
+#: gives up on it: twice ``suitability.MIN_OBS`` (5; restated — this
+#: package stays below the routing layer, a test pins the two), so a
+#: model whose runs never yield a review or land signal stops costing
+#: builds once it had two ledgers' worth of chances (gr761723).
+EXPLORE_MAX_TRIES = 10
+
+
+def explore_model(
+    lane: Lane,
+    *,
+    current: str | None,
+    counts: Mapping[str, int],
+    min_obs: int,
+    avoid: frozenset[str] = frozenset(),
+    tried: Mapping[str, int] | None = None,
+    max_tries: int = EXPLORE_MAX_TRIES,
+) -> str | None:
+    """The under-observed model a build explores on ``lane``, or ``None``.
+
+    Only a lane listing more than one model explores — every listed
+    model, those below ``default_model`` included: the default is the
+    cheapest model trusted to write code unattended, and whether a
+    cheaper one can is exactly what exploring it measures. The candidate
+    is the listed model other than ``current`` (the pick already runs
+    it: running it again explores nothing), outside ``avoid`` and
+    explored fewer than ``max_tries`` times per ``tried`` — ``{model id:
+    exploration runs}``, with or without an outcome — with the fewest
+    outcomes in ``counts`` — ``{model id: validated outcomes}``, a
+    missing model is 0, so a newly listed one qualifies at once — ties
+    to the cheapest (``models`` is cheapest first). ``None`` when that
+    count is already ``min_obs`` or more: every other model is observed
+    enough."""
+    if len(lane.models) < 2:
+        return None
+    spent = tried or {}
+    pool = [
+        m
+        for m in lane.models
+        if m != current and m not in avoid and spent.get(m, 0) < max_tries
+    ]
+    if not pool:
+        return None
+    # ``min`` keeps the first of equal counts: the cheapest model.
+    best = min(pool, key=lambda m: counts.get(m, 0))
+    return None if counts.get(best, 0) >= min_obs else best
+
+
 def pin_params(rung: Rung) -> dict[str, str]:
     """The ``meta.op.params`` that pin a ``run_slice`` node to ``rung``:
     its ``model`` (routed through ``pick_lane``), else its ``lane`` for
@@ -1158,6 +1235,7 @@ __all__ = [
     "COST_ORDER",
     "COST_SUBSCRIPTION",
     "ENGINE_PATHS",
+    "EXPLORE_MAX_TRIES",
     "FACTORY_DENY_WRITE_PATHS",
     "HOST_REFUSAL_BACKOFF",
     "HUMAN_ONLY_PATHS",
@@ -1171,6 +1249,8 @@ __all__ = [
     "deny_paths_for",
     "derive_lanes",
     "engine_hits",
+    "explore_draw",
+    "explore_model",
     "freed_lane",
     "get_lane",
     "human_only_hits",

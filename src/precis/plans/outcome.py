@@ -49,6 +49,18 @@ proven difference, while a pick on the same adapter as the unnamed
 session — like a session with neither model nor adapter — still
 refuses (:func:`code_session_models`).
 
+The validated signal (gr761723) is the third record on a BUILD run:
+``meta.build_signal`` = ``{review?: {verdict, job, at}, land?: {result,
+job, at}}``. ``plan_dispatch`` stamps the reviewer's ``review: LAND |
+FIX | REVERT`` verdict on the build job it judged and ``land_slice``
+the land's result — ``landed`` with a sha, or ``red`` on the diff —
+on the build job whose attempt ref it shipped (:func:`build_job_of_ref`:
+``refs/factory/build/<todo>/<job>`` names that job). Either writer goes
+through :func:`record_build_signal`. :func:`build_signal_outcome`
+folds the record to ONE outcome per run — the newest signal wins, a
+mechanical gate failure counts when no signal came — which the
+suitability rollup reads as the run's model's validated outcome.
+
 The refusal the pick returns is a CANDIDATE verdict — "nothing in the
 set it was offered satisfies" — not a fleet one (gr739375): the
 candidate table is this host's exec-filtered slice, and a pinned rung
@@ -65,6 +77,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -988,6 +1001,84 @@ def record_verdict(
         )
 
 
+#: ``meta`` key of a build run's validated signal (gr761723).
+BUILD_SIGNAL_KEY = "build_signal"
+#: Review verdicts a build signal records, and which count as success.
+REVIEW_SIGNALS: frozenset[str] = frozenset({"LAND", "FIX", "REVERT"})
+#: Land results a build signal records: ``landed`` (a sha reached the
+#: target) is a success, ``red`` (ship red on the diff) a failure.
+LAND_SIGNALS: frozenset[str] = frozenset({"landed", "red"})
+#: ``refs/factory/build/<todo>/<job>`` — the attempt ref a build pushed
+#: (``_slice_ws.build_ref``, restated: this package stays below the
+#: workers layer).
+_BUILD_REF_RE = re.compile(r"refs/factory/build/(\d+)/(\d+)")
+
+
+def build_job_of_ref(ref: Any) -> int | None:
+    """The build job id an attempt ref names, else ``None``."""
+    m = _BUILD_REF_RE.fullmatch(str(ref or "").strip())
+    return int(m.group(2)) if m and int(m.group(2)) > 0 else None
+
+
+def record_build_signal(
+    store: Any, job_id: int, kind: str, value: str, *, by_job: int | None = None
+) -> None:
+    """Merge one signal into the build job's ``meta.build_signal``:
+    ``kind`` ``review`` (``value`` one of :data:`REVIEW_SIGNALS`) or
+    ``land`` (one of :data:`LAND_SIGNALS`), with the job that produced
+    it and the time. A later signal of the same kind replaces the
+    earlier one — a re-review or a re-land rules the run once, never
+    twice."""
+    allowed = REVIEW_SIGNALS if kind == "review" else LAND_SIGNALS
+    if kind not in ("review", "land") or value not in allowed:
+        raise ValueError(f"outcome.record_build_signal: bad {kind!r} signal {value!r}")
+    field = "verdict" if kind == "review" else "result"
+    payload = {field: value, "job": by_job, "at": _utcnow()}
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, ARRAY[%s::text], "
+            "COALESCE(meta->(%s::text), '{}'::jsonb) "
+            "|| jsonb_build_object(%s::text, %s::jsonb)) "
+            "WHERE ref_id = %s AND kind = 'job'",
+            (
+                BUILD_SIGNAL_KEY,
+                BUILD_SIGNAL_KEY,
+                kind,
+                json.dumps(payload),
+                int(job_id),
+            ),
+        )
+
+
+def build_signal_outcome(
+    signal: Any, gate_pass: Any = None, attempt_free: Any = None
+) -> bool | None:
+    """One validated outcome for a build run: ``True`` success, ``False``
+    failure, ``None`` no signal (gr761723).
+
+    The NEWEST of the run's review verdict (``LAND`` success, ``FIX``/
+    ``REVERT`` failure) and land result (``landed`` success, ``red``
+    failure) decides — a pre-land review is followed by its land, a
+    post-land review follows the land, and the later read knows more.
+    With neither, a mechanical gate failure (``meta.outcome.gate_pass``
+    false on a run not marked attempt-free) is a failure; a gate pass
+    alone is no validated outcome."""
+    rec = signal if isinstance(signal, dict) else {}
+    seen: list[tuple[str, bool]] = []
+    review = rec.get("review")
+    if isinstance(review, dict) and review.get("verdict") in REVIEW_SIGNALS:
+        seen.append((str(review.get("at") or ""), review["verdict"] == "LAND"))
+    land = rec.get("land")
+    if isinstance(land, dict) and land.get("result") in LAND_SIGNALS:
+        seen.append((str(land.get("at") or ""), land["result"] == "landed"))
+    if seen:
+        # ISO stamps sort as text; a tie keeps the land (listed last).
+        return max(enumerate(seen), key=lambda kv: (kv[1][0], kv[0]))[1][1]
+    if gate_pass is False and not attempt_free:
+        return False
+    return None
+
+
 def pass_rate_table(conn: Any) -> list[dict[str, Any]]:
     """The pass-rate table the hard gates drive: per task category, the
     run count, how many passed every gate, and the outcome histogram."""
@@ -1057,9 +1148,12 @@ def gate_lied_rate(conn: Any) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "BUILD_SIGNAL_KEY",
     "CATEGORY_WARMUP",
     "CODE_TASK_CLASS",
+    "LAND_SIGNALS",
     "OUTCOMES",
+    "REVIEW_SIGNALS",
     "SAMPLE_PERCENT",
     "SUSPICIOUS_MIN_RUNS",
     "TEST_EXPECTED_CLASSES",
@@ -1067,7 +1161,9 @@ __all__ = [
     "VERDICTS",
     "PriorPick",
     "account_default_model",
+    "build_job_of_ref",
     "build_outcome",
+    "build_signal_outcome",
     "category_stats",
     "classify",
     "code_session_models",
@@ -1078,6 +1174,7 @@ __all__ = [
     "hard_gates",
     "pass_rate_table",
     "prior_picks",
+    "record_build_signal",
     "record_verdict",
     "select_review",
     "session_disagreement",

@@ -277,6 +277,15 @@ REVIEW_TASK_CLASS = "review"
 #: todo and closes it — the tick releases this reviewer, mints the held
 #: land on a LAND verdict, and sends FIX/REVERT back to the builder.
 PRELAND_REVIEW_KEY = "preland_review"
+#: ``meta.review_fallback`` on a reviewer's ``run_slice`` job (gr761723):
+#: a flat-rate lane of a vendor that built none of the reviewed work
+#: (``plan_dispatch._review_fallback_lane``). ``run_slice`` moves the
+#: review there — rewriting ``params.lane`` — when the chosen lane closes
+#: a quota, rate or auth window on it, or the pin is unknown, disabled,
+#: parked or backed off at submit, and only while the fallback itself is
+#: enabled, unparked, not backed off and not metered. A full chosen lane
+#: or a host missing its binary is waited for, as without a fallback.
+REVIEW_FALLBACK_KEY = "review_fallback"
 #: ``meta.pending_land`` on a build todo whose land waits on a pre-land
 #: reviewer: the params ``run_slice._mint_land`` would have minted
 #: ``land_slice`` with (todo_id, worktree, branch, lane?, checked?,

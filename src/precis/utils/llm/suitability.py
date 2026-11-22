@@ -15,6 +15,19 @@ label a reviewer reads off the model card.
 
 Thresholds are initial values (design D9) — tune them once real rows
 have flowed, not before.
+
+Build runs (gr761723): a factory build (``run_slice`` job on a code
+todo) never writes ``llm_call_log``, so :func:`rollup` also reads the
+run records themselves (:func:`build_runs`) — one validated outcome per
+build job, keyed ``meta.model@meta.adapter``, folded by
+:func:`precis.plans.outcome.build_signal_outcome` from the review
+verdict and the land result stamped on the job (the newest wins; a
+mechanical gate failure counts when neither came). A run whose model
+was never named (an unpinned codex session whose config names none)
+keys as :data:`UNNAMED_MODEL`. The same rows feed the build pick's
+exploration input (:func:`build_explore_counts`: outcomes and tries) and the per-lane
+model table (:func:`lane_model_outcomes`, printed by ``precis llm
+suitability``).
 """
 
 from __future__ import annotations
@@ -36,11 +49,17 @@ __all__ = [
     "OVERKILL_HEADROOM",
     "PRIOR_N_MEASURED",
     "PRIOR_N_PUBLISHED",
+    "UNNAMED_MODEL",
+    "BuildRun",
+    "LaneModelRow",
     "SuitabilityRow",
     "band_for",
+    "build_explore_counts",
+    "build_runs",
     "busiest_task_kinds",
     "interval",
     "label",
+    "lane_model_outcomes",
     "lower_bound",
     "offering_key",
     "prior",
@@ -167,6 +186,183 @@ def offering_key(model: str, adapter: str) -> str:
     return f"{model}@{adapter}"
 
 
+# ── build runs (gr761723) ───────────────────────────────────────────────
+
+#: The model key of a build run that recorded none — an unpinned session
+#: on an account whose default this host could not name.
+UNNAMED_MODEL = "default"
+
+
+class BuildRun(NamedTuple):
+    """One factory build run (a ``run_slice`` job on a code todo).
+
+    ``source`` is the todo's task class — the recipe source its
+    ``task_kind`` was stamped from, so :func:`band_for` of its recipe is
+    the run's band. ``outcome`` is the run's one validated outcome
+    (``True``/``False``) or ``None`` when no signal has come yet."""
+
+    lane: str
+    model: str
+    adapter: str
+    task_kind: str
+    source: str
+    day: date
+    explored: bool
+    outcome: bool | None
+
+
+#: Build runs in the window. ``refs`` has no ``created_at`` index, so the
+#: window is a ``ref_id`` floor: the scalar subquery walks a
+#: ``ref_id``-leading btree (``refs_pkey`` or ``refs_ref_id_kind_key``)
+#: backwards from the newest ref to the first one created before the
+#: window (ids rise with ``created_at``, the column's ``now()`` default),
+#: and ``j.ref_id > floor`` rides the outer index — the test DB plans
+#: ``refs_slice_overlap_jobs_idx`` (the ``run_slice``/``land_slice``
+#: partial index) with ``job_type = 'run_slice' AND ref_id > floor`` as
+#: its index condition, so no old job's heap row is read. The
+#: ``created_at`` test stays as the exact filter. The todo join reads the class off
+#: ``params.todo_id`` (the todo the job executes, as the mint stamps do),
+#: guarded so a malformed id is no cast error.
+_BUILD_RUNS_SQL = (
+    "SELECT j.meta->>'lane', "
+    "COALESCE(NULLIF(j.meta->>'model', ''), %s), "
+    "j.meta->>'adapter', "
+    "COALESCE(j.meta->>'task_kind', 'unknown'), "
+    "COALESCE(t.meta->>'task_class', 'code'), "
+    "(j.created_at AT TIME ZONE 'UTC')::date, "
+    "COALESCE(j.meta->>'explore', '') = 'true', "
+    "j.meta->(%s::text), "
+    "j.meta->'outcome'->'gate_pass', "
+    "j.meta->>'attempt_free' "
+    "FROM refs j LEFT JOIN refs t ON t.kind = 'todo' AND t.ref_id = "
+    "CASE WHEN j.meta->'params'->>'todo_id' ~ '^[0-9]{{1,18}}$' "
+    "THEN (j.meta->'params'->>'todo_id')::bigint END "
+    "WHERE j.ref_id > COALESCE((SELECT f.ref_id FROM refs f "
+    "WHERE f.created_at <= now() - (%s * interval '1 day') "
+    "ORDER BY f.ref_id DESC LIMIT 1), 0) "
+    "AND j.kind = 'job' AND j.retired_at IS NULL "
+    "AND j.meta->>'job_type' = 'run_slice' "
+    "AND j.created_at > now() - (%s * interval '1 day') "
+    "AND j.meta ? 'lane' AND j.meta->>'adapter' IS NOT NULL "
+    "AND COALESCE(t.meta->>'task_class', 'code') = 'code'"
+    "{filters}"
+)
+
+
+def build_runs(
+    store: Store,
+    *,
+    window_days: int = 30,
+    model: str | None = None,
+    adapter: str | None = None,
+    task_kind: str | None = None,
+) -> list[BuildRun]:
+    """The window's factory build runs, each with its one validated
+    outcome (:func:`precis.plans.outcome.build_signal_outcome` over
+    ``meta[BUILD_SIGNAL_KEY]``)."""
+    from precis.plans.outcome import BUILD_SIGNAL_KEY, build_signal_outcome
+
+    filters = ""
+    params: list[Any] = [UNNAMED_MODEL, BUILD_SIGNAL_KEY, window_days, window_days]
+    if model is not None:
+        filters += " AND COALESCE(NULLIF(j.meta->>'model', ''), %s) = %s"
+        params += [UNNAMED_MODEL, model]
+    if adapter is not None:
+        filters += " AND j.meta->>'adapter' = %s"
+        params.append(adapter)
+    if task_kind is not None:
+        filters += " AND j.meta->>'task_kind' = %s"
+        params.append(task_kind)
+    with store.pool.connection() as conn:
+        raw = conn.execute(_BUILD_RUNS_SQL.format(filters=filters), params).fetchall()
+    return [
+        BuildRun(
+            lane=str(r[0]),
+            model=str(r[1]),
+            adapter=str(r[2]),
+            task_kind=str(r[3]),
+            source=str(r[4]),
+            day=r[5],
+            explored=bool(r[6]),
+            outcome=build_signal_outcome(r[7], r[8], r[9]),
+        )
+        for r in raw
+    ]
+
+
+def _source_band(source: str, cache: dict[str, str]) -> str:
+    """:func:`band_for` of ``source``'s recipe, memoised per call."""
+    if source not in cache:
+        from precis.utils.llm import recipes as _recipes
+
+        rec = _recipes.lookup(source)
+        cache[source] = band_for(rec.difficulty_prior if rec is not None else None)
+    return cache[source]
+
+
+def build_explore_counts(
+    store: Store,
+    *,
+    adapter: str,
+    task_kind: str,
+    source: str,
+    window_days: int = 30,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """``({model: validated build outcomes}, {model: exploration runs})``
+    on ``adapter`` for ``task_kind`` in ``source``'s band over the window
+    — the counts the build pick explores by (gr761723). Exploration runs
+    count whether or not they yielded an outcome (the pick's try bound).
+    Read from the run records, the rollup's own input, not from the
+    stored card posteriors: the lane models (``swe-2-*``) carry no llm
+    card, and a cardless model's posterior is never stored, so a card
+    read would leave it at zero forever. A model with no row is absent —
+    the caller reads it as 0."""
+    bands: dict[str, str] = {}
+    band = _source_band(source, bands)
+    outcomes: dict[str, int] = {}
+    explored: dict[str, int] = {}
+    for run in build_runs(
+        store, window_days=window_days, adapter=adapter, task_kind=task_kind
+    ):
+        if _source_band(run.source, bands) != band:
+            continue
+        if run.explored:
+            explored[run.model] = explored.get(run.model, 0) + 1
+        if run.outcome is not None:
+            outcomes[run.model] = outcomes.get(run.model, 0) + 1
+    return outcomes, explored
+
+
+class LaneModelRow(NamedTuple):
+    """Builds of one lane model on one task kind: ``runs`` in the window,
+    ``explored`` of them exploration picks, and the validated outcomes."""
+
+    lane: str
+    model: str
+    adapter: str
+    task_kind: str
+    runs: int
+    explored: int
+    success: int
+    failure: int
+
+
+def lane_model_outcomes(store: Store, *, window_days: int = 30) -> list[LaneModelRow]:
+    """Per ``(lane, model, task kind)``: build runs, exploration picks
+    and validated outcomes — the ``precis llm suitability`` lane table
+    (gr761723). Sorted by lane, model, kind."""
+    acc: dict[tuple[str, str, str, str], list[int]] = {}
+    for run in build_runs(store, window_days=window_days):
+        cell = acc.setdefault(
+            (run.lane, run.model, run.adapter, run.task_kind), [0] * 4
+        )
+        cell[0] += 1
+        cell[1] += int(run.explored)
+        cell[2] += int(run.outcome is True)
+        cell[3] += int(run.outcome is False)
+    return [LaneModelRow(*key, *cell) for key, cell in sorted(acc.items())]
+
+
 # ── the nightly rollup (slice 6) ────────────────────────────────────────
 
 
@@ -269,6 +465,13 @@ def rollup(
     skipped. Gated rows (never ran) and paused rows (a window pause, not
     an outcome) are excluded in SQL, so they cannot move a posterior.
 
+    Factory build runs join the same buckets (gr761723): each build job
+    in the window with a validated outcome (:func:`build_runs` — the
+    newest of its review verdict and land result, else a mechanical gate
+    failure) adds exactly one, keyed by the job's ``model@adapter``,
+    its ``task_kind`` and its todo class's band. A build job is one row
+    however often it was reviewed or re-landed, so no run counts twice.
+
     Drift: per offering, the day-by-day modal ``(observed.model,
     observed.provider)`` fingerprint (rows carrying none don't vote).
     ``drift_at`` is the latest observed day whose modal differs from the
@@ -307,6 +510,23 @@ def rollup(
         n_failure: int
 
     groups = [_Group(*r) for r in raw]
+    # Build runs carry no observed identity: they never vote on drift.
+    groups += [
+        _Group(
+            b.model,
+            b.adapter,
+            b.task_kind,
+            b.source,
+            b.day,
+            None,
+            None,
+            1,
+            int(b.outcome is True),
+            int(b.outcome is False),
+        )
+        for b in build_runs(store, window_days=window_days, model=model)
+        if b.outcome is not None
+    ]
 
     recipe_cache: dict[str, Any] = {}
 

@@ -15497,3 +15497,498 @@ def test_poll_without_marker_lines_touches_nothing_more(
     _rf_poll(store, ctx, handle, "Nothing to report; gripe in the middle: not a marker")
     assert not store.gripes and store.comments(1) == []
     assert store.refs[1].meta == before
+
+
+# ── build exploration (gr761723) ───────────────────────────────────
+
+
+def _explore_ids(share: float) -> tuple[int, int]:
+    """A job id whose exploration draw falls under ``share`` and one whose
+    draw does not."""
+    hit = next(i for i in range(1, 10_000) if lanes.explore_draw(i) < share)
+    miss = next(i for i in range(1, 10_000) if lanes.explore_draw(i) >= share)
+    return hit, miss
+
+
+def test_explore_draw_is_seeded_and_lands_at_the_share() -> None:
+    """The draw is the job id's hash: the same id draws the same value
+    (a relaunch repeats it), and over 20,000 ids the share under 0.2 is
+    0.2 within two points."""
+    assert lanes.explore_draw(4242) == lanes.explore_draw(4242)
+    draws = [lanes.explore_draw(i) for i in range(1, 20_001)]
+    assert all(0.0 <= d < 1.0 for d in draws)
+    taken = sum(d < 0.2 for d in draws) / len(draws)
+    assert abs(taken - 0.2) < 0.02, taken
+
+
+def test_explore_model_picks_the_least_observed_listed_model() -> None:
+    sub = seed_lane("claude-sub")  # haiku, sonnet (default), opus
+    pick = lanes.explore_model
+    # A model with no outcome yet (newly listed) reads as 0 and wins.
+    counts = {"claude-sonnet-5-5": 9, "claude-opus-5-5": 2}
+    assert pick(sub, current="claude-sonnet-5-5", counts=counts, min_obs=5) == (
+        "claude-haiku-5-5"
+    )
+    # Ties go to the cheapest listed model.
+    assert pick(sub, current="claude-opus-5-5", counts={}, min_obs=5) == (
+        "claude-haiku-5-5"
+    )
+    # Every model observed MIN_OBS times: nothing to explore.
+    full = dict.fromkeys(sub.models, 5)
+    assert pick(sub, current="claude-sonnet-5-5", counts=full, min_obs=5) is None
+    # The least observed is what the pick already runs: the least
+    # observed OTHER model is explored.
+    assert pick(sub, current="claude-haiku-5-5", counts={}, min_obs=5) == (
+        "claude-sonnet-5-5"
+    )
+    assert (
+        pick(
+            sub,
+            current="claude-haiku-5-5",
+            counts={"claude-sonnet-5-5": 5, "claude-opus-5-5": 5},
+            min_obs=5,
+        )
+        is None
+    )
+    # A model a test session ran is skipped.
+    assert (
+        pick(
+            sub,
+            current="claude-sonnet-5-5",
+            counts=counts,
+            min_obs=5,
+            avoid=frozenset({"claude-haiku-5-5"}),
+        )
+        == "claude-opus-5-5"
+    )
+    # A one-model lane never explores.
+    assert pick(seed_lane("codex"), current=None, counts={}, min_obs=5) is None
+
+
+def test_explore_share_reads_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _Store()
+    monkeypatch.delenv("PRECIS_FACTORY_EXPLORE_SHARE", raising=False)
+    assert run_slice._explore_share(store) == pytest.approx(0.2)
+    monkeypatch.setenv("PRECIS_FACTORY_EXPLORE_SHARE", "0.5")
+    assert run_slice._explore_share(store) == pytest.approx(0.5)
+    monkeypatch.setenv("PRECIS_FACTORY_EXPLORE_SHARE", "7")
+    assert run_slice._explore_share(store) == 1.0
+    monkeypatch.setenv("PRECIS_FACTORY_EXPLORE_SHARE", "nope")
+    assert run_slice._explore_share(store) == pytest.approx(0.2)
+
+
+@pytest.fixture
+def explore(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Exploration seams: the share, the outcome and exploration-try
+    counts the pick reads (``state["counts"]``, ``state["tried"]``) and
+    the calls made to read them."""
+    from precis.utils.llm import suitability
+
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    state: dict[str, Any] = {"counts": {}, "tried": {}, "reads": []}
+    monkeypatch.setattr(run_slice, "_explore_share", lambda store: 0.2)
+
+    def counts(store: Any, **kw: Any) -> tuple[dict[str, int], dict[str, int]]:
+        state["reads"].append(kw)
+        return dict(state["counts"]), dict(state["tried"])
+
+    monkeypatch.setattr(suitability, "build_explore_counts", counts)
+    return state
+
+
+def _explore_submit(
+    store: _Store, job_id: int, *, meta: dict[str, Any] | None = None, **params: Any
+) -> _Ctx:
+    ctx = _Ctx(store, {"todo_id": 42, **params}, **(meta or {}))
+    ctx.ref_id = job_id
+    run_slice.submit(ctx, None)
+    return ctx
+
+
+def test_submit_explores_an_unobserved_model_at_the_share(
+    seams: dict[str, Any], explore: dict[str, Any]
+) -> None:
+    """A drawn code build on the multi-model claude-sub lane runs haiku —
+    0 outcomes, a model the lane lists but the default never runs —
+    and stamps ``meta.explore``; the read asked for the job's task kind
+    and its class's band."""
+    hit, _miss = _explore_ids(0.2)
+    explore["counts"] = {"claude-sonnet-5-5": 7, "claude-opus-5-5": 6}
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx = _explore_submit(store, hit, meta={"task_kind": "code.build"})
+    assert ctx.failure is None
+    assert ctx.meta_set["model"] == "claude-haiku-5-5"
+    assert ctx.meta_set["explore"] is True
+    argv = seams["launch"][-1][0]
+    assert argv[argv.index("--model") + 1] == "claude-haiku-5-5"
+    assert explore["reads"] == [
+        {"adapter": "claude_p", "task_kind": "code.build", "source": "code"}
+    ]
+    assert any("exploring 'claude-haiku-5-5'" in t for _k, t in ctx.chunks)
+
+
+def test_submit_outside_the_share_keeps_the_lane_default(
+    seams: dict[str, Any], explore: dict[str, Any]
+) -> None:
+    """The draw that misses the share keeps the default, counts unread."""
+    _hit, miss = _explore_ids(0.2)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx = _explore_submit(store, miss)
+    assert ctx.meta_set["model"] == "claude-sonnet-5-5"
+    assert "explore" not in ctx.meta_set
+    assert explore["reads"] == []
+
+
+def test_submit_exploration_repeats_on_a_retry_of_the_job(
+    seams: dict[str, Any], explore: dict[str, Any]
+) -> None:
+    """The same job id draws the same: a resubmit with unchanged counts
+    picks the same model, and a relaunch of a job that already explored
+    keeps its model even when the counts moved since."""
+    hit, _miss = _explore_ids(0.2)
+    explore["counts"] = {"claude-haiku-5-5": 3, "claude-sonnet-5-5": 9}
+    store = _Store()
+    store.add_todo(42, "t")
+    sub = seed_lane("claude-sub")
+
+    def pick(**meta: Any) -> tuple[str, str] | None:
+        ctx = _Ctx(store, {"todo_id": 42}, **meta)
+        ctx.ref_id = hit
+        return run_slice._explore_pick(
+            ctx,
+            lane=sub,
+            model="claude-sonnet-5-5",
+            task_class="code",
+            params={"todo_id": 42},
+            todo=store.refs[42],
+            left_pin=False,
+        )
+
+    first, second = pick(), pick()
+    assert first is not None and second is not None
+    assert first[0] == second[0] == "claude-opus-5-5"
+    # The counts moved (opus now the most observed): the relaunch of the
+    # job that explored keeps opus.
+    explore["counts"] = {"claude-haiku-5-5": 3, "claude-opus-5-5": 4}
+    again = pick(explore=True, model="claude-opus-5-5")
+    assert again is not None and again[0] == "claude-opus-5-5"
+    # The full submit stamps the repeated pick.
+    ctx = _explore_submit(
+        store, hit, meta={"explore": True, "model": "claude-opus-5-5"}
+    )
+    assert ctx.meta_set["model"] == "claude-opus-5-5"
+    assert ctx.meta_set["explore"] is True
+
+
+@pytest.mark.parametrize(
+    ("why", "todo_meta", "job_meta", "params"),
+    [
+        ("model-pinned job", {}, {}, {"model": "claude-sonnet-5-5"}),
+        ("lane-pinned job (ladder, rescue, top rung)", {}, {}, {"lane": "claude-sub"}),
+        (
+            "model-pinned node",
+            {"op": {"type": "run_slice", "params": {"model": "claude-opus-5-5"}}},
+            {},
+            {},
+        ),
+        ("release band", {}, {"claim_band": "release"}, {}),
+        ("release-branch land", {"land_target": "release/r12"}, {}, {}),
+        ("not a code build", {"task_class": "validate"}, {}, {}),
+    ],
+)
+def test_submit_never_explores_the_excluded_builds(
+    seams: dict[str, Any],
+    explore: dict[str, Any],
+    why: str,
+    todo_meta: dict[str, Any],
+    job_meta: dict[str, Any],
+    params: dict[str, Any],
+) -> None:
+    hit, _miss = _explore_ids(0.2)
+    store = _Store()
+    store.add_todo(42, "t", meta=todo_meta)
+    ctx = _explore_submit(store, hit, meta=job_meta, **params)
+    assert ctx.meta_set.get("model") != "claude-haiku-5-5", why
+    assert "explore" not in ctx.meta_set, why
+    assert explore["reads"] == [], why
+
+
+def test_submit_exploration_read_failure_keeps_the_default(
+    seams: dict[str, Any], explore: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.utils.llm import suitability
+
+    def boom(store: Any, **kw: Any) -> Any:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(suitability, "build_explore_counts", boom)
+    hit, _miss = _explore_ids(0.2)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _explore_submit(store, hit)
+    assert ctx.failure is None
+    assert ctx.meta_set["model"] == "claude-sonnet-5-5"
+    assert "explore" not in ctx.meta_set
+
+
+def test_submit_never_explores_a_metered_lane(
+    seams: dict[str, Any], explore: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pricier model is never explored at metered cost."""
+    paid = replace(seed_lane("claude-sub"), name="paid", credential_pool="metered")
+    use_lanes(monkeypatch, paid)
+    got = lanes.get_lane("paid", _Store())
+    assert got is not None and got.cost_class == lanes.COST_METERED
+    hit, _miss = _explore_ids(0.2)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _explore_submit(store, hit)
+    assert ctx.meta_set["lane"] == "paid"
+    assert ctx.meta_set["model"] == "claude-sonnet-5-5"
+    assert "explore" not in ctx.meta_set and explore["reads"] == []
+
+
+def test_submit_never_explores_under_the_env_model_pin(
+    seams: dict[str, Any], explore: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_RUN_SLICE_MODEL`` on a claude_p lane is the host's pin."""
+    monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "claude-test-model")
+    hit, _miss = _explore_ids(0.2)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _explore_submit(store, hit)
+    assert ctx.meta_set["model"] == "claude-test-model"
+    assert "explore" not in ctx.meta_set and explore["reads"] == []
+
+
+def test_explore_max_tries_is_twice_the_ledger_floor() -> None:
+    from precis.utils.llm.suitability import MIN_OBS
+
+    assert lanes.EXPLORE_MAX_TRIES == 2 * MIN_OBS
+
+
+def test_a_model_explored_max_tries_times_without_signal_is_dropped(
+    seams: dict[str, Any], explore: dict[str, Any]
+) -> None:
+    """haiku has been explored EXPLORE_MAX_TRIES times and none of those
+    runs yielded an outcome: it is no longer chosen — the next least
+    observed model (opus) is; with opus spent too, nothing is."""
+    sub = seed_lane("claude-sub")
+    spent = {"claude-haiku-5-5": lanes.EXPLORE_MAX_TRIES}
+    assert (
+        lanes.explore_model(
+            sub,
+            current="claude-sonnet-5-5",
+            counts={"claude-sonnet-5-5": 9, "claude-opus-5-5": 1},
+            min_obs=5,
+            tried=spent,
+        )
+        == "claude-opus-5-5"
+    )
+    # One try short of the bound still explores it.
+    assert (
+        lanes.explore_model(
+            sub,
+            current="claude-sonnet-5-5",
+            counts={},
+            min_obs=5,
+            tried={"claude-haiku-5-5": lanes.EXPLORE_MAX_TRIES - 1},
+        )
+        == "claude-haiku-5-5"
+    )
+    hit, _miss = _explore_ids(0.2)
+    explore["counts"] = {"claude-sonnet-5-5": 9}
+    explore["tried"] = {
+        "claude-haiku-5-5": lanes.EXPLORE_MAX_TRIES,
+        "claude-opus-5-5": lanes.EXPLORE_MAX_TRIES,
+    }
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _explore_submit(store, hit)
+    assert ctx.meta_set["model"] == "claude-sonnet-5-5"
+    assert "explore" not in ctx.meta_set
+
+
+# ── the review's fallback lane (gr761723) ──────────────────────────
+
+
+def _review_lanes(monkeypatch: pytest.MonkeyPatch, **codex_kw: Any) -> None:
+    codex, sub = _codex_and_sub()
+    codex = replace(codex, task_classes=frozenset({"code", "review"}), **codex_kw)
+    use_lanes(monkeypatch, codex, sub)
+
+
+def test_review_on_a_full_lane_waits_for_it(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full pinned review lane is waited for, not bypassed — the
+    fallback moves a review only off a dead pin or a closed window."""
+    _review_lanes(monkeypatch)
+    seams["live"] = {"codex": 1}
+    store = _Store()
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "codex"}, review_fallback="claude-sub")
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "pinned by params.lane is at its cap" in deferred[0][1]
+    assert "params" not in ctx.meta_set and seams["launch"] == []
+
+
+def test_review_on_a_host_without_the_binary_never_moves(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _review_lanes(monkeypatch)
+    seams["bins_absent"] = {"codex_exec"}
+    store = _Store()
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "codex"}, review_fallback="claude-sub")
+    ctx.defer = lambda wake_at, note: True
+    assert run_slice.submit(ctx, None) is None
+    assert "params" not in ctx.meta_set and seams["launch"] == []
+
+
+def test_review_on_a_parked_pin_moves_to_its_fallback(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin went dead (health-parked) between dispatch and submit: the
+    review moves to its fallback instead of failing."""
+    _review_lanes(monkeypatch, parked_reason="auth:not-logged-in")
+    store = _Store()
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "codex"}, review_fallback="claude-sub")
+    handle = run_slice.submit(ctx, None)
+    assert handle is not None and ctx.failure is None
+    assert ctx.meta_set["lane"] == "claude-sub"
+    assert ctx.meta_set["params"]["lane"] == "claude-sub"
+    assert ctx.meta_set["review_fallback"] is None
+    assert any("fallback lane 'claude-sub'" in t for _k, t in ctx.chunks)
+
+
+def test_usable_fallback_refuses_dead_and_metered_lanes() -> None:
+    codex, sub = _codex_and_sub()
+    paid = Lane(
+        "paid",
+        "kimi_tree",
+        "metered",
+        1,
+        frozenset({"review"}),
+        vendor="moonshot",
+        cost_class=lanes.COST_METERED,
+    )
+    parked = replace(codex, parked_reason="auth:x")
+    off = replace(codex, name="off", enabled=False)
+    table = (sub, paid, parked, off)
+    usable = run_slice._usable_fallback
+    store = _Store()
+    assert usable(store, "claude-sub", table, {}) is True
+    assert usable(store, "paid", table, {}) is False
+    assert usable(store, "codex", table, {}) is False
+    assert usable(store, "off", table, {}) is False
+    assert usable(store, "gone", table, {}) is False
+    until = datetime.now(UTC) + timedelta(minutes=5)
+    assert usable(store, "claude-sub", table, {"claude-sub": until}) is False
+
+
+def test_review_on_an_open_lane_keeps_its_pin(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _review_lanes(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "codex"}, review_fallback="claude-sub")
+    assert run_slice.submit(ctx, None) is not None
+    assert ctx.meta_set["lane"] == "codex"
+    assert "params" not in ctx.meta_set
+
+
+def test_review_quota_window_relaunches_on_the_fallback_now(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quota window on the reviewer's lane moves it to the fallback at
+    once — never a park until the reset (a reviewer node is a generator,
+    so the vendor switch alone would wait for it)."""
+    _review_lanes(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"}, review_fallback="codex")
+    handle = run_slice.submit(ctx, None)
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _Ctx(store, ctx.meta["params"], **ctx.meta_set, review_fallback="codex")
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.failure is None
+    assert handle["not_before"] <= datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert pctx.meta_set["params"]["lane"] == "codex"
+    assert pctx.meta_set["review_fallback"] is None
+    assert pctx.meta_set["exclude_vendor"] is None
+    assert any("fallback lane" in t for _k, t in pctx.chunks)
+
+    seams["alive"] = False
+    meta = {k: v for k, v in pctx.meta_set.items() if k != "params"}
+    rctx = _Ctx(store, pctx.meta_set["params"], **meta)
+    assert run_slice.poll(rctx, handle) is False
+    argv = seams["launch"][-1][0]
+    assert argv[0].endswith("codex") and argv[1] == "exec"
+    assert rctx.meta_set["lane"] == "codex"
+
+
+def _quota_on_sub_with_fallback(
+    seams: dict[str, Any], store: _Store, fallback: str
+) -> tuple[_Ctx, dict[str, Any]]:
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "claude-sub"}, review_fallback=fallback)
+    handle = run_slice.submit(ctx, None)
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _Ctx(store, ctx.meta["params"], **ctx.meta_set, review_fallback=fallback)
+    assert run_slice.poll(pctx, handle) is False
+    return pctx, handle
+
+
+def test_review_quota_window_with_a_parked_fallback_parks_for_the_reset(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead fallback never fails the review: it stays on its lane and
+    parks for the reset, as without one."""
+    _review_lanes(monkeypatch, parked_reason="auth:not-logged-in")
+    store = _Store()
+    pctx, handle = _quota_on_sub_with_fallback(seams, store, "codex")
+    assert pctx.failure is None and pctx.status is None
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    assert due > datetime.now(UTC)
+    assert "params" not in pctx.meta_set
+    assert any("stays on its lane" in t for _k, t in pctx.chunks)
+
+
+def test_review_quota_window_never_moves_to_a_metered_fallback(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closed subscription window must not buy paid compute: a metered
+    fallback is refused."""
+    _codex, sub = _codex_and_sub()
+    paid = Lane(
+        "paid",
+        "kimi_tree",
+        "metered",
+        1,
+        frozenset({"review"}),
+        vendor="moonshot",
+    )
+    use_lanes(monkeypatch, sub, paid)
+    got = lanes.get_lane("paid", _Store())
+    assert got is not None and got.cost_class == lanes.COST_METERED
+    store = _Store()
+    pctx, _handle = _quota_on_sub_with_fallback(seams, store, "paid")
+    assert pctx.failure is None
+    assert "params" not in pctx.meta_set
+    assert any("stays on its lane" in t for _k, t in pctx.chunks)
