@@ -2436,10 +2436,15 @@ def _open_work_dependants(store: Store, ids: list[int]) -> dict[int, list[str]]:
     pointing at the node both mean the node is mid-work. Terminal STATUS
     values are the cross-kind union in
     :data:`precis.todo.BLOCKER_TERMINAL_STATUSES` (todo done/won't-do/
-    auto-timeout, gripe wontfix, quest abandoned).
+    auto-timeout, gripe wontfix, quest abandoned). The held-proposal
+    digest todo links every memory it lists but is bookkeeping about the
+    proposal, not work on the node, so it never shields (minting it must
+    not stale the very proposal it lists).
     """
     if not ids:
         return {}
+    from precis.graph.garden.digest import DIGEST_TAG
+
     terminals = sorted(BLOCKER_TERMINAL_STATUSES)
     sql = (
         "SELECT m.ref_id, w.ref_id, w.kind FROM links l "
@@ -2449,7 +2454,10 @@ def _open_work_dependants(store: Store, ids: list[int]) -> dict[int, list[str]]:
         "AND w.retired_at IS NULL AND NOT EXISTS ("
         "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
         "WHERE rt.ref_id = w.ref_id AND t.namespace = 'STATUS' "
-        "AND t.value = ANY(%s))"
+        "AND t.value = ANY(%s)) AND NOT EXISTS ("
+        "SELECT 1 FROM ref_tags dt JOIN tags d USING (tag_id) "
+        "WHERE dt.ref_id = w.ref_id AND d.namespace = 'OPEN' "
+        "AND d.value = %s)"
     )
     out: dict[int, list[str]] = {}
     with store.pool.connection() as conn:
@@ -2457,7 +2465,7 @@ def _open_work_dependants(store: Store, ids: list[int]) -> dict[int, list[str]]:
             sql.format(m_col="dst_ref_id", w_col="src_ref_id")
             + " UNION "
             + sql.format(m_col="src_ref_id", w_col="dst_ref_id"),
-            (ids, terminals, ids, terminals),
+            (ids, terminals, DIGEST_TAG, ids, terminals, DIGEST_TAG),
         ).fetchall()
     for mem_id, work_id, kind in rows:
         handle = try_format(kind, int(work_id)) or f"{kind}:{int(work_id)}"

@@ -451,7 +451,10 @@ jobs:
     # Ordinary selections keep the 25 min hang cap (~5 min of tests + setup;
     # scripts/lib/gate_fast.py warns past 300 s in one non-nightly file).
     # FULL runs the whole non-nightly suite, so use test-linux's 40 min cap.
-    timeout-minutes: ${{ needs.plan.outputs.gate_fast_full == 'true' && 40 || 25 }}
+    # So does a release branch: it selects against origin/prod, and without a
+    # measured coverage DB that is near the whole suite (r347: 2508 of ~2760
+    # files, shards ran 14-21 min and one hit 25 twice; gr752626).
+    timeout-minutes: ${{ (needs.plan.outputs.gate_fast_full == 'true' || startsWith(github.ref, 'refs/heads/release/')) && 40 || 25 }}
     strategy:
       fail-fast: false
       matrix:

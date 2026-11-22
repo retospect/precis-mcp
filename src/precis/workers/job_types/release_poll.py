@@ -1950,6 +1950,7 @@ class _GateLand:
     todo_id: int | None
     job_id: int | None
     committed_at: datetime | None
+    release_base: str | None = None
 
     @property
     def ask_key(self) -> str:
@@ -2012,6 +2013,7 @@ def _gate_lands(
         lands = _release_lands(rel)
         pin = str(rel.get("cut_sha") or rel.get("sha") or "").lower()
         picked, undone, notes = _branch_carries(rel, lands)
+    release_base = _release.release_branch(str(rel["rN"])) if rel else None
     stamped = _landed_jobs(store)
     out: list[_GateLand] = []
     # What the release carries, for the carry hold: not a commit the
@@ -2034,12 +2036,11 @@ def _gate_lands(
         engine = bool(_lanes.engine_hits(land.paths))
         if not engine:
             continue
-        if todos:
-            out.extend(
-                _GateLand(sha12, t, job_id, land.committed_at) for t in sorted(todos)
-            )
-        else:
-            out.append(_GateLand(sha12, None, None, land.committed_at))
+        base = release_base if land.branch_only else None
+        out.extend(
+            _GateLand(sha12, tid, job_id, land.committed_at, base)
+            for tid in (sorted(todos) if todos else [None])
+        )
     return out, pin, scanned, notes
 
 
@@ -2600,7 +2601,9 @@ def _sha_hang(lane_table: tuple[Any, ...]) -> str | None:
     return None
 
 
-def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
+def _mint_sha_reviewer(
+    store: Any, sha12: str, *, release_base: str | None = None
+) -> tuple[str, int, bool]:
     """Mint the sha-keyed reviewer over a hand-landed engine commit —
     nothing links it, or the linked todo has no live plan root;
     returns ``(note, reviewer id, fresh)`` — one per commit: the
@@ -2637,7 +2640,7 @@ def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
                 int(dup[0]),
                 False,
             )
-        rid = _templates.mint_sha_reviewer(store, sha12)
+        rid = _templates.mint_sha_reviewer(store, sha12, release_base=release_base)
     return f"engine review: minted reviewer td{rid} for {sha12}", rid, True
 
 
@@ -3191,7 +3194,7 @@ def _engine_verdicts(
                                 )
                             else:
                                 note, minted_id, fresh = _mint_sha_reviewer(
-                                    store, unit.sha12
+                                    store, unit.sha12, release_base=unit.release_base
                                 )
                         except Exception as exc:
                             log.warning(

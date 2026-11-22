@@ -73,7 +73,6 @@ _KNOWN_ISOLATED: tuple[str, ...] = (
     "precis-structure-import-help",
     "precis-structure-slab-help",
     "precis-time-help",
-    "precis-user-queue-help",
     "sci-abstract",
     "sci-conclusion",
     "sci-discussion",

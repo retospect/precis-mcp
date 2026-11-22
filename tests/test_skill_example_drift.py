@@ -18,7 +18,8 @@ Per call it checks, against the live ``boot`` registry:
   path (search-only); env-gated kinds that did not boot are skipped;
 - the kind's ``KindSpec`` supports the verb;
 - the literal ``mode=`` on put/edit is in the spec's declared mode
-  vocabulary (``_validate_mode``);
+  vocabulary (``_validate_mode``), except for the dispatcher-owned
+  ``edit(mode='trust')`` route;
 - every supplied top-level kwarg survives the strictness gate —
   ``_handler_accepted_kwargs`` plus the wrapper-defaulted set plus the
   params dispatch consumes before the gate (``reason=`` on put/edit) or
@@ -382,7 +383,14 @@ def _check_single(
     # ── mode vocabulary (put/edit) ──────────────────────────────
     if verb in ("put", "edit") and "mode" in kw:
         mode_val = _literal(kw["mode"])
-        if isinstance(mode_val, str) and mode_val != _EDIT_MODE_WRAPPER_DEFAULT:
+        # _call_handler routes trust edits to edit_trust before it checks
+        # the handler's mode vocabulary. Keep checking the example's kwargs.
+        trust_edit = verb == "edit" and mode_val == "trust"
+        if (
+            isinstance(mode_val, str)
+            and mode_val != _EDIT_MODE_WRAPPER_DEFAULT
+            and not trust_edit
+        ):
             modes = handler.spec.edit_modes if verb == "edit" else handler.spec.modes
             if modes is not None and mode_val not in modes:
                 findings.append(
