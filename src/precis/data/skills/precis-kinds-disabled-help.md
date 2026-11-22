@@ -8,6 +8,7 @@ answers:
   - how do I check what's actually live in this build?
   - what does reason='prohibited' mean on a kind?
   - what does "kind routes through host(s)" mean?
+  - I am a worker and the kind my task needs is disabled — what do I do?
 applies-to: all kinds (boot-time enablement)
 tags: troubleshooting
 status: active
@@ -45,6 +46,21 @@ deliverable is draft 'X' — write prose with put(kind='draft' ...) …`.
 When the reason is an instruction, follow it. Otherwise the kind is
 simply not callable from this session: use a kind that is live, and tell
 the user which kind is off and why instead of retrying.
+
+## I am a worker and the kind my task needs is off
+## My todo names tex or markdown files and the file kind is disabled here
+## No operator to ask: what does a background tick do about a disabled kind?
+
+```python
+search(kind="memory", tags=["project:<project>"])  # the same section as a memory; the project hub links its sections
+
+tag(kind="todo", id=<todo id>, add=["STATUS:blocked"], reason="tex disabled on this host")  # no memory holds it: park the todo
+```
+
+A file kind (`markdown`, `plaintext`, `tex`) that is off means this host
+reads no workspace files, under any id or spelling. Read the section from
+the project's memories. If none holds it, finish the part of the task that
+needs no file, then park the todo with the reason and stop.
 
 ## "unknown kind" with "routes through host(s)"
 

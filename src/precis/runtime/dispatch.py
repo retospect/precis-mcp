@@ -1187,6 +1187,49 @@ def _tick_disabled_hint(kind: str) -> str | None:
     return dict(ctx.disabled_kinds).get(kind)
 
 
+#: The kinds served from ``PRECIS_ROOT`` — off together on a host without it.
+_FILE_KINDS = ("markdown", "plaintext", "tex")
+
+_KINDS_DISABLED_POINTER = (
+    "see get(kind='skill', id='precis-kinds-disabled-help') "
+    "and precis-overview Needs column"
+)
+
+_NO_WORKSPACE_FILES = "this host cannot read workspace files"
+
+
+def _disabled_kind_next(kind: str, reason: str, *, all_files_off: bool) -> list[str]:
+    """``next:`` lines for a call on a kind gated out at boot.
+
+    Every kind gets the disabled-kinds skill pointer. A file kind the host
+    cannot serve (``missing PRECIS_ROOT``, or ``prohibited``) also gets the
+    two things a worker can do without an operator, each as its own call
+    line (gr649944: workers whose task named ``tex--<slug>`` files retried
+    the same get two or three times per tick, because the pointer led to a
+    skill that only said the env was the operator's to fix). Any other
+    reason on a file kind is an instruction from whoever disabled it (the
+    inline ``kind:reason`` hint a draft tick sets) and already says what to
+    do, so it keeps the pointer alone. The lead line claims the host reads
+    no workspace files only when ``all_files_off`` (every kind in
+    ``_FILE_KINDS`` is gated out); with a sibling file kind live it names
+    the one kind."""
+    if kind not in _FILE_KINDS or not (
+        reason == "prohibited" or reason.startswith("missing ")
+    ):
+        return [_KINDS_DISABLED_POINTER]
+    lead = (
+        _NO_WORKSPACE_FILES if all_files_off else f"kind {kind!r} is off on this host"
+    )
+    return [
+        f"{lead}; do not retry — read the same section as a memory, or "
+        "park the todo with the reason:",
+        "search(kind='memory', tags=['project:<project>'])",
+        f"tag(kind='todo', id=<todo id>, add=['STATUS:blocked'], "
+        f"reason='{kind} disabled on this host')",
+        _KINDS_DISABLED_POINTER,
+    ]
+
+
 #: Agent-authored text args of put/edit/supersede, across every kind's verbs
 #: (collected from the handlers' signatures). ``meta`` / ``params`` /
 #: ``items`` / ``terms`` are dict/list containers whose string values are
@@ -4027,6 +4070,24 @@ class DispatchMixin(RuntimeShape):
                 )
         return kinds
 
+    def _file_kinds_off(self) -> list[str]:
+        """The file kinds this build gated out at boot (all of
+        ``_FILE_KINDS`` on a host without ``PRECIS_ROOT``)."""
+        loadabilities = getattr(self.hub, "loadabilities", {})
+        return [
+            kind
+            for kind in _FILE_KINDS
+            if (v := loadabilities.get(kind)) is not None and not v.loaded
+        ]
+
+    def _disabled_kind_hints(self, kind: str, reason: str) -> list[str]:
+        """:func:`_disabled_kind_next` with this build's file-kind state."""
+        return _disabled_kind_next(
+            kind,
+            reason,
+            all_files_off=len(self._file_kinds_off()) == len(_FILE_KINDS),
+        )
+
     def _file_shape_hint(self, ident: str) -> str | None:
         """The shape-level counterpart of :meth:`_maybe_infer_file_kind`
         for the refusal path: when ``ident`` carries a file signal
@@ -4059,18 +4120,23 @@ class DispatchMixin(RuntimeShape):
             # PRECIS_ROOT the file kinds are deferred outright, so the
             # id could be a file address this build can't even parse.
             # Say that instead of leaving the caller guessing.
-            loadabilities = getattr(self.hub, "loadabilities", {})
-            deferred = [
-                kind
-                for kind in ("markdown", "plaintext", "tex")
-                if (v := loadabilities.get(kind)) is not None and not v.loaded
-            ]
+            deferred = self._file_kinds_off()
             if deferred:
+                # The generic "pass kind=" hint that follows invites the
+                # one retry that cannot work, so say so here (gr649944).
+                # "Cannot read workspace files" only when all of them
+                # are off — a live sibling kind still reads its files.
+                cannot = (
+                    f"{_NO_WORKSPACE_FILES}; "
+                    if len(deferred) == len(_FILE_KINDS)
+                    else ""
+                )
                 return (
                     f"id={ident!r} looks like a file address, but the "
                     f"file kinds ({', '.join(deferred)}) are not live in "
-                    "this build — "
-                    "get(kind='skill', id='precis-kinds-disabled-help')"
+                    f"this build — {cannot}do not retry under those kinds; "
+                    "get(kind='skill', id='precis-kinds-disabled-help') "
+                    "names what to do instead"
                 )
             return None
         owners = self._file_id_kinds(ident, "owns_existing_file")
@@ -4145,10 +4211,7 @@ class DispatchMixin(RuntimeShape):
                 raise Unsupported(
                     f"kind {kind!r} is registered but disabled in this build "
                     f"({reason})",
-                    next=(
-                        "see get(kind='skill', id='precis-kinds-disabled-help') "
-                        "and precis-overview Needs column"
-                    ),
+                    next=self._disabled_kind_hints(kind, reason),
                 )
             # Broad usability pass 2026-05-30 (#10): the previous
             # ``options:`` trailer silently filtered to kinds that
@@ -6503,9 +6566,10 @@ class DispatchMixin(RuntimeShape):
         used to fall through to the bare ``missing kind=`` refusal, which
         named neither the id's kind nor the way out. The cause says the
         kind is disabled on this host (with the boot-time reason); the
-        breadcrumb defers to the disabled-kinds skill rather than
-        duplicating its per-kind guidance, and — when the deployment
-        serves the kind from another host — names that host, the
+        breadcrumb is :func:`_disabled_kind_next` (the disabled-kinds
+        skill, plus a worker's two actions for a file kind), or — when
+        the deployment serves the kind from another host — that host
+        and the skill, without the worker's actions: the host is the
         read-only fallback ``precis-get-help`` documents for a kind this
         process lacks. No-op when the prefix is not a registered kind.
         """
@@ -6515,21 +6579,23 @@ class DispatchMixin(RuntimeShape):
         if verdict is None or verdict.loaded:
             return
         reason = verdict.reason or "disabled"
-        hints: list[str] = []
+        hosts: list[str] = []
         store = getattr(self.hub, "store", None)
         if store is not None:
             try:
                 hosts = store.find_kind_providers(prefix)
             except Exception:  # pragma: no cover - missing table / DB error
                 hosts = []
-            if hosts:
-                hints.append(
-                    f"kind {prefix!r} routes through host(s): {', '.join(hosts)} "
-                    "— read it there (read-only here)"
-                )
-        hints.append(
-            "see get(kind='skill', id='precis-kinds-disabled-help') "
-            "and precis-overview Needs column"
+        # A host that serves the kind is the way on: "read it there" and
+        # the worker lines ("do not retry", park the todo) contradict.
+        hints = (
+            [
+                f"kind {prefix!r} routes through host(s): {', '.join(hosts)} "
+                "— read it there (read-only here)",
+                _KINDS_DISABLED_POINTER,
+            ]
+            if hosts
+            else self._disabled_kind_hints(prefix, reason)
         )
         raise Unsupported(
             f"kind {prefix!r} is disabled on this host ({reason})",

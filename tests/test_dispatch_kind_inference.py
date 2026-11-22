@@ -17,7 +17,10 @@ not. ``put``/``edit`` stay kind-required (get-only inference).
 
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,6 +30,7 @@ from precis.runtime import PrecisRuntime
 from precis.store import Store
 
 DOI = "10.1021/ja01019a011"
+SKILLS = Path(__file__).resolve().parents[1] / "src/precis/data/skills"
 
 
 @pytest.fixture
@@ -126,3 +130,178 @@ class TestDisabledKindPrefix:
         out = runtime.dispatch("get", {"id": f"todo:{m.group(1)}"})
         assert "[error" not in out
         assert "prefix probe" in out
+
+
+def _next_calls(out: str, verb: str) -> list[str]:
+    """The ``next:`` lines of a rendered refusal that are a ``verb(`` call."""
+    return [
+        line.removeprefix("  next: ").strip()
+        for line in out.splitlines()
+        if line.startswith(f"  next: {verb}(")
+    ]
+
+
+def _call_args(call: str) -> dict[str, Any]:
+    """Keyword args of a printed ``verb(k=v, …)`` call, as dispatch takes them."""
+    node = ast.parse(call, mode="eval").body
+    assert isinstance(node, ast.Call)
+    return {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg}
+
+
+class TestDisabledFileKindWorkerNext:
+    """gr649944: a worker whose task names ``tex--<slug>`` files, on a host
+    without PRECIS_ROOT, got "registered but disabled" plus a pointer to a
+    skill that called the missing env "the operator's to fix" — 46 such
+    errors in ~20 worker buckets on 2026-11-12, two or three retries per
+    tick. The refusal now says not to retry and names the two things a
+    worker can do: read the section as a memory, or park the todo with a
+    reason."""
+
+    @pytest.mark.parametrize(
+        ("verb", "args"),
+        [
+            ("get", {"kind": "tex", "id": "tex--x"}),
+            ("search", {"kind": "tex", "q": "design loop"}),
+            ("get", {"id": "tex:chapters/intro"}),
+        ],
+    )
+    def test_disabled_file_kind_names_both_worker_actions(
+        self, runtime: PrecisRuntime, verb: str, args: dict[str, str]
+    ) -> None:
+        assert "tex" not in runtime.hub.kinds  # no PRECIS_ROOT in this boot
+        out = runtime.dispatch(verb, args)
+        assert "[error:Unsupported]" in out
+        assert "missing PRECIS_ROOT" in out
+        assert "do not retry" in out
+        assert _next_calls(out, "search") == [
+            "search(kind='memory', tags=['project:<project>'])"
+        ]
+        assert _next_calls(out, "tag") == [
+            "tag(kind='todo', id=<todo id>, add=['STATUS:blocked'], "
+            "reason='tex disabled on this host')"
+        ]
+        assert "precis-kinds-disabled-help" in out
+
+    def test_worker_next_calls_run_as_printed(self, runtime: PrecisRuntime) -> None:
+        """The two calls are accepted by the runtime exactly as the refusal
+        prints them, once the placeholders are filled."""
+        out = runtime.dispatch("get", {"kind": "tex", "id": "tex--x"})
+        (search_call,) = _next_calls(out, "search")
+        (tag_call,) = _next_calls(out, "tag")
+        made = runtime.dispatch("put", {"kind": "todo", "text": "tex section fix"})
+        m = re.search(r"id=(\d+)", made)
+        assert m is not None
+
+        found = runtime.dispatch(
+            "search", _call_args(search_call.replace("<project>", "nox"))
+        )
+        assert "[error" not in found
+        parked = runtime.dispatch(
+            "tag", _call_args(tag_call.replace("<todo id>", m.group(1)))
+        )
+        assert "[error" not in parked
+        assert "STATUS:blocked" in parked
+
+    def test_skill_worker_section_names_the_same_two_calls(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        """``precis-kinds-disabled-help`` is where the refusal points; its
+        worker section carries the same two calls (double-quoted, as skill
+        fences write them)."""
+        out = runtime.dispatch("get", {"kind": "tex", "id": "tex--x"})
+        skill = (SKILLS / "precis-kinds-disabled-help.md").read_text(encoding="utf-8")
+        assert "## I am a worker and the kind my task needs is off" in skill
+        for call in _next_calls(out, "search") + _next_calls(out, "tag"):
+            assert call.replace("'", '"') in skill
+
+    def test_kindless_file_id_says_do_not_retry(self, runtime: PrecisRuntime) -> None:
+        """``get(id='tex--x')`` with no ``kind=`` bounces on "missing kind=";
+        its "pass kind=" hint invites the retry that cannot work, so the
+        file-address line says so."""
+        out = runtime.dispatch("get", {"id": "tex--x"})
+        assert "missing kind" in out
+        assert "not live in this build" in out
+        assert "do not retry" in out
+        assert "precis-kinds-disabled-help" in out
+
+    def test_disabled_non_file_kind_keeps_plain_pointer(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        """Only the file kinds get the workspace wording: another disabled
+        kind keeps the skill pointer and names no memory or todo call."""
+        off = sorted(
+            kind
+            for kind, verdict in runtime.hub.loadabilities.items()
+            if not verdict.loaded and kind not in {"markdown", "plaintext", "tex"}
+        )
+        assert off, "this boot gates out no non-file kind"
+        out = runtime.dispatch("get", {"kind": off[0], "id": "x"})
+        assert "[error:Unsupported]" in out
+        assert "precis-kinds-disabled-help" in out
+        assert "workspace files" not in out
+        assert not _next_calls(out, "tag")
+
+    def test_instruction_reason_keeps_plain_pointer(self) -> None:
+        """A file kind switched off with an inline instruction (a draft tick
+        gating ``tex``) already says what to do: no park-the-todo line."""
+        from precis.runtime.dispatch import _disabled_kind_next
+
+        hints = _disabled_kind_next(
+            "tex", "write prose with put(kind='draft')", all_files_off=True
+        )
+        assert len(hints) == 1
+        assert "precis-kinds-disabled-help" in hints[0]
+
+    def test_kind_served_by_another_host_gets_no_worker_lines(
+        self, runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When another host serves the kind, "read it there" is the way
+        on: the refusal does not also say "do not retry" or park the todo."""
+        monkeypatch.setattr(
+            runtime.hub.store, "find_kind_providers", lambda slug, **_: ["maple"]
+        )
+        out = runtime.dispatch("get", {"id": "tex:chapters/intro"})
+        assert "[error:Unsupported]" in out
+        assert "kind 'tex' is disabled on this host" in out
+        assert "routes through host(s): maple" in out
+        assert "precis-kinds-disabled-help" in out
+        assert "do not retry" not in out
+        assert not _next_calls(out, "search")
+        assert not _next_calls(out, "tag")
+
+    def test_one_file_kind_off_does_not_claim_files_unreadable(
+        self, runtime: PrecisRuntime, store: Store, tmp_path: Path
+    ) -> None:
+        """Only with every file kind off does the refusal say the host
+        cannot read workspace files. ``tex`` prohibited beside a live
+        ``markdown`` names the one kind as off, on both the ``kind=``
+        refusal and the kindless file-address hint."""
+        all_off = runtime.dispatch("get", {"kind": "tex", "id": "tex--x"})
+        assert "this host cannot read workspace files; do not retry" in all_off
+        assert "this host cannot read workspace files" in runtime.dispatch(
+            "get", {"id": "tex--x"}
+        )
+
+        partial = PrecisRuntime(
+            config=PrecisConfig(),
+            hub=boot(
+                store=store,
+                precis_root=str(tmp_path),
+                kinds_disabled=frozenset({"tex"}),
+            ),
+        )
+        assert "markdown" in partial.hub.kinds
+        assert "tex" not in partial.hub.kinds
+        out = partial.dispatch("get", {"kind": "tex", "id": "tex--x"})
+        assert "[error:Unsupported]" in out
+        assert "kind 'tex' is registered but disabled in this build" in out
+        assert "kind 'tex' is off on this host; do not retry" in out
+        assert "workspace files" not in out
+        assert _next_calls(out, "search")
+        assert _next_calls(out, "tag")
+
+        kindless = partial.dispatch("get", {"id": "chapters/intro.tex"})
+        assert "missing kind" in kindless
+        assert "file kinds (tex) are not live in this build" in kindless
+        assert "do not retry" in kindless
+        assert "workspace files" not in kindless
