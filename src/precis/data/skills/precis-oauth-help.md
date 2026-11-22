@@ -40,9 +40,12 @@ private learning calls and `gtd` for private GTD calls. One may be offered
 instead of full access.
 
 This guide, `get(kind='skill', id='precis-learning-help')` with a learning
-grant, and `get(kind='profile', id='me')` — the session's own user, connection label
-and permission scope — are available to OAuth callers without extra
-view/args fields. A scoped token cannot elevate itself
+grant, and `get(kind='profile', id='me')` — the session's own user, key-memory
+handle, connection label and permission scope — are available to OAuth callers
+without extra view/args fields. So is one read of your own key memory,
+`get(kind='memory', id='me<N>')`: the startup text (and the first tool
+response on stateless HTTP) names the handle, and the call takes only `kind`
+and `id`. A scoped token cannot elevate itself
 by asking for another kind or supplying an owner. Scope refusals mean
 reconnect with an available permission; do not retry with the infrastructure
 token.

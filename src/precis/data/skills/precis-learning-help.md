@@ -26,9 +26,10 @@ mint another if lost. Revoke an individual token from Account. An install-wide
 token, slice grant, stdio actor or owner argument does not identify a learner.
 
 A personal token permits calls to your own learning and GTD data. It also
-permits `get(kind='skill', id='precis-learning-help')` and
-`get(kind='profile', id='me')`. These reads take no `view`, `args` or
-other keys.
+permits `get(kind='skill', id='precis-learning-help')`,
+`get(kind='profile', id='me')` (which shows your key-memory handle) and one
+read of your own key memory, `get(kind='memory', id='me<N>')`. These reads
+take no `view`, `args` or other keys.
 
 Personal calls use the streamable HTTP transport with SDK session ownership.
 Start a new MCP session when changing users or switching between an install
