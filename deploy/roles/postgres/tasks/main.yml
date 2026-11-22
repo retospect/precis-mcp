@@ -195,7 +195,7 @@
     password: "{{ lookup('vars', 'vault_' + item.password_var) }}"
     role_attr_flags: LOGIN
     state: present
-    db: postgres
+    login_db: postgres
     login_user: "{{ pg_user }}"
     login_unix_socket: /tmp
   become: true
@@ -220,7 +220,7 @@
 # — postgres_roles in the overlay gives it LOGIN + password.
 - name: Grant precis_system membership of agent_rw
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: |
       DO $$
       BEGIN
@@ -246,7 +246,7 @@
 # play. Guarded: a no-op until the cutover has created the role.
 - name: Grant precis_ingress membership of agent_rw
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: |
       DO $$
       BEGIN
@@ -271,7 +271,7 @@
 # Keyed on DB state, so a play before or after the cutover does the right one.
 - name: Schema public privileges for agent_rw (CREATE only before db-own)
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: |
       DO $$
       BEGIN
@@ -301,7 +301,7 @@
 - name: Enable pg_stat_statements extension in precis_prod
   community.postgresql.postgresql_ext:
     name: pg_stat_statements
-    db: precis_prod
+    login_db: precis_prod
     state: present
     login_user: "{{ pg_user }}"
     login_unix_socket: /tmp
@@ -315,7 +315,7 @@
 - name: Enable pgcrypto extension in precis_prod
   community.postgresql.postgresql_ext:
     name: pgcrypto
-    db: precis_prod
+    login_db: precis_prod
     state: present
     login_user: "{{ pg_user }}"
     login_unix_socket: /tmp
@@ -343,7 +343,7 @@
 # guarded, so it no-ops on a cluster that hasn't provisioned the roles.
 - name: Set defensive statement timeouts on the application roles
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: |
       DO $$
       BEGIN
@@ -398,7 +398,7 @@
 - name: Check for the vault._key table (migration 0239)
   when: vault_pg_app_secret_key is defined and (vault_pg_app_secret_key | length > 0)
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: "SELECT to_regclass('vault._key') IS NOT NULL AS present"
     login_user: "{{ pg_user }}"
     login_unix_socket: /tmp
@@ -413,7 +413,7 @@
     and (vault_pg_app_secret_key | length > 0)
     and vault_key_table.query_result[0].present
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: >-
       INSERT INTO vault._key (one, k) VALUES (true, %(key)s)
       ON CONFLICT (one) DO UPDATE SET k = EXCLUDED.k
@@ -432,7 +432,7 @@
     and (vault_pg_app_secret_key | length > 0)
     and vault_key_table.query_result[0].present
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: "ALTER SYSTEM RESET app.secret_key"
     autocommit: true
     login_user: "{{ pg_user }}"
@@ -448,7 +448,7 @@
     and (vault_pg_app_secret_key | length > 0)
     and not vault_key_table.query_result[0].present
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: "ALTER SYSTEM SET app.secret_key = '{{ vault_pg_app_secret_key }}'"
     autocommit: true
     login_user: "{{ pg_user }}"
@@ -462,7 +462,7 @@
 - name: Reload PostgreSQL config to apply the vault key change
   when: vault_pg_app_secret_key is defined and (vault_pg_app_secret_key | length > 0)
   community.postgresql.postgresql_query:
-    db: precis_prod
+    login_db: precis_prod
     query: "SELECT pg_reload_conf()"
     login_user: "{{ pg_user }}"
     login_unix_socket: /tmp
