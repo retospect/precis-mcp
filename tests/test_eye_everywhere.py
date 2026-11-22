@@ -368,6 +368,78 @@ class TestMemoryBatchEye:
         assert "not every view or operation does" in out
 
 
+class TestBatchEye:
+    """gr659493: ``get(id=[...], extent=…)`` on a kind that takes the base
+    eye (paper) is one eye block per id, never the ``str()`` of the list
+    looked up as one slug."""
+
+    def _paper_chunks(self, store: Any) -> tuple[Any, list[str]]:
+        paper = _ref(store, "paper", "Rigidity percolation", slug="mao18")
+        store.chunks.insert_chunks(
+            paper.id, [ChunkInsert(ord=i, text=f"body of chunk {i}") for i in range(4)]
+        )
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord",
+                (paper.id,),
+            ).fetchall()
+        return paper, [f"pc{row[0]}" for row in rows]
+
+    @pytest.mark.parametrize("with_kind", [True, False])
+    def test_chunk_handles_render_one_block_per_id_in_caller_order(
+        self, runtime_with_store: Any, store: Any, with_kind: bool
+    ) -> None:
+        _, chunks = self._paper_chunks(store)
+        ids = [chunks[2], chunks[1]]
+        kind = {"kind": "paper"} if with_kind else {}
+        out, err = _get(runtime_with_store, id=ids, extent="fisheye", **kind)
+        assert not err, out
+        assert out.startswith("# 2 paper (batch, extent='fisheye')\n\n")
+        assert out.index(f"▸ {chunks[2]}") < out.index(f"▸ {chunks[1]}")
+        # the header chip counts reads, so it differs between the two calls
+        chip = re.compile(r"  \[created [^\]]*\]")
+        singles = []
+        for ident in ids:
+            single, single_err = _get(
+                runtime_with_store, id=ident, extent="fisheye", **kind
+            )
+            assert not single_err
+            singles.append(chip.sub("", single))
+        assert chip.sub("", out).split("\n\n", 1)[1] == "\n\n".join(singles)
+
+    def test_a_missing_id_is_a_block_between_live_eyes(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        _, chunks = self._paper_chunks(store)
+        missing = f"pc{int(chunks[-1][2:]) + 100_000}"
+        out, err = _get(
+            runtime_with_store,
+            kind="paper",
+            id=[chunks[0], missing, chunks[3]],
+            extent="fisheye",
+        )
+        assert not err, out
+        markers = [f"▸ {chunks[0]}", f"{missing}  not found", f"▸ {chunks[3]}"]
+        positions = [out.index(marker) for marker in markers]
+        assert positions == sorted(positions)
+
+    @pytest.mark.parametrize("invalid", ["empty", "over-cap", "window"])
+    def test_an_invalid_list_refuses_the_whole_call_with_bad_input(
+        self, runtime_with_store: Any, store: Any, invalid: str
+    ) -> None:
+        from precis.handlers._numeric_ref import BATCH_ID_CAP
+
+        _, chunks = self._paper_chunks(store)
+        ids = {
+            "empty": [],
+            "over-cap": [chunks[0]] * (BATCH_ID_CAP + 1),
+            "window": [chunks[0], "mao18~0..2"],
+        }[invalid]
+        out, err = _get(runtime_with_store, kind="paper", id=ids, extent="fisheye")
+        assert err and "[error:BadInput]" in out
+        assert "body of chunk 0" not in out
+
+
 class TestPerKind:
     def test_taxon_eye_groups_its_hierarchy_under_taxonomy(
         self, runtime_with_store: Any, store: Any

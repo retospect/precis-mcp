@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.response import Response
 
 if TYPE_CHECKING:
@@ -575,7 +575,13 @@ class Handler(ABC):
         graph node gets ``Unsupported`` with the reason in one sentence.
         Override to add a header (``finding``'s trust posture), accept a
         legacy address (``draft``'s ``¶`` anchors) or refuse (``measure``).
+        A list of ids is one eye block per id (:meth:`_eye_each`); an
+        override that resolves ``id`` before delegating here keeps its own
+        list behaviour (``memory`` pages a batch, the other numeric-ref
+        kinds refuse).
         """
+        if isinstance(id, (list, tuple)):
+            return self._eye_each(list(id), extent=extent, q=q, ring=ring)
         from precis.handlers._eye import eye_response
 
         store = getattr(self, "store", None) or getattr(self.hub, "store", None)
@@ -592,6 +598,53 @@ class Handler(ABC):
             ring=ring,
             stores_cache=self.stores_cached_refs,
         )
+
+    def _eye_each(
+        self,
+        ids: list[Any],
+        *,
+        extent: Any,
+        q: str | None,
+        ring: Any,
+    ) -> Response:
+        """``get(kind=K, id=[...], extent=<rung>)``: :meth:`eye` mapped over
+        the ids in caller order, one block per id (gr659493 — the list used
+        to be ``str()``-ed and looked up as one slug).
+
+        A missing or deleted id is a one-line block; any other refusal (a
+        window selector, a kind with no graph node) fails the whole call.
+        The id count is capped like the plain batch get. No dedupe and no
+        paging: the result budget bounds the body.
+        """
+        from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
+
+        kind = self.spec.kind
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next=f"get(kind={kind!r}, id=[<id>, ...], extent={extent!r})",
+            )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=_id_batch_next("get", kind, ids, extra=f", extent={extent!r}"),
+            )
+        for pos, ident in enumerate(ids):
+            if isinstance(ident, bool) or not isinstance(ident, (str, int)):
+                raise BadInput(
+                    f"id[{pos}] must be one id or handle, got {type(ident).__name__}",
+                    next=f"get(kind={kind!r}, id=[<id>, ...], extent={extent!r})",
+                )
+        blocks: list[str] = []
+        for ident in ids:
+            try:
+                blocks.append(self.eye(id=ident, extent=extent, q=q, ring=ring).body)
+            except NotFound:
+                blocks.append(f"{ident}  not found")
+            except Gone:
+                blocks.append(f"{ident}  deleted")
+        header = f"# {len(ids)} {kind} (batch, extent={extent!r})\n\n"
+        return Response(body=header + "\n\n".join(blocks), result_count=len(blocks))
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         """Per-kind list of accepted ``view=`` values.
