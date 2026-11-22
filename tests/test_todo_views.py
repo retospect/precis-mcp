@@ -930,17 +930,30 @@ def test_get_view_meta_in_unknown_view_options(handler: TodoHandler) -> None:
 # ── gr547804: get view aliases and the unknown-view vocabulary ─────
 
 
-def test_get_view_brief_and_tags_read_as_the_card(handler: TodoHandler) -> None:
-    """gr547804: 'brief' and 'tags' each have one reading — the card
-    already is the brief and carries the ``tags:`` line — so the get
-    runs it and names the reading."""
+def test_get_view_brief_reads_as_the_card(handler: TodoHandler) -> None:
+    """gr547804: 'brief' has one reading — the card already is the
+    brief and carries the ``tags:`` line — so the get runs it and
+    names the reading."""
     r = handler.put(text="Tagged todo.", tags=["project:x"])
     rid = _id_of(r.body)
-    for view in ("brief", "tags"):
-        body = handler.get(id=rid, view=view).body
-        assert f"interpreted: view={view!r} read as the default view" in body
-        assert "Tagged todo." in body
-        assert "project:x" in body
+    body = handler.get(id=rid, view="brief").body
+    assert "interpreted: view='brief' read as the default view" in body
+    assert "Tagged todo." in body
+    assert "project:x" in body
+
+
+def test_get_view_tags_lists_the_ref_tags(handler: TodoHandler) -> None:
+    """gr752798: 'tags' is the base tag-set read (gr613470), not a fold
+    to the card — a caller reading the tags of many todos pays for the
+    tags, not every full body."""
+    r = handler.put(text="Tagged todo.", tags=["project:x"])
+    rid = _id_of(r.body)
+    body = handler.get(id=rid, view="tags").body
+    assert f"# todo {rid} — tags" in body
+    assert "STATUS:open" in body
+    assert "project:x" in body
+    assert "interpreted:" not in body
+    assert "Tagged todo." not in body
 
 
 def test_get_view_status_reads_as_the_card(handler: TodoHandler) -> None:
@@ -958,7 +971,7 @@ def test_get_view_card_reads_as_the_default(handler: TodoHandler) -> None:
     """gr735602: the todo skills call a plain get "the todo card", so
     ``view='card'`` kept arriving from real callers and was refused as
     unknown — it has one reading, the default card, and folds like
-    'full'/'brief'/'tags'/'status'."""
+    'full'/'brief'/'status'."""
     todo_id = _id_of(handler.put(text="Card alias todo.", tags=["project:x"]).body)
     plain = handler.get(id=todo_id)
     out = handler.get(id=todo_id, view="card")

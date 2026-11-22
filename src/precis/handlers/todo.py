@@ -634,19 +634,22 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: family already folds on job/memory/gripe). ``'full'`` is the default
 #: card — a todo's plain get already is the complete read (title +
 #: body + comments + links; ``view='body'`` is the bounded body-only
-#: read, gr554136). ``'brief'`` and ``'tags'`` (gr547804) read as the
+#: read, gr554136). ``'brief'`` (gr547804) reads as the
 #: same card — a todo card is the brief and carries its ``tags:``
 #: line, including the lifecycle status requested by ``'status'``
 #: (gr709768). ``'card'`` is the name the todo skills use for what a
 #: plain get returns ("read the todo card"), so it folds too —
 #: prod kept refusing it (gr735602, 9+ calls in 24 h, two sessions).
-#: ``None`` maps to the default view; each alias runs the
-#: canonical call and names the reading via
+#: ``'tags'`` used to fold the same way (gr547804) until gr752798: the
+#: base ``view='tags'`` (gr613470) is the bounded tag-set read — a
+#: caller that wants only the tags of many todos shouldn't pay for
+#: every full card — so it now rides ``_BASE_VIEWS`` into the shared
+#: dispatch like 'meta'. ``None`` maps to the default view; each alias
+#: runs the canonical call and names the reading via
 #: :func:`interpreted` (gr494831's shape).
 _TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
     "brief": None,
-    "tags": None,
     "status": None,
     "card": None,
 }
@@ -968,8 +971,11 @@ class TodoHandler(NumericRefHandler):
             # list views live. Name the whole vocabulary here. Search
             # views stay excluded so the base's search-redirect (or its
             # own refusal) keeps handling them; alias spellings ('full',
-            # 'brief', 'tags') without an id fall through to the
-            # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
+            # 'brief', 'card') without an id fall through to the
+            # "requires id=" refusal; 'tags' is a shared per-ref view
+            # (the direct handler refuses a missing id, the MCP
+            # dispatcher answers kind-level with the tag inventory);
+            # eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
             views_list = [
                 "body",

@@ -6,7 +6,9 @@ quest, gripe; a PreToolUse hint advertised the spelling verbatim).
 ``meta`` renders the ref's meta dict as JSON, ``tags`` its tag set —
 and paper's ``tags`` lists its ref_tags. Kinds that already gave the
 spelling an own reading keep it (todo/quest/taxon 'meta', job's
-'meta'→'raw', todo/gripe 'tags'→card, paper's 'meta'→overview).
+'meta'→'raw', gripe 'tags'→card, paper's 'meta'→overview; todo's
+'tags'→card fold came out under gr752798 — the shared tag-set read is
+the bounded one a many-todo caller asks for).
 The kind-level inventories stay on
 ``search(kind=K, view='meta'|'tags')``.
 """
@@ -114,6 +116,31 @@ def test_todo_meta_uses_the_shared_render(hub: Hub) -> None:
     body = handler.get(id=rid, view="meta").body
     assert f"# todo {rid} — meta" in body
     assert '"llm_tier": "sonnet"' in body
+
+
+def test_todo_tags_uses_the_shared_render(hub: Hub) -> None:
+    """gr752798: todo's ``'tags'→card`` fold (gr547804) is out — the
+    shared tag-set read is the bounded one a many-todo caller asks
+    for."""
+    handler = TodoHandler(hub=hub)
+    r = handler.put(text="todo tags fixture", tags=["area-meta-fix"])
+    rid = _id_of(r.body)
+    body = handler.get(id=rid, view="tags").body
+    assert f"# todo {rid} — tags" in body
+    assert "STATUS:open" in body
+    assert "area-meta-fix" in body
+    assert "interpreted:" not in body
+
+
+def test_todo_tags_batch_view(hub: Hub) -> None:
+    """``get(id=[...], view='tags')`` maps the tag-set read per id —
+    the triage shape the gripe fell back to ``search`` for."""
+    handler = TodoHandler(hub=hub)
+    a = _id_of(handler.put(text="tags a", tags=["area-a"]).body)
+    b = _id_of(handler.put(text="tags b", tags=["area-b"]).body)
+    body = handler.get(id=[a, b], view="tags").body
+    assert f"# todo {a} — tags" in body and f"# todo {b} — tags" in body
+    assert "area-a" in body and "area-b" in body
 
 
 def test_meta_needs_an_id(hub: Hub) -> None:

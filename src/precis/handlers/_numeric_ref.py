@@ -159,9 +159,11 @@ _FILLER_FIRST_LINE = re.compile(
 #: across todo, paper, job, quest, gripe — a local PreToolUse hint
 #: advertised exactly ``get(kind, id, view='meta'|'tags')``); kinds that
 #: already gave the spelling an own reading keep it — todo/quest/pres/
-#: taxon 'meta', job's ``'meta'→'raw'``, todo's and
-#: gripe's ``'tags'→None`` — those branches run ahead of the base
-#: dispatch. ``full`` (gr676930) is the family-wide complete-read
+#: taxon 'meta', job's ``'meta'→'raw'``, gripe's ``'tags'→None`` —
+#: those branches run ahead of the base dispatch (todo's ``'tags'→None``
+#: fold came out under gr752798 — the tag-set read is the bounded one a
+#: many-todo caller asks for). ``full`` (gr676930) is the family-wide
+#: complete-read
 #: spelling promised by the get description; on the base dispatch it
 #: renders the bare get (card + body), the fullest read a base kind
 #: has. Kinds with their own fuller ``full`` (todo, gripe, job, alert's
