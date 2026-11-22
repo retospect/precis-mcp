@@ -130,7 +130,7 @@ Derived groups name their check after the thing they watch:
   `deploy-uncovered:<host>` (a live
   host in no overlay deploy group — deploys silently skip it),
   `deploy-behind:<host>` (its `meta.code_sha` ≠ the deployed sha),
-  `deploy-ledger:unpublished|invalid` (no published overlay group map
+  `deploy-ledger:stale` (every covered host serves one sha the ledger lacks), `deploy-ledger:unpublished|invalid` (no published overlay group map
   yet; blind until then); `local-serving-pressure` →
   `local-serving-pressure:<host>` (a serving host's KV usage sustained
   over threshold, retractions, or rising host swap-in); `llm-tier-regression` →

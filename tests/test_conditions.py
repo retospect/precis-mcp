@@ -1497,6 +1497,28 @@ def test_deploy_fleet_flags_uncovered_and_lagging_hosts(
     assert "no deploy group" in mine["deploy-uncovered:fleet-c"]
 
 
+def test_deploy_fleet_stale_ledger_is_one_finding(store: Store, fleet_ledger) -> None:
+    """All covered hosts serve one sha the ledger lacks: one
+    ``deploy-ledger:stale`` naming both, no per-host ``deploy-behind``.
+    Mixed hosts keep the per-host findings."""
+    mine = ("fleet-a", "fleet-b")
+    fleet_ledger.extend(mine)
+    _set_ledger(store, {"sha": _FLEET_SHA_A, "covered": list(mine)})
+    for h in mine:
+        _seed_beat(store, h, code_sha=_FLEET_SHA_B)
+    found = _probe_deploy_fleet(store)
+    stale = [f for f in found if f.key == "deploy-ledger:stale"]
+    assert len(stale) == 1
+    assert _FLEET_SHA_A[:12] in stale[0].detail
+    assert _FLEET_SHA_B[:12] in stale[0].detail
+    assert not [f for f in found if f.key.rsplit(":", 1)[-1] in mine]
+
+    _seed_beat(store, "fleet-a", code_sha=_FLEET_SHA_A)
+    found = _probe_deploy_fleet(store)
+    assert "deploy-ledger:stale" not in {f.key for f in found}
+    assert "deploy-behind:fleet-b" in {f.key for f in found}
+
+
 def test_deploy_fleet_ledger_missing_or_invalid(store: Store, fleet_ledger) -> None:
     """No ledger row means the check is blind — that gets its own finding
     (the gr507870 shape), and a malformed payload does too."""

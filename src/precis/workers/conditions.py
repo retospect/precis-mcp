@@ -1224,6 +1224,11 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     ``_DEPLOY_IN_FLIGHT_MAX_MIN`` so a dead deploy's stale marker re-arms
     the check.
 
+    * ``deploy-ledger:stale`` — every covered host serves one sha that is
+      not the ledger's: the ledger is the stale side, so one finding
+      replaces the per-host ``deploy-behind`` set. Mixed hosts (or any
+      recorded skip) keep the per-host findings.
+
     Both need the ledger: written by ``scripts/deploy`` at each success
     marker because the overlay's group membership never leaves the deploy
     machine. ``deploy-ledger:unpublished`` fires while no deploy has
@@ -1300,6 +1305,32 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
             if age_s < in_flight_min * 60:
                 deploying_sha = d_sha
     out: list[ConditionFinding] = []
+    covered_shas = {
+        str(c) if isinstance(c, str) and _DEPLOY_SHA_RE.match(c) else None
+        for h, c in beats
+        if str(h) in covered_set
+    }
+    lone_sha = next(iter(covered_shas)) if len(covered_shas) == 1 else None
+    ledger_stale = bool(
+        deployed_sha
+        and lone_sha
+        and lone_sha != deployed_sha
+        and lone_sha != deploying_sha
+        and not skipped_set
+    )
+    if ledger_stale:
+        assert deployed_sha and lone_sha
+        out.append(
+            ConditionFinding(
+                key="deploy-ledger:stale",
+                detail=(
+                    f"every covered host serves {lone_sha[:12]} but the "
+                    f"ledger records {deployed_sha[:12]} — the ledger is the "
+                    "stale side (a deploy succeeded without publishing it); "
+                    "re-run the publish step rather than chasing hosts"
+                ),
+            )
+        )
     for host, code_sha in beats:
         host = str(host)
         if host not in covered_set:
@@ -1317,7 +1348,8 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
             )
             continue
         if (
-            deployed_sha
+            not ledger_stale
+            and deployed_sha
             and isinstance(code_sha, str)
             and _DEPLOY_SHA_RE.match(code_sha)
             and code_sha != deployed_sha
