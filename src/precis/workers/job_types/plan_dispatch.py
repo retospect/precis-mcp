@@ -125,7 +125,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    coordinator ``brief:`` on the reviewer or the builder's ``validated:``
    rebuttal, newer than the last rejection, buys that head one fresh
    review (a new finding from a brief-bought review is an ordinary
-   send-back), or the gating review is not the one that rejected it. ``REVERT``
+   send-back), or the gating review is not the one that rejected it.
+   An open pre-land stop ask blocks both the build and its review, even
+   when the worker marks the build done. A no-op rebuild on a denied
+   finding parks before another review. A single-target review reporting
+   duplicate work already on main closes through the task moot path.
+   ``REVERT``
    mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
@@ -1359,7 +1364,12 @@ class _Plan:
         (gr659981). The one exemption is ``n`` itself being the pre-land
         reviewer gating that land (:func:`_is_its_land_gate`): its LAND
         verdict is what mints the held ``land_slice``, so holding it
-        would deadlock the chain."""
+        would deadlock the chain. A coordinator ask on its build holds
+        that review even when sequencing would otherwise release it."""
+        if _preland_stop_open(self, n):
+            return True
+        if _is_reviewer(n) and _preland_review_held(self, n):
+            return True
         for node in (n, *self.ancestors(n)):
             for b in self.blockers.get(node.id, []):
                 if self.status_of(b) not in BLOCKER_TERMINAL_STATUSES:
@@ -3517,6 +3527,10 @@ _PRELAND_STOPS: dict[str, str] = {
         "the rebuild did not resolve the finding, or the reviewer is wrong "
         "about it; the verdict names no head other than the pushed tip"
     ),
+    "denied path": (
+        "the rebuild returned no-op and the review requires a change "
+        "outside the builder lane's allowed paths"
+    ),
     "unchanged head": (
         "the rebuild pushed no new commit, so the reviewer judged the same "
         "tree again: read the rebuild job for why it committed nothing (a "
@@ -3678,9 +3692,57 @@ def _open_preland_stop_ask(plan: _Plan, t: _Node) -> _Node | None:
     and the next stop is a new question."""
     for m in sorted(plan.nodes.values(), key=lambda m: m.id):
         stop = m.meta.get(PRELAND_STOP_KEY) if m.kind == "todo" else None
-        if isinstance(stop, dict) and stop.get("node") == t.id and not _closed(m):
+        if m.kind != "todo" or _closed(m):
+            continue
+        if isinstance(stop, dict) and stop.get("node") == t.id:
+            return m
+        # Stops minted before the marker used this same title prefix.
+        if _is_ask_node(m) and m.title.startswith(
+            f"td{t.id}: pre-land review loop stopped ("
+        ):
             return m
     return None
+
+
+def _preland_stop_open(plan: _Plan, t: _Node) -> bool:
+    """Read the stop marker even if the ask's blocker edge is missing."""
+    return (
+        any(
+            isinstance(t.meta.get(key), dict)
+            for key in (
+                _templates.PENDING_LAND_KEY,
+                _templates.PRELAND_HELD_KEY,
+                _templates.PRELAND_FIX_ROUNDS_KEY,
+            )
+        )
+        and _open_preland_stop_ask(plan, t) is not None
+    )
+
+
+def _preland_review_held(plan: _Plan, n: _Node) -> bool:
+    """A held build's coordinator ask also holds its read-only review."""
+    return any(
+        _preland_stop_open(plan, t)
+        or (
+            (
+                n.meta.get(_templates.PRELAND_REVIEW_KEY)
+                or isinstance(t.meta.get(_templates.PENDING_LAND_KEY), dict)
+                or isinstance(t.meta.get(_templates.PRELAND_HELD_KEY), dict)
+            )
+            and plan.open_asks(t)
+        )
+        for t in _review_targets(plan, n)
+        if t.status not in _RULING_STATUSES
+    )
+
+
+# Match affirmative duplicate findings, independently of the judged-head SHA.
+_ALREADY_ON_MAIN = re.compile(
+    r"(?:^|[.!?]\s+|\n)\s*(?:(?:the |this )?"
+    r"(?:fix|change|work|patch)\s+(?:is|was)\s+)?"
+    r"already (?:landed )?on (?:`?origin/`?)?`?main`?\b",
+    re.IGNORECASE,
+)
 
 
 def _park_preland_rounds(
@@ -3700,7 +3762,8 @@ def _park_preland_rounds(
     rebuilding again (gr684815, gr688058): ``stop`` is
     :func:`_preland_round`'s ``(reason, why)`` — the same finding twice
     running, an unchanged reviewed head, a stale-read verdict, or
-    :data:`PRELAND_FIX_CAP` rounds. The ask's title names the reason and
+    :data:`PRELAND_FIX_CAP` rounds — or a no-op rebuild on a denied
+    finding. The ask's title names the reason and
     its body that reason's own reading (:data:`_PRELAND_STOPS`).
 
     Only the count resets (gr762396): ``record`` — the round record of
@@ -4026,6 +4089,7 @@ def _park_rejected_head(
     t: _Node,
     head: str,
     now: datetime,
+    denied: str | None = None,
 ) -> None:
     """Hold ``t`` on the "unchanged head" stop instead of releasing the
     reviewer ``n`` onto ``head`` — the head its last FIX/REVERT already
@@ -4056,6 +4120,19 @@ def _park_rejected_head(
             w.remove_tags(t, claims)
         if t.status != "open":
             w.set_status(t, "open")
+    elif denied:
+        # The verdict step found a no-op while the branch was still stashed.
+        # Consume that verdict so answering the ask can start a fresh run.
+        stash = _dict_of(t.meta.get(_templates.PRELAND_HELD_KEY))
+        w.stamp_meta(
+            t,
+            {
+                _templates.PRELAND_HELD_KEY: {
+                    **stash,
+                    "at": now.astimezone(UTC).isoformat(),
+                }
+            },
+        )
     kind = str(record.get("kind") or "")
     rest = str(record.get("verdict") or "")
     if not kind or not rest:
@@ -4066,6 +4143,7 @@ def _park_rejected_head(
         "and the held land is that unchanged head — the rebuild pushed "
         "nothing new, so no review re-runs on it (gr762396)"
     )
+    stop = ("denied path", denied) if denied else ("unchanged head", why)
     _park_preland_rounds(
         plan,
         w,
@@ -4074,11 +4152,21 @@ def _park_rejected_head(
         t,
         kind.upper() or "FIX",
         rest or "(the rejected finding's text is not recorded)",
-        ("unchanged head", why),
+        stop,
         now,
         head,
         record,
     )
+
+
+def _denied_noop_reason(store: Any, plan: _Plan, w: _Writer, t: _Node) -> str | None:
+    finding = _handback_finding(store, plan, t, w, after_rebuild=True)
+    if finding is None:
+        return None
+    denied = _route.coordinator_route(
+        _as_intent(finding), _node_deny_paths(store, plan, t), graph=False
+    )
+    return f"the no-op rebuild's review finding {denied}" if denied else None
 
 
 def _step_reviews(
@@ -4093,7 +4181,31 @@ def _step_reviews(
     for n in plan.todos():
         if not _is_reviewer(n) or plan.paused(n):
             continue
-        if plan.child_todos(n) or plan.live_job(n):
+        if plan.child_todos(n) or plan.live_job(n) or _preland_review_held(plan, n):
+            continue
+        # run_slice can re-hold the land and mark the build done itself.
+        # Check that path before accepting a verdict or releasing a review.
+        parked = False
+        for t in _pending_targets(plan, n) if not _closed(n) else ():
+            build_jobs = plan.jobs(t)
+            if (
+                t.status != "done"
+                or not build_jobs
+                or build_jobs[-1].status != "succeeded"
+                or plan.live_job(t)
+            ):
+                continue
+            verdict = _verdict_comment(store, t.id, since=build_jobs[-1].created_at)
+            if verdict is None or verdict[0] != "no-op":
+                continue
+            denied = _denied_noop_reason(store, plan, w, t)
+            if denied is not None:
+                params = _dict_of(t.meta.get(_templates.PENDING_LAND_KEY))
+                _park_rejected_head(
+                    plan, w, res, n, t, str(params.get("head") or ""), now, denied
+                )
+                parked = True
+        if parked:
             continue
         dead = _dead_land_targets(plan, store, n)
         if dead:
@@ -4249,6 +4361,23 @@ def _step_reviews(
                 continue
             w.set_status(n, "done")
             res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
+        elif preland and len(pending) == 1 and _ALREADY_ON_MAIN.search(rest):
+            target = pending[0]
+            if target.status not in _RULING_STATUSES:
+                w.comment(target, f"handoff: moot: review td{n.id} — {rest}")
+                w.add_tag(target, MOOT_TAG, now)
+                w.remove_tags(target, _claims(target))
+                w.set_status(target, "done")
+            w.stamp_meta(
+                target,
+                {
+                    _templates.PENDING_LAND_KEY: None,
+                    _templates.PRELAND_HELD_KEY: None,
+                    _templates.PRELAND_FIX_ROUNDS_KEY: None,
+                },
+            )
+            w.set_status(n, "won't-do")
+            res.notes.append(f"td{n.id}: review {kind} — duplicate work on main")
         elif preland:
             # gr570506 (Reto 2026-11-12): a FIX/REVERT on a branch that
             # has not landed sends the work back to the builder — nothing
@@ -5174,7 +5303,7 @@ def _step_verdicts(
             # unblocking the build with no brief — and a ``moot:`` would
             # kill the plan.
             continue
-        if plan.live_job(n):
+        if plan.live_job(n) or _preland_stop_open(plan, n):
             continue
         root = plan.nodes.get(n.root)
         if root is not None and "release-pass" in root.open_tags:
@@ -5297,6 +5426,20 @@ def _step_verdicts(
             reviewer_node = (
                 plan.nodes.get(reviewer_id) if isinstance(reviewer_id, int) else None
             )
+            if kind_ == "no-op" and reviewer_node is not None:
+                denied = _denied_noop_reason(store, plan, w, n)
+                if denied is not None:
+                    _park_rejected_head(
+                        plan,
+                        w,
+                        res,
+                        reviewer_node,
+                        n,
+                        str(held_params.get("head") or ""),
+                        now or datetime.now(UTC),
+                        denied,
+                    )
+                    continue
             rejected = (
                 _held_on_rejected_head(store, plan, w, reviewer_node, n, held_params)
                 if reviewer_node is not None
@@ -9168,7 +9311,12 @@ _HANDBACK_HEAD_RE = re.compile(
 
 
 def _handback_finding(
-    store: Any, plan: _Plan, n: _Node, w: _Writer | None = None
+    store: Any,
+    plan: _Plan,
+    n: _Node,
+    w: _Writer | None = None,
+    *,
+    after_rebuild: bool = False,
 ) -> str | None:
     """The finding of the newest pre-land hand-back on ``n`` still
     waiting for its rebuild (gr738860), else ``None``: the newest comment
@@ -9177,10 +9325,10 @@ def _handback_finding(
     parenthetical stripped. ``None`` once a coordinator ``brief:``
     (:func:`_route_text`'s) is newer — the coordinator has spoken — or a
     builder job was created after it (a rebuild already ran on that
-    finding). A dry pass reads the hand-back it would have written
-    (``w.dry_comments``) first: the write is skipped, so the store lacks
-    it."""
-    if w is not None and w.dry_run:
+    finding), unless checking a no-op verdict, which requires a rebuild.
+    A dry pass reads a hand-back it would have written from
+    ``w.dry_comments`` when looking for work to dispatch."""
+    if not after_rebuild and w is not None and w.dry_run:
         for ref_id, text in reversed(w.dry_comments):
             if (
                 ref_id == n.id
@@ -9207,10 +9355,11 @@ def _handback_finding(
     brief_at = getattr(brief, "created_at", None)
     if brief is not None and (not isinstance(brief_at, datetime) or brief_at > stamp):
         return None
-    if any(
+    rebuilt = any(
         str(j.meta.get("job_type") or DEFAULT_OP) == DEFAULT_OP and j.created_at > stamp
         for j in plan.jobs(n)
-    ):
+    )
+    if rebuilt != after_rebuild:
         return None
     text = _HANDBACK_TAIL_RE.sub("", str(hand.text).strip())
     return _HANDBACK_HEAD_RE.sub("", text, count=1).strip() or None
@@ -9487,6 +9636,17 @@ def _overlap_holds(
     return held
 
 
+def _node_deny_paths(store: Any, plan: _Plan, n: _Node) -> tuple[str, ...]:
+    """The deny paths governing this build's repository."""
+    repo = _node_repo(plan, n)
+    if repo == _lanes.DEFAULT_REPO:
+        return _lanes.deny_paths_for(store) + _governs.governed_skill_paths()
+    profile = _lanes.repo_profile(repo)
+    if profile is not None and profile.deny_paths is not None:
+        return profile.deny_paths
+    return _lanes.deny_paths_for(store)
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -9602,11 +9762,7 @@ def _step_dispatch(
                 if profile is not None:
                     # The precis deny set (and its governed skills) is no
                     # reason to route a brief about another repo.
-                    node_deny = (
-                        profile.deny_paths
-                        if profile.deny_paths is not None
-                        else _lanes.deny_paths_for(w.store)
-                    )
+                    node_deny = _node_deny_paths(w.store, plan, n)
         if plan.blocked(n) or plan.paused(n):
             continue
         if _is_repo_release(n):

@@ -9085,6 +9085,91 @@ def test_preland_fix_needing_a_denied_path_routes_to_one_ask(
     assert len(_run_slice_jobs(store, build)) == runs
 
 
+@pytest.mark.parametrize("linked", [True, False])
+def test_preland_stop_holds_a_done_build_and_its_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch, linked: bool
+) -> None:
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(store, "")
+    build, review = mint.ids["build"], mint.ids["review"]
+    # The last review was already consumed. A build finishing with a
+    # held land must not release a new review while the ask is open.
+    latest = _run_slice_jobs(store, review)[-1]
+    store.stamp_ref_meta(review, {"review": {"job": latest, "verdict": "FIX"}})
+    store.remove_tag(review, Tag.open("claimed-by:lane-claude-sub"))
+    store.add_tag(
+        review, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+    )
+    plan = pd._load(store)
+    ask = pd._mint_coordinator_ask(
+        store,
+        plan,
+        plan.nodes[build],
+        title=f"td{build}: pre-land review loop stopped (same finding) — a coordinator call",
+        body="Coordinator decision required.",
+        context="same finding",
+        now=datetime.now(UTC),
+        block_node=linked,
+    )
+    for _ in range(2):
+        result = pd.run_pass(store)
+        assert result.asks == result.dispatched == 0
+        assert _status(store, build) == "done"
+        assert _run_slice_jobs(store, review) == [latest]
+    _mark_done(store, ask)
+    assert pd.run_pass(store).dispatched == 1
+
+
+def test_preland_review_already_on_main_closes_duplicate(store: Store) -> None:
+    mint = _reviewed_pending(
+        store, "review: REVERT — The fix is already on main as 667b1f0a2."
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    result = pd.run_pass(store)
+    assert result.reviews == 1
+    assert result.asks == result.dispatched == 0
+    assert _status(store, mint.ids["root"]) == "won't-do"
+    assert _status(store, review) == "won't-do"
+    assert _meta(store, build).get("pending_land") is None
+    assert any("moot: review" in c for c in _todo_comments(store, build))
+    assert pd.run_pass(store).dispatched == 0
+
+
+@pytest.mark.parametrize("worker_reheld", [True, False])
+def test_noop_rebuild_on_denied_review_finding_stops_before_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch, worker_reheld: bool
+) -> None:
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(store, _DENIED_FINDING)
+    build, review = mint.ids["build"], mint.ids["review"]
+    assert pd.run_pass(store).asks == 1
+    (first_ask,) = _blocked_by_ids(store, build)
+    _mark_done(store, first_ask)
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, _STALE_NOOP)
+    if worker_reheld:
+        _rehold(store, build)
+        store.stamp_ref_meta(build, {"preland_held": None})
+    result = pd.run_pass(store)
+    assert result.asks == 1
+    assert result.dispatched == 0
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    (stop,) = _preland_stops(store, build)
+    assert _meta(store, stop)["preland_stop"]["reason"] == "denied path"
+    assert "scripts/ship" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(stop)
+    )
+    assert len(_run_slice_jobs(store, review)) == 1
+    result = pd.run_pass(store)
+    assert result.asks == result.dispatched == 0
+    _mark_done(store, stop)
+    result = pd.run_pass(store)
+    assert result.asks == 0
+    assert result.dispatched == 1
+    assert len(_run_slice_jobs(store, review)) == 1
+
+
 def test_preland_fix_on_an_allowed_path_still_rebuilds(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

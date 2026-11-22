@@ -29,6 +29,10 @@ entry-point group; failure isolation mirrors
 :func:`precis.dispatch._load_plugins` — one broken plugin must not
 brick the worker.
 
+A pre-land coordinator ask holds the builder and reviewer together.
+Builds can be done with a pending land, so a review checks the build's
+ask separately from sequencing on the build's status.
+
 ``elsevier_abstract_backfill`` is deterministic: explicit confirmed IDs,
 expected-count guard and dry-run default re-arm existing fetch pins without
 removing body/hash/event evidence or calling a provider/model.
