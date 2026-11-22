@@ -19,6 +19,15 @@ Adapted from companion-inc/feynman (MIT). Checks whether a paper's
 stated methods, defaults, and metrics match what its public
 repository actually does.
 
+## Build the mesh first
+
+Before the audit draft, mint a finding hub for every claim of the paper
+the audit relies on, matches included, and file one memory node for the
+audited project. The mismatch findings filed below with `cited_in` stay
+as they are. The draft comes last and cites `[fi<id>]` and `[me<id>]`
+only, never bare `[pc<id>]` or `[pa<id>]`; the step order is
+[[precis-gap-analysis]].
+
 ## Read the paper's claims first
 
 ```python
@@ -80,8 +89,9 @@ Part 2); `disputes` is free to file and never blocks the paper.
 put(kind="draft", id="<slug>-audit", project=<todo-id>, title="Code audit — <slug>")
 ```
 
-One artifact per audit: the paper, the repo, and every finding above,
-grouped mismatches / omissions / ambiguous.
+One artifact per audit: the paper, the repo, and every finding above
+cited as `[fi<id>]`, grouped mismatches / omissions / ambiguous. A fact
+read in the repo cites the memory node of the project, `[me<id>]`.
 
 ## See also
 

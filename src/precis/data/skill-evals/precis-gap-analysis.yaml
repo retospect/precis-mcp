@@ -1,0 +1,62 @@
+# Eval cases for precis-gap-analysis (schema: precis.skill_eval.cases).
+# gr613096: a survey builds the mesh first and writes last. Criteria match
+# calls order-insensitively, so "finding before draft" is pinned as two
+# facts: a finding grounded on the given chunk is minted, and no draft
+# write cites a bare paper chunk or whole paper.
+skill: precis-gap-analysis
+cases:
+  - id: survey-mesh-before-draft
+    subtasks: 2
+    prompt: |
+      Compare project X against precis from its paper and write it up as
+      draft 'x-gap-analysis-{run}'. The paper is pa7; the claim to rely
+      on, 'X completes 71 % of 25 held-out tasks', is stated in its
+      chunk pc42.
+    expect:
+      calls:
+        - verb: put
+          kind: finding
+          # Grounded on the chunk: a supporter's source_handle (the hub
+          # door the skill teaches) or args.cited_in (a chase finding).
+          args: {args: 're:(?s).*\bpc42\b.*'}
+        - {verb: put, kind: draft, args: {id: 're:x-gap-analysis-\d+-\d+'}}
+    forbid:
+      calls:
+        - {verb: put, kind: draft, args: {text: 're:(?s).*\[p[ac]\d.*'}}   # bare [pc…] / [pa…] cite
+        - {verb: edit, kind: draft, args: {text: 're:(?s).*\[p[ac]\d.*'}}
+    fake:
+      calls:
+        - {verb: search, kind: memory, args: {tags: ['SPACE:repo-dev'], args: {under: me608724}, q: project X}}
+        - {verb: get, kind: paper, args: {id: pc42}}
+        - {verb: search, kind: finding, args: {q: 'X completes 71 % of 25 held-out tasks', status: '*', mode: semantic}}
+        - verb: put
+          kind: finding
+          args:
+            title: Benchmark runs show X completes 71 % of 25 held-out tasks.
+            args: {supporters: [{paper: pa7, source_handle: pc42}]}
+        - verb: put
+          kind: memory
+          args:
+            title: 'Project X: agent benchmark harness, 71 % on 25 held-out tasks'
+            text: >-
+              What: agent benchmark harness. Licence: MIT. Handles: pa7,
+              fi101. Surveyed: 2026-11-22. Take: graded task depth.
+              Reject: none.
+            tags: ['SPACE:repo-dev', 'section:reference']
+            link: me608724
+            rel: part-of
+        - {verb: put, kind: draft, args: {id: x-gap-analysis-0-0, title: 'Project X — gap analysis'}}
+        - verb: put
+          kind: draft
+          args:
+            id: x-gap-analysis-0-0
+            chunk_kind: paragraph
+            text: 'X completes 71 % of 25 held-out tasks [fi101]; precis has no graded task depth [me102].'
+            at: {last: true}
+      record: null
+      answer: >
+        Mesh first: searched the prior-art hub, read pc42, minted claim
+        hub fi101 on it (supporters with source_handle), filed the
+        project's memory node me102 under me608724, then wrote the draft,
+        whose prose cites [fi101] and [me102] and never a bare [pc42] or
+        [pa7].

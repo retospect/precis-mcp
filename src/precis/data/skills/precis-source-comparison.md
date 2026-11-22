@@ -20,6 +20,16 @@ Adapted from companion-inc/feynman (MIT). Builds a source-grounded
 matrix of what different corpus sources say about one topic, and
 where they disagree.
 
+## Build the mesh first
+
+Before the matrix, mint a finding hub for every claim a paper row will
+quote and close that cell with `[fi<id>]`. A hub takes paper supporters
+only, so a web, news or wikipedia row cites a memory node `[me<id>]`
+that holds the source handle: one node per non-paper source, or per
+surveyed project. The draft comes last and cites `[fi<id>]` and
+`[me<id>]` only, never bare `[pc<id>]` or `[pa<id>]`; the step order is
+[[precis-gap-analysis]].
+
 ## Gather across kinds
 
 ```python
@@ -33,7 +43,9 @@ summarising its position.
 ## Build the matrix
 
 Columns: source, key claim, evidence type, caveats, confidence. One
-row per source; quote the claim, don't paraphrase past what it says.
+row per source; quote the claim, don't paraphrase past what it says, and
+close the claim cell with its hub `[fi<id>]` (a paper row) or its memory
+node `[me<id>]` (a web, news or wikipedia row).
 
 ```python
 put(kind="draft", id="<topic>-comparison", project=<todo-id>, title="<Topic> — source comparison")
