@@ -837,10 +837,11 @@ only by a worker advertising all three; `land_slice`, `release_cut`,
 `release_deploy` and `release_confirm` need `repo_checkout` + `git` (a
 task's next build, review and land stay pinned to the host whose hub
 holds its work, a re-cut, deploy or confirm to the host that ran the
-cut). Until a host
-qualifies, the job waits `STATUS:queued` — it is not failed or counted as
-an attempt — the sweeper raises `scheduler/unschedulable:<job id>`, and
-after 10 min the tick notes `td<id>: job jo<N> queued <m> min — no host
+cut). Until a host qualifies, the job stays `STATUS:queued` without
+consuming an attempt. The sweeper raises `scheduler/unschedulable:<job id>`
+unless a host covered by `host-dark` last advertised the full missing token
+set and matches any pin. In that case the job waits on the host alert.
+After 10 min the tick notes `td<id>: job jo<N> queued <m> min — no host
 advertises {tokens}`.
 
 The probes, re-run every heartbeat:
@@ -1422,7 +1423,9 @@ and `service_config` pins apply to no run_slice. The play refuses the switch
 when the host has no managed builder user and `builder_hosts` names no other
 host. A fleet-wide operator hold of
 `run_slice` now also withdraws the `builder` floor everywhere, so queued
-builds raise the unschedulable alert for its duration. Rollback: the variable
+builds raise the unschedulable alert for its duration unless a host covered
+by `host-dark` last advertised the full missing token set and matches any
+pin. Those builds wait on the host alert. To roll back, set the variable
 back to `true` and redeploy.
 
 Builds on other builder hosts only: the same variable works before the gateway

@@ -12166,6 +12166,49 @@ def test_unplaced_ask_waits_on_a_dark_host(store: Store) -> None:
     assert pd._UNPLACED_ASK_KEY in _meta(store, task)
 
 
+def test_dark_builder_outage_raises_one_alert_for_ten_waiting_jobs(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.alerts import list_open_alerts
+    from precis.workers import nursery, sweeper
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        for i in range(10):
+            m.node(f"task-{i}", f"Build {i}", {"op": "run_slice"}, body="Build it.")
+
+    plan = T._run(store, None, build)
+    tasks = [plan.ids[f"task-{i}"] for i in range(10)]
+    for task in tasks:
+        job = _slice_job(
+            store, task, "run_slice", "queued", meta={"adapter": "claude_p"}
+        )
+        _backdate(store, job, 35)
+    _dark_advertise(
+        store,
+        "node-a",
+        {"repo_checkout": 1, "claude_bin": 1, "git": 1},
+        meta={"worker_units": {"units": {"worker": {}}}},
+    )
+    monkeypatch.setattr(
+        nursery, "_DETECTORS", [("host-dark", nursery._detect_host_dark)]
+    )
+    monkeypatch.setattr(nursery, "notify_critical_alert", lambda *args, **kwargs: None)
+    nursery.run_nursery_pass(store)
+    nursery.run_nursery_pass(store)
+    assert sweeper._alert_unschedulable_jobs(store) == 0
+
+    result = pd.run_pass(store)
+    assert result.asks == 0
+    assert all(pd._UNPLACED_ASK_KEY not in _meta(store, task) for task in tasks)
+    assert sum("waiting on host-dark:node-a" in note for note in result.notes) == 10
+    alerts = [a for a in list_open_alerts(store) if a["source"] == "nursery:host-dark"]
+    assert len(alerts) == 1
+    assert "node-a" in alerts[0]["title"]
+    assert alerts[0]["severity"] == "critical"
+    assert alerts[0]["seen_count"] == 2
+
+
 def test_unplaced_ask_mints_past_the_host_dark_cap(store: Store) -> None:
     """td681892: ``host-dark`` pages the 50 stalest hosts only. A job that
     fits only the 51st dark host gets NO replacement alert, so its ask

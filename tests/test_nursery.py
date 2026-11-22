@@ -1976,7 +1976,7 @@ def test_host_dark_detail_hints_db_auth_when_units_were_up(store: Store) -> None
         f for f in _detect_host_dark(store) if f.fingerprint_key == f"host-dark:{host}"
     ]
     assert len(hits) == 1
-    assert "fe_sendauth" in hits[0].detail
+    assert "fe_sendauth: no password supplied" in hits[0].detail
 
     host = _host()
     _seed_heartbeat(

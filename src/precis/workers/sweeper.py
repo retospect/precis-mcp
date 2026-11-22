@@ -130,6 +130,7 @@ from precis.workers.executors._common import (
     RELEASE_LEG_JOB_TYPES,
     advertised_by_host,
     append_chunk,
+    dark_advertised_by_host,
     effective_requires,
     job_type_requires,
     lane_adapter_map,
@@ -809,9 +810,13 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     ``nursery._detect_host_dark`` uses to call a host dark (mirrored on the
     ``/factory`` UI's ``_STALE_AFTER_S`` = 600s "alive" cutoff), so a host
     merely quiet between heartbeats (default 60s pacing) never trips this.
+    When one host covered by the nursery's host-dark alert last advertised
+    the full placement gap and all other missing resources, that alert
+    covers the wait. A retired host still leaves an unschedulable job.
     """
     with store.pool.connection() as conn:
         by_host = advertised_by_host(conn)
+        dark_by_host = dark_advertised_by_host(conn)
         lane_map = lane_adapter_map(conn)
         advertised = set().union(*by_host.values()) if by_host else set()
         rows = conn.execute(
@@ -882,9 +887,14 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             unmet_set |= {res for res in requires if res not in advertised}
         if not unmet_set:
             continue
+        pin = params.get("target_node")
+        dark_hosts = (
+            [dark_by_host.get(str(pin), set())] if pin else dark_by_host.values()
+        )
+        if gap and any(unmet_set <= tokens for tokens in dark_hosts):
+            continue
         unmet = sorted(unmet_set)
         requires = {**requires, **{tok: 1 for tok in placement_requires(meta)}}
-        pin = params.get("target_node")
         where = f"target_node={pin}" if pin else "no target_node pin"
         fingerprint = f"unschedulable:{ref_id}"
         raise_alert(

@@ -1732,20 +1732,19 @@ def _host_dark_detail(
         "liveness signal down with it (gr186752). Every daemon on this host "
         "is presumed dead until the heartbeat resumes. "
     )
-    detail = (
+    units = ((meta or {}).get("worker_units") or {}).get("units") or {}
+    if units:
+        base += (
+            f"If {host} is reachable, its workers may have lost database access. "
+            "Units were running at the last heartbeat. Before restarting, check "
+            "the worker log for `fe_sendauth: no password supplied` and verify "
+            "the deployed database credentials. "
+        )
+    return (
         base
         + _platform_recovery_hint(platform)
         + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
     )
-    units = ((meta or {}).get("worker_units") or {}).get("units") or {}
-    if units:
-        detail += (
-            " Likely cause: units were running at the last beat; a host "
-            "that is up but silent often cannot authenticate to the "
-            "database — check the worker log for fe_sendauth and the "
-            "credential files."
-        )
-    return detail
 
 
 def _detect_dead_workers(store: Store) -> list[Symptom]:

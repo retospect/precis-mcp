@@ -147,6 +147,9 @@ capability requirements no live host advertises in `resource_slots`
 (and no `params.target_node` pin falls back on) can never be placed —
 it raises `scheduler/unschedulable:<job ref>` at warn, auto-resolved
 when the job leaves the queue or the capability is advertised again.
+If a host covered by `host-dark` last advertised the full missing token
+set and matches any `params.target_node` pin, the job waits on that host
+alert.
 A job pinned by `params.target_node` to a host that still heartbeats
 but no longer runs the executor's drain pass (it left the lane: ran
 `job_<executor>` this week, silent past 4h, nothing leased there) fails
