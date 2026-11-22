@@ -16,6 +16,8 @@ status: active
 
 # Spoken descriptions and word handles
 
+For a quick start in a live conversation, read [[precis-voice-chat-help]].
+
 ## Talking by voice: name things, keep handles recoverable
 
 When talking to Reto by voice, say the description first and never read the
@@ -47,9 +49,8 @@ cues, so use the returned exact handle for subsequent reads and writes.
 
 A word handle is the say-out-loud form of a ref id: two common words,
 adjective + noun, instead of six digits (`gr674030` is "gentle beacon").
-Speak them when a human listens rather than reads: a voice or audio
-interface, or the user saying "use word handles". Say the words and never
-read the number aloud: "gentle beacon", not "674030".
+Use them aloud when a description is unavailable or the user asks for word
+handles. Say "gentle beacon" and never read the number aloud.
 
 Off by default, so normal agent traffic pays no tokens. Turn it on and
 off again for text:

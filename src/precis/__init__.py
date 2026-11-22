@@ -38,6 +38,8 @@ plugins and bridges sharing the repo:
   per account (``web_user_key_memory``) so token rotation and separate grants keep the same hub.
   The account insert mints the hub transactionally. MCP reads the pointer
   from the authenticated request for initialize and the first tool result.
+  The live voice skill pointer also rides both surfaces because some
+  connectors hide initialize instructions and any connection can carry voice.
 - *Storage.* ``store/`` (psycopg3 pool, forward-only ``Migrator``, composed
   sub-stores) over ``migrations/``; ``settings.py`` / ``secrets.py`` are the
   DB-resident config and vault layers.

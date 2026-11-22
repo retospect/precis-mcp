@@ -223,7 +223,8 @@ by URL over Tailscale). Set the draft's default voice per profile
 
 ## See also
 
-For reference names in podcasts and voice chat, follow
+For live conversation, read [[precis-voice-chat-help]].
+For reference names in podcasts, follow
 [[precis-word-handles-help]] §Talking by voice: name things, keep handles recoverable.
 Say the description and retain the handle once in the transcript; never read it aloud.
 

@@ -19,8 +19,7 @@ def instructions(user: WebUser) -> str:
         f"me{memory_id} ({to_words(memory_id)}). "
         f"Read it first with get(kind='memory', id='me{memory_id}'). "
         "Update it when you learn something durable they stated and your "
-        "connection allows the write. For voice, use words in speech and the "
-        "numeric handle in calls. See get(kind='skill', id='precis-word-handles-help')."
+        "connection allows the write."
     )
 
 

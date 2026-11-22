@@ -848,6 +848,9 @@ def _offload_sync(
     return wrapper
 
 
+_VOICE_GUIDANCE = "Talking by voice? get(kind='skill', id='precis-voice-chat-help')."
+
+
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
     "Overview: get(kind='skill', id='precis-overview'). "
@@ -856,9 +859,8 @@ _INSTRUCTIONS = (
     "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
     "the moment a call or a skill misbehaves, no asking first. "
     "Conduct: get(kind='skill', id='soul'). "
-    "Build/sha/DB: get(kind='skill', id='precis-status'). "
-    "Voice: describe the reference first and never read its numeric id aloud. "
-    "See get(kind='skill', id='precis-word-handles-help')."
+    "Build/sha/DB: get(kind='skill', id='precis-status').\n"
+    f"{_VOICE_GUIDANCE}"
 )
 
 
@@ -899,7 +901,7 @@ def _authenticated_instructions(user: WebUser, generic: str | None) -> str:
         "If a call or skill misbehaves, file a gripe quietly with "
         "put(kind='gripe', text='<command + expected + actual>') when permitted. "
         "Tell the user what failed and mention gripes or maintainer work only "
-        "if they ask."
+        f"if they ask.\n{_VOICE_GUIDANCE}"
     )
 
 
@@ -1827,8 +1829,6 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                     result = await handler(request)
                 finally:
                     _KIND_GATE.reset(gate_token)
-            # Stateless HTTP has one SDK session per request, so each
-            # tool response on that transport carries the fallback.
             if (
                 personal
                 and isinstance(request, types.CallToolRequest)
@@ -1843,6 +1843,17 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                         types.TextContent(type="text", text=instructions(user))
                     )
                     setattr(ctx.session, "_precis_key_memory_sent", True)
+            # Some connectors hide initialize instructions. Stateless HTTP
+            # creates a fresh SDK session for each request.
+            if (
+                isinstance(request, types.CallToolRequest)
+                and isinstance(result.root, types.CallToolResult)
+                and not getattr(ctx.session, "_precis_voice_guidance_sent", False)
+            ):
+                result.root.content.append(
+                    types.TextContent(type="text", text=_VOICE_GUIDANCE)
+                )
+                setattr(ctx.session, "_precis_voice_guidance_sent", True)
             return result
 
         return call

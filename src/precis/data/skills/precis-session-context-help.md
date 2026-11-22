@@ -2,11 +2,12 @@
 id: precis-session-context-help
 family: core
 title: precis — session context (banner, disabled kinds, default tags)
-summary: reading the cold-start banner — live and unavailable kinds, pinned skills — and the default tags a put may pick up
+summary: read the cold-start banner, understand connector session binding, and identify default tags on a put
 answers:
   - why did a verb fail with Unsupported on a kind I expected in this session?
   - why did my note end up tagged with a project tag I didn't add?
   - what does the workspace tag mean on a file?
+  - how is my connector session bound for the word-handle switch?
 applies-to: cold-start banner; put/tag response hints
 status: active
 tags: orientation, troubleshooting
@@ -43,6 +44,25 @@ on either line.
 A `Pinned skills:` line lists skills this deployment surfaces for every
 connecting agent; see [[precis-startup-skills-help]] for it and its ⚠
 warning lines.
+
+## How is my connector session bound?
+
+The server binds calls on a stateful MCP connection to its live session,
+created by the transport. A stateless HTTP connector gets a fresh session
+per request. On that transport, the word-handle switch follows the
+authenticated OAuth grant across calls and access-token refreshes. The
+acknowledgement says either `for this session` or `for this connector credential`.
+
+A shared installation bearer on stateless HTTP has no dedicated switch
+scope. If `put(kind='handle', text='on')` returns `BadInput` asking for a live
+session or dedicated credential, reconnect through OAuth for a persistent
+switch, or call `get(kind='handle', id=648264)` with the ref's numeric id to
+convert it once. See [[precis-word-handles-help]] for client matching and
+how to check whether the switch is on.
+
+The banner points every connecting agent to [[precis-voice-chat-help]].
+Connectors that hide the banner can get the same pointer in the first
+tool reply of a live session, or in each stateless HTTP tool reply.
 
 ## How do I tell the user what this deployment is configured for?
 
