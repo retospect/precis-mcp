@@ -1375,8 +1375,37 @@ def _poll(
     return ssh_node._poll_one(ctx)
 
 
+_JOB_HOST_MEM_MB, _JOB_HOST_CPU_MILLI = 16384, 8000
+
+
+def _slice_fp() -> Footprint:
+    """The footprint a detached ``slice`` job holds: run_slice's own default
+    (no live override in these tests), so a retuned default moves the
+    expectations with it."""
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+    return _WORK_FOOTPRINTS["slice"]
+
+
+def _job_host_free(*held: Footprint) -> dict[str, int]:
+    """``_seed_job_host``'s free capacity once ``held`` footprints are held."""
+    return {
+        "cpu_milli": _JOB_HOST_CPU_MILLI - sum(f.cpu_milli for f in held),
+        "mem_mb": _JOB_HOST_MEM_MB - sum(f.mem_mb for f in held),
+    }
+
+
+def _slice_job_holds(rid: int, pid: int) -> list[tuple[str, int, str]]:
+    """The two rows a launched ``slice`` job's spawn leaves, by resource."""
+    fp = _slice_fp()
+    holder = f"job:{rid}:{pid}:3600"
+    return [("cpu_milli", fp.cpu_milli, holder), ("mem_mb", fp.mem_mb, holder)]
+
+
 def _seed_job_host(store: Store, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
-    store.sync_host_resource_slots(host, {"mem_mb": 16384, "cpu_milli": 8000})
+    store.sync_host_resource_slots(
+        host, {"mem_mb": _JOB_HOST_MEM_MB, "cpu_milli": _JOB_HOST_CPU_MILLI}
+    )
     monkeypatch.setenv("PRECIS_HOST_NAME", host)
 
 
@@ -1391,10 +1420,7 @@ def test_job_spawn_holds_name_the_job_and_its_child(
         store, rid, ["sleep", "30"], tmp_path, monkeypatch, babysit=True
     )
     try:
-        assert _job_holds(store, host) == [
-            ("cpu_milli", 2000, f"job:{rid}:{pid}:3600"),
-            ("mem_mb", 4096, f"job:{rid}:{pid}:3600"),
-        ]
+        assert _job_holds(store, host) == _slice_job_holds(rid, pid)
     finally:
         _kill_group(pid)
 
@@ -1413,12 +1439,12 @@ def test_dead_launcher_holds_refunded_by_the_terminal_poll(
     _group_gone(pid)
     # Nothing released them: the dead launcher's leak the poll must close.
     assert [r for r, _u, _h in _job_holds(store, host)] == ["cpu_milli", "mem_mb"]
-    assert _free(store, host) == {"cpu_milli": 6000, "mem_mb": 12288}
+    assert _free(store, host) == _job_host_free(_slice_fp())
 
     assert _poll(store, rid, pid, monkeypatch, done=True) is True
 
     assert _job_holds(store, host) == []
-    assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
+    assert _free(store, host) == _job_host_free()
 
 
 @posix_groups
@@ -1465,10 +1491,7 @@ def test_worker_exit_hook_keeps_a_running_jobs_holds(
     try:
         assert local_serving.release_process_holds() == 1
         assert own not in _hold_ids(store, host)
-        assert _job_holds(store, host) == [
-            ("cpu_milli", 2000, f"job:{rid}:{pid}:3600"),
-            ("mem_mb", 4096, f"job:{rid}:{pid}:3600"),
-        ]
+        assert _job_holds(store, host) == _slice_job_holds(rid, pid)
     finally:
         _kill_group(pid)
 
@@ -1501,7 +1524,7 @@ def test_readopting_poll_renews_a_live_childs_hold(
         left = _ttl_left_s(store, host)
         assert len(left) == 2
         assert all(s > admission.DEFAULT_TTL_S - 60 for s in left), left
-        assert _free(store, host) == {"cpu_milli": 6000, "mem_mb": 12288}
+        assert _free(store, host) == _job_host_free(_slice_fp())
     finally:
         _kill_group(pid)
 
@@ -1521,7 +1544,7 @@ def test_terminal_poll_leaves_a_live_childs_hold_to_the_graced_sweep(
     )
     try:
         assert _poll(store, rid, pid, monkeypatch, done=True) is True
-        held = {"cpu_milli": 6000, "mem_mb": 12288}
+        held = _job_host_free(_slice_fp())
         assert _free(store, host) == held
 
         _age_status(store, rid, _grace_s() - 30)
@@ -1653,13 +1676,14 @@ def test_gone_child_pass_refunds_a_requeued_jobs_hold_in_one_pass(
         # Another host's hold naming the same (here gone) pgid: not ours to judge.
         elsewhere = admission.job_holder(requeued, dead, 3600)
         assert _admit(store, other_host, fp, elsewhere) is not None
-        assert _free(store, host) == {"cpu_milli": 3000, "mem_mb": 7168}
+        # Two slice holds (dead + live child) and the bare 1000/1024 hold.
+        assert _free(store, host) == _job_host_free(_slice_fp(), _slice_fp(), fp)
         # Neither job-scoped path sees it: the job is not terminal.
         assert admission.reclaim_settled_job_holds(store) == 0
 
         assert admission.reap_gone_job_child_holds(store) == 2
 
-        assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 11264}
+        assert _free(store, host) == _job_host_free(_slice_fp(), fp)
         assert sorted({h for _r, _u, h in _job_holds(store, host)}) == sorted(
             [admission.job_holder(bare_job), f"job:{live_job}:{live}:3600"]
         )
@@ -1670,7 +1694,7 @@ def test_gone_child_pass_refunds_a_requeued_jobs_hold_in_one_pass(
         assert _free(store, other_host) == {"cpu_milli": 7000, "mem_mb": 15360}
 
         assert admission.reap_gone_job_child_holds(store) == 0
-        assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 11264}
+        assert _free(store, host) == _job_host_free(_slice_fp(), fp)
     finally:
         _kill_group(live)
 
