@@ -356,6 +356,89 @@ def test_run_id_prefix_does_not_suppress_new_run(
     assert res.seen_again == [gid]
 
 
+_HEAD = "d" * 40
+_FIX = "0f442255cb"
+
+
+def _titled(store: Store, title: str) -> list[int]:
+    """Every live gripe carrying ``title``, oldest first."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'gripe' AND retired_at IS NULL "
+            "AND title = %s ORDER BY ref_id",
+            (title,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+@pytest.mark.parametrize(
+    "fix_comment",
+    [
+        f"resolved: {_FIX[:9]} (main, release pending) — moot: already fixed (td2)",
+        "moot: gr{gid} already fixed by " + _FIX + " — plan dropped (td2)",
+    ],
+    ids=["resolved", "moot"],
+)
+def test_run_older_than_the_fix_appends_no_seen_again(
+    store: Store, monkeypatch: pytest.MonkeyPatch, fix_comment: str
+) -> None:
+    """gr759153: a red run whose head is a proper ancestor of the fix an
+    open gripe names (``resolved:`` or a moot drop) is stale — no ``seen
+    again``; the run's other signatures still file and the run is
+    judged (in ``ci_watch.seen``)."""
+    gid = _seed_gripe(
+        store, NIGHTLY_ONE, status="triaged", tags=("origin:ci-watch", "ci:nightly")
+    )
+    text = fix_comment.format(gid=gid)
+    _comment(store, gid, text)
+    data = _fake_gh(monkeypatch, "red_nightly.json")
+    fix = _FIX[:9] if text.startswith("resolved:") else _FIX
+    data["endpoints"][f"repos/o/r/compare/{_HEAD}...{fix}"] = {"status": "ahead"}
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert res.seen_again == []
+    assert _comments(store, gid) == [text]
+    assert len(res.filed) == 3 and _titled(store, NIGHTLY_ONE) == [gid]
+    assert any(f"predates gr{gid}'s fix" in n for n in res.notes)
+    assert "201" in _seen(store)
+
+
+def test_run_older_than_a_closed_gripes_fix_does_not_refile(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr759153 (gr753177 -> gr759276): a closed gripe's signature is not
+    re-filed for a run whose head predates the sha that resolved it —
+    also not under ``dry_run``."""
+    old = _seed_gripe(store, NIGHTLY_ONE, status="done")
+    _comment(store, old, f"resolved: {_FIX[:9]} (main, release pending) — fix")
+    data = _fake_gh(monkeypatch, "red_nightly.json")
+    data["endpoints"][f"repos/o/r/compare/{_HEAD}...{_FIX[:9]}"] = {"status": "ahead"}
+    preview = ci_watch.run_pass(store, repo=REPO, dry_run=True)
+    assert f"file {NIGHTLY_ONE}" not in preview.would
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert len(res.filed) == 3
+    assert _titled(store, NIGHTLY_ONE) == [old]
+
+
+@pytest.mark.parametrize("status", ["behind", "identical", "diverged"])
+def test_run_at_or_after_the_fix_still_reports(
+    store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """A red run whose head is the fix or past it (or off its line) is a
+    real recurrence: an open gripe gets ``seen again``, a closed one
+    refiles."""
+    open_gid = _seed_gripe(store, NIGHTLY_ONE, tags=("origin:ci-watch", "ci:nightly"))
+    _comment(store, open_gid, f"resolved: {_FIX[:9]} (main, release pending) — fix")
+    closed = _seed_gripe(store, NIGHTLY_TWO, status="done")
+    _comment(store, closed, "moot: gr0 already fixed by abcdef1234 — plan dropped")
+    data = _fake_gh(monkeypatch, "red_nightly.json")
+    data["endpoints"][f"repos/o/r/compare/{_HEAD}...{_FIX[:9]}"] = {"status": status}
+    data["endpoints"][f"repos/o/r/compare/{_HEAD}...abcdef1234"] = {"status": status}
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert res.seen_again == [open_gid]
+    assert len(_titled(store, NIGHTLY_TWO)) == 2
+    assert len(res.filed) == 3
+
+
 def test_ci_mute_silences_the_open_gripe(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

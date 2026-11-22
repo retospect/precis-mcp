@@ -637,6 +637,214 @@ def test_dispatch_cooldown_meta_holds_the_gripe(store: Store, two_lanes: Any) ->
         assert a in {c.gripe_id for c in gd.candidates(store, 10)}
 
 
+def _comment_at(store: Store, gripe_id: int, text: str, minutes_ago: float) -> None:
+    """A ``gripe_comment`` stamped ``minutes_ago`` (the moot/triage order
+    under test is by chunk time)."""
+    gd._append_comment(store, gripe_id, text)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - make_interval(secs => %s) "
+            "WHERE ref_id = %s AND chunk_kind = 'gripe_comment' AND text = %s",
+            (minutes_ago * 60, gripe_id, text),
+        )
+
+
+def _status_of(store: Store, ref_id: int) -> str | None:
+    return next(
+        (str(t.value) for t in store.tags_for(ref_id) if t.prefix == "STATUS"), None
+    )
+
+
+def _moot_line(gid: int, sha: str = "0f442255cb", td: int = 759782) -> str:
+    return f"moot: gr{gid} already fixed by {sha} — plan dropped (td{td})"
+
+
+#: A ci_watch-filed gripe's dispatch-relevant tags (``ci_watch._insert_gripe``).
+_CI = ("fix:code", "origin:ci-watch", "ci:nightly")
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [_CI, ("fix:code", "origin:ci-watch"), ("fix:code", "ci:nightly")],
+    ids=["both", "origin", "nightly"],
+)
+def test_verified_moot_resolves_the_gripe_to_auto_verify(
+    store: Store,
+    two_lanes: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tags: tuple[str, ...],
+) -> None:
+    """gr759153: a CI-signature gripe whose own chain dropped its plan as
+    moot on a sha verified on main gets the land's ``resolved:`` comment
+    and ``STATUS:auto_verify`` on the next pass, and is not re-minted."""
+    checked: list[str] = []
+
+    def _on_main(_store: Store, sha: str) -> bool:
+        checked.append(sha)
+        return True
+
+    monkeypatch.setattr(gd, "_sha_on_main", _on_main)
+    _light(store)
+    g = _gripe(store, "already fixed", status="triaged", tags=tags)
+    _comment_at(store, g, _moot_line(g), minutes_ago=30)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert checked == ["0f442255cb"]
+    assert res.extra["moot_resolved"] == [{"gripe": g, "sha": "0f442255c"}]
+    assert _status_of(store, g) == "auto_verify"
+    assert _comments(store, g)[-1] == (
+        "resolved: 0f442255c (main, release pending) — moot: already fixed (td759782)"
+    )
+    assert _roots_for(store, g) == [] and res.ok == 0
+    # Idempotent: the gripe left the open/triaged set, nothing re-checks it.
+    assert gd.resolve_moot_gripes(store) == [] and checked == ["0f442255cb"]
+
+
+def test_non_ci_gripe_moot_is_neither_closed_nor_skipped(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coordinator ruling (gr759153): ancestry alone closes only a CI
+    signature. A gripe with no ``origin:ci-watch``/``ci:nightly`` tag and
+    a moot on a verified sha is not resolved (its sha is never even
+    asked) and stays a candidate — plan_dispatch's dispatch cooldown is
+    what throttles its unverified moots."""
+    checked: list[str] = []
+
+    def _on_main(_store: Store, sha: str) -> bool:
+        checked.append(sha)
+        return True
+
+    monkeypatch.setattr(gd, "_sha_on_main", _on_main)
+    _light(store)
+    g = _gripe(store, "agent report", status="triaged")
+    _comment_at(store, g, _moot_line(g), minutes_ago=30)
+    assert gd.resolve_moot_gripes(store) == [] and checked == []
+    assert _status_of(store, g) == "triaged"
+    assert g in {c.gripe_id for c in gd.candidates(store, 10)}
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["moot_resolved"] == [] and _roots_for(store, g)
+
+
+def test_unanswered_moot_sha_is_rechecked_at_most_hourly(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sha neither GitHub nor the local repo answered for stamps
+    ``meta.moot_recheck_after`` an hour out: the next sweep does not ask
+    again; once the stamp lapses (or is malformed) it does."""
+    from datetime import UTC, datetime, timedelta
+
+    checked: list[str] = []
+
+    def _unknown(_store: Store, sha: str) -> bool | None:
+        checked.append(sha)
+        return None
+
+    monkeypatch.setattr(gd, "_sha_on_main", _unknown)
+    g = _gripe(store, "unanswered", status="triaged", tags=_CI)
+    _comment_at(store, g, _moot_line(g), minutes_ago=30)
+    assert gd.resolve_moot_gripes(store) == [] and len(checked) == 1
+    ref = store.get_ref(kind="gripe", id=g)
+    assert ref is not None
+    until = datetime.fromisoformat(
+        str((ref.meta or {})[gd.MOOT_RECHECK_META]).replace("Z", "+00:00")
+    )
+    assert timedelta(minutes=55) < until - datetime.now(UTC) <= timedelta(hours=1)
+    assert gd.resolve_moot_gripes(store) == [] and len(checked) == 1
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+    store.stamp_ref_meta(g, {gd.MOOT_RECHECK_META: past})
+    assert gd.resolve_moot_gripes(store) == [] and len(checked) == 2
+    store.stamp_ref_meta(g, {gd.MOOT_RECHECK_META: "garbage"})
+    assert gd.resolve_moot_gripes(store) == [] and len(checked) == 3
+    assert _status_of(store, g) == "triaged"
+
+
+def test_unverified_moot_leaves_the_gripe_and_keeps_it_out(
+    store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr759153: a moot sha not verified on main closes nothing — the
+    gripe stays ``triaged`` with no ``resolved:`` — and the candidate
+    guard still keeps it out of dispatch."""
+    monkeypatch.setattr(gd, "_sha_on_main", lambda _s, _sha: False)
+    _light(store)
+    g = _gripe(store, "claimed fixed", status="triaged", tags=_CI)
+    _comment_at(store, g, _moot_line(g), minutes_ago=30)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["moot_resolved"] == []
+    assert _status_of(store, g) == "triaged"
+    assert not any(c.startswith("resolved:") for c in _comments(store, g))
+    assert _roots_for(store, g) == [] and res.ok == 0
+
+
+@pytest.mark.parametrize("why", ["other gripe", "no sha", "no-autoclose"])
+def test_moot_sweep_skips_what_it_cannot_resolve(
+    store: Store, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """A moot naming another gripe, a moot line with no ``already fixed by
+    <sha>``, or a ``hold:no-autoclose`` gripe is never resolved."""
+    monkeypatch.setattr(gd, "_sha_on_main", lambda _s, _sha: True)
+    tags = (*_CI, "hold:no-autoclose") if why == "no-autoclose" else _CI
+    g = _gripe(store, f"skip {why}", status="triaged", tags=tags)
+    text = {
+        "other gripe": _moot_line(g + 1000),
+        "no sha": f"moot: gr{g} section deleted — plan dropped (td1)",
+        "no-autoclose": _moot_line(g),
+    }[why]
+    _comment_at(store, g, text, minutes_ago=30)
+    assert gd.resolve_moot_gripes(store) == []
+    assert _status_of(store, g) == "triaged"
+
+
+def test_candidates_skip_a_gripe_moot_since_its_last_triage(store: Store) -> None:
+    """gr759153 backstop: a CI-signature gripe whose newest ``moot:`` is
+    newer than its newest triage comment and STATUS stamp is no
+    candidate; a re-triage after the moot (a ``triage:`` comment, or a
+    STATUS change) makes it eligible again, and a later moot holds it
+    out once more."""
+    g = _gripe(store, "moot loop", status="triaged", tags=_CI)
+    plain = _gripe(store, "never moot", status="triaged", tags=_CI)
+    _comment_at(store, g, "triage: suspected cause - x", minutes_ago=90)
+    _comment_at(store, g, _moot_line(g, td=1), minutes_ago=60)
+    picks = {c.gripe_id for c in gd.candidates(store, 10)}
+    assert g not in picks and plain in picks
+    # Re-triaged after the moot: eligible again.
+    _comment_at(store, g, "triage: suspected cause - y", minutes_ago=45)
+    assert g in {c.gripe_id for c in gd.candidates(store, 10)}
+    # Its next chain ends moot too: out again.
+    _comment_at(store, g, _moot_line(g, td=2), minutes_ago=30)
+    assert g not in {c.gripe_id for c in gd.candidates(store, 10)}
+    # A status change after the moot (re-opened by hand) re-arms it too.
+    store.add_tag(g, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True)
+    _tag_age(store, g, "open", minutes=20)
+    assert g in {c.gripe_id for c in gd.candidates(store, 10)}
+
+
+def test_sha_on_main_asks_github_then_the_local_repo(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's verdict wins when it has one; an unknown falls back to the
+    fix repo's ``origin/main``, whose ``True`` verifies; neither
+    answering is ``None``."""
+    from precis.plans import gates
+    from precis.workers import factory_rescue
+
+    local: list[str] = []
+    local_says = [True]
+
+    def _local(sha: str, *, fetch: bool) -> bool:
+        local.append(sha)
+        assert fetch is False
+        return local_says[0]
+
+    monkeypatch.setattr(factory_rescue, "_sha_on_main", _local)
+    monkeypatch.setattr(gates, "_github_ancestor", lambda _s, _sha, _h: False)
+    assert gd._sha_on_main(store, "abc1234") is False and local == []
+    monkeypatch.setattr(gates, "_github_ancestor", lambda _s, _sha, _h: True)
+    assert gd._sha_on_main(store, "abc1234") is True and local == []
+    monkeypatch.setattr(gates, "_github_ancestor", lambda _s, _sha, _h: None)
+    assert gd._sha_on_main(store, "abc1234") is True and local == ["abc1234"]
+    local_says[0] = False
+    assert gd._sha_on_main(store, "abc1234") is None and len(local) == 2
+
+
 def test_closed_chain_frees_its_slot_and_its_gripe_reenters(
     store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

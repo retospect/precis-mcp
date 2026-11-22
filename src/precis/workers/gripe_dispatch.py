@@ -58,6 +58,23 @@ Each fire:
   resume from the saved branch, or ``start over``); dropping it is
   closing the root ``won't-do``. The gripe's open tag ``chain-stalls:<n>``
   counts the asks. At most :data:`_STALL_BATCH` asks a pass.
+* **Moot resolve** (:func:`resolve_moot_gripes`, first, gr759153). A
+  build that finds its gripe's fix already on main drops the plan with
+  ``moot: gr<N> already fixed by <sha> — plan dropped (td<M>)`` on the
+  gripe and leaves it ``triaged``; the chain's root closes, so the
+  live-todo exclusion below no longer holds it. Each pass, a
+  CI-signature gripe (:data:`CI_SIGNATURE_TAGS`: ``origin:ci-watch`` or
+  ``ci:nightly``) ``open``/``triaged`` whose newest ``moot:`` postdates
+  its last triage or status change, and whose sha is verified on main
+  (GitHub compare, else the fix repo's ``origin/main``), gets
+  ``resolved: <sha9> (main, release pending) — moot: already fixed
+  (td<M>)`` and ``STATUS:auto_verify`` through the land's own writer; an
+  unverified sha is left as it is (the candidate read still skips it),
+  and one neither source answered for waits an hour
+  (``meta.moot_recheck_after``). Only CI signatures: a wrong
+  ancestry-only close self-corrects there (a later red nightly on a
+  newer head reports again), on any other gripe it would close a real
+  report silently. At most :data:`_MOOT_SWEEP_BATCH` gripes a pass.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
   ``triaged``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
@@ -73,7 +90,11 @@ Each fire:
   ``meta.dispatch_cooldown_until`` stamp (``plan_dispatch``'s moot close
   writes it when a ``moot:`` drop could not resolve the gripe, so an
   unproven claim pauses the re-mint loop instead of feeding it,
-  gr759153), none
+  gr759153), on a CI-signature gripe no ``moot:`` comment newer than
+  both the newest ``triage:`` comment and the newest STATUS stamp (the
+  gripe's own chain already
+  found it fixed and nobody re-triaged or re-opened it since — a
+  re-triage makes it eligible again, gr759153), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
   ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
   ``rescue:intake``), and the **filer-trust rule** below.
@@ -151,7 +172,9 @@ The pass bills no model call and holds no transaction across the mint
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis import settings as psettings
@@ -299,6 +322,70 @@ DISPATCH_COOLDOWN_META = "dispatch_cooldown_until"
 #: (:func:`moot_cooldown_hours`).
 MOOT_COOLDOWN_KEY = "factory.gripe_dispatch.moot_cooldown_hours"
 DEFAULT_MOOT_COOLDOWN_HOURS = 6
+#: Prefix of the dispatch-outcome comment a chain's moot drop leaves on
+#: its gripe (``plan_dispatch._gripe_verdict_note``: ``moot: gr<N>
+#: already fixed by <sha> — plan dropped (td<M>)``, gr759153).
+_MOOT_PREFIX = "moot:"
+#: Prefix of a triage comment (``gripe_triage``'s ``triage: …`` or a
+#: human's): a re-triage after a moot re-opens the gripe to dispatch.
+_TRIAGE_PREFIX = "triage:"
+#: The sha a ``moot:`` comment names as the fix already on main. Read by
+#: :func:`resolve_moot_gripes` and by ``ci_watch`` (its stale-run check).
+MOOT_FIXED_RE = re.compile(
+    r"^moot:.*?\balready fixed (?:by|in) ([0-9a-f]{7,40})\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+#: The ``(td<M>)`` tail naming the chain node whose moot dropped the plan.
+_MOOT_TODO_RE = re.compile(r"\(td(\d+)\)\s*$")
+_MOOT_GRIPE_RE = re.compile(r"\bgr(\d+)\b", re.IGNORECASE)
+#: Moot gripes the resolve sweep reads per pass.
+_MOOT_SWEEP_BATCH = 50
+#: The predicate over ``refs r`` (gr759153): the gripe's newest ``moot:``
+#: comment is newer than its newest ``triage:`` comment and its newest
+#: STATUS stamp — the dispatcher's own chain already found the fix on
+#: main and nobody has re-triaged or re-opened the gripe since. Two
+#: ``%s`` parameters: ``_MOOT_PREFIX + '%'`` then ``_TRIAGE_PREFIX + '%'``.
+_MOOT_SINCE_TRIAGE_SQL = (
+    "EXISTS (SELECT 1 FROM chunks mc WHERE mc.ref_id = r.ref_id "
+    "AND mc.chunk_kind = 'gripe_comment' AND mc.text LIKE %s "
+    "AND mc.created_at > GREATEST("
+    "COALESCE((SELECT max(tc.created_at) FROM chunks tc "
+    "WHERE tc.ref_id = r.ref_id AND tc.chunk_kind = 'gripe_comment' "
+    "AND tc.text LIKE %s), '-infinity'::timestamptz), "
+    "COALESCE((SELECT max(mst.created_at) FROM ref_tags mst "
+    "JOIN tags ms ON ms.tag_id = mst.tag_id "
+    "WHERE mst.ref_id = r.ref_id AND ms.namespace = 'STATUS'), "
+    "'-infinity'::timestamptz)))"
+)
+#: Open tags marking a CI-signature gripe — what ``ci_watch._insert_gripe``
+#: stamps on every gripe it files (``origin:ci-watch``, plus ``ci:nightly``
+#: for a nightly red). The moot resolve and the moot guard apply to these
+#: only (coordinator ruling, gr759153): a wrong ancestry-only close
+#: self-corrects there — a later red nightly on a newer head re-reports or
+#: re-files the signature — while on any other gripe it would close a real
+#: report silently (their unverified moots ride ``plan_dispatch``'s
+#: dispatch cooldown instead).
+CI_SIGNATURE_TAGS: tuple[str, ...] = ("origin:ci-watch", "ci:nightly")
+#: The predicate over ``refs r``: the gripe carries a
+#: :data:`CI_SIGNATURE_TAGS` tag — module constants only, never row data.
+_CI_SIGNATURE_SQL = (
+    "EXISTS (SELECT 1 FROM ref_tags ct JOIN tags cg ON cg.tag_id = ct.tag_id "
+    "WHERE ct.ref_id = r.ref_id AND cg.namespace IN ('OPEN', 'FLAG') "
+    "AND cg.value IN (" + ", ".join(f"'{t}'" for t in CI_SIGNATURE_TAGS) + "))"
+)
+#: Gripe ``meta`` key :func:`resolve_moot_gripes` stamps when neither
+#: GitHub nor the local repo could answer for the moot's sha: an ISO-8601
+#: UTC time before which the sweep does not ask again.
+MOOT_RECHECK_META = "moot_recheck_after"
+_MOOT_RECHECK_HOURS = 1
+#: The predicate over ``refs r``: no future :data:`MOOT_RECHECK_META`
+#: stamp (a malformed one fails open toward the re-check).
+_MOOT_RECHECK_DUE_SQL = (
+    f"CASE WHEN r.meta->>'{MOOT_RECHECK_META}' "
+    "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?Z$' "
+    f"AND pg_input_is_valid(r.meta->>'{MOOT_RECHECK_META}', 'timestamptz') "
+    f"THEN (r.meta->>'{MOOT_RECHECK_META}')::timestamptz <= now() ELSE TRUE END"
+)
 
 
 def gripe_trust(store: Store) -> str:
@@ -591,6 +678,121 @@ def moot_cooldown_hours(store: Store) -> int:
     :data:`DEFAULT_MOOT_COOLDOWN_HOURS`, 0 disables the cooldown."""
     raw = psettings.get_int(MOOT_COOLDOWN_KEY, store=store)
     return raw if raw is not None and raw >= 0 else DEFAULT_MOOT_COOLDOWN_HOURS
+
+
+def _sha_on_main(store: Store, sha: str) -> bool | None:
+    """Whether ``sha`` is an ancestor of main: GitHub's compare API first
+    (prod workers have no checkout, :func:`precis.plans.gates._github_ancestor`),
+    whose ``True``/``False`` is the verdict; on no answer, the fix repo's
+    ``origin/main`` without a fetch
+    (:func:`precis.workers.factory_rescue._sha_on_main`), whose ``True``
+    is. Neither answering is ``None`` — the gripe is left as it is and
+    the sweep waits :data:`_MOOT_RECHECK_HOURS` before asking again."""
+    from precis.plans import gates as _gates
+
+    verdict = _gates._github_ancestor(store, sha, "main")
+    if verdict is not None:
+        return verdict
+    from precis.workers import factory_rescue as _rescue
+
+    return True if _rescue._sha_on_main(sha, fetch=False) else None
+
+
+def resolve_moot_gripes(store: Store) -> list[dict[str, Any]]:
+    """Resolve the gripes a dispatched chain already found fixed (gr759153).
+
+    A CI-signature gripe (:data:`CI_SIGNATURE_TAGS`) ``open``/``triaged``
+    whose newest ``moot:`` comment is newer than its last triage or
+    status change (:data:`_MOOT_SINCE_TRIAGE_SQL`) and names ``already
+    fixed by <sha>`` for this gripe gets, when the sha is verified on
+    main (:func:`_sha_on_main`), the land's own
+    ``resolved:`` writer (``land_slice._resolve_gripe``): ``resolved:
+    <sha9> (main, release pending) — moot: already fixed (td<M>)`` and
+    ``STATUS:auto_verify``; ``gripe_validate`` closes it once the sha is
+    on prod. An unverified sha, a moot naming another gripe, or a gripe
+    tagged ``hold:no-autoclose`` is left alone — the candidate read still
+    keeps it out of dispatch. A sha neither GitHub nor the local repo
+    answered for stamps :data:`MOOT_RECHECK_META` an hour out, and the
+    sweep skips the gripe until then. Any other gripe is never read
+    here: ancestry alone may close only a CI signature. One gripe's
+    failure never stops the pass. Returns ``{gripe, sha}`` per resolved
+    gripe."""
+    from precis.workers.job_types import land_slice as _ls
+
+    sql = f"""
+        SELECT r.ref_id,
+               (SELECT mc.text FROM chunks mc
+                 WHERE mc.ref_id = r.ref_id AND mc.chunk_kind = 'gripe_comment'
+                   AND mc.text LIKE %s
+                 ORDER BY mc.created_at DESC, mc.ord DESC LIMIT 1)
+          FROM refs r
+          JOIN ref_tags st ON st.ref_id = r.ref_id
+          JOIN tags s ON s.tag_id = st.tag_id
+                     AND s.namespace = 'STATUS' AND s.value = ANY(%s)
+         WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+           AND {_CI_SIGNATURE_SQL}
+           AND {_MOOT_SINCE_TRIAGE_SQL}
+           AND {_MOOT_RECHECK_DUE_SQL}
+           AND NOT EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
+                            WHERE ht.ref_id = r.ref_id AND h.namespace IN ('OPEN', 'FLAG')
+                              AND h.value = 'hold:no-autoclose')
+         ORDER BY r.ref_id DESC
+         LIMIT %s
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            sql,
+            (
+                _MOOT_PREFIX + "%",
+                list(_DISPATCH_STATUSES),
+                _MOOT_PREFIX + "%",
+                _TRIAGE_PREFIX + "%",
+                _MOOT_SWEEP_BATCH,
+            ),
+        ).fetchall()
+    resolved: list[dict[str, Any]] = []
+    for gid_raw, text_raw in rows:
+        gid, text = int(gid_raw), str(text_raw or "")
+        m = MOOT_FIXED_RE.search(text)
+        if m is None:
+            continue
+        named = _MOOT_GRIPE_RE.search(text)
+        if named is not None and int(named.group(1)) != gid:
+            continue
+        sha = m.group(1).lower()
+        try:
+            verdict = _sha_on_main(store, sha)
+            if verdict is None:
+                until = datetime.now(UTC) + timedelta(hours=_MOOT_RECHECK_HOURS)
+                store.stamp_ref_meta(
+                    gid,
+                    {MOOT_RECHECK_META: until.isoformat().replace("+00:00", "Z")},
+                )
+                log.info(
+                    "gripe_dispatch: gr%d moot sha %s unanswered — recheck after %s",
+                    gid,
+                    sha[:9],
+                    until.isoformat(),
+                )
+                continue
+            if not verdict:
+                log.info(
+                    "gripe_dispatch: gr%d moot names %s, not verified on main — left",
+                    gid,
+                    sha[:9],
+                )
+                continue
+            td = _MOOT_TODO_RE.search(text)
+            detail = "moot: already fixed" + (f" (td{td.group(1)})" if td else "")
+            did = _ls._resolve_gripe(store, gid, sha, detail, status="auto_verify")
+        except Exception:
+            log.warning(
+                "gripe_dispatch: moot resolve of gr%d failed", gid, exc_info=True
+            )
+            continue
+        if "STATUS:auto_verify" in did:
+            resolved.append({"gripe": gid, "sha": sha[:9]})
+    return resolved
 
 
 def _idle_hours(store: Store, node_ids: tuple[int, ...]) -> float:
@@ -999,6 +1201,9 @@ def _candidate_picks(
                 THEN (r.meta->>'dispatch_cooldown_until')::timestamptz <= now()
                 ELSE TRUE
            END
+           -- gr759153: a CI-signature gripe whose own chain already ended
+           -- moot, with no triage or status change since, is not re-minted.
+           AND NOT ({_CI_SIGNATURE_SQL} AND {_MOOT_SINCE_TRIAGE_SQL})
            AND NOT EXISTS (SELECT 1 FROM links bl JOIN refs bt ON bt.ref_id = bl.dst_ref_id
                             WHERE bl.src_ref_id = r.ref_id AND bl.relation = 'blocked-by'
                               AND bt.retired_at IS NULL
@@ -1038,6 +1243,8 @@ def _candidate_picks(
                 supported_projects,
                 _PROJECT_SKIP_PREFIX + "%",
                 list(HOLD_TAGS),
+                _MOOT_PREFIX + "%",
+                _TRIAGE_PREFIX + "%",
                 sorted(TERMINAL_TODO_STATUSES),
                 limit,
             ),
@@ -1175,6 +1382,13 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
             extra={"payload": inner_result_payload(result)},
         )
         return result
+    # gr759153: a gripe its own chain found already fixed on main moves to
+    # auto_verify before the candidate read, so it is not re-minted.
+    try:
+        moot_resolved = resolve_moot_gripes(store)
+    except Exception:
+        log.warning("gripe_dispatch: moot resolve sweep failed", exc_info=True)
+        moot_resolved = []
     # Cause-based breaker first: a lane or host whose newest builds all died
     # of one engine cause stops taking builds (its ask is the only record),
     # before the capacity below is read.
@@ -1234,6 +1448,7 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         "todo_parked": sum(1 for c in todo_chains if not c.live),
         "max_parked": cap_parked,
         "stalled": stalled,
+        "moot_resolved": moot_resolved,
         "breaker": breaker,
         "slots": slots,
         # What the todo pass reads to decide whether the gripe pass left
@@ -1589,8 +1804,11 @@ def _rescue_intake(
 
 
 __all__ = [
+    "CI_SIGNATURE_TAGS",
     "FIX_CLASS_TAGS",
     "HOLD_TAGS",
+    "MOOT_FIXED_RE",
+    "MOOT_RECHECK_META",
     "ROUTE_BUILDER_TAG",
     "SERVICE_NAME",
     "TRUST_KEY",
@@ -1604,6 +1822,7 @@ __all__ = [
     "lane_capacity",
     "open_chain_count",
     "parked_chain_count",
+    "resolve_moot_gripes",
     "run_gripe_dispatch_pass",
     "sweep_stalled",
 ]

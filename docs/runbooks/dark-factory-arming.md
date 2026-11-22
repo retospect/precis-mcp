@@ -661,7 +661,10 @@ matching gripe already records that run in its filing body or a
 `seen again:` comment, replay skips the signature even after the gripe
 closes or the run leaves the ledger. A new run adds a `seen again:`
 comment to an open match or files a new gripe, naming the old handle
-if it closed less than 7 days ago. An open
+if it closed less than 7 days ago — unless its head predates a fix a
+matching gripe already names (`resolved: <sha>` or `moot: … already
+fixed by <sha>`, checked with the compare API): that run reports
+nothing for the signature. An open
 unresolved gripe with no live todo link is flake-closed after two
 consecutive green runs; a `resolved: <sha>` gripe gets `green on <url>`
 once a green head contains the sha. `ci_watch.seen` (cap 50) is the

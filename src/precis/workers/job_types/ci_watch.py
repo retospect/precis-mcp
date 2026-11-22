@@ -24,6 +24,13 @@ A new run with only terminal matches refiles — inside
 (``regressed after gr<N>``). An open ``ci:mute`` tag on the gripe
 silences it entirely (also under ``dry_run``). A red run whose
 signatures could not be read stays out of ``ci_watch.seen`` for retry.
+A red run whose head predates a fix a matching gripe already names — a
+``resolved: <sha>`` comment or a ``moot: … already fixed by <sha>``
+drop, the head a proper ancestor of that sha per the compare API — is
+stale for that signature (gr759153): no ``seen again`` on an open match
+and no refile of a closed one; a red run on a head at or after the fix
+still reports. The rule is by sha, not "newest run only": a replayed
+red run can be the newest nightly while its head predates the fix.
 
 The gripe body is what a builder without the MCP acts on: a ``Goal:``
 line, the signature, run URL, head sha, job/step name, the
@@ -130,7 +137,8 @@ OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
 #: log read: a runner kill or operator cancel IS the failure.
 BAD_JOB_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out"})
 #: gh api calls one tick may spend, quiet night included: 2 run lists +
-#: soak-candidate job probes + red-run job/log reads + compare calls.
+#: soak-candidate job probes + red-run job/log reads + compare calls
+#: (the close sweep's and the stale-run check's).
 _API_BUDGET = 15
 #: Jobs-endpoint probes the soak scan may spend per tick — the red-run
 #: job/log reads keep the rest of :data:`_API_BUDGET`. A probed run with
@@ -1022,6 +1030,70 @@ def _contains(repo: str, resolved: str, head: str, budget: dict[str, int]) -> bo
     return status in ("identical", "ahead")
 
 
+def _predates(repo: str, head: str, fix: str, budget: dict[str, int]) -> bool:
+    """True when ``head`` is a proper ancestor of ``fix`` — compare
+    status ``ahead``: the run tested a tree from before the fix. An equal
+    sha is not stale (the fix commit itself ran red); no budget is
+    ``False``, so the run is reported as before."""
+    if not _take(budget):
+        return False
+    data = _gh_json(f"repos/{repo}/compare/{head}...{fix}")
+    return isinstance(data, dict) and str(data.get("status") or "") == "ahead"
+
+
+def _stale_sigs(
+    store: Any,
+    repo: str,
+    sigs: dict[str, dict[str, Any]],
+    wf: str,
+    run: dict[str, Any],
+    budget: dict[str, int],
+    res: WatchResult,
+) -> set[str]:
+    """The signatures this red run must not report (gr759153): a matching
+    gripe, open or terminal, names a fix — a ``resolved: <sha>`` comment
+    or a ``moot: … already fixed by <sha>`` drop — whose sha the run's
+    head predates (:func:`_predates`). Such a run neither appends ``seen
+    again`` nor re-files a closed gripe's signature: it tested code the
+    fix had not reached. A red run on a head at or after every fix still
+    reports. Read before ``_note_run``'s lock — the compare calls are
+    network."""
+    from precis.workers.gripe_dispatch import MOOT_FIXED_RE
+
+    head = str(run.get("head_sha") or "")
+    if not head:
+        return set()
+    fixes: dict[str, list[tuple[int, str]]] = {}
+    with store.pool.connection() as conn:
+        for sig in sigs:
+            for gid in _title_matches(conn, _title(wf, sig)):
+                for text in _comments_of(conn, gid):
+                    shas = [m.group(1) for m in RESOLVED_RE.finditer(text)]
+                    shas += [m.group(1) for m in MOOT_FIXED_RE.finditer(text)]
+                    fixes.setdefault(sig, []).extend((gid, s.lower()) for s in shas)
+    verdicts: dict[str, bool] = {}
+    stale: set[str] = set()
+    rid = str(run.get("id") or "")
+    for sig, found in sorted(fixes.items()):
+        for gid, fix in found:
+            if fix not in verdicts:
+                try:
+                    verdicts[fix] = _predates(repo, head, fix, budget)
+                except GhUnavailable as exc:
+                    res.notes.append(
+                        f"run {rid}: compare {head[:9]}...{fix[:9]} failed ({exc})"
+                    )
+                    verdicts[fix] = False
+            if verdicts[fix]:
+                res.notes.append(
+                    f"run {rid} on {head[:9]} predates gr{gid}'s fix {fix[:9]} "
+                    f"— {sig} skipped"
+                )
+                stale.add(sig)
+                break
+    return stale
+
+
 def _sweep(
     store: Any,
     repo: str,
@@ -1172,7 +1244,10 @@ def run_pass(
                             f"run {rid} red but no {wf} signatures — left unseen"
                         )
                         continue
-                    _note_run(store, sigs, wf, run, now, dry_run=dry_run, res=res)
+                    stale = _stale_sigs(store, res.repo, sigs, wf, run, budget, res)
+                    fresh = {s: i for s, i in sigs.items() if s not in stale}
+                    if fresh:
+                        _note_run(store, fresh, wf, run, now, dry_run=dry_run, res=res)
                 seen[rid] = {
                     "at": str(run.get("updated_at") or _z(now)),
                     "verdict": verdict,
