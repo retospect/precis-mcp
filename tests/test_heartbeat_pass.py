@@ -86,15 +86,16 @@ def test_report_resource_slots_no_warning_when_nothing_expired(store, caplog) ->
 
 
 def test_report_resource_slots_sweeps_settled_job_holds(store, caplog) -> None:
-    """gr762788: the pass refunds the spawn holds of a job terminal past
-    the orphan reaper's grace."""
+    """gr762788: the pass refunds the unnamed spawn hold of a job terminal
+    past the orphan reaper's grace; td764135: its hold naming a child pgid
+    on a host that is not this one stays (only that host judges it)."""
     from precis.store._resource_slots_ops import insert_slot_hold
     from precis.store.types import Tag
     from precis.workers.admission import job_holder
     from precis.workers.executors._common import ORPHAN_REAP_GRACE_S
 
     host = "test-host-6"
-    store.sync_host_resource_slots(host, {"llm:heartbeat-test-3": 2})
+    store.sync_host_resource_slots(host, {"llm:heartbeat-test-3": 3})
     ref = store.insert_ref(kind="job", slug=None, title="settled job", meta={})
     store.add_tag(ref.id, Tag.parse_strict("STATUS:succeeded"), set_by="agent")
     with store.pool.connection() as conn:
@@ -110,14 +111,8 @@ def test_report_resource_slots_sweeps_settled_job_holds(store, caplog) -> None:
         )
         conn.commit()
         with conn.transaction():
-            insert_slot_hold(
-                conn,
-                host,
-                "llm:heartbeat-test-3",
-                1,
-                job_holder(int(ref.id), 4321),
-                3600.0,
-            )
+            for holder in (job_holder(int(ref.id)), job_holder(int(ref.id), 4321)):
+                insert_slot_hold(conn, host, "llm:heartbeat-test-3", 1, holder, 3600.0)
 
     with caplog.at_level("WARNING", logger="precis.workers.heartbeat"):
         hb._report_resource_slots(store, host)

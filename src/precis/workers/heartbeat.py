@@ -1068,10 +1068,12 @@ def _report_resource_slots(store: object, host: str) -> str:
             )
     except Exception:
         log.warning("heartbeat: expired-hold reclaim failed", exc_info=True)
-    # Job-owned spawn holds (gr762788) of a job gone, or terminal for longer
-    # than the orphan reaper's grace — whether the poll saw the transition
-    # or not (sweeper, cancel, a direct STATUS tag): one statement,
-    # fleet-wide. Separate try, same reasoning as above.
+    # Job-owned spawn holds (gr762788) naming no child pgid, of a job gone or
+    # terminal for longer than the orphan reaper's grace — whether the poll
+    # saw the transition or not (sweeper, cancel, a direct STATUS tag): one
+    # statement, fleet-wide. A hold naming a pgid is left to the host-local
+    # pass below or the TTL (td764135): its child may outlive the grace.
+    # Separate try, same reasoning as above.
     try:
         from precis.workers.admission import reclaim_settled_job_holds
 
@@ -1083,7 +1085,8 @@ def _report_resource_slots(store: object, host: str) -> str:
     # Job-owned spawn holds on THIS host whose child process group is gone,
     # whatever the job's status (gr763200): a launcher SIGKILLed with its
     # child, the job reclaimed to queued and claimed elsewhere, leaves a
-    # hold no poll tends and the settled sweep skips. Host-local by nature
+    # hold no poll tends; a terminal job's named child is refunded only
+    # here, once its group exits (td764135). Host-local by nature
     # (a pgid means nothing on another host), so `local_host()`, never the
     # heartbeat's `host` override. Separate try, same reasoning as above.
     try:

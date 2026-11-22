@@ -406,6 +406,12 @@ def delete_job_slot_holds(
     return int(row[0]) if row is not None else 0
 
 
+#: A job hold that names its child's process group: ``job:<id>:<pgid>``,
+#: optionally ``:<ttl_s>`` — what the host-local gone-child pass judges,
+#: and what the settled-job sweep never touches (td764135).
+_JOB_CHILD_HOLDER_RE = "^job:[0-9]{1,18}:[0-9]+(:[0-9]+)?$"
+
+
 #: A ``job:`` holder's job id; the CASE keeps the cast off any holder the
 #: regex rejects (WHERE clauses carry no evaluation order).
 _HOLD_JOB_ID = (
@@ -413,14 +419,19 @@ _HOLD_JOB_ID = (
     "THEN split_part(h.holder, ':', 2)::bigint END"
 )
 
-# The settled-job sweep: one statement deleting every `job:` hold whose job
-# is gone (no live kind='job' row) or has carried a terminal STATUS for
-# longer than the grace (the tag's `created_at`), then the same grouped
-# capped refund as the TTL sweep.
+# The settled-job sweep: one statement deleting every `job:` hold that names
+# no child process group and whose job is gone (no live kind='job' row) or
+# has carried a terminal STATUS for longer than the grace (the tag's
+# `created_at`), then the same grouped capped refund as the TTL sweep. A
+# hold naming a pgid is skipped whatever its job's state (td764135): a
+# terminal job's child may outlive the grace (the orphan reaper takes 25
+# jobs a pass and skips a child it cannot identify), so only its own host's
+# gone-child pass, which sees the group exit, or the TTL refunds it.
 _RECLAIM_SETTLED_JOB_HOLDS = (
     "WITH doomed AS ("
     "  DELETE FROM resource_slot_holds h "
     "  WHERE h.holder LIKE 'job:%%' "
+    "    AND h.holder !~ '" + _JOB_CHILD_HOLDER_RE + "' "
     "    AND NOT EXISTS ("
     "      SELECT 1 FROM refs r "
     f"      WHERE r.ref_id = {_HOLD_JOB_ID} "
@@ -449,20 +460,17 @@ _RECLAIM_SETTLED_JOB_HOLDS = (
 def reclaim_settled_job_holds(
     conn: Connection, terminal_statuses: list[str], grace_s: float
 ) -> int:
-    """Delete every ``job:`` hold whose job is gone, or has been terminal
-    (a ``STATUS`` in ``terminal_statuses``) for over ``grace_s`` seconds,
-    refunding its units — the refund of a terminal job's footprint once
-    its child has had the orphan reaper's grace to exit. Returns holds
-    deleted."""
+    """Delete every ``job:`` hold naming no child process group whose job
+    is gone, or has been terminal (a ``STATUS`` in ``terminal_statuses``)
+    for over ``grace_s`` seconds, refunding its units — the refund of a
+    terminal job's footprint whose child was never named, once it has had
+    the orphan reaper's grace to exit. A ``job:<id>:<pgid>[:<ttl_s>]``
+    hold is never touched here (td764135): only the owning host's
+    gone-child pass or the TTL sweep refunds it. Returns holds deleted."""
     row = conn.execute(
         _RECLAIM_SETTLED_JOB_HOLDS, (list(terminal_statuses), float(grace_s))
     ).fetchone()
     return int(row[0]) if row is not None else 0
-
-
-#: A job hold that names its child's process group: ``job:<id>:<pgid>``,
-#: optionally ``:<ttl_s>`` — what the host-local gone-child pass judges.
-_JOB_CHILD_HOLDER_RE = "^job:[0-9]{1,18}:[0-9]+(:[0-9]+)?$"
 
 
 def job_child_slot_holds(conn: Connection, host: str) -> list[tuple[int, str]]:
