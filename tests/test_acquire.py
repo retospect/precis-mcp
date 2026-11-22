@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -582,6 +583,45 @@ def test_reacquire_restamps_for_explicit_ask_inside_window(
         claimed = claim_stubs_to_fetch(conn, limit=10)
         conn.commit()
     assert [s.ref_id for s in claimed] == [rid]
+
+
+def test_reacquire_by_arxiv_gives_an_s2_only_stub_its_arxiv_id(
+    handler: PaperHandler,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # gr711568: a stub minted from a bare S2 id holds no arXiv id, so the
+    # cascade skips its arXiv leg and only S2 answers (no_oa_version, for
+    # months). Re-asking by arXiv id collapses onto the stub through the
+    # S2 id; the arXiv id must land on the row, or the next pass still
+    # never reaches arXiv.
+    from precis.workers import fetch_oa
+
+    s2_id = "0123456789abcdef0123456789abcdef01234567"
+    rid, _ = store.upsert_stub_paper(
+        identifiers=[("s2", s2_id)], title="t", set_by="chase"
+    )
+    _fetcher_event(store, rid, age="2 hours", event="no_oa_version")
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {"title": "t", "arxiv_id": "2401.00077", "s2_id": s2_id},
+    )
+    r = handler.acquire(identifier="arxiv:2401.00077")
+    assert "already tracked" in r.body
+    assert _ref_id(r.body) == rid
+    assert ("arxiv", "2401.00077") in _identifiers(store, rid)
+
+    with store.pool.connection() as conn:
+        claimed = fetch_oa.claim_stubs_to_fetch(conn, limit=10)
+        conn.commit()
+    assert [(s.ref_id, s.arxiv) for s in claimed] == [(rid, "2401.00077")]
+    monkeypatch.setattr(fetch_oa, "_download_pdf", lambda *_a, **_k: 1)
+    outcome = fetch_oa._try_arxiv(claimed[0], inbox_dir=tmp_path)
+    assert outcome is not None
+    assert outcome.event == "fetch_ok"
+    assert outcome.payload["url"] == "https://arxiv.org/pdf/2401.00077.pdf"
 
 
 def test_reacquire_guarded_path_keeps_restamp_guard(

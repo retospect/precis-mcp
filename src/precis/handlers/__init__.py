@@ -20,6 +20,9 @@ An unheld DOI lookup can queue ingest. Explicit retries bypass the daily
 cap, while batch passage searches keep their per-call mint limit.
 arXiv DataCite DOIs can use stored arXiv aliases. On an alias miss,
 paper reads check the DOI itself before considering acquisition.
+An acquire that lands on a tracked paper registers the identifiers it
+resolved there: a stub known only by its S2 id needs the arXiv id on its
+row before ``fetch_oa`` can try arXiv.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace

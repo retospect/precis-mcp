@@ -2363,6 +2363,15 @@ class PaperHandler(Handler):
                 s2_meta=s2_meta,
                 conn=conn,
             )
+            if not created:
+                # The hit came through one alias (say the S2 id of a stub
+                # minted from a citation list); register the others this
+                # ask resolved. fetch_oa reads the arXiv id from
+                # ref_identifiers, so without it the arXiv leg never runs
+                # for that stub (gr711568).
+                self.store.insert_ref_identifiers(
+                    ref_id, [(k, v, "dream") for k, v in identifiers], conn=conn
+                )
             # Tag the provenance only on a fresh stub — never slap
             # DREAM:acquire onto a paper the corpus already holds in full.
             if created:
