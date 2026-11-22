@@ -1731,10 +1731,11 @@ class TestParallelPass:
 
         def _stop() -> bool:
             checks["n"] += 1
-            # Row-top and write-slice checks alternate (row1, write1,
-            # row2, write2, row3…): the flag goes true on the fifth
+            # Call 1 is tier 1's pre-claim check (gr739436). Then
+            # row-top and write-slice checks alternate (row1, write1,
+            # row2, write2, row3…): the flag goes true on the sixth
             # call — after row 2's write, before row 3 starts.
-            return checks["n"] > 4
+            return checks["n"] > 5
 
         result = run_chunk_keywords_pass(
             store,

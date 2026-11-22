@@ -265,7 +265,8 @@ def _keywords(row: dict[str, Any]) -> Stage:
     detail = (
         f"worker=chunk_keywords; keywords_meta.version={meta.get('version')!r}; "
         f"keywords_meta.content_sha={meta.get('content_sha')!r}; "
-        "compared with current body content_sha; requires current body embedding"
+        "compared with current body content_sha; KeyBERT requires current body "
+        "embedding (tier-1 RAKE keywords may stand in until it lands)"
     )
     if not complete:
         # The claim's gate (claim_chunks_without_keywords): an ok, current

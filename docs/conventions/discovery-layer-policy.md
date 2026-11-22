@@ -20,9 +20,14 @@ layer", carrying its own F20 amendment banner).
   forms, GIN-indexed for lexical filter and for Jaccard-distance
   clustering at query time.
 - `chunks.keywords_meta JSONB` — versioned envelope with
-  `{version, embedder, keywords:[{short, long, score}]}` (KeyBERT
-  cosine scores against the chunk's bge-m3 embedding, abbreviations
-  resolved via the paper's Schwartz-Hearst legend).
+  `{version, extractor, embedder, keywords:[{short, long, score}]}`
+  (KeyBERT cosine scores against the chunk's bge-m3 embedding,
+  abbreviations resolved via the paper's Schwartz-Hearst legend).
+  `extractor` names the tier: `rake` is tier 1, written for a chunk
+  still unembedded 15 minutes after it landed (RAKE rank only, `score`
+  null, no `embedder`, version `rake-<KEYWORDS_VERSION>`); `keybert`
+  is tier 2, which replaces a tier-1 row once the chunk is embedded.
+  A row with no `extractor` predates the key and is KeyBERT.
 
 There are no precomputed segment rows and no per-sentence embeddings.
 

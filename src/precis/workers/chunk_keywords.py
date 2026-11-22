@@ -12,6 +12,7 @@ per-CHUNK keybert keywords and stores them directly on ``chunks``:
 
       {
         "version": "1.1",
+        "extractor": "keybert",
         "embedder": "bge-m3",
         "keywords": [
           {"short": "MOF", "long": "metal-organic framework", "score": 0.82},
@@ -39,6 +40,34 @@ Algorithm (per chunk):
 6. Score by cosine vs. the chunk's pre-computed embedding.
 7. Take top-K, dedupe abbrev pairs, store both forms in
    ``keywords_meta`` and the canonical short in ``keywords TEXT[]``.
+
+**Two tiers (gr739436).** The algorithm above is tier 2 and needs the
+chunk's vector. A fresh chunk with no current embedding gets tier 1
+first: the same cleaned candidates in RAKE's own order, no model and no
+vector (:func:`claim_unembedded_chunks`,
+:func:`extract_statistical_keywords`), so keywords exist before the
+embedding does. ``keywords_meta.extractor`` names the tier
+(:data:`TIER1_EXTRACTOR` / :data:`TIER2_EXTRACTOR`); a tier-1 row
+carries :data:`TIER1_VERSION`, which the stale predicate reads as
+"waiting for KeyBERT", so tier 2 replaces it through the ordinary
+version-stale claim once the chunk is embedded. A chunk that already
+has its embedding skips tier 1. RAKE was the extractor at hand (no new
+dependency, no corpus table): on 300 prod paper paragraphs it took
+0.11 ms per chunk and 57% of its keywords were also in the stored
+KeyBERT top-8; YAKE and TF-IDF were not measured.
+
+Tier 1 waits :data:`TIER1_MIN_AGE` (``chunks.created_at``) before it
+claims a chunk. A tier-1 row has non-NULL ``keywords``, so it leaves
+``chunks_keywords_pending_idx`` for good and reaches KeyBERT only
+through the paced, unindexed version-stale claim (tier 3). A chunk that
+embeds inside the window keeps the indexed fresh-backlog path; tier 1
+fires only when the embedder is behind. The open follow-up is a
+partial index over version-stale rows (``keywords_meta->>'version' IS
+DISTINCT FROM KEYWORDS_VERSION``): with the upgrade indexed, tier 1
+could run as soon as the chunk lands. Tier-1 counts stay out of the
+pass's ``claimed``/``ok``/``failed``, which the health probes read as
+the KeyBERT drain ledger; they report as ``tier1_claimed`` /
+``tier1_ok`` / ``tier1_failed`` in the same ``worker_logs`` payload.
 
 Lazy upgrade: bump :data:`KEYWORDS_VERSION` to invalidate every
 existing row's ``keywords_meta.version`` mismatch; the claim query
@@ -125,7 +154,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -152,6 +182,41 @@ log = logging.getLogger(__name__)
 #: markup/citation residue first — the stored corpus re-derives via
 #: the tier-3 stale claim, the ruling's "slow background burn".
 KEYWORDS_VERSION = "1.1"
+
+#: ``keywords_meta.extractor`` values (gr739436). Tier 1 is RAKE rank
+#: alone — no model, no vector — for a chunk that has no current
+#: embedding yet; tier 2 is the KeyBERT cosine ranking. Rows written
+#: before the key existed carry none and are KeyBERT.
+TIER1_EXTRACTOR = "rake"
+TIER2_EXTRACTOR = "keybert"
+
+#: The version a tier-1 row carries. Never equal to
+#: :data:`KEYWORDS_VERSION`, so every reader of the stale predicate
+#: (``keywords_meta->>'version' IS DISTINCT FROM KEYWORDS_VERSION`` —
+#: the claim, both write guards, the backlog counts) sees a tier-1 row
+#: as waiting for KeyBERT without knowing about tiers. Derived from
+#: ``KEYWORDS_VERSION`` because both tiers share the candidate cleaning
+#: that version tracks.
+TIER1_VERSION = f"{TIER1_EXTRACTOR}-{KEYWORDS_VERSION}"
+
+#: Minimum ``chunks.created_at`` age before tier 1 claims a chunk: a
+#: chunk that embeds inside this window gets KeyBERT through the indexed
+#: fresh-backlog claim instead of the paced, unindexed stale upgrade.
+TIER1_MIN_AGE = timedelta(minutes=15)
+
+#: Prefix of the tier-1 counts in a pass result and its ``worker_logs``
+#: payload (``tier1_claimed`` / ``tier1_ok`` / ``tier1_failed``), kept
+#: apart from ``claimed``/``ok``/``failed``, the KeyBERT drain ledger the
+#: health probes sum.
+TIER1_KEY_PREFIX = "tier1_"
+
+
+def tier1_counts(result: dict[str, int]) -> dict[str, int]:
+    """The ``tier1_*`` entries of a :func:`run_chunk_keywords_pass`
+    result, for a caller's log payload (empty when tier 1 claimed
+    nothing)."""
+    return {k: v for k, v in result.items() if k.startswith(TIER1_KEY_PREFIX)}
+
 
 #: Fixed signed-bigint key for the single-runner advisory lock (same idiom
 #: as ``paper_reconcile``/``openalex_enrich``/``paper_meta_enrich`` — see
@@ -430,8 +495,10 @@ def claim_chunks_without_keywords(
     Returns rows of ``(chunk_id, ref_id, text, embedding)`` — the
     embedding is pulled from ``chunk_embeddings`` via JOIN so the
     worker can score candidates without re-embedding the chunk.
-    ``embedding`` is ``None`` when no embedding exists yet (worker
-    pass ordering: embed runs before keybert).
+    Every tier requires a current ``ok`` embedding, so ``embedding``
+    is not ``None`` in practice; a chunk without one is not claimed
+    here and gets tier-1 keywords from :func:`claim_unembedded_chunks`
+    once it is older than :data:`TIER1_MIN_AGE`.
 
     ``stale_claimed``: when a list is passed, the number of rows the
     tier-3 claim added is appended to it (nothing is appended when
@@ -582,6 +649,104 @@ def claim_chunks_without_keywords(
         if stale_claimed is not None:
             stale_claimed.append(len(out) - before)
     return out
+
+
+def claim_unembedded_chunks(
+    conn: Connection,
+    *,
+    limit: int,
+    shard_count: int = 1,
+    shard_index: int = 0,
+) -> list[tuple[int, int, str]]:
+    """Return up to ``limit`` fresh chunks that have no current embedding
+    — the tier-1 (statistical) claim (gr739436).
+
+    The complement of :func:`claim_chunks_without_keywords`'s embedding
+    gate, over fresh rows only (``keywords IS NULL``): a row that claim
+    walks past because nothing can score it yet. A tier-1 row leaves
+    this claim for good once written (``keywords`` is no longer NULL)
+    and re-enters the KeyBERT claim as version-stale
+    (:data:`TIER1_VERSION`) when its embedding lands.
+
+    Bounded by construction: ``kw_head`` takes the newest
+    ``limit * _CANDIDATE_SCAN_MULT`` rows of the
+    ``chunks_keywords_pending_idx`` walk with NO embedding probe, and
+    only those rows are probed. An unbounded ``NOT EXISTS`` walk would
+    probe every embedded row still waiting for KeyBERT on every poll
+    that finds nothing — the usual case. The price: a chunk that never
+    gets an embedding and sits deeper than the window waits until the
+    KeyBERT drain brings it into the head. Freshly written chunks are
+    the newest ``chunk_id`` values, so they are in the window.
+
+    Age gate: only chunks older than :data:`TIER1_MIN_AGE` qualify (see
+    the module docstring's "Two tiers"). The ``created_at`` filter sits
+    in the outer query over the head rows, so the head keeps walking
+    ``chunks_keywords_pending_idx`` in ``chunk_id DESC`` order. The
+    price: while more than ``limit * _CANDIDATE_SCAN_MULT`` chunks
+    younger than the gate are pending, the head holds only young rows
+    and tier 1 claims nothing until ingest slows.
+
+    ``shard_count`` / ``shard_index`` as in
+    :func:`claim_chunks_without_keywords`. Returns rows of
+    ``(chunk_id, ref_id, text)``, newest first.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    if shard_count < 1:
+        raise ValueError("shard_count must be >= 1")
+    if not 0 <= shard_index < shard_count:
+        raise ValueError("shard_index must satisfy 0 <= shard_index < shard_count")
+    shard_params: tuple[Any, ...] = (
+        (shard_count, shard_index) if shard_count > 1 else ()
+    )
+    rows = conn.execute(
+        _unembedded_claim_sql(shard_count),
+        (
+            *shard_params,
+            limit * _CANDIDATE_SCAN_MULT,
+            TIER1_MIN_AGE,
+            "bge-m3",
+            limit,
+        ),
+    ).fetchall()
+    return [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
+
+
+def _unembedded_claim_sql(shard_count: int) -> str:
+    """:func:`claim_unembedded_chunks`' statement. Params, in order: the
+    shard pair (only when ``shard_count > 1``), the head size, the
+    minimum age, the embedder name, the claim limit."""
+    shard_clause = (
+        "\n               AND c2.chunk_id %% %s = %s" if shard_count > 1 else ""
+    )
+    return f"""
+        WITH kw_head AS MATERIALIZED (
+            SELECT c2.chunk_id
+              FROM chunks c2
+             WHERE {_eligibility_sql("c2.")}
+               AND c2.keywords IS NULL{shard_clause}
+             ORDER BY c2.chunk_id DESC
+             LIMIT %s
+        )
+        SELECT c.chunk_id, c.ref_id, c.text
+          FROM kw_head q
+          JOIN chunks c ON c.chunk_id = q.chunk_id
+         WHERE {_ELIGIBILITY_SQL}
+           AND c.keywords IS NULL
+           AND c.created_at < now() - %s
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM chunk_embeddings ce
+                  WHERE ce.chunk_id = c.chunk_id
+                    AND ce.embedder = %s
+                    AND ce.status = 'ok'
+                    AND ce.vector IS NOT NULL
+                    AND ce.content_sha IS NOT DISTINCT FROM c.content_sha
+               )
+         ORDER BY c.chunk_id DESC
+         LIMIT %s
+           FOR UPDATE OF c SKIP LOCKED
+        """
 
 
 def keyword_eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
@@ -1094,6 +1259,44 @@ def extract_chunk_keywords(
     return _score_keyword_candidates(chunk_embedding, candidate_meta, cand_vecs)
 
 
+def extract_statistical_keywords(
+    *, chunk_text: str, abbrevs: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Return the tier-1 keywords for one chunk: the same cleaned,
+    junk-filtered RAKE candidates KeyBERT ranks, kept in RAKE's own
+    order (degree/frequency phrase score) — no embedder, no vector
+    (gr739436). Same ``[{"short", "long", "score"}, ...]`` shape and
+    abbrev-pair dedupe as :func:`extract_chunk_keywords`; ``score`` is
+    ``None`` because no cosine was computed."""
+    return _top_k_keywords(
+        (None, long_form, cand_short)
+        for long_form, cand_short in _prepare_keyword_candidates(chunk_text, abbrevs)
+    )
+
+
+def _top_k_keywords(
+    ranked: Iterable[tuple[float | None, str, str | None]],
+) -> list[dict[str, Any]]:
+    """Top-K of an already ranked ``(score, long, short)`` stream.
+
+    Dedupe by abbrev pair: if the stream contains both the short
+    ("MOF") and the long ("metal-organic framework") of the same
+    abbrev, keep just one entry (the higher-ranked). Walk top-down,
+    track seen abbrev-keys.
+    """
+    seen_keys: set[str] = set()
+    kept: list[dict[str, Any]] = []
+    for score, long_form, cand_short in ranked:
+        key = (cand_short or long_form).lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        kept.append({"short": cand_short, "long": long_form, "score": score})
+        if len(kept) >= _TOP_K:
+            break
+    return kept
+
+
 def _prepare_keyword_candidates(
     chunk_text: str, abbrevs: dict[str, str]
 ) -> list[tuple[str, str | None]]:
@@ -1163,22 +1366,7 @@ def _score_keyword_candidates(
     ]
 
     scored.sort(key=lambda t: t[0], reverse=True)
-
-    # Dedupe by abbrev pair: if the top-K contains both the short
-    # ("MOF") and the long ("metal-organic framework") of the same
-    # abbrev, keep just one entry (the higher-scoring). Walk top-down,
-    # track seen abbrev-keys.
-    seen_keys: set[str] = set()
-    kept: list[dict[str, Any]] = []
-    for score, long_form, cand_short in scored:
-        key = (cand_short or long_form).lower()
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        kept.append({"short": cand_short, "long": long_form, "score": score})
-        if len(kept) >= _TOP_K:
-            break
-    return kept
+    return _top_k_keywords(scored)
 
 
 def write_chunk_keywords(
@@ -1212,6 +1400,7 @@ def write_chunk_keywords(
     canonical = [c for c in canonical if c]
     meta = {
         "version": KEYWORDS_VERSION,
+        "extractor": TIER2_EXTRACTOR,
         "embedder": embedder_name,
         "keywords": keywords,
     }
@@ -1281,6 +1470,7 @@ def write_chunk_keywords_bulk(
         canonical = [c for c in canonical if c]
         meta = {
             "version": KEYWORDS_VERSION,
+            "extractor": TIER2_EXTRACTOR,
             "embedder": embedder_name,
             "keywords": keywords,
         }
@@ -1303,6 +1493,140 @@ def write_chunk_keywords_bulk(
         (*params, KEYWORDS_VERSION),
     )
     return cur.rowcount
+
+
+def write_statistical_keywords_bulk(
+    conn: Connection, items: list[tuple[int, list[dict[str, Any]]]]
+) -> int:
+    """Tier-1 twin of :func:`write_chunk_keywords_bulk` (gr739436): the
+    same columns and ``content_sha`` stamp, an envelope of
+    :data:`TIER1_VERSION` + :data:`TIER1_EXTRACTOR` with no
+    ``embedder``, and a narrower guard — ``keywords IS NULL`` only, so
+    a tier-1 write can never replace KeyBERT keywords that landed
+    between its claim and its write. Returns the UPDATE's rowcount."""
+    if not items:
+        return 0
+    values: list[str] = []
+    params: list[Any] = []
+    for chunk_id, keywords in items:
+        canonical = [
+            (k.get("short") or k.get("long") or "").lower().strip() for k in keywords
+        ]
+        meta = {
+            "version": TIER1_VERSION,
+            "extractor": TIER1_EXTRACTOR,
+            "keywords": keywords,
+        }
+        values.append("(%s::bigint, %s::text[], %s::jsonb)")
+        params.extend([chunk_id, [c for c in canonical if c], Jsonb(meta)])
+    cur = conn.execute(
+        f"""
+        UPDATE chunks c
+           SET keywords = v.keywords,
+               keywords_meta =
+                   v.keywords_meta || jsonb_build_object('content_sha', c.content_sha)
+          FROM (VALUES {", ".join(values)}) AS v(chunk_id, keywords, keywords_meta)
+         WHERE c.chunk_id = v.chunk_id
+           AND c.keywords IS NULL
+        """,
+        params,
+    )
+    return cur.rowcount
+
+
+def _run_statistical_tier(
+    store: Store,
+    *,
+    batch_size: int,
+    deadline: float,
+    shard_count: int = 1,
+    shard_index: int = 0,
+    should_stop: Callable[[], bool] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, int]:
+    """Tier 1 of a pass (gr739436): claim chunks with no current
+    embedding, rank their RAKE candidates, bulk-write. No embedder
+    call anywhere, so it runs before the KeyBERT half and an embedder
+    outage cannot hold it up.
+
+    Same transaction discipline as :func:`_run_chunk_keywords_batch`:
+    the claim commits before any work, each write slice is its own
+    short :func:`retry_locked` transaction, and the ``keywords IS NULL``
+    write guard makes a duplicate claim a no-op. Same result shape; a
+    slice lost to residual lock contention counts as neither ``ok`` nor
+    ``failed`` and re-claims next pass.
+
+    ``deadline`` (on ``clock``) and ``should_stop`` are the pass's own,
+    checked as the KeyBERT batch checks them: both before the claim and
+    per claimed row, ``should_stop`` alone before each write slice (rows
+    already ranked still write once the clock runs out, as KeyBERT's
+    scored rows do). Rows not reached stay unwritten and re-claim next
+    pass.
+    """
+
+    def _out_of_time() -> bool:
+        return clock() >= deadline or (should_stop is not None and should_stop())
+
+    if _out_of_time():
+        return {"claimed": 0, "ok": 0, "failed": 0}
+    with store.pool.connection() as conn:
+        rows = claim_unembedded_chunks(
+            conn, limit=batch_size, shard_count=shard_count, shard_index=shard_index
+        )
+        conn.commit()
+    ok = failed = 0
+    abbrev_cache: dict[int, dict[str, str]] = {}
+    ranked: list[tuple[int, list[dict[str, Any]]]] = []
+    for chunk_id, ref_id, text in rows:
+        if _out_of_time():
+            break
+        try:
+            if ref_id not in abbrev_cache:
+                abbrev_cache[ref_id] = _ensure_paper_abbrevs_retrying(store, ref_id)
+            ranked.append(
+                (
+                    chunk_id,
+                    extract_statistical_keywords(
+                        chunk_text=text, abbrevs=abbrev_cache[ref_id]
+                    ),
+                )
+            )
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            log.warning(
+                "chunk_keywords: tier-1 chunk_id=%s deferred after residual "
+                "lock contention: %s",
+                chunk_id,
+                exc,
+            )
+        except Exception:
+            log.exception("chunk_keywords: tier-1 chunk_id=%s failed", chunk_id)
+            failed += 1
+    for i in range(0, len(ranked), _BULK_WRITE_MAX_ROWS):
+        if should_stop is not None and should_stop():
+            break
+        part = ranked[i : i + _BULK_WRITE_MAX_ROWS]
+
+        def _bulk(part: list[tuple[int, list[dict[str, Any]]]] = part) -> None:
+            with store.pool.connection() as wconn:
+                write_statistical_keywords_bulk(wconn, part)
+                wconn.commit()
+
+        try:
+            retry_locked(_bulk, label="chunk_keywords tier-1 bulk write")
+            ok += len(part)
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            log.warning(
+                "chunk_keywords: %d tier-1 chunks deferred after residual "
+                "lock contention: %s",
+                len(part),
+                exc,
+            )
+        except Exception:
+            log.exception(
+                "chunk_keywords: tier-1 bulk write failed for %d chunks", len(part)
+            )
+            failed += len(part)
+    return {"claimed": len(rows), "ok": ok, "failed": failed}
 
 
 def _ensure_paper_abbrevs_retrying(store: Store, ref_id: int) -> dict[str, str]:
@@ -1638,10 +1962,13 @@ def run_chunk_keywords_pass(
     ``should_stop`` — the lane's SIGINT/SIGTERM flag, forwarded to the
     batch so a stop lands mid-batch, not just between passes.
 
-    Returns ``{"claimed": N, "ok": K, "failed": F}`` — see
-    :func:`_run_chunk_keywords_batch`'s docstring for the shape and the
-    claim/extract/write phases it runs. Pure pass — the caller decides
-    whether to loop.
+    Returns ``{"claimed": N, "ok": K, "failed": F}`` for the KeyBERT
+    tiers — see :func:`_run_chunk_keywords_batch`'s docstring for the
+    shape and the claim/extract/write phases it runs. When tier 1
+    claimed rows the dict also carries ``tier1_claimed`` /
+    ``tier1_ok`` / ``tier1_failed`` (:func:`tier1_counts` picks them
+    out); tier 1 never adds to the first three. Pure pass — the caller
+    decides whether to loop.
 
     Single-runner advisory lock (see the module docstring): ``chunk_keywords``
     runs on every system-profile host on the same ~2s tick, all ordering
@@ -1681,11 +2008,24 @@ def run_chunk_keywords_pass(
         global _pass_count, _stale_draining
         _pass_count += 1
         stale: list[int] = []
+        # One deadline for both tiers. Tier 1 runs first: it needs no
+        # embedder, so an embedder outage cannot hold it up. A parked
+        # pass (``max_seconds`` 0) parks both tiers.
+        deadline = clock() + resolved_max_seconds
+        tier1 = _run_statistical_tier(
+            store,
+            batch_size=resolved_batch_size,
+            deadline=deadline,
+            shard_count=shard_count,
+            shard_index=shard_index,
+            should_stop=should_stop,
+            clock=clock,
+        )
         result = _run_chunk_keywords_batch(
             store,
             embedder,
             batch_size=resolved_batch_size,
-            max_seconds=resolved_max_seconds,
+            max_seconds=max(0.0, deadline - clock()),
             include_stale=_stale_draining or (_pass_count % _STALE_CLAIM_EVERY) == 0,
             stale_claimed=stale,
             shard_count=shard_count,
@@ -1697,6 +2037,11 @@ def run_chunk_keywords_pass(
         # filled by the earlier tiers leaves _stale_draining untouched.
         if stale:
             _stale_draining = stale[0] > 0
+        # Tier 1 never folds into claimed/ok/failed: the health probes
+        # read those as the KeyBERT drain, and a tier-1 row is still
+        # pending there until KeyBERT rewrites it.
+        if tier1["claimed"]:
+            result.update({f"{TIER1_KEY_PREFIX}{k}": v for k, v in tier1.items()})
         return result
 
     if not single_runner:
@@ -1827,9 +2172,12 @@ def run_dedicated_loop(
                     "failed": result["failed"],
                     "report_only": False,
                     "duration_ms": int((clock() - t0) * 1000),
+                    **tier1_counts(result),
                 }
             },
         )
+        # KeyBERT counts only: tier-1 writes go on during an embedder
+        # outage, and the lane must still back off then.
         if result["claimed"] > 0 and result["ok"] * 2 >= result["claimed"]:
             continue
         # Empty queue — OR a mostly-poison batch that claimed rows but

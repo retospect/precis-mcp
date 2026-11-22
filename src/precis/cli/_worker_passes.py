@@ -57,7 +57,10 @@ def build_ref_passes(
         getattr(args, "only", None) is not None
         or not env_flag("PRECIS_CHUNK_KEYWORDS_DEDICATED")
     ):
-        from precis.workers.chunk_keywords import run_chunk_keywords_pass
+        from precis.workers.chunk_keywords import (
+            run_chunk_keywords_pass,
+            tier1_counts,
+        )
 
         # Narrow to EmbedHandler so mypy sees the .embedder
         # attribute; the abstract WorkerHandler doesn't carry it.
@@ -88,7 +91,11 @@ def build_ref_passes(
             # (~60 s) bounds the advisory-lock hold — same trap as
             # ``chase_trigger`` (gr454865), which passes ``None`` too.
             r = run_chunk_keywords_pass(store, kw_embedder, batch_size=None)
-            return BatchResult.from_dict("chunk_keywords", r)
+            # Tier-1 counts ride in ``extra`` (own payload keys), never
+            # in the claimed/ok/failed drain ledger (gr739436).
+            return BatchResult.from_dict(
+                "chunk_keywords", {**r, "extra": tier1_counts(r)}
+            )
 
         ref_passes.append(_chunk_keywords_pass)
 
