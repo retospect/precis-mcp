@@ -688,6 +688,13 @@ def test_every_kind_renders_or_refuses_with_a_reason(
                         ref.id, Tag.closed("STATUS", "open"), set_by="agent", conn=conn
                     )
                 ident = ref.id
+            elif kind == "checklist":
+                # A checklist definition is a registry row, not a ref; its
+                # graph endpoint ref exists only with a checklist_graph_refs
+                # row (td750177), so seed it the way the product mints it.
+                ident = store.checklist_ensure_graph_ref(
+                    store.checklist_create(name="checklist-node")["id"]
+                )
             else:
                 ident = _ref(store, kind, f"a {kind} node", slug=slug).id
         except Exception:
