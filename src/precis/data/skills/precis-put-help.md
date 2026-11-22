@@ -26,7 +26,8 @@ and `link`.
 Create by omitting `id=`: the response returns the new ref's handle
 (`me<N>`). Required fields are per kind — each `precis-<kind>-help`
 lists them. `mode=` picks the creation door: file kinds
-(markdown/plaintext/tex/python) take `'create'`; the paid-import kinds
+(markdown/plaintext/tex/python) take `'create'`, and python also
+`'anchor'` (cite a 2–3 line range, see `precis-python-help`); the paid-import kinds
 (`websearch`, `perplexity-reasoning`, `perplexity-research`) take
 `'import'`. Other kinds gate their own doors: paper `'fetch-si'`,
 structure `'rerun'` / `'neb'` / `'md'` / `'analyze'` / `'trust'`,
@@ -45,7 +46,7 @@ The template catalog and a spec-linked plain-todo recipe are in
 | markdown | `create` |
 | plaintext | `create` |
 | tex | `create` |
-| python | `create` |
+| python | `create`, `anchor` |
 | websearch | `import` |
 | perplexity-reasoning | `import` |
 | perplexity-research | `import` |
@@ -266,6 +267,8 @@ put(
 
 Same `mode='create'` discipline as `markdown`. The `id=` form for
 `python` is `<repo>::<dotted.path>`; see `precis-python-help`.
+To cite existing code instead, `put(kind="python", mode="anchor",
+id="main/src/precis/dispatch.py~L12-L14")` mints an `an<N>` handle.
 
 ## Import a Perplexity report I already paid for
 ## Stash a web-UI Sonar answer at $0
