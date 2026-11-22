@@ -755,6 +755,27 @@ class _FailingOutsideSearch(_SpySearch):
         return out
 
 
+class _PeekingSearch(_SpySearch):
+    """A :class:`_SpySearch` as the real search now behaves (gr626691): an
+    answered query that is not escalated still runs the small outside peek,
+    which may fail."""
+
+    def __init__(self, peek_error: str | None = None) -> None:
+        super().__init__()
+        self.peek_error = peek_error
+
+    def __call__(
+        self, store: Any, query: str, exclude_ref_ids: list[int]
+    ) -> list[tuple[int, float | None]]:
+        out = super().__call__(store, query, exclude_ref_ids)
+        if not self.force_external:
+            rep = self._reports[query]
+            rep.external_ran = True
+            rep.peeked = True
+            rep.external_error = self.peek_error
+        return out
+
+
 def _supply_metas(store: Any, cap: int, meta_key: str) -> list[dict[str, Any]]:
     return [
         b.meta[meta_key]
@@ -869,6 +890,40 @@ class TestSupplyEscalation:
         assert _supply_metas(store, cap, "supply_outcome")[-1]["dry"] is False
         assert ledger.supply_history(store, cap, KEY) == ledger.SupplyHistory()
         assert "not found outside" not in _unmet_gap_detail(store, root)
+
+    def test_routine_peek_does_not_count_as_searched_outside(self, store: Any) -> None:
+        """gr626691: every answered query peeks outside. The peek is not the
+        escalation this ledger bounds; counted, it would use up the two-tick
+        bound before the full outside leg had run twice."""
+        root, cap = make_root(store, demand=2.0, supply=None)
+        fn = _PeekingSearch()
+
+        # tick 1: local-first plus a peek, recorded as not searched outside.
+        self._dry_tick(store, root, fn, "q1")
+        assert fn.seen == [False]
+        assert _supply_metas(store, cap, "supply_outcome") == [
+            {"v": 2, "key": KEY, "dry": True, "external": False, "queries": ["q1"]}
+        ]
+        assert "outside searched: no" in _entries(store, cap, "observation")[-1].text
+        assert ledger.supply_history(store, cap, KEY).ext_dry == 0
+
+        # ticks 2 and 3 both get the full escalated leg; tick 4 stops.
+        for q in ("q2", "q3", "q4"):
+            self._dry_tick(store, root, fn, q)
+        assert fn.seen == [False, True, True, False]
+        (nf,) = _supply_metas(store, cap, "supply_not_found_outside")
+        assert nf == {"key": KEY, "queries": ["q2", "q3"]}
+
+    def test_failed_routine_peek_is_not_an_outside_failure(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        fn = _PeekingSearch(peek_error="HTTPError: 429")
+
+        self._dry_tick(store, root, fn, "q1")
+        assert _supply_metas(store, cap, "supply_outcome") == [
+            {"v": 2, "key": KEY, "dry": True, "external": False, "queries": ["q1"]}
+        ]
+        assert "outside searched: no" in _entries(store, cap, "observation")[-1].text
+        assert ledger.supply_history(store, cap, KEY).ext_failed == 0
 
     def test_failed_outside_search_does_not_count_as_searched(self, store: Any) -> None:
         root, cap = make_root(store, demand=2.0, supply=None)

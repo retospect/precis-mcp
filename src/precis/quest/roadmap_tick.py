@@ -990,7 +990,9 @@ def _run_supply(
     every tick came back dry). Each tick appends one ``supply_outcome``
     observation on the capability's logbook, read back via
     :func:`~precis.quest.roadmap_ledger.supply_history`. After a dry tick the
-    next one runs with ``search_fn.force_external`` set — the attribute is
+    next one runs with ``search_fn.force_external`` set — the FULL outside
+    leg, not the routine small peek every answered query now gets (gr626691);
+    the attribute is
     flipped for this call only and restored in ``finally`` (the caller owns
     ``search_fn`` and reuses it across ticks and keys; a constructed copy
     would have to re-plumb hub and embedder; non-:class:`AcquiringSearch`
@@ -1070,12 +1072,15 @@ def _run_supply(
 
     # Only an outside search that returned counts toward the two-tick bound:
     # a failed one (429, outage, missing S2 client) says nothing about the
-    # literature, so it must not end in "not found outside".
+    # literature, so it must not end in "not found outside". A routine peek
+    # (gr626691 — every answered query peeks a little) is not the escalation
+    # this ledger measures: it runs on every tick and would end every key's
+    # escalation after two dry ticks, so peeked reports are skipped here.
     external = False
     external_error: str | None = None
     for q in queries:
         rep = getattr(search_fn, "report_for", lambda _q: None)(q)
-        if rep is None or not rep.external_ran:
+        if rep is None or not rep.external_ran or getattr(rep, "peeked", False):
             continue
         if rep.external_error:
             external_error = external_error or rep.external_error

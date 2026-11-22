@@ -112,13 +112,11 @@ Package-level invariants (detail lives on the named module):
   live coordinator per active quest (idempotent re-mint, reboot-orphan
   reap, failed/dry-rest backoff + escalation; see :mod:`precis.quest.loop`);
   ``allocator`` backs only the manual ``precis quest run`` one-shot.
-- **Lit-search is local-first.** A tick's ``searches`` hit the graph (papers,
-  findings, drafts, concepts, memories; ``search.LOCAL_KINDS``) first; Semantic
-  Scholar + ``PaperHandler.acquire`` run only on a miss (< ``LOCAL_ENOUGH``
-  hits above the floor), and an S2 failure keeps the local hits. Drafts and
-  memories count as hits but are never linked ``serves`` (a draft serving a
-  quest means *owned by* it; ``search.LINKABLE_KINDS``). The logbook line per
-  query reports local vs acquired.
+- **Lit-search is local-first, and always peeks outside.** A tick's
+  ``searches`` hit the graph first; the full Semantic Scholar + acquire leg
+  runs only on a miss, and an answered query still acquires a small peek
+  (gr626691). Thresholds, the peek knob, what links ``serves`` and the
+  logbook line: :mod:`precis.quest.search`.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
   ``meta.fidelity_levels`` (screening→neb→verify) — seed time only.
   ``meta.operating_conditions`` and ``meta.environment_space`` use the

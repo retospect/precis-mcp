@@ -10,11 +10,22 @@ servers + context, and — crucially — acquiring a paper is *external progress
 (cascade resets the stall clock), so grounding earns compute where re-reasoning
 does not.
 
-**Local first.** :func:`make_acquiring_search`'s local leg is the hybrid
-cross-kind search over papers, findings, drafts, concepts and memories
-(:func:`_local_graph_search`); the external S2 + acquire leg runs only when
-that returns fewer than :data:`LOCAL_ENOUGH` hits above the floor, and an S2
-failure keeps the local hits. Only :data:`LINKABLE_KINDS` are linked ``serves``.
+**Local first, but always peek.** :func:`make_acquiring_search`'s local leg
+is the hybrid cross-kind search over papers, findings, drafts, concepts and
+memories (:func:`_local_graph_search`); the external S2 + acquire leg runs
+the full :func:`_acquire_per_query` bound only when that returns fewer than
+:data:`LOCAL_ENOUGH` hits above the floor — plus a smaller bounded peek
+(:func:`_peek_per_query`, gr626691: "always peek a little, every time") even
+when the graph answered, so a well-stocked local corpus cannot suppress
+newer opposing evidence. The peek acquires ``PRECIS_QUEST_PEEK_PER_QUERY``
+S2 results per query (default 2, clamped 0..10; 0 restores the old skip). It
+is routine freshness, not escalation: its :class:`QueryReport` carries
+``peeked``, and the supply ledger's "searched outside" accounting skips it
+(``roadmap_tick._run_supply``). An S2 failure keeps the local hits either way.
+Only :data:`LINKABLE_KINDS` are linked ``serves``: drafts and memories count
+toward :data:`LOCAL_ENOUGH` (:data:`LOCAL_KINDS` is what the local leg
+searches) but are never linked, because a draft that ``serves`` a quest is
+that quest's *owned* draft.
 Each query's :class:`QueryReport` feeds the logbook's local-vs-acquired line.
 
 The search is an **injectable seam** (``search_fn``) exactly like
@@ -86,8 +97,9 @@ log = logging.getLogger(__name__)
 MAX_QUERIES = env_int("PRECIS_QUEST_MAX_QUERIES", 10, lo=1, hi=100)
 #: How many top hits to link per query.
 MAX_LINK_PER_QUERY = 3
-#: Local-first: the external (Semantic Scholar + acquire) leg runs only when
-#: the graph leg returns fewer than this many hits above the relevance floor.
+#: Local-first: the full external (Semantic Scholar + acquire) leg runs only
+#: when the graph leg returns fewer than this many hits above the relevance
+#: floor; at or above it only the small :func:`_peek_per_query` peek runs.
 LOCAL_ENOUGH = 3
 #: Kinds the local leg searches — the same hybrid cross-kind primitive
 #: (``Store.search_chunks_across_kinds``) the ``search()`` verb's cross-kind
@@ -112,6 +124,16 @@ def _acquire_per_query() -> int:
     (default 4, clamped 1..10) — a knob on acquisition volume without a
     redeploy."""
     return env_int("PRECIS_QUEST_ACQUIRE_PER_QUERY", 4, lo=1, hi=10)
+
+
+def _peek_per_query() -> int:
+    """The peek bound (gr626691, Reto 2026-11-11: "always peek a little,
+    every time"): when the graph already answered a query (:data:`LOCAL_ENOUGH`
+    hits above the floor) the external leg still runs, but only this many S2
+    results are acquired (default 2, clamped 0..10; **0** restores the old
+    skip). The full :func:`_acquire_per_query` bound stays reserved for a
+    thin graph (or ``force_external`` escalation)."""
+    return env_int("PRECIS_QUEST_PEEK_PER_QUERY", 2, lo=0, hi=10)
 
 
 def relevance_floor() -> float:
@@ -161,8 +183,13 @@ class QueryReport:
     acquired: int = 0
     external_ran: bool = False
     #: The external leg ran because the search was escalated
-    #: (``AcquiringSearch.force_external``), not because the graph was thin.
+    #: (``AcquiringSearch.force_external``), not because the graph was thin
+    #: or peeking.
     forced: bool = False
+    #: The external leg ran the small peek bound (:func:`_peek_per_query`)
+    #: even though the graph answered — routine freshness, NOT escalation;
+    #: the supply ledger's "searched outside" accounting skips these.
+    peeked: bool = False
     external_error: str | None = None
     lexical_only: bool = False
     kinds: dict[int, str] = field(default_factory=dict)
@@ -174,11 +201,13 @@ class AcquiringSearch:
     :class:`QueryReport` side channel (``report_for``) that
     :func:`run_search_step` reads for its logbook line.
 
-    ``force_external`` (default False) makes the external leg run whatever the
-    local count — the roadmap supply role's escalation after a dry tick (see
-    ``roadmap_tick._run_supply``). Local hits are still returned first, same
-    ordering and dedup; only the "graph answered, skip outside" shortcut is
-    off. It is a plain attribute so a caller can flip it for one step."""
+    ``force_external`` (default False) makes the FULL external leg
+    (:func:`_acquire_per_query`) run whatever the local count — the roadmap
+    supply role's escalation after a dry tick (see
+    ``roadmap_tick._run_supply``). It is a plain attribute so a caller can
+    flip it for one step. Without it, an answered graph still gets the small
+    :func:`_peek_per_query` peek (gr626691); local hits are always returned
+    first, same ordering and dedup."""
 
     def __init__(
         self,
@@ -222,10 +251,33 @@ class AcquiringSearch:
             report.kinds[rid] = kind
 
         acquired: list[int] = []
-        if len(local_ok) < LOCAL_ENOUGH or self.force_external:
+        thin = len(local_ok) < LOCAL_ENOUGH
+        if thin or self.force_external:
+            limit = _acquire_per_query()
+        else:
+            # gr626691: "always peek a little, every time" — an answered
+            # graph still gets a bounded outside peek so fresh opposing
+            # evidence is not suppressed by a well-stocked local corpus.
+            limit = _peek_per_query()
+        if limit:
             report.external_ran = True
-            report.forced = len(local_ok) >= LOCAL_ENOUGH
-            acquired, report.external_error = self._acquire(query)
+            report.forced = self.force_external and not thin
+            report.peeked = not thin and not self.force_external
+            try:
+                acquired, report.external_error = self._acquire(query, limit)
+            except Exception as exc:
+                # The local hits answered a peeked query, so nothing in the
+                # peek (handler import or construction included) may fail
+                # it. The thin-graph and escalated legs raise as before.
+                if not report.peeked:
+                    raise
+                log.warning(
+                    "quest %s: outside peek failed for %r",
+                    self.quest_id,
+                    query[:80],
+                    exc_info=True,
+                )
+                report.external_error = f"{type(exc).__name__}: {str(exc)[:120]}"
             report.acquired = len(acquired)
             for rid in acquired:
                 report.kinds.setdefault(rid, "paper")
@@ -243,9 +295,12 @@ class AcquiringSearch:
             out.append((rid, score))
         return out
 
-    def _acquire(self, query: str) -> tuple[list[int], str | None]:
+    def _acquire(self, query: str, limit: int) -> tuple[list[int], str | None]:
         """The external leg: S2 free-text search, then queue each DOI-bearing
-        candidate via ``PaperHandler.acquire``. Returns ``(acquired ids,
+        candidate via ``PaperHandler.acquire`` — at most ``limit`` candidates
+        (the full :func:`_acquire_per_query` bound on a thin graph or an
+        escalation, the small :func:`_peek_per_query` peek otherwise).
+        Returns ``(acquired ids,
         error)`` — an S2 failure is recorded, never raised (the caller keeps
         its local hits); a per-candidate acquire failure is swallowed. The S2
         client is the ``[paper]`` extra, so its import sits inside the same
@@ -256,7 +311,7 @@ class AcquiringSearch:
         try:
             from precis.ingest.semantic_scholar import search_s2_papers
 
-            candidates = search_s2_papers(query, limit=_acquire_per_query())
+            candidates = search_s2_papers(query, limit=limit)
         except Exception as exc:
             log.debug("quest %s: S2 search failed for %r", self.quest_id, query[:80])
             candidates = []
@@ -476,17 +531,22 @@ def make_acquiring_search(
 ) -> AcquiringSearch:
     """Build a ``search_fn`` that looks locally first, then acquires.
 
-    **Local first.** The graph (papers, findings, drafts, concepts, memories —
+    **Local first, but always peek.** The graph (papers, findings, drafts,
+    concepts, memories —
     :func:`_local_graph_search`) is searched; only when it returns fewer than
-    :data:`LOCAL_ENOUGH` hits above :func:`relevance_floor` does the external
-    leg run: Semantic Scholar's top results for the query — anything carrying
+    :data:`LOCAL_ENOUGH` hits above :func:`relevance_floor` does the FULL
+    external leg run: Semantic Scholar's top results for the query — anything
+    carrying
     a DOI — are queued through ``PaperHandler.acquire`` (idempotent stub mint
     + ``fetch_oa`` pickup later, out of band). A query the graph already
-    answers acquires nothing and makes no S2 call — unless ``force_external``
-    is set, the roadmap supply role's escalation after a dry tick: then the
-    external leg runs for every query regardless of the local count (local
-    hits still come first, same dedup) and the logbook line says
-    "outside searched (escalated)". Default False; no other caller sets it.
+    answers still runs the small :func:`_peek_per_query` peek (gr626691:
+    "always peek a little, every time" — fresh outside evidence must not be
+    suppressed by a well-stocked corpus), and ``force_external``, the roadmap
+    supply role's escalation after a dry tick, upgrades that to the full
+    :func:`_acquire_per_query` leg regardless of the local count (local
+    hits still come first, same dedup; the logbook line says
+    "outside searched (escalated)", resp. "outside peeked" for the routine
+    peek). ``force_external`` defaults False; no other caller sets it.
 
     An S2 failure (rate limit, exception) is recorded on the query's
     :class:`QueryReport` and the local hits are still returned; a bad DOI or
@@ -519,6 +579,8 @@ def _sources_clause(report: QueryReport | None) -> str:
         tail = "graph answered, outside searched (escalated)"
     elif report.external_error:
         tail = f"outside search failed: {report.external_error}"
+    elif report.peeked:
+        tail = "graph answered, outside peeked"
     else:
         tail = "graph thin, outside searched"
     if report.lexical_only:
