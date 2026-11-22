@@ -48,6 +48,11 @@ older than 30 days or never checked), `all` (ignore the persisted TTL), or
 retracted citations unless `ignore_retractions=True` explicitly waives the
 gate. The pane button has a per-press cap; PDF jobs do not. Progress and the
 pane show "N of M checked within 30 d". Word exports never contact Crossref.
+The pane's **fetch missing DOIs** button looks up cited papers that have
+an arXiv, PubMed or Semantic Scholar id but no DOI and saves the matches
+to their library records; press again to continue a large draft. Cites
+with no persistent identifier stay in the missing-DOI list. Advisory only,
+never export-gating.
 Both formats place a Retraction coverage block after Unverified claims when
 coverage is incomplete or checks were skipped; its first line is red for
 `none` or any never-checked citation.
