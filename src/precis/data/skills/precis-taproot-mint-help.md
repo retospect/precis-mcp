@@ -405,7 +405,7 @@ put(
     kind="finding",
     title="Pd/C catalyzes Suzuki coupling at room temperature.",
     args={
-        "scope": {"catalyst": "Pd/C"},
+        "scope": {"material": "Pd/C"},
         "supporters": [{"paper": "pa5", "source_handle": "pc293"}],
     },
 )  # -> "claim hub fi<id> …" — cite it as [fi<id>]
