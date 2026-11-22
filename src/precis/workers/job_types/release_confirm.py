@@ -30,19 +30,29 @@ factory attests, a failed probe asks, never rolls back; there is no
 **The session MCP** (gr685985). The shared session MCP serves from a
 watched checkout that only a manual step (``scripts/host-ops/pin-prod``)
 moves, and worker heartbeats say nothing about it: r337 and r338 were
-confirmed while it still served the release before. The server stamps what
-it serves in the ``release.mcp_served`` setting (:mod:`precis.mcp_served_stamp`)
-and :func:`_mcp_evidence` reads the stamp, store only — no HTTP, no token.
-No stamp, or one older than the worker liveness window, attests nothing
-and is not a problem (an install without a shared MCP still confirms). A
-live stamp attests when its ``sha`` is the release sha, or the previous
-prod sha under an unbounced scope; or when its ``pending_sha`` — the
-checkout's HEAD, which the checkout watchdog stamps on first seeing it
-move — is the release sha (the restart is deferred while sessions are
-live, up to the watchdog's cap, so the confirm does not wait for it).
-Any other live stamp parks the probe like a worker still rolling, and past
-the deadline is the one problem; when it is the *only* problem the job
-files its own ruling ask (:func:`_mint_mcp_ask`), as for the web.
+confirmed while it still served the release before. Each stamping server
+writes what it serves under its own ``release.mcp_served.<host:pid>`` key
+(:mod:`precis.mcp_served_stamp`, gr762430) and :func:`_mcp_evidence`
+reads every live instance's record, store only — no HTTP, no token. No
+record, or only ones older than three refreshes on the store's clock
+(:data:`precis.mcp_served_stamp.FRESH`, ~15 min), attests nothing and is
+not a problem (an install without a shared MCP still confirms; a stopped
+stack drops its key, a killed one ages out). Every live instance must attest: its
+``sha`` is the release sha, or the previous prod sha under an unbounced
+scope; or its ``pending_sha`` — the checkout's HEAD, which the checkout
+watchdog stamps on first seeing it move — is the release sha (the restart
+is deferred while sessions are live, up to the watchdog's cap, so the
+confirm does not wait for it). Any other live instance parks the probe
+like a worker still rolling, and past the deadline is the one problem;
+when it is the *only* problem the job files its own ruling ask
+(:func:`_mint_mcp_ask`), as for the web, naming each lagging instance.
+An answered ask for the same release and the same lagging instances is
+never re-minted (:func:`_mcp_ask_guard`): while their records predate the
+answer — a stack stopped before answering — the probe parks until they
+age out; a record written after the answer reopens that ask with one
+comment naming the instance, and the probe parks on it the same way, so
+no retry-cap ask follows either. Once the confirm attests, every MCP ask
+of the release still open is closed as moot (:func:`_close_moot_mcp_asks`).
 
 **The restart race.** Right after the rollout a worker's heartbeat can
 still carry the old sha. The probe re-reads the store until a deadline —
@@ -122,7 +132,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -228,6 +238,22 @@ _FAILURE_CAP = 560
 
 
 @dataclass(frozen=True, slots=True)
+class StaleMcp:
+    """A live session MCP instance not at the release (gr762430):
+    ``instance`` (``host:pid``), its ``started_at`` as stamped, the
+    ``served`` sha and the record's ``at``."""
+
+    instance: str
+    started_at: str
+    served: str
+    at: datetime
+
+    def label(self) -> str:
+        """``host:pid (started <started_at>)`` — how an ask names it."""
+        return f"{self.instance} (started {self.started_at or 'unknown'})"
+
+
+@dataclass(frozen=True, slots=True)
 class Evidence:
     """What :func:`gather_evidence` found: ``ok`` (no problems and no
     hosts still waiting on a restart), the pinned ``sha`` the runtime
@@ -248,9 +274,13 @@ class Evidence:
     reported as a note in ``text``, never a problem and never
     ``waiting``. ``unbounced`` names the workers accepted at the previous
     prod sha because the deploy's bounce scope restarted no worker
-    (gr645561). ``mcp_only`` is true when the session MCP's stamp
-    (:func:`_mcp_evidence`) is the ONLY problem — the workers all attest —
-    and ``mcp_sha`` is the sha it still serves then (gr685985)."""
+    (gr645561). ``mcp_only`` is true when the session MCP's stamps
+    (:func:`_mcp_evidence`) are the ONLY problem — the workers all attest —
+    and ``mcp_sha`` is the sha the first lagging instance still serves
+    then (gr685985); ``mcp_stale`` names every lagging live instance,
+    whether it is the problem or still waited on (gr762430);
+    ``mcp_held`` is set when the re-mint guard (:func:`_mcp_ask_guard`)
+    turned the MCP problem into a wait — the park's note then."""
 
     ok: bool
     sha: str | None
@@ -263,6 +293,8 @@ class Evidence:
     unbounced: tuple[str, ...] = ()
     mcp_only: bool = False
     mcp_sha: str | None = None
+    mcp_stale: tuple[StaleMcp, ...] = ()
+    mcp_held: str | None = None
 
 
 def _same_sha(a: str | None, b: str) -> bool:
@@ -404,46 +436,69 @@ def _mcp_evidence(
     *,
     now: datetime,
     deadline: datetime | None,
-) -> tuple[str, str | None, bool, str | None]:
-    """``(clause, problem, waiting, served)`` for the session MCP half of
-    the evidence (gr685985), from the server's own store stamp.
+) -> tuple[str, str | None, bool, tuple[StaleMcp, ...]]:
+    """``(clause, problem, waiting, stale)`` for the session MCP half of
+    the evidence (gr685985), from the servers' own store stamps — one per
+    instance (gr762430, :func:`precis.mcp_served_stamp.live_stamps`).
 
-    No stamp, or one older than the worker liveness window, is a clause,
-    never a problem — an install without a shared MCP must still confirm.
-    A live stamp attests when it serves ``sha`` (or an unbounced previous
-    sha), or when the watched checkout is already at ``sha`` and only the
-    deferred restart is pending. Any other live stamp is ``waiting``
-    before ``deadline`` (like a worker still rolling) and the problem
-    after it. ``served`` is the sha the stamp says is served."""
-    stamp = _mss.read_stamp(store)
-    if stamp is None or now - stamp["at"] > timedelta(minutes=_df.FLEET_FRESH_MIN):
-        return "not attested (no live served-sha stamp)", None, False, None
-    served = str(stamp["sha"])
-    pending = str(stamp.get("pending_sha") or "")
-    if _same_sha(served, sha):
-        return f"at {sha[:12]}", None, False, served
-    if any(_same_sha(served, p) for p in prev_shas):
-        return (
-            f"at {served[:12]} (previous prod sha, deploy bounced no worker)",
-            None,
-            False,
-            served,
+    No live record (none, or all older than
+    :data:`precis.mcp_served_stamp.FRESH` on the store's clock) is a clause, never a problem — an install without a shared MCP must
+    still confirm, and a stopped stack ages out. Each live instance
+    attests when it serves ``sha`` (or an unbounced previous sha), or when
+    its watched checkout is already at ``sha`` and only the deferred
+    restart is pending. Any instance that does not is in ``stale``: the
+    probe is ``waiting`` before ``deadline`` (like a worker still rolling)
+    and the one problem after it, naming each such instance."""
+    stamps = _mss.live_stamps(store, fresh=_mss.FRESH)
+    if not stamps:
+        return "not attested (no live served-sha stamp)", None, False, ()
+    rolling = deadline is not None and now < deadline
+    clauses: list[str] = []
+    stale: list[StaleMcp] = []
+    for rec in stamps:
+        served = str(rec["sha"])
+        pending = str(rec.get("pending_sha") or "")
+        if _same_sha(served, sha):
+            clauses.append(f"at {sha[:12]}")
+        elif any(_same_sha(served, p) for p in prev_shas):
+            clauses.append(
+                f"at {served[:12]} (previous prod sha, deploy bounced no worker)"
+            )
+        elif pending and _same_sha(pending, sha):
+            clauses.append(
+                f"checkout at {sha[:12]}, restart pending (serving {served[:12]})"
+            )
+        else:
+            stale.append(
+                StaleMcp(
+                    instance=str(rec["instance"]),
+                    started_at=str(rec.get("started_at") or ""),
+                    served=served,
+                    at=rec["at"],
+                )
+            )
+            clauses.append(
+                f"serving {served[:12]}, still rolling"
+                if rolling
+                else f"serving {served[:12]}"
+            )
+    if len(stamps) == 1:
+        clause = clauses[0]
+    else:
+        clause = f"{len(stamps)} live instances: " + ", ".join(
+            f"{rec['instance']} {c}" for rec, c in zip(stamps, clauses, strict=True)
         )
-    if pending and _same_sha(pending, sha):
-        return (
-            f"checkout at {sha[:12]}, restart pending (serving {served[:12]})",
-            None,
-            False,
-            served,
-        )
-    if deadline is not None and now < deadline:
-        return f"serving {served[:12]}, still rolling", None, True, served
+    if not stale:
+        return clause, None, False, ()
+    if rolling:
+        return clause, None, True, tuple(stale)
+    lagging = ", ".join(f"{s.label()} still serves {s.served[:12]}" for s in stale)
     return (
-        f"serving {served[:12]}",
-        f"session MCP still serves {served[:12]}, release is {sha[:12]} "
-        "— pin the prod checkout (scripts/host-ops/pin-prod)",
+        clause,
+        f"session MCP {lagging}, release is {sha[:12]} — pin the prod "
+        "checkout (scripts/host-ops/pin-prod) or stop a non-shared stack",
         False,
-        served,
+        tuple(stale),
     )
 
 
@@ -632,9 +687,9 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     else:
         web_clause = "not attested (no pinned sha)"
     mcp_problem: str | None = None
-    mcp_sha: str | None = None
+    mcp_stale: tuple[StaleMcp, ...] = ()
     if sha is not None:
-        mcp_clause, mcp_problem, mcp_waits, mcp_sha = _mcp_evidence(
+        mcp_clause, mcp_problem, mcp_waits, mcp_stale = _mcp_evidence(
             store, sha, prev_shas, now=now, deadline=deadline
         )
         if mcp_problem is not None:
@@ -684,7 +739,8 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         noncohort=tuple(h for h, _why in noncohort),
         unbounced=tuple(unbounced),
         mcp_only=(mcp_problem is not None and len(problems) == 1 and not waiting),
-        mcp_sha=mcp_sha if mcp_problem is not None else None,
+        mcp_sha=mcp_stale[0].served if mcp_problem is not None else None,
+        mcp_stale=mcp_stale,
     )
 
 
@@ -724,12 +780,14 @@ def _mint_probe_ask(
     title: str,
     body: str,
     options: list[str],
+    extra_meta: dict[str, Any] | None = None,
 ) -> int:
     """The ruling ask a lone probe failure files on the confirm node: the
     workers already attest, so the ask carries the evidence the tick's
     retry-cap mint would not, and its ``blocked-by`` edge suppresses that
     mint (``_Plan.open_asks``); answering re-arms ``todo_id`` with a fresh
-    retry budget for the re-probe. Insert shape of
+    retry budget for the re-probe. ``extra_meta`` lands beside
+    ``meta.ask`` (the MCP ask's re-mint key). Insert shape of
     ``plan_dispatch._mint_ask``; returns the ask's todo id."""
     from precis.plans.nodes import finish_mint
     from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -744,7 +802,8 @@ def _mint_probe_ask(
             "options": list(options),
             "blocks": f"td{todo_id}",
             "context": context[:_ASK_CONTEXT_CAP],
-        }
+        },
+        **(extra_meta or {}),
     }
     check_ask_meta(meta)
     with store.tx() as conn:
@@ -812,29 +871,73 @@ def _mint_web_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
     )
 
 
+#: ``meta`` key of an MCP ask's re-mint key — ``{rn, instances}``, the
+#: release and the sorted lagging instances it asked about (gr762430).
+_MCP_ASK_KEY = "mcp_stale"
+
+
+def _mcp_ask_key(rn: str, ev: Evidence) -> dict[str, Any]:
+    return {_MCP_ASK_KEY: {"rn": rn, "instances": sorted(_stale_instances(ev))}}
+
+
+def _stale_instances(ev: Evidence) -> set[str]:
+    return {s.instance for s in ev.mcp_stale}
+
+
+#: The MCP stamp freshness window in minutes, for ask text.
+_FRESH_MIN = int(_mss.FRESH.total_seconds() // 60)
+
+#: How many lagging instances an ask title names before "+N more".
+_TITLE_NAMES = 3
+
+
+def _title_names(stale: tuple[StaleMcp, ...]) -> str:
+    """The lagging instances for an ask title: the first
+    :data:`_TITLE_NAMES` labels, then ``+N more`` (the body lists all)."""
+    if not stale:
+        return "unknown instance"
+    shown = ", ".join(s.label() for s in stale[:_TITLE_NAMES])
+    extra = len(stale) - _TITLE_NAMES
+    return f"{shown} +{extra} more" if extra > 0 else shown
+
+
 def _mint_mcp_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
     """The ruling ask an MCP-only probe failure files on the confirm node
-    (gr685985): every live worker attests the sha and only the shared
-    session MCP's served-sha stamp still names another one — its watched
-    checkout was not pinned. The one step is ``scripts/host-ops/pin-prod``
-    by whoever owns the prod checkout; answering re-arms the confirm."""
+    (gr685985): every live worker attests the sha and only live session
+    MCP instances' served-sha stamps still name another one. The ask names
+    each such instance (``host:pid`` and ``started_at``, gr762430): the
+    shared session MCP's step is ``scripts/host-ops/pin-prod`` by whoever
+    owns the prod checkout, any other stack can simply be stopped (its
+    stamp ages out). Answering re-arms the confirm; ``meta.mcp_stale`` is
+    the key :func:`_mcp_ask_guard` matches a later failure against."""
     short = ev.sha[:12] if ev.sha else "unset"
     served = (ev.mcp_sha or "unknown")[:12]
+    names = _title_names(ev.mcp_stale)
+    lines = "\n".join(
+        f"- {s.label()} serves {s.served[:12]}, last stamp {s.at.strftime(_TS_FMT)}"
+        for s in ev.mcp_stale
+    )
     title = (
-        f"{rn or 'release'}: session MCP still serves {served}, release is "
-        f"{short} — pin the prod checkout, then answer"
+        f"{rn or 'release'}: session MCP {names} still serves {served}, "
+        f"release is {short} — pin or stop it, then answer"
     )
     body = (
         f"{ev.text}\n\nThe workers are confirmed: every live worker host "
-        f"already reports {short}. Only the shared session MCP still serves "
-        f"{served} — its watched checkout has not been pinned to the "
-        "release. As the owner of the prod checkout run "
-        "scripts/host-ops/pin-prod, then answer 'retry the MCP check' and "
-        f"close this todo: closing re-arms td{todo_id} with a fresh retry "
-        "budget and the confirm re-reads the server's stamp. Pick 'won't "
-        f"do' by closing td{todo_id} STATUS:won't-do — the release then "
-        "stays unconfirmed until a hand `scripts/round deploy "
-        "--confirm-runtime … && scripts/round close` lands."
+        f"already reports {short}. These live session MCP instances still "
+        f"serve another sha:\n{lines}\n\nFor the shared session MCP, its "
+        "watched checkout has not been pinned to the release: as the owner "
+        "of the prod checkout run scripts/host-ops/pin-prod. Any other "
+        "instance — a dev stack or test image holding the prod DSN — is not "
+        "shared and can simply be stopped: its stamp is ignored once it is "
+        f"{_FRESH_MIN} minutes old. Then answer 'retry the MCP "
+        f"check' and close this todo: closing re-arms td{todo_id} with a "
+        "fresh retry budget and the confirm re-reads the stamps, waiting "
+        "for stamps written before the answer to age out rather than "
+        "asking again; an instance that stamps after the answer reopens "
+        "this todo with a comment naming it. Pick 'won't do' by closing "
+        f"td{todo_id} STATUS:won't-do — the release then stays unconfirmed "
+        "until a hand `scripts/round deploy --confirm-runtime … && "
+        "scripts/round close` lands."
     )
     return _mint_probe_ask(
         store,
@@ -844,6 +947,192 @@ def _mint_mcp_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
         title=title,
         body=body,
         options=_MCP_ASK_OPTIONS,
+        extra_meta=_mcp_ask_key(rn, ev),
+    )
+
+
+def _prior_mcp_ask(
+    store: Store, todo_id: int, rn: str, instances: set[str]
+) -> tuple[int, datetime | None] | None:
+    """``(ask id, answered at)`` of the newest MCP ask on ``todo_id`` for
+    release ``rn`` and exactly the lagging ``instances`` (its
+    ``meta.mcp_stale``), else ``None``. ``answered at`` is when its
+    terminal STATUS was set, ``None`` while the ask is open (never
+    answered, or reopened by :func:`_mcp_ask_guard`)."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.ref_id, a.meta -> %s -> 'instances', t.value, rt.created_at
+              FROM links l
+              JOIN refs a ON a.ref_id = l.dst_ref_id
+              LEFT JOIN ref_tags rt ON rt.ref_id = a.ref_id
+                AND rt.tag_id IN (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
+              LEFT JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE l.relation = 'blocked-by' AND l.src_ref_id = %s
+               AND a.kind = 'todo' AND a.retired_at IS NULL
+               AND a.meta -> %s ->> 'rn' = %s
+             ORDER BY a.ref_id DESC
+            """,
+            (_MCP_ASK_KEY, todo_id, _MCP_ASK_KEY, rn),
+        ).fetchall()
+    for ask_id, asked, status, status_at in rows:
+        if isinstance(asked, list) and set(map(str, asked)) == instances:
+            if str(status or "open") not in TERMINAL_TODO_STATUSES:
+                return int(ask_id), None
+            return int(ask_id), _parse_ts(status_at)
+    return None
+
+
+def _reopen_mcp_ask(
+    store: Store,
+    todo_id: int,
+    ask_id: int,
+    since: list[StaleMcp],
+    answered_at: datetime,
+) -> bool:
+    """Set the answered ask back to open with one comment naming each
+    instance that stamped after the answer, and clear the confirm node's
+    ``meta.rearmed_by_ask``: the tick re-arms a node once per ask id
+    (``plan_dispatch._step_rearm``), so without the clear the ask's next
+    answer would not reset the retry floor. The three writes are one
+    transaction: a reopen without the clear would bring that back.
+    ``True`` when reopened; a store error is logged, rolls all three back
+    and only skips the reopen."""
+    from precis.principal import worker_comment_meta
+    from precis.store.types import ChunkInsert, Tag
+
+    named = "; ".join(
+        f"{s.label()} serves {s.served[:12]}, stamped {s.at.strftime(_TS_FMT)}"
+        for s in since
+    )
+    text = (
+        f"{NAME}: reopened — the answer did not stop this instance: {named} "
+        f"(answered {answered_at.strftime(_TS_FMT)}). Pin or stop it, then "
+        "answer again; the confirm waits meanwhile and asks nothing new."
+    )
+    try:
+        with store.tx() as conn:
+            store.add_tag(
+                ask_id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            # run_slice._append_comment's shape (next ord, worker-stamped
+            # todo_comment), inside this transaction.
+            existing = store.chunks.list_chunks_for_ref(ask_id, conn=conn)
+            store.chunks.insert_chunks(
+                ask_id,
+                [
+                    ChunkInsert(
+                        ord=max((int(c.ord) for c in existing), default=0) + 1,
+                        text=text,
+                        meta={"chunk_kind": "todo_comment", **worker_comment_meta()},
+                    )
+                ],
+                conn=conn,
+            )
+            store.stamp_ref_meta(todo_id, {"rearmed_by_ask": None}, conn=conn)
+    except Exception:
+        log.warning("%s: reopening td%s failed", NAME, ask_id, exc_info=True)
+        return False
+    return True
+
+
+def _close_moot_mcp_asks(store: Store, todo_id: Any, rn: str, sha: str) -> list[int]:
+    """The confirm attests: close every still-open MCP ask of release
+    ``rn`` (``meta.mcp_stale.rn``) under ``todo_id``'s plan root —
+    typically one :func:`_mcp_ask_guard` reopened — STATUS:done with one
+    comment saying it is moot. Returns the closed ids. Never raises: a
+    failed close is logged and the confirm goes on."""
+    if not isinstance(todo_id, int) or not rn:
+        return []
+    from precis.store.types import Tag
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    closed: list[int] = []
+    try:
+        root = _release.plan_root(store, todo_id)
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.ref_id,
+                       (SELECT t.value FROM ref_tags rt
+                          JOIN tags t ON t.tag_id = rt.tag_id
+                         WHERE rt.ref_id = a.ref_id AND t.namespace = 'STATUS'
+                         LIMIT 1)
+                  FROM refs a
+                 WHERE a.parent_id = %s AND a.kind = 'todo'
+                   AND a.retired_at IS NULL AND a.meta -> %s ->> 'rn' = %s
+                 ORDER BY a.ref_id
+                """,
+                (root, _MCP_ASK_KEY, rn),
+            ).fetchall()
+        for ask_id, status in rows:
+            if str(status or "open") in TERMINAL_TODO_STATUSES:
+                continue
+            _rs._append_comment(
+                store,
+                int(ask_id),
+                f"{NAME}: moot — every live instance serves {sha[:12]}",
+            )
+            store.add_tag(
+                int(ask_id),
+                Tag.closed("STATUS", "done"),
+                set_by="system",
+                replace_prefix=True,
+            )
+            closed.append(int(ask_id))
+    except Exception:
+        log.warning("%s: closing moot MCP asks failed", NAME, exc_info=True)
+    return closed
+
+
+def _mcp_ask_guard(
+    store: Store, ev: Evidence, rn: str, todo_id: Any, now: datetime
+) -> Evidence:
+    """The re-mint guard (gr762430): an MCP-only failure whose release and
+    lagging instances match an existing ask mints no new one; the
+    evidence comes back waiting on the session MCP instead, so the probe
+    parks and re-reads (no failure, so no retry-cap ask either).
+
+    When every lagging record was written before the answer — the stack
+    was stopped (or pinned) before answering, its stamp only has to age
+    out — it simply parks. When one was written after the answer the
+    instance is still running: the ask is reopened with one comment naming
+    it (:func:`_reopen_mcp_ask`) and the probe parks on the open ask; a
+    still-open ask (the reopened one) parks without another comment. The
+    park's deadline is where the newest lagging record stops being live,
+    re-set on every re-probe while the instance keeps stamping. Anything
+    else is returned unchanged."""
+    if not ev.mcp_only or not ev.mcp_stale or not isinstance(todo_id, int):
+        return ev
+    prior = _prior_mcp_ask(store, todo_id, rn, _stale_instances(ev))
+    if prior is None:
+        return ev
+    ask_id, answered_at = prior
+    state = "open"
+    if answered_at is not None:
+        since = [s for s in ev.mcp_stale if s.at > answered_at]
+        if since and _reopen_mcp_ask(store, todo_id, ask_id, since, answered_at):
+            state = "reopened"
+        else:
+            state = "answered"
+    ages_out = max(s.at for s in ev.mcp_stale) + _mss.FRESH
+    names = ", ".join(s.instance for s in ev.mcp_stale)
+    return replace(
+        ev,
+        problems=[],
+        waiting=("session MCP",),
+        mcp_held=(
+            f"session MCP ask td{ask_id} {state}; waiting for the stamps of "
+            f"{names} to age out by {ages_out:%H:%M}Z"
+        ),
+        deadline=max(ages_out + _REPROBE_EVERY, now + _REPROBE_EVERY),
+        mcp_only=False,
     )
 
 
@@ -960,10 +1249,13 @@ def _park_probe(
         handle = dict(fields)
     else:
         handle.update(fields)
-    note = (
-        f"{NAME}: waiting on {', '.join(ev.waiting)} to restart — "
-        f"re-probe after {due:%H:%M}Z"
-    )
+    if ev.mcp_held:
+        note = f"{NAME}: {ev.mcp_held} — re-probe after {due:%H:%M}Z"
+    else:
+        note = (
+            f"{NAME}: waiting on {', '.join(ev.waiting)} to restart — "
+            f"re-probe after {due:%H:%M}Z"
+        )
     if ev.deadline is not None:
         note += f" (deadline {ev.deadline:%H:%M}Z)"
     ctx.append_chunk("job_event", note)
@@ -1076,8 +1368,15 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     rel = _release.release_of(ctx.store, int(params["todo_id"])) or {}
     now = datetime.now(UTC)
-    ev = gather_evidence(ctx.store, rel, now=now)
+    ev = _mcp_ask_guard(
+        ctx.store,
+        gather_evidence(ctx.store, rel, now=now),
+        rn,
+        params.get("todo_id"),
+        now,
+    )
     if ev.ok and ev.sha is not None:
+        _close_moot_mcp_asks(ctx.store, params.get("todo_id"), rn, ev.sha)
         why = _merge_back_wait(rel, None, now)
         if why is not None:
             return _park_merge_back(ctx, ev, rn, now, why)
@@ -1109,9 +1408,16 @@ def _probe_poll(ctx: Any, handle: dict[str, Any]) -> bool:
     if rel is None:
         ctx.record_failure(f"{NAME}: no release on the plan root")
         return True
-    ev = gather_evidence(ctx.store, rel, now=now)
+    ev = _mcp_ask_guard(
+        ctx.store,
+        gather_evidence(ctx.store, rel, now=now),
+        str(handle.get("rn") or rel["rN"]),
+        todo_id,
+        now,
+    )
     if ev.ok and ev.sha is not None:
         rn = str(handle.get("rn") or rel["rN"])
+        _close_moot_mcp_asks(ctx.store, todo_id, rn, ev.sha)
         why = _merge_back_wait(rel, handle, now)
         if why is not None:
             _park_merge_back(ctx, ev, rn, now, why, handle)

@@ -873,24 +873,37 @@ def test_failure_reason_is_capped_at_560(store: Store) -> None:
 # ── the session MCP's served-sha stamp (gr685985) ───────────────────
 
 
+MCP = "mcp-host:100"
+
+
 def _mcp_stamp(
     store: Store,
     sha: str,
     *,
     age_min: float = 1,
     pending: str | None = None,
-) -> None:
-    """Write ``release.mcp_served`` as the server does, ``age_min`` old."""
-    at = datetime.now(UTC) - timedelta(minutes=age_min)
+    instance: str = MCP,
+    started_min: float | None = None,
+    legacy: bool = False,
+) -> dict[str, Any]:
+    """Write one instance's record as the server does, ``age_min`` old
+    (gr762430: ``release.mcp_served.<instance>``); ``legacy`` writes the
+    pre-gr762430 single key instead. Returns the record."""
+    now = datetime.now(UTC)
+    at = now - timedelta(minutes=age_min)
+    started = now - timedelta(minutes=age_min if started_min is None else started_min)
     rec: dict[str, Any] = {
         "sha": sha,
         "served_from": "watched-checkout",
-        "started_at": at.strftime(rcf._TS_FMT),
+        "started_at": started.strftime(rcf._TS_FMT),
         "at": at.strftime(rcf._TS_FMT),
+        "instance": instance,
     }
     if pending:
         rec["pending_sha"] = pending
-    psettings.set_setting("release.mcp_served", json.dumps(rec), store=store)
+    key = "release.mcp_served" if legacy else f"release.mcp_served.{instance}"
+    psettings.set_setting(key, json.dumps(rec), store=store)
+    return rec
 
 
 def test_mcp_without_a_stamp_is_not_attested_and_not_a_problem(store: Store) -> None:
@@ -907,7 +920,7 @@ def test_mcp_stale_stamp_is_not_attested(store: Store) -> None:
     one naming another sha, past the deadline."""
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA)
-    _mcp_stamp(store, SHA2, age_min=rcf._df.FLEET_FRESH_MIN + 30)
+    _mcp_stamp(store, SHA2, age_min=rcf._FRESH_MIN + 30)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert ev.ok and ev.problems == []
     assert "mcp: not attested (no live served-sha stamp)" in ev.text
@@ -937,12 +950,13 @@ def test_mcp_at_another_sha_past_the_deadline_is_the_only_problem(
 ) -> None:
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA)
-    _mcp_stamp(store, SHA2)
+    rec = _mcp_stamp(store, SHA2)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok and ev.waiting == ()
     assert ev.problems == [
-        f"session MCP still serves {SHA2[:12]}, release is {SHA[:12]} "
-        "— pin the prod checkout (scripts/host-ops/pin-prod)"
+        f"session MCP {MCP} (started {rec['started_at']}) still serves "
+        f"{SHA2[:12]}, release is {SHA[:12]} — pin the prod checkout "
+        "(scripts/host-ops/pin-prod) or stop a non-shared stack"
     ]
     assert ev.mcp_only and ev.mcp_sha == SHA2 and not ev.web_only
 
@@ -1001,14 +1015,15 @@ def test_an_mcp_only_failure_files_its_own_ask(store: Store) -> None:
     mint = _cut(store)
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA)
-    _mcp_stamp(store, SHA2)
+    rec = _mcp_stamp(store, SHA2)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert ev.mcp_only and not ev.ok
     failures: list[str] = []
     ctx = SimpleNamespace(store=store, record_failure=failures.append)
     rcf._probe_failed(ctx, ev, "r7", mint.ids["confirm"])
     assert len(failures) == 1 and failures[0].startswith(
-        "release_confirm: probe failed — session MCP still serves"
+        f"release_confirm: probe failed — session MCP {MCP} (started "
+        f"{rec['started_at']}) still serves {SHA2[:12]}"
     )
     assert "asked in td" in failures[0]
     with store.pool.connection() as conn:
@@ -1020,12 +1035,395 @@ def test_an_mcp_only_failure_files_its_own_ask(store: Store) -> None:
     assert len(rows) == 1
     ask_id, title = int(rows[0][0]), str(rows[0][1])
     assert SHA2[:12] in title and SHA[:12] in title
+    # gr762430: the ask names the instance and when it started.
+    assert f"{MCP} (started {rec['started_at']})" in title
     ref = store.get_ref(kind="todo", id=ask_id)
     assert ref is not None
     assert ref.meta["ask"]["options"] == rcf._MCP_ASK_OPTIONS
     assert ref.meta["ask"]["blocks"] == f"td{mint.ids['confirm']}"
+    assert ref.meta["mcp_stale"] == {"rn": "r7", "instances": [MCP]}
     body = " ".join(c.text for c in store.chunks.list_chunks_for_ref(ask_id))
     assert "scripts/host-ops/pin-prod" in body and "workers are confirmed" in body
+    assert f"{MCP} (started {rec['started_at']})" in body
+    assert "can simply be stopped" in body
+
+
+# ── one stamp per instance (gr762430) ───────────────────────────────
+
+GW = "gw-mcp:7"
+STRAY = "laptop-dev:31043"
+
+
+def test_mcp_two_live_instances_one_behind_fails_naming_it(store: Store) -> None:
+    """The r348 shape: the shared MCP serves the release, a stray stack
+    keeps stamping the old sha. Written after the stray, the shared one's
+    record would have won the old single key; now both count."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    stray = _mcp_stamp(store, SHA2, instance=STRAY)
+    _mcp_stamp(store, SHA, instance=GW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert not ev.ok and ev.mcp_only and ev.mcp_sha == SHA2
+    assert [s.instance for s in ev.mcp_stale] == [STRAY]
+    assert ev.problems == [
+        f"session MCP {STRAY} (started {stray['started_at']}) still serves "
+        f"{SHA2[:12]}, release is {SHA[:12]} — pin the prod checkout "
+        "(scripts/host-ops/pin-prod) or stop a non-shared stack"
+    ]
+    assert (
+        f"mcp: 2 live instances: {GW} at {SHA[:12]}, {STRAY} serving {SHA2[:12]}"
+        in ev.text
+    )
+
+
+def test_mcp_a_stopped_instance_ages_out_and_the_confirm_passes(
+    store: Store,
+) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance=GW)
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=rcf._FRESH_MIN + 1)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.problems == [] and ev.mcp_stale == ()
+    assert f"mcp: at {SHA[:12]}" in ev.text and STRAY not in ev.text
+
+
+def test_mcp_every_instance_at_or_pending_the_release_confirms(store: Store) -> None:
+    """The restart-pending case holds per instance: one instance already
+    serves the release, the other's checkout is pinned with its restart
+    deferred — neither waits."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance=GW)
+    _mcp_stamp(store, SHA2, pending=SHA, instance="other-mcp:9")
+    for now in (datetime.now(UTC), _past_window()):
+        ev = rcf.gather_evidence(store, REL, now=now)
+        assert ev.ok and ev.problems == [] and ev.waiting == ()
+        assert (
+            f"other-mcp:9 checkout at {SHA[:12]}, restart pending "
+            f"(serving {SHA2[:12]})" in ev.text
+        )
+
+
+def test_mcp_a_restart_on_one_host_supersedes_its_predecessor(store: Store) -> None:
+    """A restarted server is a new pid on the same host; the record its
+    predecessor left stays live for the freshness window but no longer
+    speaks for that host."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2, instance="gw-mcp:7", started_min=50, age_min=10)
+    _mcp_stamp(store, SHA, instance="gw-mcp:8", started_min=5)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.problems == [] and ev.mcp_stale == ()
+    assert f"mcp: at {SHA[:12]}" in ev.text
+
+
+def _mcp_asks(store: Store, root_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND meta ? 'mcp_stale' ORDER BY ref_id",
+            (root_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _answer(store: Store, ask_id: int, *, minutes_ago: float) -> datetime:
+    """Close the ask as an answer does; its STATUS tag set ``minutes_ago``."""
+    from precis.store.types import Tag
+
+    store.add_tag(
+        ask_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    at = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = %s WHERE ref_id = %s AND tag_id IN "
+            "(SELECT tag_id FROM tags WHERE namespace = 'STATUS')",
+            (at, ask_id),
+        )
+    return at
+
+
+def test_an_answered_mcp_ask_is_not_minted_again_for_the_same_instances(
+    store: Store,
+) -> None:
+    mint = _cut(store)
+    confirm = mint.ids["confirm"]
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance=GW)
+    stray = _mcp_stamp(store, SHA2, instance=STRAY, age_min=5)
+    now = _past_window()
+    failures: list[str] = []
+    ctx = SimpleNamespace(store=store, record_failure=failures.append)
+    rcf._probe_failed(ctx, rcf.gather_evidence(store, REL, now=now), "r7", confirm)
+    asks = _mcp_asks(store, mint.root_id)
+    assert len(asks) == 1
+    _answer(store, asks[0], minutes_ago=2)
+
+    # The stray stopped before the answer: wait for its stamp to age out.
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert not ev.ok and ev.problems == [] and not ev.mcp_only
+    assert len(ev.waiting) == 1
+    assert ev.mcp_held is not None and ev.mcp_held.startswith(
+        f"session MCP ask td{asks[0]} answered;"
+    )
+    last = datetime.strptime(stray["at"], rcf._TS_FMT).replace(tzinfo=UTC)
+    assert ev.deadline == max(
+        last + rcf._mss.FRESH + rcf._REPROBE_EVERY, now + rcf._REPROBE_EVERY
+    )
+
+    # Another lagging instance is a changed condition: it asks again.
+    _mcp_stamp(store, SHA2, instance="other-dev:5")
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert ev.mcp_only
+    rcf._probe_failed(ctx, ev, "r7", confirm)
+    assert len(_mcp_asks(store, mint.root_id)) == 2
+
+
+def _status(store: Store, ref_id: int) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row else "open"
+
+
+def _comments(store: Store, ref_id: int) -> list[str]:
+    return [
+        c.text for c in store.chunks.list_chunks_for_ref_by_kind(ref_id, "todo_comment")
+    ]
+
+
+def test_an_instance_stamping_after_the_answer_reopens_the_ask(
+    store: Store,
+) -> None:
+    """The answer did not stop the instance: the same ask goes back to open
+    with one comment naming it, and the probe parks — no new ask, no
+    failure for the tick's retry-cap ask to pick up."""
+    mint = _cut(store)
+    confirm = mint.ids["confirm"]
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance=GW)
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=5)
+    now = _past_window()
+    failures: list[str] = []
+    ctx = SimpleNamespace(store=store, record_failure=failures.append)
+    rcf._probe_failed(ctx, rcf.gather_evidence(store, REL, now=now), "r7", confirm)
+    asks = _mcp_asks(store, mint.root_id)
+    assert len(asks) == 1
+    _answer(store, asks[0], minutes_ago=2)
+    # The tick re-armed the confirm on that answer (plan_dispatch._step_rearm).
+    store.stamp_ref_meta(confirm, {"rearmed_by_ask": asks[0]})
+    rec = _mcp_stamp(store, SHA2, instance=STRAY, age_min=0)  # still running
+
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert not ev.ok and ev.problems == [] and not ev.mcp_only
+    assert ev.mcp_held is not None and ev.mcp_held.startswith(
+        f"session MCP ask td{asks[0]} reopened;"
+    )
+    last = datetime.strptime(rec["at"], rcf._TS_FMT).replace(tzinfo=UTC)
+    assert ev.deadline == last + rcf._mss.FRESH + rcf._REPROBE_EVERY
+    assert _status(store, asks[0]) == "open"
+    notes = _comments(store, asks[0])
+    assert len(notes) == 1
+    assert "the answer did not stop this instance" in notes[0]
+    assert STRAY in notes[0] and SHA2[:12] in notes[0] and rec["at"] in notes[0]
+    # The next answer of the reopened ask must re-arm the node again.
+    ref = store.get_ref(kind="todo", id=confirm)
+    assert ref is not None and ref.meta.get("rearmed_by_ask") is None
+
+    # The next re-probe finds the ask open: it parks again, says nothing
+    # more and asks nothing new.
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert ev.problems == [] and ev.mcp_held is not None
+    assert ev.mcp_held.startswith(f"session MCP ask td{asks[0]} open;")
+    assert len(_comments(store, asks[0])) == 1
+    assert _mcp_asks(store, mint.root_id) == asks
+    assert len(failures) == 1
+
+
+def _as_instance(
+    monkeypatch: pytest.MonkeyPatch, store: Store, instance: str, sha: str
+) -> None:
+    """Make this process the stamping server ``instance`` serving ``sha``."""
+    from precis import mcp_served_stamp as mss
+
+    monkeypatch.setattr(mss, "_identity", lambda: (sha, "watched-checkout"))
+    monkeypatch.setattr(mss, "_instance", lambda: instance)
+    monkeypatch.setattr(mss, "_state", (store, datetime.now(UTC)))
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_pending", None)
+
+
+def test_mcp_a_colour_swap_confirms_within_one_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blue/green: the new colour's container has a new hostname, so it
+    never overwrites the old colour's record. The old colour's graceful
+    stop deletes its own key, and the confirm passes at once."""
+    from precis import mcp_served_stamp as mss
+
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _as_instance(monkeypatch, store, "blue-1a2b3c:7", SHA2)
+    assert mss.write_stamp(store, datetime.now(UTC))
+    _as_instance(monkeypatch, store, "green-4d5e6f:7", SHA)
+    assert mss.write_stamp(store, datetime.now(UTC))
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.mcp_only and [s.instance for s in ev.mcp_stale] == ["blue-1a2b3c:7"]
+
+    _as_instance(monkeypatch, store, "blue-1a2b3c:7", SHA2)
+    assert mss.forget_own_stamp() is True
+    assert mss.write_stamp(store, datetime.now(UTC)) is False  # stopped for good
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.mcp_stale == ()
+    assert f"mcp: at {SHA[:12]}" in ev.text
+
+
+def test_mcp_a_killed_colour_ages_out_after_the_short_window(store: Store) -> None:
+    """SIGKILL leaves the old colour's key behind: it stops counting after
+    three refreshes (~15 min), not the worker heartbeat window's 60."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance="green-4d5e6f:7")
+    _mcp_stamp(store, SHA2, instance="blue-1a2b3c:7", age_min=rcf._FRESH_MIN - 5)
+    assert rcf.gather_evidence(store, REL, now=_past_window()).mcp_only
+    _mcp_stamp(store, SHA2, instance="blue-1a2b3c:7", age_min=rcf._FRESH_MIN + 5)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.mcp_stale == ()
+
+
+def test_the_legacy_record_of_an_instance_with_its_own_key_is_dropped(
+    store: Store,
+) -> None:
+    """Rollout fallback: the per-instance record wins over a legacy record
+    naming the same instance."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    # Started later than the per-instance record: without the dedupe the
+    # same-host rule would pick the legacy record.
+    _mcp_stamp(store, SHA2, instance=GW, legacy=True, started_min=0)
+    _mcp_stamp(store, SHA, instance=GW, started_min=5)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.mcp_stale == ()
+    assert f"mcp: at {SHA[:12]}" in ev.text and "live instances" not in ev.text
+
+
+def test_the_mcp_ask_title_names_at_most_three_instances(store: Store) -> None:
+    mint = _cut(store)
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    for i in range(5):
+        _mcp_stamp(store, SHA2, instance=f"dev-{i}:1")
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.mcp_only and len(ev.mcp_stale) == 5
+    ask_id = rcf._mint_mcp_ask(store, mint.ids["confirm"], "r7", ev)
+    ref = store.get_ref(kind="todo", id=ask_id)
+    assert ref is not None
+    assert "dev-2:1" in ref.title and "dev-3:1" not in ref.title
+    assert "+2 more" in ref.title
+    body = " ".join(c.text for c in store.chunks.list_chunks_for_ref(ask_id))
+    assert all(f"dev-{i}:1" in body for i in range(5))
+
+
+def test_a_failed_reopen_only_skips_the_reopen(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _cut(store)
+    confirm = mint.ids["confirm"]
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=5)
+    now = _past_window()
+    ctx = SimpleNamespace(store=store, record_failure=lambda _t: None)
+    rcf._probe_failed(ctx, rcf.gather_evidence(store, REL, now=now), "r7", confirm)
+    asks = _mcp_asks(store, mint.root_id)
+    _answer(store, asks[0], minutes_ago=2)
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=0)
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(store, "add_tag", boom)
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert ev.problems == [] and ev.mcp_held is not None
+    assert ev.mcp_held.startswith(f"session MCP ask td{asks[0]} answered;")
+    monkeypatch.undo()
+    assert _status(store, asks[0]) == "done"
+
+
+def test_a_reopen_whose_comment_fails_changes_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reopen's STATUS, comment and re-arm clear are one transaction: a
+    failed comment write leaves the ask answered and the re-arm marker as
+    it was, never a reopened ask its next answer cannot re-arm."""
+    mint = _cut(store)
+    confirm = mint.ids["confirm"]
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=5)
+    now = _past_window()
+    ctx = SimpleNamespace(store=store, record_failure=lambda _t: None)
+    rcf._probe_failed(ctx, rcf.gather_evidence(store, REL, now=now), "r7", confirm)
+    asks = _mcp_asks(store, mint.root_id)
+    _answer(store, asks[0], minutes_ago=2)
+    store.stamp_ref_meta(confirm, {"rearmed_by_ask": asks[0]})
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=0)
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("chunk write failed")
+
+    monkeypatch.setattr(store.chunks, "insert_chunks", boom)
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    monkeypatch.undo()
+    assert ev.mcp_held is not None
+    assert ev.mcp_held.startswith(f"session MCP ask td{asks[0]} answered;")
+    assert _status(store, asks[0]) == "done"
+    assert _comments(store, asks[0]) == []
+    ref = store.get_ref(kind="todo", id=confirm)
+    assert ref is not None and ref.meta.get("rearmed_by_ask") == asks[0]
+
+
+def test_the_legacy_single_key_counts_as_one_more_instance(store: Store) -> None:
+    """Rollout fallback (remove after gr762430's release): a server still on
+    the old code writes ``release.mcp_served``; it is held to the release
+    beside the per-instance records, by its own ``instance`` name."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance=GW)
+    old = _mcp_stamp(store, SHA2, instance=STRAY, legacy=True)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.mcp_only and [s.instance for s in ev.mcp_stale] == [STRAY]
+    assert f"{STRAY} (started {old['started_at']})" in ev.problems[0]
+    # Alone and at the release, the legacy record still attests.
+    psettings.clear_setting(f"release.mcp_served.{GW}", store=store)
+    _mcp_stamp(store, SHA, instance=STRAY, legacy=True)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and f"mcp: at {SHA[:12]}" in ev.text
+    # The old server restarted onto the new code on the same host: its
+    # per-instance record supersedes the legacy one it left behind.
+    _mcp_stamp(store, SHA2, instance="laptop-dev:1", legacy=True, started_min=50)
+    _mcp_stamp(store, SHA, instance="laptop-dev:2", started_min=5)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.mcp_stale == ()
 
 
 def test_mcp_served_setting_is_registered() -> None:

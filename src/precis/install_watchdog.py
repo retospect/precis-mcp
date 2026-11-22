@@ -768,6 +768,18 @@ def drain_then_exit(
             f"{stuck} of {pending} call(s) still running"
         ),
     )
+    # os._exit skips atexit: drop this instance's served-sha stamp here so
+    # the release confirm stops counting it now (gr762430) — the backstop
+    # for the drain signal's own forget at drain start, and the only one on
+    # the checkout watchdog's bounce (its pending_sha attests until here).
+    # Idempotent, bounded, never raises; a no-op in a process that does
+    # not stamp.
+    try:
+        from precis.mcp_served_stamp import forget_own_stamp
+
+        forget_own_stamp()
+    except Exception:
+        log.warning("drain exit: served stamp not dropped", exc_info=True)
     sys.stderr.flush()
     os._exit(0)
 
@@ -808,6 +820,19 @@ def install_drain_signal(
         if draining.is_set():
             return
         draining.set()
+        # Drop the served-sha stamp at drain START, before the quiet
+        # deferral (up to the cap) and the drain: ``docker stop -t`` may
+        # SIGKILL a busy server long before drain_then_exit's own forget
+        # runs, leaving its key live (gr762430). Its own thread — the
+        # handler runs on the event loop and must not wait on the store.
+        try:
+            from precis.mcp_served_stamp import forget_own_stamp
+
+            threading.Thread(
+                target=forget_own_stamp, name="drain-forget-stamp", daemon=True
+            ).start()
+        except Exception:
+            log.warning("drain signal: served stamp not dropped", exc_info=True)
         threading.Thread(
             target=drain_then_exit,
             kwargs={

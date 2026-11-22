@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -33,13 +33,234 @@ def _lane(monkeypatch: pytest.MonkeyPatch, lane: str, sha: str | None = SHA) -> 
     monkeypatch.setenv("PRECIS_CHECKOUT_WATCHDOG", "/src")
 
 
+def _mine(store: Store) -> dict[str, Any] | None:
+    """This process's own per-instance record (gr762430)."""
+    mine = [r for r in mss.read_stamps(store) if r["instance"] == mss._instance()]
+    return mine[0] if mine else None
+
+
+def test_each_instance_writes_its_own_key_and_never_the_legacy_one(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762430: two stamping servers no longer overwrite one record."""
+    _lane(monkeypatch, "watched-checkout")
+    monkeypatch.setattr(mss, "_instance", lambda: "gw-mcp:7")
+    assert mss.write_stamp(store, T0, now=T0)
+    monkeypatch.setattr(mss, "_instance", lambda: "laptop-dev:31043")
+    assert mss.write_stamp(store, T0, now=T0)
+    recs = mss.read_stamps(store)
+    assert [r["instance"] for r in recs] == ["gw-mcp:7", "laptop-dev:31043"]
+    with store.pool.connection() as conn:
+        keys = [
+            str(k)
+            for (k,) in conn.execute(
+                "SELECT key FROM app_settings WHERE key LIKE 'release.mcp%' "
+                "ORDER BY key"
+            ).fetchall()
+        ]
+    assert keys == [
+        "release.mcp_served.gw-mcp:7",
+        "release.mcp_served.laptop-dev:31043",
+    ]
+    assert mss.read_stamp(store) is None
+
+
+def test_at_is_the_store_clock_so_a_writer_far_behind_is_still_live(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762430 ruling: ``at`` comes from the store's ``now()``; a writer
+    whose own clock runs two hours behind still counts as live."""
+
+    class _Behind(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return datetime.now(tz) - timedelta(hours=2)
+
+    _lane(monkeypatch, "watched-checkout")
+    monkeypatch.setattr(mss, "_instance", lambda: "behind-host:3")
+    monkeypatch.setattr(mss, "datetime", _Behind)
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_pending", None)
+    assert mss.write_stamp(store, T0)
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT now()").fetchone()
+    assert row is not None
+    (rec,) = mss.read_stamps(store)
+    assert abs((rec["at"] - row[0]).total_seconds()) < 60  # the store's clock
+    live = mss.live_stamps(store)
+    assert [r["instance"] for r in live] == ["behind-host:3"]
+
+
+def test_forget_drops_only_this_instance_and_stops_later_writes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _lane(monkeypatch, "watched-checkout")
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_pending", None)
+    monkeypatch.setattr(mss, "_state", (store, T0))
+    monkeypatch.setattr(mss, "_instance", lambda: "other:1")
+    assert mss.write_stamp(store, T0)
+    monkeypatch.setattr(mss, "_instance", lambda: "mine:2")
+    assert mss.write_stamp(store, T0)
+    assert mss.forget_own_stamp() is True
+    assert [r["instance"] for r in mss.read_stamps(store)] == ["other:1"]
+    assert mss.write_stamp(store, T0) is False
+    t = mss.note_pending(NEW)  # its write is refused too
+    assert t is not None
+    t.join(10)
+    assert [r["instance"] for r in mss.read_stamps(store)] == ["other:1"]
+
+
+def test_forget_is_bounded_and_a_noop_without_a_stamper(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_state", None)
+    assert mss.forget_own_stamp() is False
+    release = threading.Event()
+
+    def slow(*_a: Any, **_k: Any) -> None:
+        release.wait(30)
+
+    monkeypatch.setattr(psettings, "clear_setting", slow)
+    monkeypatch.setattr(mss, "_state", (store, T0))
+    t0 = time.monotonic()
+    assert mss.forget_own_stamp(timeout_s=0.5) is False
+    assert time.monotonic() - t0 < 2.0
+    release.set()
+
+
+def test_the_drain_signal_drops_the_stamp_before_the_quiet_deferral(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``docker stop`` → the supervisor's SIGHUP → the drain handler. A
+    call just ended, so the real quiet window defers the exit; the key is
+    already gone while the drain still waits (a busy server is SIGKILLed
+    by ``docker stop -t`` long before its drain ends)."""
+    import signal
+
+    from precis import inflight
+    from precis import install_watchdog as iw
+
+    if not hasattr(signal, "SIGHUP"):
+        pytest.skip("no SIGHUP on this platform")
+    _lane(monkeypatch, "watched-checkout")
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_pending", None)
+    monkeypatch.setattr(mss, "_state", (store, T0))
+    monkeypatch.setattr(mss, "_instance", lambda: "drain-host:4")
+    assert mss.write_stamp(store, T0)
+
+    inflight._reset_for_tests()
+    inflight.leave(inflight.enter())  # a call just ended
+    quiet = iw.resolved_respawn_quiet_s()
+    assert quiet > 0 and inflight.busy(quiet)  # the drain would defer
+
+    exits: list[int] = []
+
+    def fake_exit(code: int) -> None:
+        exits.append(code)
+        raise SystemExit(code)
+
+    handlers: dict[int, Any] = {}
+    monkeypatch.setattr(iw, "_write_exit_breadcrumb", lambda *a, **k: None)
+    monkeypatch.setattr(iw.os, "_exit", fake_exit)
+    monkeypatch.setattr(iw.signal, "signal", lambda sig, h: handlers.setdefault(sig, h))
+    if threading.current_thread() is not threading.main_thread():
+        me = threading.current_thread()
+        monkeypatch.setattr(iw.threading, "main_thread", lambda: me)
+    try:
+        assert iw.install_drain_signal(drain_timeout_s=0.1, defer_cap_s=2.0)
+        handlers[iw.DRAIN_SIGNAL](iw.DRAIN_SIGNAL, None)
+        drain = [t for t in threading.enumerate() if t.name == "drain-restart"]
+        assert len(drain) == 1
+        until = time.monotonic() + 2.0
+        while mss.read_stamps(store) and time.monotonic() < until:
+            time.sleep(0.05)
+        assert mss.read_stamps(store) == []
+        assert drain[0].is_alive() and exits == []  # still deferring
+        drain[0].join(15)
+        assert not drain[0].is_alive() and exits == [0]
+    finally:
+        inflight._reset_for_tests()
+
+
+def test_a_late_write_after_forget_does_not_restore_the_key(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write slow on the store clock outlives forget's lock wait: it
+    re-checks ``_stopped`` right before writing and writes nothing."""
+    _lane(monkeypatch, "watched-checkout")
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_pending", None)
+    monkeypatch.setattr(mss, "_state", (store, T0))
+    monkeypatch.setattr(mss, "_instance", lambda: "late:5")
+    entered, release = threading.Event(), threading.Event()
+    real_now = mss._db_now
+
+    def slow_now(s: Any) -> datetime:
+        entered.set()
+        release.wait(10)
+        return real_now(s)
+
+    monkeypatch.setattr(mss, "_db_now", slow_now)
+    result: list[bool] = []
+    t = threading.Thread(target=lambda: result.append(mss.write_stamp(store, T0)))
+    t.start()
+    assert entered.wait(5)
+    assert mss.forget_own_stamp(timeout_s=0.2) is True  # lock wait timed out
+    release.set()
+    t.join(10)
+    assert result == [False]
+    assert mss.read_stamps(store) == []
+
+
+def test_the_drain_exit_drops_the_stamp_before_exiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis import install_watchdog as iw
+
+    order: list[str] = []
+    monkeypatch.setattr(mss, "forget_own_stamp", lambda: order.append("forget"))
+    monkeypatch.setattr(iw, "_write_exit_breadcrumb", lambda *a, **k: None)
+
+    def fake_exit(code: int) -> None:
+        order.append(f"exit {code}")
+        raise SystemExit(code)
+
+    monkeypatch.setattr(iw.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit):
+        iw.drain_then_exit(reason="r", detail="d", why="w", drain_timeout_s=0.1)
+    assert order == ["forget", "exit 0"]
+
+
+def test_a_malformed_instance_row_is_skipped(store: Store) -> None:
+    psettings.set_setting(mss.stamp_key("bad:1"), "not json", store=store)
+    rec = {"sha": SHA, "at": "2026-11-20T05:00:00Z"}
+    psettings.set_setting(mss.stamp_key("good:2"), json.dumps(rec), store=store)
+    recs = mss.read_stamps(store)
+    assert [r["instance"] for r in recs] == ["good:2"]  # named from its key
+
+
+def test_a_stamper_start_prunes_day_old_instance_records(store: Store) -> None:
+    old = {"sha": SHA, "at": "2026-11-18T05:00:00Z", "instance": "gone:1"}
+    new = {"sha": SHA, "at": "2026-11-20T04:00:00Z", "instance": "live:2"}
+    psettings.set_setting(mss.stamp_key("gone:1"), json.dumps(old), store=store)
+    psettings.set_setting(mss.stamp_key("live:2"), json.dumps(new), store=store)
+    psettings.set_setting(mss.LEGACY_KEY, json.dumps(old), store=store)
+    assert mss.prune_stamps(store, now=T0) == 1
+    assert [r["instance"] for r in mss.read_stamps(store)] == ["live:2"]
+    psettings.invalidate()
+    assert mss.read_stamp(store) is not None  # the legacy key is never pruned
+
+
 def test_a_watched_checkout_server_writes_the_record(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _lane(monkeypatch, "watched-checkout")
     assert mss.write_stamp(store, T0, now=T0)
     psettings.invalidate()
-    rec = mss.read_stamp(store)
+    rec = _mine(store)
     assert rec is not None
     assert rec["sha"] == SHA and rec["served_from"] == "watched-checkout"
     assert rec["started_at"] == "2026-11-20T05:00:00Z" and rec["at"] == T0
@@ -53,7 +274,7 @@ def test_a_pending_sha_is_carried_only_when_it_differs(
     _lane(monkeypatch, "watched-checkout")
     assert mss.write_stamp(store, T0, now=T0, pending_sha=NEW)
     psettings.invalidate()
-    rec = mss.read_stamp(store)
+    rec = _mine(store)
     assert rec is not None and rec["pending_sha"] == NEW
     assert "pending_sha" not in mss.build_record(T0, pending_sha=SHA)
 
@@ -67,7 +288,7 @@ def test_a_dev_or_image_server_does_not_stamp(
     _lane(monkeypatch, lane)
     assert not mss.stamps_this_process("streamable-http")
     assert mss.write_stamp(store, T0) is False
-    assert mss.read_stamp(store) is None
+    assert mss.read_stamps(store) == []
 
 
 def test_a_watched_checkout_server_without_the_watchdog_env_does_not_stamp(
@@ -77,7 +298,7 @@ def test_a_watched_checkout_server_without_the_watchdog_env_does_not_stamp(
     monkeypatch.delenv("PRECIS_CHECKOUT_WATCHDOG")
     assert not mss.stamps_this_process("streamable-http")
     assert mss.write_stamp(store, T0) is False
-    assert mss.read_stamp(store) is None
+    assert mss.read_stamps(store) == []
 
 
 def test_a_worktree_or_stdio_server_does_not_stamp(
@@ -111,7 +332,7 @@ def test_a_store_error_never_raises(
 
 def test_a_malformed_record_reads_as_none(store: Store) -> None:
     for raw in ("not json", "[]", json.dumps({"sha": SHA}), json.dumps({"at": "x"})):
-        psettings.set_setting(mss.STAMP_KEY, raw, store=store)
+        psettings.set_setting(mss.LEGACY_KEY, raw, store=store)
         assert mss.read_stamp(store) is None
 
 
@@ -127,7 +348,7 @@ def test_note_pending_updates_the_stamp_and_is_a_noop_without_a_stamper(
     assert t is not None
     t.join(10)
     psettings.invalidate()
-    rec = mss.read_stamp(store)
+    rec = _mine(store)
     assert rec is not None and rec["sha"] == SHA and rec["pending_sha"] == NEW
 
 
@@ -142,6 +363,7 @@ def test_note_pending_returns_without_waiting_for_a_slow_store(
 
     monkeypatch.setattr(psettings, "set_setting", slow)
     monkeypatch.setattr(mss, "_state", (object(), T0))
+    monkeypatch.setattr(mss, "_db_now", lambda _store: T0)
     monkeypatch.setattr(mss, "_pending", None)
     t0 = time.monotonic()
     t = mss.note_pending(NEW)
@@ -163,7 +385,7 @@ def test_a_refresh_after_note_pending_still_carries_pending_sha(
     t.join(10)
     assert mss.write_stamp(store, T0)  # the periodic refresh: no pending argument
     psettings.invalidate()
-    rec = mss.read_stamp(store)
+    rec = _mine(store)
     assert rec is not None and rec["pending_sha"] == NEW
 
 

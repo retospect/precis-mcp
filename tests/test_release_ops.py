@@ -6419,6 +6419,135 @@ def test_probe_parks_until_the_worker_restarts(
     ]
 
 
+def _mcp_record(sha: str, instance: str, age_min: float) -> str:
+    at = (datetime.now(UTC) - timedelta(minutes=age_min)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return json.dumps({"sha": sha, "started_at": at, "at": at, "instance": instance})
+
+
+def test_an_answered_mcp_ask_parks_the_probe_until_the_stray_ages_out(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762430: a stray stack stopped and its ask answered — the re-armed
+    confirm neither fails nor asks again while the stray's last stamp is
+    still live; once it ages out the re-probe confirms."""
+    script = _round_script(checkout)
+    mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    rollout = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    psettings.set_setting(
+        "release.round",
+        _round_row(7, "deployed", {"sha": SHA, "rollout_at": rollout}),
+        store=store,
+    )
+    stray = "release.mcp_served.laptop-dev:31043"
+    psettings.set_setting(stray, _mcp_record(SHA2, "laptop-dev:31043", 5), store=store)
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    assert "asked in td" in ctx.failures[0]
+    asks = _asks_under(store, mint.root_id)
+    assert len(asks) == 1
+    store.add_tag(
+        asks[0], Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+    ctx = Ctx(store, params)
+    launches = list(checkout["argv"])
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    assert ctx.failures == [] and checkout["argv"] == launches
+    assert _asks_under(store, mint.root_id) == asks
+
+    psettings.set_setting(
+        stray,
+        _mcp_record(SHA2, "laptop-dev:31043", rcf._FRESH_MIN + 1),
+        store=store,
+    )
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False
+    assert handle["phase"] == "confirm", ctx.failures
+    assert checkout["argv"][-1][:4] == [str(script), "deploy", "--confirm-runtime", SHA]
+
+
+def _status_of(store: Store, ref_id: int) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row else "open"
+
+
+def test_a_reopened_mcp_ask_closes_as_moot_when_the_confirm_passes(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr762430: the stray kept stamping after the answer, so its ask was
+    reopened; once it ages out and the confirm attests, that ask closes
+    STATUS:done with one moot comment. Only open MCP asks of this release
+    close — another release's stays open."""
+    script = _round_script(checkout)
+    mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    rollout = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    psettings.set_setting(
+        "release.round",
+        _round_row(7, "deployed", {"sha": SHA, "rollout_at": rollout}),
+        store=store,
+    )
+    stray = "release.mcp_served.laptop-dev:31043"
+    psettings.set_setting(stray, _mcp_record(SHA2, "laptop-dev:31043", 5), store=store)
+    assert rcf.submit(Ctx(store, params), None) is None
+    asks = _asks_under(store, mint.root_id)
+    assert len(asks) == 1
+    store.add_tag(
+        asks[0], Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '2 minutes' "
+            "WHERE ref_id = %s",
+            (asks[0],),
+        )
+    other = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="r6 MCP ask",
+        meta={"mcp_stale": {"rn": "r6", "instances": ["x:1"]}},
+        parent_id=mint.root_id,
+    )
+    store.add_tag(
+        other.id, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+    )
+
+    # Still stamping after the answer: the ask is reopened, the probe parks.
+    psettings.set_setting(stray, _mcp_record(SHA2, "laptop-dev:31043", 0), store=store)
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    assert _status_of(store, asks[0]) == "open"
+
+    # Stopped at last: the stamp ages out, the confirm attests and the
+    # reopened ask is moot.
+    psettings.set_setting(
+        stray,
+        _mcp_record(SHA2, "laptop-dev:31043", rcf._FRESH_MIN + 1),
+        store=store,
+    )
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False
+    assert handle["phase"] == "confirm", ctx.failures
+    assert checkout["argv"][-1][:4] == [str(script), "deploy", "--confirm-runtime", SHA]
+    assert _status_of(store, asks[0]) == "done"
+    notes = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref_by_kind(asks[0], "todo_comment")
+    ]
+    assert notes[-1] == f"release_confirm: moot — every live instance serves {SHA[:12]}"
+    assert sum("moot" in n for n in notes) == 1
+    assert _status_of(store, other.id) == "open"
+    assert _asks_under(store, mint.root_id) == asks
+
+
 def test_confirm_holds_the_retirement_until_the_merge_back_settles(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

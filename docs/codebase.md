@@ -157,9 +157,10 @@ Plan dispatch queues every doable node with its score and release band.
 The gateway's `20d-precis-worker-drain.yml` provisions a release-only
 `job_inproc` claimant so bulk jobs cannot consume its worker slot.
 `release_confirm` attests the workers' heartbeat sha and, from the
-`release.mcp_served` stamp the shared session MCP writes itself
-(`mcp_served_stamp.py`; store only, no token), the sha that server serves:
-no live stamp is a note, a lagging one parks the probe and then files an ask.
+`release.mcp_served.<host:pid>` stamps each session MCP writes itself
+(`mcp_served_stamp.py`; store only, no token), the sha every live instance
+serves: no live stamp is a note, a lagging instance parks the probe and then
+files an ask naming it; an answered ask for the same instances is not re-minted.
 A pre-land review job's and every `land_slice` job's score floors at
 `FINISH_FIRST_SCORE`, so the review and the land of a finished build are
 claimed ahead of fresh builds; at the host claim an already-queued land

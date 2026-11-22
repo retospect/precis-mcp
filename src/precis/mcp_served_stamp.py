@@ -6,10 +6,41 @@ step moves, so two releases were confirmed while the MCP still served the
 release before them. The server is the one party that knows what it
 serves (``precis-status``'s ``served_sha`` / ``served_from``); the factory
 has no token for it and must not parse its rendered text. So the server
-writes one small record to the ``release.mcp_served`` setting — ``{sha,
-served_from, started_at, at, instance}`` — when it starts serving and refreshes
-``at`` every :data:`REFRESH_S`; :func:`read_stamp` is what the confirm
-reads, store only.
+writes one small record — ``{sha, served_from, started_at, at, instance}``
+— when it starts serving and refreshes ``at`` every :data:`REFRESH_S`;
+:func:`live_stamps` is what the confirm reads, store only.
+
+**One key per instance** (gr762430). The record lives under
+``release.mcp_served.<instance>`` (:data:`STAMP_PREFIX`; ``instance`` is
+``host:pid``), never one shared key: a second stamping server — a stale
+dev stack holding the prod DSN — used to overwrite the shared MCP's
+record every refresh, and the confirm read whichever wrote last. A reader
+sees every instance; one whose ``at`` is older than :data:`FRESH`
+(three refreshes) is ignored, so a killed stack ages out on its own. A
+graceful stop deletes the instance's own key at once
+(:func:`forget_own_stamp`, at the start of the drain ``docker stop``
+triggers, before any deferral; again at the drain exit and from
+``atexit``): a blue/green colour swap gives the new
+container a new hostname, so the old colour's record would otherwise
+keep the old sha live — the single key used to be overwritten instead.
+``at`` is the store's ``now()``, never the writer's clock, so freshness
+and the confirm's answer-time comparison read one clock. A
+restart on the same host supersedes the record its predecessor left
+(:func:`live_stamps`), and the stamper prunes records a day old at start
+(:func:`prune_stamps`). The supersede rule assumes one stamping server per
+hostname: the shared MCP colours run as separate containers with distinct
+hostnames, so it hides nothing today; two watched-checkout servers sharing
+one hostname would hide the older-started one.
+
+**The legacy key, one release only** (gr762430 — remove after the release
+that ships it). A server still on the pre-gr762430 code writes the single
+``release.mcp_served`` key (:data:`LEGACY_KEY`). :func:`live_stamps` reads
+it as one more instance record, named by its own ``instance`` field: it
+joins the per-instance records unless one of them carries the same
+instance, then passes the same freshness and same-host rules. New code
+never writes it, so once every stamping server runs this code it ages
+out. Remove :func:`read_stamp`, :data:`LEGACY_KEY` and the merge in
+:func:`live_stamps` together.
 
 A pinned checkout does not restart the server at once: the checkout
 watchdog defers the exit while sessions are live, up to its cap (30
@@ -23,24 +54,25 @@ Who stamps (:func:`stamps_this_process`): only the process that serves
 from a watched checkout — build identity ``served_from: watched-checkout``
 AND ``PRECIS_CHECKOUT_WATCHDOG`` set (the shared session MCP's launcher
 sets it) — and is not a per-worktree server (``PRECIS_MCP_WORKTREE``). The
-key is global, so a second server writing it would make the confirm read
-the wrong one: the public MCP daemon runs from the git-installed web venv
-(``vcs-install``) and is restarted by the deploy itself, so it never
-stamps; nor does a stdio server, a dev server from a working tree, a baked
-test image or a CLI one-shot. ``instance`` (``host:pid``) names the writer
-for a reader of the raw record. A stamp failure is logged and never stops
-the server from serving.
+public MCP daemon runs from the git-installed web venv (``vcs-install``)
+and is restarted by the deploy itself, so it never stamps; nor does a
+stdio server, a dev server from a working tree, a baked test image or a
+CLI one-shot. A stack that does stamp — any watched-checkout server with
+the prod DSN — is one more instance the confirm holds to the release, and
+its ask names it. A stamp failure is logged and never stops the server
+from serving.
 """
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import socket
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -48,13 +80,29 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: ``app_settings`` key the record lives under (a registered setting, the
-#: same arrangement as ``release.prod_head``).
-STAMP_KEY = "release.mcp_served"
+#: The single last-writer key the pre-gr762430 servers write (a registered
+#: setting, the same arrangement as ``release.prod_head``). Read only, as
+#: the rollout fallback; remove with the fallback (module docstring).
+LEGACY_KEY = "release.mcp_served"
 
-#: Refresh cadence of ``at``; the confirm treats a stamp older than the
-#: worker liveness window as not attested, so this sits far inside it.
+#: ``app_settings`` key prefix of the per-instance records:
+#: ``release.mcp_served.<host>:<pid>`` (gr762430).
+STAMP_PREFIX = f"{LEGACY_KEY}."
+
+#: A per-instance record whose ``at`` is this old is removed when a
+#: stamper starts (:func:`prune_stamps`) — far past any reader's window.
+PRUNE_AFTER = timedelta(days=1)
+
+#: Refresh cadence of ``at``.
 REFRESH_S = 300.0
+
+#: A record whose ``at`` (store clock) is older than this is not live:
+#: three missed refreshes — a killed stack ages out in ~15 minutes, not
+#: the worker heartbeat window's 60.
+FRESH = timedelta(seconds=3 * REFRESH_S)
+
+#: How long :func:`forget_own_stamp` may hold a process exit.
+_FORGET_TIMEOUT_S = 3.0
 
 #: The one ``served_from`` lane (``precis.handlers.skill._git_identity_lane``)
 #: that stamps, together with the checkout watchdog env.
@@ -70,6 +118,9 @@ _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 _state: tuple[Store, datetime] | None = None
 _pending: str | None = None
 _write_lock = threading.Lock()
+#: Set by :func:`forget_own_stamp`: no later write may resurrect the key.
+_stopped = False
+_atexit_registered = False
 
 
 def _identity() -> tuple[str, str] | None:
@@ -92,6 +143,16 @@ def _identity() -> tuple[str, str] | None:
     if not (os.environ.get(_CHECKOUT_ROOT_ENV) or "").strip():
         return None
     return sha, served_from
+
+
+def _instance() -> str:
+    """``host:pid`` — this process's instance name and its key suffix."""
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def stamp_key(instance: str) -> str:
+    """The ``app_settings`` key ``instance``'s record lives under."""
+    return f"{STAMP_PREFIX}{instance}"
 
 
 def stamps_this_process(transport: str) -> bool:
@@ -118,7 +179,7 @@ def build_record(
         "served_from": served_from,
         "started_at": started_at.strftime(_TS_FMT),
         "at": (now or datetime.now(UTC)).strftime(_TS_FMT),
-        "instance": f"{socket.gethostname()}:{os.getpid()}",
+        "instance": _instance(),
     }
     if pending_sha and pending_sha != sha:
         rec["pending_sha"] = pending_sha
@@ -132,24 +193,101 @@ def write_stamp(
     now: datetime | None = None,
     pending_sha: str | None = None,
 ) -> bool:
-    """Write the record; ``True`` when written. The process's pending
-    value (:func:`note_pending`) is always carried, read under the write
-    lock. Never raises — a stamp failure (store down, unwritable) is
-    logged and the server serves on."""
+    """Write this instance's record under its own key (:func:`stamp_key`);
+    ``True`` when written. ``at`` is the store's clock (:func:`_db_now`)
+    unless ``now`` pins it. The process's pending value
+    (:func:`note_pending`) is always carried, read under the write lock;
+    after :func:`forget_own_stamp` nothing is written. Never raises — a
+    stamp failure (store down, unwritable) is logged and the server serves
+    on."""
     try:
         with _write_lock:
+            if _stopped:
+                return False
+            if now is None and _identity() is not None:
+                now = _db_now(store)
             rec = build_record(started_at, now=now, pending_sha=pending_sha or _pending)
             if not rec:
                 return False
             from precis import settings
 
+            # Re-checked right before the write: a forget whose lock wait
+            # timed out (this write slow on the store clock) has already
+            # deleted the key, and this late write must not restore it.
+            if _stopped:
+                return False
             settings.set_setting(
-                STAMP_KEY, json.dumps(rec, separators=(",", ":")), store=store
+                stamp_key(str(rec["instance"])),
+                json.dumps(rec, separators=(",", ":")),
+                store=store,
             )
     except Exception:
         log.warning("mcp served stamp: write failed", exc_info=True)
         return False
     return True
+
+
+def _db_now(store: Store) -> datetime:
+    """The store's ``now()`` — the one clock ``at`` and its readers use.
+    Raises when the store is unreadable."""
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT now()").fetchone()
+    if row is None or row[0] is None:
+        raise RuntimeError("mcp served stamp: store clock unreadable")
+    value: datetime = row[0]
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def forget_own_stamp(timeout_s: float = _FORGET_TIMEOUT_S) -> bool:
+    """A graceful stop: delete this instance's own key so a reader stops
+    counting it at once, instead of after :data:`FRESH` (gr762430 — a
+    colour swap's new container has a new hostname, nothing overwrites
+    the old record). ``docker stop`` reaches the server as the drain
+    signal, whose handler calls this at drain START, before the quiet
+    deferral and the drain (:func:`precis.install_watchdog.install_drain_signal`)
+    — a busy server may be SIGKILLed before the drain ends;
+    :func:`precis.install_watchdog.drain_then_exit` (also the checkout
+    watchdog's bounce, whose ``pending_sha`` attests until then) and
+    ``atexit`` call it again as a backstop — it is idempotent. No later
+    write lands (``_stopped``, re-checked by :func:`write_stamp` right
+    before its store write). Best effort and
+    bounded: waits at most about ``timeout_s`` for an in-flight write,
+    then as long again for the delete; ``True`` when the key is gone,
+    never raises, a no-op (``False``) in a process that does not stamp."""
+    global _stopped
+    try:
+        state = _state
+        if state is None:
+            return False
+        _stopped = True
+        held = _write_lock.acquire(timeout=timeout_s)
+        try:
+            key = stamp_key(_instance())
+            done = threading.Event()
+
+            def _clear() -> None:
+                try:
+                    from precis import settings
+
+                    settings.clear_setting(
+                        key, store=state[0], reason="mcp served stamp: instance stopped"
+                    )
+                    done.set()
+                except Exception:
+                    log.warning("mcp served stamp: forget failed", exc_info=True)
+
+            t = threading.Thread(
+                target=_clear, name="mcp-served-stamp-forget", daemon=True
+            )
+            t.start()
+            t.join(timeout_s)
+            return done.is_set()
+        finally:
+            if held:
+                _write_lock.release()
+    except Exception:
+        log.warning("mcp served stamp: forget failed", exc_info=True)
+        return False
 
 
 def note_pending(sha: str) -> threading.Thread | None:
@@ -178,6 +316,7 @@ def note_pending(sha: str) -> threading.Thread | None:
 
 
 def _loop(store: Store, started_at: datetime, interval_s: float) -> None:
+    prune_stamps(store)
     while True:
         write_stamp(store, started_at)
         time.sleep(interval_s)
@@ -192,7 +331,7 @@ def start_served_stamp_thread(
 ) -> threading.Thread | None:
     """Stamp now and every ``interval_s`` on a daemon thread; ``None`` (no
     thread) when this process must not stamp (:func:`stamps_this_process`)."""
-    global _state
+    global _state, _atexit_registered
     try:
         if not stamps_this_process(transport):
             return None
@@ -201,6 +340,11 @@ def start_served_stamp_thread(
         return None
     started = started_at or datetime.now(UTC)
     _state = (store, started)
+    # A graceful exit that runs atexit (uvicorn's own SIGTERM shutdown)
+    # drops the key; the drain exit (os._exit) calls forget itself.
+    if not _atexit_registered:
+        atexit.register(forget_own_stamp)
+        _atexit_registered = True
     thread = threading.Thread(
         target=_loop,
         args=(store, started, interval_s),
@@ -211,12 +355,9 @@ def start_served_stamp_thread(
     return thread
 
 
-def read_stamp(store: Store) -> dict[str, Any] | None:
-    """The ``release.mcp_served`` record with ``at`` parsed to an aware
-    datetime, or ``None`` when absent, unparsable or malformed."""
-    from precis import settings
-
-    raw = settings.get_str(STAMP_KEY, store=store)
+def _parse(raw: str | None) -> dict[str, Any] | None:
+    """One raw record with ``at`` parsed to an aware datetime, or ``None``
+    when absent, unparsable or malformed."""
     if not raw:
         return None
     try:
@@ -229,12 +370,133 @@ def read_stamp(store: Store) -> dict[str, Any] | None:
     return {**rec, "at": at}
 
 
+def _instance_rows(store: Store) -> list[tuple[str, str]]:
+    """``(key, value)`` of every per-instance row, store only; ``[]`` when
+    the store is unreadable (the reader attests nothing then, as an absent
+    stamp does)."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM app_settings WHERE starts_with(key, %s) "
+                "ORDER BY key",
+                (STAMP_PREFIX,),
+            ).fetchall()
+    except Exception:
+        log.warning("mcp served stamp: per-instance read failed", exc_info=True)
+        return []
+    return [(str(k), str(v)) for k, v in rows]
+
+
+def read_stamps(store: Store) -> list[dict[str, Any]]:
+    """Every per-instance record (:func:`_parse` shape), ``instance`` set
+    from the key when the record lacks it; malformed rows are skipped.
+    No freshness filter — :func:`live_stamps` is the confirm's reader."""
+    out: list[dict[str, Any]] = []
+    for key, raw in _instance_rows(store):
+        rec = _parse(raw)
+        if rec is None:
+            continue
+        if not isinstance(rec.get("instance"), str) or not rec["instance"]:
+            rec["instance"] = key[len(STAMP_PREFIX) :]
+        out.append(rec)
+    return out
+
+
+def read_stamp(store: Store) -> dict[str, Any] | None:
+    """The legacy single ``release.mcp_served`` record a pre-gr762430
+    server writes (:func:`_parse` shape), or ``None``. The rollout
+    fallback only — remove after the release that ships gr762430."""
+    from precis import settings
+
+    return _parse(settings.get_str(LEGACY_KEY, store=store))
+
+
+def _host(instance: str) -> str | None:
+    """The host half of ``host:pid``, else ``None`` (no pid: never
+    superseded)."""
+    host, sep, pid = instance.rpartition(":")
+    return host if sep and host and pid.isdigit() else None
+
+
+def live_stamps(store: Store, *, fresh: timedelta = FRESH) -> list[dict[str, Any]]:
+    """The records of the instances live now, sorted by instance; "now" is
+    the store's clock (:func:`_db_now`), the one ``at`` is written on, so a
+    writer's or reader's skewed clock never moves the window. ``[]`` when
+    the store is unreadable.
+
+    Every per-instance record (:func:`read_stamps`) plus — the rollout
+    fallback (gr762430, remove after its release) — the legacy single
+    record (:func:`read_stamp`) as one more instance, named by its own
+    ``instance`` field (``legacy`` when it has none) and dropped when a
+    per-instance record already carries that instance. Then a record whose
+    ``at`` is older than ``fresh`` is ignored (a stopped stack ages out),
+    and of the live records sharing one host the one with the newest
+    ``started_at`` stands for it: a restart supersedes the record its
+    predecessor left, which would otherwise stay live for ``fresh``."""
+    try:
+        now = _db_now(store)
+    except Exception:
+        log.warning("mcp served stamp: store clock unreadable", exc_info=True)
+        return []
+    recs = read_stamps(store)
+    legacy = read_stamp(store)
+    if legacy is not None:
+        legacy["instance"] = str(legacy.get("instance") or "legacy")
+        if all(r["instance"] != legacy["instance"] for r in recs):
+            recs.append(legacy)
+    live = [r for r in recs if now - r["at"] <= fresh]
+    newest: dict[str, tuple[str, datetime]] = {}
+    for r in live:
+        host = _host(str(r["instance"]))
+        if host is None:
+            continue
+        mark = (str(r.get("started_at") or ""), r["at"])
+        if host not in newest or mark > newest[host]:
+            newest[host] = mark
+    kept = [
+        r
+        for r in live
+        if (host := _host(str(r["instance"]))) is None
+        or (str(r.get("started_at") or ""), r["at"]) == newest[host]
+    ]
+    return sorted(kept, key=lambda r: str(r["instance"]))
+
+
+def prune_stamps(store: Store, *, now: datetime | None = None) -> int:
+    """Clear every per-instance record whose ``at`` is :data:`PRUNE_AFTER`
+    old — the keys dead instances (each restart is a new pid) leave
+    behind; returns how many. Never raises."""
+    from precis import settings
+
+    cutoff = (now or datetime.now(UTC)) - PRUNE_AFTER
+    n = 0
+    try:
+        for key, raw in _instance_rows(store):
+            rec = _parse(raw)
+            if rec is not None and rec["at"] < cutoff:
+                settings.clear_setting(
+                    key, store=store, reason="mcp served stamp: dead instance"
+                )
+                n += 1
+    except Exception:
+        log.warning("mcp served stamp: prune failed", exc_info=True)
+    return n
+
+
 __all__ = [
+    "FRESH",
+    "LEGACY_KEY",
+    "PRUNE_AFTER",
     "REFRESH_S",
-    "STAMP_KEY",
+    "STAMP_PREFIX",
     "build_record",
+    "forget_own_stamp",
+    "live_stamps",
     "note_pending",
+    "prune_stamps",
     "read_stamp",
+    "read_stamps",
+    "stamp_key",
     "stamps_this_process",
     "start_served_stamp_thread",
     "write_stamp",
