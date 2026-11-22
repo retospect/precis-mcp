@@ -53,8 +53,13 @@ only keywords; find a missing chunk with
 `put(kind='todo', text='taproot backfill <slug>',
 meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 'params': {'scope': <slug-or-dc>}})` — converts `[pc<id>]`/`[pa<id>]`
-cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
-`get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
+cites to `[fi<id>]` claim-hub cites on the cluster worker. The put acks
+`created todo td<id>` — the `jo<id>` job arrives later, minted under the
+todo on the minter's next pass (`job-minted` event;
+`get(kind='todo', id='td<id>', view='tree')` shows it with a `⚙` marker).
+Poll that child handle with `get(kind='job', id='jo<id>')`; its number is
+a job id, not a todo id, so `get(kind='todo', id=<that number>)` is
+NotFound. See `precis-taproot-backfill-help`.
 
 **A retitled hub drifts every cite of it.** A `[fi<id>]` cite pins the
 hub's wording at write time; a later hub reword marks each citing chunk
