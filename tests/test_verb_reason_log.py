@@ -212,9 +212,12 @@ def test_paper_tag_batch(
         },
     )
     assert "tagged 2 paper refs in one transaction" in out, out
-    lines = out.splitlines()
-    assert lines.count("updated paper batch-first: +1 tag, -1 tag") == 1, out
-    assert lines.count("updated paper batch-second: +1 tag, -1 tag") == 1, out
+    # Both papers are addressed by handle first, but receipts use cite keys.
+    receipts = [line for line in out.splitlines() if line.startswith("updated paper ")]
+    assert receipts == [
+        "updated paper batch-first: +1 tag, -1 tag",
+        "updated paper batch-second: +1 tag, -1 tag",
+    ], out
     for ref in (first, second):
         tags = {tag.value for tag in store.tags_for(ref.id)}
         assert "aixmat-2026" in tags
