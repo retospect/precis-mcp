@@ -38,6 +38,16 @@
 # up` later. That pass needs a liveness judgment — but a cheap one (run
 # markers, the ship lock, execs and mtimes), not scripts/inflight.
 #
+# A stack whose db holds a `precis_dev*` database is never removed either
+# (gr613540): `scripts/dev db-up` creates `precis_dev` inside the same
+# `precis-test-db` container — the service declares no named volume — so
+# `down -v` deletes the whole dev world along with the test db. Because
+# pgdata lives on the container overlay, the only way to know is to ask the
+# postgres itself: `dev_db_verdict` execs a catalog query, starting a
+# stopped container for the check and stopping it again. A db that cannot
+# be asked counts as held — an unseen precis_dev is unrecoverable, a leaked
+# stack is not — and every `down -v` that fires prints one line.
+#
 # A live SubagentStart marker suppresses the sweeps FOR THE TREE IT SCOPES TO
 # (gr513859): an isolation worktree can disappear while its task falls back to
 # the parent tree, so a missing mount path alone is not proof the task has
@@ -90,7 +100,11 @@
 #      scripts/test in the fleet failed before its first test.
 #      scripts/test now tears an agent tree's project down itself at exit
 #      (unless PRECIS_TEST_KEEP_DB=1), so this 2 h reap is the backstop.
-# All five together are meant to be far more conservative than "would
+#   6. the test-db serves no `precis_dev*` database — `scripts/dev db-up`'s
+#      whole world lives in the same container and `down -v` deletes it
+#      (gr613540). `dev_db_verdict` asks postgres; a db it cannot ask is
+#      kept too.
+# All six together are meant to be far more conservative than "would
 # scripts/inflight call this safe_remove" — this sweep never removes the
 # worktree itself, only its docker footprint, so a false negative (leaving a
 # leaked project alone) is free while a false positive (downing an
@@ -175,6 +189,55 @@ is_attempt_clone() {  # <tree-root>
     return 1
 }
 
+# dev_db_verdict <db-container-id> — echo one word:
+#   holds    the db serves a database named precis_dev* — spare the stack
+#   empty    it serves none — the stack may be `down -v`'d
+#   unknown  the db could not be asked — spare the stack (gr613540: the
+#            loss of an unseen precis_dev is unrecoverable; a leaked stack
+#            is not, and this pass runs again at every SessionStart)
+# A stopped container is started for the check and stopped again — a stack
+# the idle-stop pass stopped still has to reach `down -v` when it later
+# qualifies, so "stopped" must not mean "invisible". --dry-run never
+# starts one: a stopped db it cannot see is `unknown`, which keeps the
+# would-reap list a superset of what a real run would remove.
+dev_db_verdict() {
+    local cid="$1" started=0 tries=0 max out
+    # admission: exempt — sub-second probe inside an existing container
+    if ! docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1; then
+        [ "$DRY_RUN" = 1 ] && { echo unknown; return 0; }
+        # admission: exempt — brief start of an existing container to read its catalog
+        docker start "$cid" >/dev/null 2>&1 || { echo unknown; return 0; }
+        started=1
+        max="${PRECIS_DEV_DB_CHECK_SECONDS:-15}"
+        case "$max" in '' | *[!0-9]*) max=15 ;; esac
+        while [ "$tries" -lt "$max" ]; do
+            # admission: exempt — sub-second probe inside an existing container
+            docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 1
+            tries=$((tries + 1))
+        done
+    fi
+    # admission: exempt — a one-row catalog SELECT inside an existing container
+    if out="$(docker exec "$cid" psql -U postgres -d postgres -tAc \
+        "SELECT 1 FROM pg_database WHERE datname LIKE 'precis_dev%' LIMIT 1" \
+        2>/dev/null)"; then
+        case "$out" in 1) out=holds ;; *) out=empty ;; esac
+    else
+        out=unknown
+    fi
+    [ "$started" = 1 ] && docker stop "$cid" >/dev/null 2>&1 || true
+    echo "$out"
+}
+
+# keep_for_dev_db <project> <verdict> — echo the keep line unless --for-hook.
+keep_for_dev_db() {
+    [ "$FOR_HOOK" = 1 ] && return 0
+    case "$2" in
+        holds) echo "reap-test-dbs: keeping $1 — its db holds a precis_dev* database" ;;
+        *) echo "reap-test-dbs: keeping $1 — could not inspect its db for precis_dev*" ;;
+    esac
+}
+
 REAPED=()
 STOPPED=()
 SEEN=""
@@ -223,6 +286,22 @@ while IFS='|' read -r proj cfg; do
         REAPED+=("$proj")
         continue
     fi
+    # (6) the db holds no precis_dev* database — scripts/dev db-up's whole
+    # dev world lives in the same precis-test-db container `down -v` is
+    # about to delete (gr613540). Asked AFTER --dry-run: probing is a real
+    # docker exec, so the would-reap list stays a conservative superset.
+    db_cid=""
+    while IFS='|' read -r cid svc; do
+        [ "$svc" = "precis-test-db" ] && db_cid="$cid"
+    done < <(docker ps -a --filter "label=com.docker.compose.project=$proj" \
+        --format '{{.ID}}|{{.Label "com.docker.compose.service"}}' 2>/dev/null)
+    if [ -n "$db_cid" ]; then
+        v="$(dev_db_verdict "$db_cid")"
+        if [ "$v" != "empty" ]; then
+            keep_for_dev_db "$proj" "$v"
+            continue
+        fi
+    fi
     # `down -p <name>` finds the project by label, so no compose file is
     # needed — which is the point, the file went with the tree. Best-effort:
     # a concurrent session reaping the same project, or a half-removed one,
@@ -230,6 +309,7 @@ while IFS='|' read -r proj cfg; do
     if env UID="$(id -u)" GID="$(id -g)" \
         docker compose -p "$proj" down -v >/dev/null 2>&1; then
         REAPED+=("$proj")
+        echo "reap-test-dbs: down -v $proj"
     fi
 done < <(docker ps -a --format \
     '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.config_files"}}' \
@@ -456,9 +536,20 @@ PY
                 REAPED+=("$proj")
                 continue
             fi
+            # (6) the db holds no precis_dev* database — scripts/dev db-up's
+            # whole dev world lives in the same precis-test-db container
+            # `down -v` is about to delete (gr613540). Asked AFTER
+            # --dry-run: probing is a real docker exec, so the would-reap
+            # list stays a conservative superset.
+            v="$(dev_db_verdict "$db_cid")"
+            if [ "$v" != "empty" ]; then
+                keep_for_dev_db "$proj" "$v"
+                continue
+            fi
             if env UID="$(id -u)" GID="$(id -g)" \
                 docker compose -p "$proj" down -v >/dev/null 2>&1; then
                 REAPED+=("$proj")
+                echo "reap-test-dbs: down -v $proj"
             fi
         done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
     fi

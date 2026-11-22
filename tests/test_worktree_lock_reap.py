@@ -2226,16 +2226,22 @@ exec "{real_git}" "$@"
 
 _FAKE_DOCKER_SCRIPT = r"""#!/usr/bin/env bash
 # Synthetic docker for scripts/reap-test-dbs tests -- NEVER touches the real
-# daemon. Driven by three files named by env vars:
+# daemon. Driven by files named by env vars:
 #   FAKE_DOCKER_CONTAINERS  rows:
-#       project|cid|service|config_files[|state|started_rfc3339|nexec]
-#       (state defaults to running, started to '', nexec to 0)
+#       project|cid|service|config_files[|state|started_rfc3339|nexec|dbs]
+#       (state defaults to running, started to '', nexec to 0, dbs to '')
+#       dbs is a comma-separated catalog of database names; the literal
+#       NOEXEC makes every `docker exec` on the container fail.
 #   FAKE_DOCKER_CREATED     rows: cid|RFC3339-created-timestamp
-#   FAKE_DOCKER_LOG         appended to on every `compose ... down|stop` call
+#   FAKE_DOCKER_LOG         appended to on every `compose ... down|stop`
+#                           call and every `docker start|stop <cid>`
+#   FAKE_DOCKER_STARTED     cids `docker start`ed — a container `exec`able
+#                           iff its row state is running or it is in here
 set -u
 CONTAINERS="${FAKE_DOCKER_CONTAINERS:?}"
 CREATED="${FAKE_DOCKER_CREATED:?}"
 LOG="${FAKE_DOCKER_LOG:?}"
+STARTED="${FAKE_DOCKER_STARTED:?}"
 args=("$@")
 joined="$*"
 
@@ -2297,6 +2303,34 @@ case "${args[0]:-}" in
         esac
     done
     echo "${verb:-down}|$proj" >> "$LOG"
+    exit 0
+    ;;
+  start|stop)
+    cid="${args[1]:-}"
+    echo "${args[0]}|$cid" >> "$LOG"
+    if [ "${args[0]}" = "start" ]; then
+        grep -qxF "$cid" "$STARTED" 2>/dev/null || echo "$cid" >> "$STARTED"
+    else
+        grep -vxF "$cid" "$STARTED" > "$STARTED.tmp" 2>/dev/null || true
+        mv "$STARTED.tmp" "$STARTED"
+    fi
+    exit 0
+    ;;
+  exec)
+    cid="${args[1]:-}"
+    dbs="$(awk -F'|' -v c="$cid" '$2==c {print $8; exit}' "$CONTAINERS")"
+    [ "$dbs" = "NOEXEC" ] && exit 1
+    rowstate="$(awk -F'|' -v c="$cid" \
+        '$2==c {print ($5 == "" ? "running" : $5); exit}' "$CONTAINERS")"
+    if [ "$rowstate" != "running" ] \
+        && ! grep -qxF "$cid" "$STARTED" 2>/dev/null; then
+        exit 1
+    fi
+    case "$joined" in
+        *psql*)
+            case ",$dbs," in *precis_dev*) echo 1 ;; esac
+            ;;
+    esac
     exit 0
     ;;
   *)
@@ -2368,17 +2402,20 @@ def _run_reap_test_dbs(
     containers_file = data_dir / "containers"
     created_file = data_dir / "created"
     log_file = data_dir / "log"
+    started_file = data_dir / "started"
     containers_file.write_text(
         "".join(f"{row}\n" for row in containers), encoding="utf-8"
     )
     created_file.write_text("".join(f"{row}\n" for row in created), encoding="utf-8")
     log_file.write_text("", encoding="utf-8")
+    started_file.write_text("", encoding="utf-8")
 
     env = _test_env()
     env["PATH"] = f"{fakebin}:{env.get('PATH', '')}"
     env["FAKE_DOCKER_CONTAINERS"] = str(containers_file)
     env["FAKE_DOCKER_CREATED"] = str(created_file)
     env["FAKE_DOCKER_LOG"] = str(log_file)
+    env["FAKE_DOCKER_STARTED"] = str(started_file)
     if extra_env:
         env.update(extra_env)
 
@@ -2592,6 +2629,116 @@ def test_reap_test_dbs_reaps_other_projects_while_a_task_is_live(
         assert "down|precis-test-agent-a1b2c3" not in log, log
     finally:
         _subagent_event(primary, "stop", "task-scoped")
+
+
+def test_reap_test_dbs_keeps_stack_whose_db_holds_precis_dev(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """gr613540: `scripts/dev db-up`'s precis_dev lives inside the same
+    precis-test-db container `down -v` deletes. Guard 6: every other guard
+    passes, yet a db serving precis_dev* must never be downed."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml||||precis_dev"
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+    assert "keeping precis-test-b" in result.stdout
+    assert "precis_dev" in result.stdout
+
+
+def test_reap_test_dbs_keeps_stack_holding_a_precis_dev_variant(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The guard matches the precis_dev* prefix, not just the literal —
+    bench worlds are named precis_dev__<world> and share the same loss."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"
+        "||||precis_test,precis_dev__quick_abc"
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_starts_a_stopped_db_to_check_and_stops_it_back(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A stopped db container can hold precis_dev just the same — the guard
+    starts it, asks, and restores the stopped state it found."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"
+        "|exited|||precis_dev"
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+    assert "start|dbcid1" in log, log
+    assert "stop|dbcid1" in log, log
+
+
+def test_reap_test_dbs_reaps_a_stopped_db_without_precis_dev(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The same start-and-ask path on a stopped db with no precis_dev still
+    reaches `down -v` — and prints the one removal line the fix asks for."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml"
+        "|exited|||precis_test"
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "start|dbcid1" in log, log
+    assert "down|precis-test-b" in log, (result.stdout, log)
+    assert "reap-test-dbs: down -v precis-test-b" in result.stdout
+
+
+def test_reap_test_dbs_keeps_stack_it_cannot_inspect(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """An uninspectable db counts as held: an unseen precis_dev is
+    unrecoverable, a leaked stack is just re-judged next SessionStart."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{b}/docker/dev/compose.yaml||||NOEXEC"
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(
+        primary,
+        tmp_path,
+        containers,
+        created,
+        extra_env={"PRECIS_DEV_DB_CHECK_SECONDS": "0"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" not in log, log
+    assert "could not inspect" in result.stdout
+
+
+def test_reap_test_dbs_keeps_a_gone_trees_stack_holding_precis_dev(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The label sweep's `down -v` (worktree already gone) is guarded too —
+    an orphaned stack can still be the only copy of a dev world."""
+    primary = reap_db_repo["primary"]
+    gone = primary / ".claude" / "worktrees" / "gone-dev"
+    containers = [
+        f"precis-test-gone-dev|dbcid1|precis-test-db|{gone}/docker/dev/compose.yaml"
+        "||||precis_dev"
+    ]
+    created = [f"dbcid1|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-gone-dev" not in log, log
+    assert "keeping precis-test-gone-dev" in result.stdout
 
 
 def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(
