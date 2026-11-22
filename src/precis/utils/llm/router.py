@@ -70,7 +70,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 
 from precis.utils._claude_subprocess import ClaudeProcessError, resolve_binary
@@ -1026,6 +1026,7 @@ class LlmResult:
     duration_s: float | None = None
     data: dict[str, Any] | None = None
     paused: bool = False
+
     interrupted: bool = False
     timed_out: bool = False
     cli_unavailable: bool = False
@@ -1158,6 +1159,8 @@ class LlmResult:
     #: the full billed list. ``None`` when the wire carried no identity —
     #: never synthesized from request config.
     observed: dict[str, Any] | None = None
+    #: A local endpoint cooldown prevented any request from being sent.
+    local_endpoint_skipped: bool = False
 
 
 def _observed_from_response(model: Any, provider: Any) -> dict[str, Any] | None:
@@ -2709,6 +2712,8 @@ class FailoverProvider:
                 return _replace(
                     last, attempt_ms=int((time.monotonic() - started) * 1000)
                 )
+            if last.local_endpoint_skipped:
+                continue
             if last.error is not None:
                 log.warning(
                     "llm-failover: rung %d (%s, model=%s) failed: %s (class=%s)",
@@ -3698,6 +3703,7 @@ def _run_with_retry(
             if (
                 result.error is None
                 or result.timed_out
+                or result.local_endpoint_skipped
                 or result.reason_class not in _failure.INPROCESS_RETRY_CLASSES
             ):
                 break
@@ -6145,6 +6151,7 @@ def _record_dispatch(
 
     if not req.log_call or not route_log.enabled():
         return None
+    gated = gated or result.local_endpoint_skipped
     # A ladder stamps the rung that actually ran on its result; that wire
     # is the row's transport, whatever rung 0 the caller was gated on (the
     # walk may have fallen through to another transport — suitability reads
@@ -6334,6 +6341,12 @@ def _is_unavailability(exc: BaseException) -> bool:
 _SMALL_LOCAL_TIMEOUT_S = 30.0
 
 
+_LOCAL_REFUSAL_COOLDOWN_S = 30.0
+_local_endpoint_lock = threading.Lock()
+# None means one call is checking recovery after the cooldown.
+_local_endpoint_retry: dict[tuple[str, str], float | None] = {}
+
+
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     """Drive the loopback local ``LlmClient`` for a local tier.
 
@@ -6341,6 +6354,12 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     worker/DB import chain (and so DB-free callers/tests never trigger
     it). Reuses ``LlmConfig.from_env`` and overrides only the model +
     ``enabled`` flag so the resolved tier model wins.
+
+    Refused connections open a process-local cooldown shared across models
+    on the same endpoint, so the ladder can move on without another failed
+    provider attempt. After the cooldown, one call checks recovery while
+    concurrent calls continue to skip. HTTP and model errors leave the
+    endpoint eligible because they show the service accepted a connection.
     """
     from dataclasses import replace
 
@@ -6376,8 +6395,32 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         cfg = replace(cfg, timeout=min(cfg.timeout, _SMALL_LOCAL_TIMEOUT_S))
     messages = _text_only_messages(req.messages) if req.messages else None
     messages = messages or [{"role": "user", "content": req.prompt}]
-    client = LlmClient(cfg)
+    url = urlparse(cfg.url)
+    endpoint = (url.scheme, url.netloc.lower())
+    with _local_endpoint_lock:
+        checking_recovery = endpoint in _local_endpoint_retry
+        if checking_recovery:
+            retry = _local_endpoint_retry[endpoint]
+            remaining = (
+                _LOCAL_REFUSAL_COOLDOWN_S if retry is None else retry - time.monotonic()
+            )
+            if remaining > 0:
+                return LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error="local endpoint unavailable after a refused connection",
+                    paused=True,
+                    local_endpoint_skipped=True,
+                    reason_class="transport",
+                    retry_at=datetime.now(UTC) + timedelta(seconds=remaining),
+                )
+            _local_endpoint_retry[endpoint] = None
+    refused = False
     try:
+        client = LlmClient(cfg)
         if req.local_reasoning_effort is not None:
             res = client.complete(
                 messages,
@@ -6386,6 +6429,8 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         else:
             res = client.complete(messages)
     except (RuntimeError, OSError) as exc:
+        reason = exc.reason if isinstance(exc, URLError) else exc
+        refused = isinstance(reason, ConnectionRefusedError)
         # A transport-level timeout / connection failure / 5xx-or-429 is
         # unavailability, not a genuine failure — flag it `paused` so a pinned
         # pass backs off and retries instead of recording a dispatch failure
@@ -6402,6 +6447,17 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
             ),
             exc=exc,
         )
+    finally:
+        if refused or checking_recovery:
+            with _local_endpoint_lock:
+                if refused:
+                    deadline = time.monotonic() + _LOCAL_REFUSAL_COOLDOWN_S
+                    if checking_recovery:
+                        _local_endpoint_retry[endpoint] = deadline
+                    else:
+                        _local_endpoint_retry.setdefault(endpoint, deadline)
+                else:
+                    _local_endpoint_retry.pop(endpoint, None)
     return result_from_openai(res, model=model, tier=req.tier)
 
 

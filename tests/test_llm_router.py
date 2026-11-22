@@ -2830,6 +2830,60 @@ def test_error_result_argv_too_long_is_flagged_not_paused() -> None:
     assert res2.argv_too_long is False
 
 
+def test_refused_local_endpoint_skips_models_until_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import precis.workers.llm_summarize as summ
+
+    clock = Mock(return_value=100.0)
+    monkeypatch.setattr(router.time, "monotonic", clock)
+    monkeypatch.setattr(router, "_local_endpoint_retry", {})
+    requests: list[str] = []
+    ledger = Mock()
+    monkeypatch.setattr(router, "_record_dispatch", ledger)
+    local_url = "http://localhost:8000/v1"
+    request = LlmRequest(tier=Tier.SMALL, prompt="p", local_url=local_url)
+
+    class FakeClient:
+        def __init__(self, config: summ.LlmConfig) -> None:
+            self.config = config
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            requests.append(self.config.model)
+            if self.config.url == local_url:
+                if clock.return_value == 100.0:
+                    raise URLError(ConnectionRefusedError("Connection refused"))
+                if self.config.model == "probe":
+                    concurrent = router._dispatch_local(request, "concurrent")
+                    assert concurrent.local_endpoint_skipped
+            return _FakeOpenAI(text="local")
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    cloud = LlmResult(
+        text="cloud", cost_usd=0.1, turns_used=None, model="cloud", tier=Tier.SMALL
+    )
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _FakeProv(cloud))
+    ladder = router.FailoverProvider(
+        [router.Rung(Transport.LOCAL), router.Rung(Transport.OPENAI_COMPAT)]
+    )
+
+    assert ladder.run(request, model="first").text == "cloud"
+    assert ladder.run(request, model="second").text == "cloud"
+    assert requests == ["first"]
+    ledger.assert_called_once()
+    paused = router._dispatch_local(request, "pinned")
+    assert paused.paused and paused.local_endpoint_skipped and paused.retry_at
+
+    other = LlmRequest(
+        tier=Tier.SMALL, prompt="p", local_url="http://localhost:8001/v1"
+    )
+    assert router._dispatch_local(other, "other").text == "local"
+    clock.return_value = 130.0
+    assert ladder.run(request, model="probe").text == "local"
+    assert ladder.run(request, model="recovered").text == "local"
+    assert requests == ["first", "other", "probe", "recovered"]
+
+
 def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
     """A request timeout on the LOCAL transport is unavailability —
     skip-and-retry, not a hard failure that can park the todo."""

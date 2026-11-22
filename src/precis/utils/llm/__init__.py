@@ -82,7 +82,7 @@ Resolution, per dispatch (in order)
    throttle (``llm.cloud_enabled`` off prunes cloud rungs; a tier left
    rungless returns ``paused``, skip-not-fail, never a silent local
    degrade); a serving-aware skip of a loopback ``LOCAL`` rung whose model
-   this host doesn't serve (else every call ECONNREFUSEs then fails over).
+   this host doesn't serve, and a cooldown for refused local endpoints.
 6. **Gates** — the budget breaker (keyed on the resolved rung's resource:
    OAuth quota vs dollars vs free local) and the catalog window admission —
    both fold refusals into the normalized result, never raise. An
