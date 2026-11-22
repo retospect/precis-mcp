@@ -34,6 +34,16 @@ caller because it builds no provider, places no call and writes nothing.
 The demand is a worker's (``work_class`` defaults to background, not the
 ambient MCP class), since the kinds asked about run unattended. It does
 not model request pins, keyword rules or the gates a real call meets.
+``/health`` (gr681308) groups the call log by executed path (the
+decision's ``executed`` stamp, ``legacy`` before shadowing), model and
+transport: call count, error share and p95 ``duration_ms``, bounded by
+``args={'window_days': N}`` (7 default, at most 30) on the ``ts`` index;
+gated rows are excluded. ``/decide-modes`` shows the winning decide mode
+(``legacy``, ``shadow``, ``on``) for each task kind logged in the window
+plus the default. ``/breaker`` reports the dollar breaker's status —
+tripped or ok, the window, spend against cap, the open alert's start
+("since"), and any resume override; the subscription quota taper is a
+separate mechanism (``/pools``). All three are read-only.
 ``/accounts`` and ``/pools`` (migration 0280, S1a) read the owned-capacity
 ledger: an account is one credential at one provider under one plan
 (``llm_account``); a pool is a rate bucket with a reset rule and explicit
@@ -280,6 +290,11 @@ class LlmHandler(NumericRefHandler):
             "id='/preview' with args={'task_kind': '<kind>'} lists the "
             "candidates the router would rank for that kind, the chosen one "
             "marked; no LLM call. "
+            "id='/health' shows error rate and p95 latency by executed "
+            "path/model/transport (args={'window_days': N}); "
+            "id='/decide-modes' the decide mode in force per task kind; "
+            "id='/breaker' whether the budget breaker is tripped and what "
+            "resumes it. "
             "put(kind='llm', args={'account': {...}}) is owner-only — for a "
             "hosted OpenAI-compatible provider, endpoint/limits/entitlement/"
             "privacy evidence makes it the whole onboarding door (created "
@@ -303,19 +318,19 @@ class LlmHandler(NumericRefHandler):
 
     #: ``put(kind='llm', args={'account': {...}})`` — the owner-only
     #: account/pool write (S1a step 4). ``get`` reads ``args=`` for
-    #: ``id='/preview'`` only: the demand whose routing is previewed.
+    #: ``id='/preview'`` (the demand whose routing is previewed) and
+    #: ``id='/health'`` (``window_days``, the call-log window).
+    _PREVIEW_ARGS: ClassVar[dict[str, type]] = {
+        "task_kind": str,
+        "source": str,
+        "tier": str,
+        "tools": bool,
+        "privacy": str,
+        "work_class": str,
+    }
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "put": ArgsSpec({"account"}),
-        "get": ArgsSpec(
-            {
-                "task_kind": str,
-                "source": str,
-                "tier": str,
-                "tools": bool,
-                "privacy": str,
-                "work_class": str,
-            }
-        ),
+        "get": ArgsSpec({**_PREVIEW_ARGS, "window_days": int}),
     }
 
     #: The prose embeds so the card is a vector (search-by-capability). Emission
@@ -397,11 +412,29 @@ class LlmHandler(NumericRefHandler):
         if isinstance(id, str) and id.strip() == "/preview":
             self._check_list_id_view(id, view)
             return Response(body=self._render_preview(args or {}))
+        if isinstance(id, str) and id.strip() == "/health":
+            self._check_list_id_view(id, view)
+            # The early return bypasses the base ``/<x>`` dispatch so
+            # ``args={'window_days'}`` reaches the render — run the same
+            # paging-selector gate it would, else ``page_size=``/``sort=``
+            # would silently succeed (review td760794).
+            self._check_list_selectors(
+                "health",
+                _kw.get("page"),
+                _kw.get("page_size"),
+                _kw.get("sort"),
+                _kw.get("closed_since"),
+                _kw.get("closed_until"),
+            )
+            return Response(body=self._render_health(args or {}))
         if args:
             raise BadInput(
-                f"args= keys {sorted(args)} apply to id='/preview' only",
-                next="get(kind='llm', id='/preview', "
-                "args={'task_kind': '<task kind>'})",
+                f"args= keys {sorted(args)} apply to id='/preview' or "
+                "id='/health' only",
+                options=[
+                    "get(kind='llm', id='/preview', args={'task_kind': '<task kind>'})",
+                    "get(kind='llm', id='/health', args={'window_days': 7})",
+                ],
             )
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
@@ -459,6 +492,12 @@ class LlmHandler(NumericRefHandler):
             return Response(body=self._render_decisions())
         if view == "suitability":
             return Response(body=self._render_suitability())
+        if view == "health":
+            return Response(body=self._render_health({}))
+        if view == "decide-modes":
+            return Response(body=self._render_decide_modes())
+        if view == "breaker":
+            return Response(body=self._render_breaker())
         return super()._list_view(view)
 
     def _supported_list_views(self) -> tuple[str, ...]:
@@ -471,6 +510,9 @@ class LlmHandler(NumericRefHandler):
             "decisions",
             "suitability",
             "preview",
+            "health",
+            "decide-modes",
+            "breaker",
         )
 
     def _op_route(self, source: str) -> Response | None:
@@ -1451,6 +1493,95 @@ class LlmHandler(NumericRefHandler):
                 )
         return "\n".join(lines)
 
+    def _render_health(self, args: dict[str, Any]) -> str:
+        """``id='/health'`` — error rate and p95 latency per executed path."""
+        example = "get(kind='llm', id='/health', args={'window_days': 7})"
+        if unexpected := args.keys() - {"window_days"}:
+            raise BadInput(
+                f"args= keys {sorted(unexpected)} are unsupported for id='/health'",
+                next=example,
+            )
+        raw = args.get("window_days", 7)
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 30:
+            raise BadInput(
+                "window_days must be a whole number from 1 to 30",
+                next=example,
+            )
+        rows = llm_catalog.llm_health(self.store, window_days=raw)
+        lines = [f"# llm health ({sum(r.calls for r in rows)} calls, {raw} d)"]
+        for r in rows:
+            p95 = f"{r.p95_ms:.0f} ms" if r.p95_ms is not None else "n/a"
+            lines.append(
+                f"  path={r.path} model={r.model} transport={r.transport}: "
+                f"calls={r.calls} errors={100 * r.error_rate:.0f}% p95={p95}"
+            )
+        return "\n".join(lines)
+
+    def _render_decide_modes(self) -> str:
+        """``id='/decide-modes'`` — the winning decide mode per task kind."""
+        from precis.utils.llm import decide
+
+        kinds = llm_catalog.logged_task_kinds(self.store)
+        lines = [f"# llm decide modes (default {decide.mode_for(None)})"]
+        for kind in kinds:
+            lines.append(f"  {kind}: {decide.mode_for(kind)}")
+        return "\n".join(lines)
+
+    def _render_breaker(self) -> str:
+        """``id='/breaker'`` — is the dollar breaker tripped, and what resumes it."""
+        from precis import alerts
+        from precis.budget import meter
+        from precis.budget import settings as budget_settings
+
+        status = meter.current_status(self.store, use_cache=False)
+        if status is None:
+            return "breaker: unknown (no spend reading available)"
+        resume = budget_settings.get_resume_until(self.store)
+        now = datetime.now(UTC)
+        resume_at = as_utc(resume) if resume is not None else None
+        resumed = resume_at is not None and resume_at > now
+        override = f"active until {resume_at:%Y-%m-%d %H:%M} UTC" if resumed else "none"
+        window = status.tripped_window
+        if window is None:
+            return (
+                f"breaker: ok hourly ${status.hourly_spent:.2f} of "
+                f"${status.hourly_cap:.2f}, daily ${status.daily_spent:.2f} of "
+                f"${status.daily_cap:.2f}; resume override: {override}\n"
+                "The subscription quota taper is a separate mechanism: see "
+                "id='/pools'."
+            )
+        spent, cap = (
+            (status.hourly_spent, status.hourly_cap)
+            if window == "hourly"
+            else (status.daily_spent, status.daily_cap)
+        )
+        hist = alerts.alert_history(
+            self.store, source="budget", fingerprint=f"cap-{window}"
+        )
+        opened = as_utc((hist.get("open") or {}).get("created_at"))
+        since = f"{opened:%Y-%m-%d %H:%M} UTC" if opened is not None else "unknown"
+        if resumed:
+            # The override bypasses the soft trip (breaker._gate): paid
+            # work runs through the cap until the instant ``override``
+            # names, so "paused" would lie about the effective state.
+            pause = (
+                "paid work still runs through the cap under the resume "
+                "override; when it lapses the cap pauses paid work unless "
+                "the window has rolled off or a human raised it"
+            )
+        else:
+            pause = (
+                "paid work is paused, free local work still runs; it "
+                "resumes when the window rolls off or a human raises the "
+                "cap or resumes on the budget page"
+            )
+        return (
+            f"breaker: tripped {window} ${spent:.2f} of ${cap:.2f} since {since}; "
+            f"{pause}; resume override: {override}\n"
+            "The subscription quota taper is a separate mechanism: see "
+            "id='/pools'."
+        )
+
     def _render_suitability(self, *, window_days: int = 7, limit: int = 10) -> str:
         """``id='/suitability'`` — stored posteriors for the busiest kinds.
 
@@ -1513,6 +1644,11 @@ class LlmHandler(NumericRefHandler):
         from precis.utils.llm import decide, operations, recipes, router
 
         example = "get(kind='llm', id='/preview', args={'task_kind': '<task kind>'})"
+        if unexpected := args.keys() - self._PREVIEW_ARGS.keys():
+            raise BadInput(
+                f"args= keys {sorted(unexpected)} are unsupported for id='/preview'",
+                next=example,
+            )
         task_kind = str(args.get("task_kind") or "").strip()
         source = str(args.get("source") or "").strip()
         if not task_kind and not source:

@@ -73,7 +73,11 @@ alert surface: `budget/cap-<window>` (`cap-hourly`, `cap-daily`) when a
 dollar spend-cap window trips, and `budget:quota/quota-<window>`
 (`quota-five_hour`, `quota-seven_day`) when a Claude subscription
 rate-limit window is exhausted. `get(kind='llm', id='/pools')` is the
-live view; nothing LLM-backed runs until the window rolls or the cap is raised.
+live view; `get(kind='llm', id='/breaker')` says whether the dollar breaker
+is tripped, the window, spend against cap, since when, and whether a resume
+override is active. Paid work resumes when the window rolls off, a human
+raises the cap, or a human resumes on the budget page; free local work
+keeps running.
 A related per-host check: `quota_check:auth/<host>:claude-oauth` fires
 when a host's Claude OAuth credential is expired or unreadable; agent
 ticks on that host fail until an operator replaces the vault token
@@ -120,6 +124,15 @@ source of the kind is a registered operation, and otherwise asks "what if
 this ran at another tier". `'tools': true`, `'privacy': 'local-only'` and
 `'work_class'` (default `background`) shape the demand. Request pins,
 keyword rules and the gates a real call meets are not modelled.
+
+## How healthy is each path? /health and /decide-modes
+
+`get(kind='llm', id='/health', args={'window_days': 7})` groups calls that
+ran by executed path (`legacy` when no decision was stamped), model and
+transport: calls, error share and p95 latency; default 7 days, at most 30,
+top 30 rows. `get(kind='llm', id='/decide-modes')` shows the decide mode in
+force (`legacy`, `shadow`, `on`) for each recently logged task kind and the
+default. Both are read-only.
 
 ## What would the new router have chosen? /decisions
 

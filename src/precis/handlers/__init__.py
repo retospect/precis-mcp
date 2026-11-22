@@ -3,6 +3,8 @@
 Handlers register :class:`precis.protocol.KindSpec` with
 :class:`precis.dispatch.Hub` at boot. Shared adapters use underscore-prefixed
 modules (:mod:`precis.handlers._numeric_ref`).
+LLM diagnostics bound call-log scans to recent windows and report the
+effective decide modes through the same memo used by live routing.
 Staged findings retain the URL and verbatim quote without fetching.
 Gripe themes span unrelated defects. Automatic merges require matching
 project and cluster scope, and filing receipts suggest out-of-scope keepers.

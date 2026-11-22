@@ -1326,3 +1326,138 @@ class TestSeed:
         assert not any(created for _mid, _rid, created in second)
         # Same ref ids on re-seed (upsert on model_id, no duplicates).
         assert {rid for _m, rid, _c in first} == {rid for _m, rid, _c in second}
+
+
+class TestHealthModesBreaker:
+    def _log(self, store: Any, n: int, *, errored: int = 0, **kw: Any) -> None:
+        import json
+
+        feats = json.dumps(kw.get("features", {}))
+        age = kw.get("age_days", 0)
+        with store.pool.connection() as conn:
+            for i in range(n):
+                conn.execute(
+                    "INSERT INTO llm_call_log (source, transport, model, errored, "
+                    "duration_ms, features, ts) VALUES ('hv', 'local', 'm1', %s, %s, "
+                    "%s::jsonb, now() - (%s * interval '1 day'))",
+                    (i < errored, (i + 1) * 100, feats, age),
+                )
+
+    def test_health_view_error_rate_and_p95(self, store: Any) -> None:
+        self._log(store, 10, errored=2, features={"decision": {"executed": "decision"}})
+        self._log(store, 3, features={"gated": True, "decision": {"executed": "x"}})
+        self._log(store, 4, age_days=3)
+        h = _handler(store)
+        body = h.get(id="/health").body
+        assert "path=decision model=m1 transport=local: calls=10 errors=20%" in body
+        assert "path=x " not in body
+        p95 = float(body.split("p95=")[1].split(" ms")[0])
+        assert 900 <= p95 <= 1000
+        assert "path=legacy model=m1 transport=local: calls=4" in body
+        body1 = h.get(id="/health", args={"window_days": 1}).body
+        assert "path=legacy" not in body1
+
+    def test_decide_modes_view_layers(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm import decide, live_config
+
+        for k in ("ka", "kb", "kc"):
+            self._log(store, 1, features={"task_kind": k})
+        self._log(store, 1, features={"task_kind": "gated_only", "gated": True})
+        stored = {"ka": "on", "kc": "bogus", "gated_only": "on"}
+        monkeypatch.setattr(
+            live_config, "decide_kind_override", lambda kind: stored.get(kind)
+        )
+        monkeypatch.setattr(live_config, "decide_override", lambda prefix: None)
+        monkeypatch.setattr(live_config, "decide_default", lambda: "shadow")
+        monkeypatch.setattr(decide, "_mode_memo", {})
+        assert decide.mode_for("ka") == "on"
+        stored["ka"] = "legacy"
+        body = _handler(store).get(id="/decide-modes").body
+        assert "# llm decide modes (default shadow)" in body
+        assert "ka: on" in body
+        assert "kb: shadow" in body
+        assert "kc: legacy" in body
+        assert "gated_only: on" in body
+
+    @pytest.mark.parametrize(
+        ("view_id", "args", "unexpected"),
+        [
+            ("/health", {"window_days": 7, "task_kind": "ka"}, "task_kind"),
+            ("/preview", {"task_kind": "ka", "window_days": 7}, "window_days"),
+        ],
+    )
+    def test_diagnostic_views_reject_each_others_args(
+        self, view_id: str, args: dict[str, Any], unexpected: str
+    ) -> None:
+        from types import SimpleNamespace
+
+        from precis.errors import BadInput
+        from precis.handlers.llm import LlmHandler
+
+        args_view = LlmHandler.ARGS["get"].view(args)
+        with pytest.raises(BadInput, match=unexpected):
+            _handler(SimpleNamespace()).get(id=view_id, args=args_view)
+
+    def test_decide_modes_lists_every_logged_kind(self, store: Any) -> None:
+        # ``logged_task_kinds`` carries no cap: a kind past the busiest-50
+        # still gets its mode line (review td760794).
+        for i in range(55):
+            self._log(store, 1, features={"task_kind": f"k{i:02d}"})
+        body = _handler(store).get(id="/decide-modes").body
+        assert "k00:" in body
+        assert "k54:" in body
+
+    def test_health_view_refuses_paging_selectors(self, store: Any) -> None:
+        from precis.errors import BadInput, Unsupported
+
+        h = _handler(store)
+        with pytest.raises(BadInput):
+            h.get(id="/health", page_size=5)
+        with pytest.raises(BadInput):
+            h.get(id="/health", sort="prio")
+        with pytest.raises(BadInput):
+            h.get(id="/health", page=2)
+        with pytest.raises(Unsupported):
+            h.get(id="/health", view="tote")
+        # page=1 is the base's allowed no-op spelling.
+        h.get(id="/health", page=1)
+
+    def test_breaker_view(self, store: Any) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from precis.budget import settings as bs
+
+        h = _handler(store)
+        assert "breaker: ok" in h.get(id="/breaker").body
+        bs.set_setting(store, bs.HOURLY_KEY, "1")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO llm_call_log (source, transport, model, cost_usd) "
+                "VALUES ('hv', 'api', 'm1', 5)"
+            )
+        body = h.get(id="/breaker").body
+        assert "breaker: tripped hourly $5.00 of $1.00" in body
+        assert "since unknown" in body
+        assert "paid work is paused" in body
+        assert "resume override: none" in body
+        until = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        bs.set_setting(store, bs.RESUME_UNTIL_KEY, until)
+        body = h.get(id="/breaker").body
+        assert "breaker: tripped hourly $5.00 of $1.00" in body
+        assert "resume override: active until" in body
+        # An active override bypasses the soft trip: "paused" would lie.
+        assert "paid work is paused" not in body
+        assert "paid work still runs through the cap" in body
+
+    def test_llm_ops_skill_names_new_views(self) -> None:
+        from pathlib import Path
+
+        import precis
+
+        text = (
+            Path(precis.__file__).parent / "data/skills/precis-llm-ops-help.md"
+        ).read_text(encoding="utf-8")
+        for needle in ("/health", "/breaker", "/decide-modes"):
+            assert needle in text

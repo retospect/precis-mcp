@@ -6330,7 +6330,7 @@ class NumericRefHandler(Handler):
         """
         return frozenset()
 
-    def _list_view_paged(
+    def _check_list_selectors(
         self,
         view: str,
         page: Any,
@@ -6338,15 +6338,17 @@ class NumericRefHandler(Handler):
         sort: Any = None,
         closed_since: Any = None,
         closed_until: Any = None,
-    ) -> Response | None:
-        """Route ``get(id='/<view>', page=N)`` to ``_list_view``.
+    ) -> tuple[int, int | None]:
+        """Parse + gate the paging selectors on an ``id='/<view>'`` read.
 
-        Views in :attr:`paged_list_views` receive ``page=`` (and the
-        canonical ``page_size=``, gr514469) plus a ``sort=`` (td596982:
-        gripe's ``/open`` accepts the shared queue vocabulary — a paged
-        override must declare the kwarg); any other view refuses
-        ``page>1``, a ``page_size`` or a ``sort`` with a pointer at
-        ``search`` instead of silently returning page 1 (gr497175).
+        Returns ``(page, page_size)`` for the caller to dispatch on.
+        ``page``/``page_size`` must be positive integers. On a view not in
+        :attr:`paged_list_views` any selector — ``page>1``, ``page_size``,
+        ``sort``, ``closed_since``/``closed_until`` — refuses with a pointer
+        at ``search`` instead of silently returning page 1 (gr497175).
+        Subclasses that intercept a ``/<x>`` id ahead of the base dispatch
+        to pass their own ``args=`` through (llm's ``/health``) call this
+        before rendering so the refusal is the same shape everywhere.
         """
         try:
             n = 1 if page is None else int(page)
@@ -6370,19 +6372,7 @@ class NumericRefHandler(Handler):
                     "args={'page_size': 20})",
                 )
         if view in self.paged_list_views:
-            # Only views in ``paged_list_views`` take ``page=``/``sort=``;
-            # the base signature stays ``(view)`` so non-paging overrides
-            # still match.
-            paged: Any = self._list_view
-            resp: Response | None = paged(
-                view,
-                page=n,
-                page_size=ps,
-                sort=sort,
-                closed_since=closed_since,
-                closed_until=closed_until,
-            )
-            return resp
+            return n, ps
         if (
             n > 1
             or ps is not None
@@ -6411,6 +6401,43 @@ class NumericRefHandler(Handler):
                     f"search(kind={self.kind!r}, tags=['<tag>'], page_size=100)",
                 ],
             )
+        return n, ps
+
+    def _list_view_paged(
+        self,
+        view: str,
+        page: Any,
+        page_size: Any = None,
+        sort: Any = None,
+        closed_since: Any = None,
+        closed_until: Any = None,
+    ) -> Response | None:
+        """Route ``get(id='/<view>', page=N)`` to ``_list_view``.
+
+        Views in :attr:`paged_list_views` receive ``page=`` (and the
+        canonical ``page_size=``, gr514469) plus a ``sort=`` (td596982:
+        gripe's ``/open`` accepts the shared queue vocabulary — a paged
+        override must declare the kwarg); any other view refuses
+        ``page>1``, a ``page_size`` or a ``sort`` with a pointer at
+        ``search`` instead of silently returning page 1 (gr497175).
+        """
+        n, ps = self._check_list_selectors(
+            view, page, page_size, sort, closed_since, closed_until
+        )
+        if view in self.paged_list_views:
+            # Only views in ``paged_list_views`` take ``page=``/``sort=``;
+            # the base signature stays ``(view)`` so non-paging overrides
+            # still match.
+            paged: Any = self._list_view
+            resp: Response | None = paged(
+                view,
+                page=n,
+                page_size=ps,
+                sort=sort,
+                closed_since=closed_since,
+                closed_until=closed_until,
+            )
+            return resp
         return self._list_view(view)
 
     def _list_view(self, view: str) -> Response | None:

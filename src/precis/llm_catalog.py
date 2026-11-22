@@ -680,6 +680,66 @@ def llm_op_models(
     return [(r[0] or "?", _tote_row(r[1:])) for r in rows]
 
 
+class HealthRow(NamedTuple):
+    """Calls, error share and p95 latency for one path/model/transport."""
+
+    path: str
+    model: str
+    transport: str
+    calls: int
+    error_rate: float
+    p95_ms: float | None
+
+
+def llm_health(
+    store: Store, *, window_days: int = 7, limit: int = 30
+) -> list[HealthRow]:
+    """Error rate and p95 ``duration_ms`` by executed path, model, transport.
+
+    The path is the decision's ``executed`` stamp, ``legacy`` for rows from
+    before decision shadowing. Window-bounded on ``ts``; gated rows excluded.
+    """
+    sql = (
+        "SELECT COALESCE(features->'decision'->>'executed', 'legacy'), "
+        "COALESCE(model, '?'), COALESCE(transport, '?'), count(*), "
+        "AVG((errored)::int), "
+        "percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) "
+        "FROM llm_call_log WHERE ts > now() - (%s * interval '1 day') "
+        f"AND {_NOT_GATED} GROUP BY 1, 2, 3 "
+        "ORDER BY count(*) DESC, 1, 2, 3 LIMIT %s"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (window_days, limit)).fetchall()
+    return [
+        HealthRow(
+            str(r[0]),
+            str(r[1]),
+            str(r[2]),
+            int(r[3]),
+            float(r[4] or 0),
+            float(r[5]) if r[5] is not None else None,
+        )
+        for r in rows
+    ]
+
+
+def logged_task_kinds(store: Store, *, window_days: int = 7) -> list[str]:
+    """Task kinds seen in the call log inside the window, busiest first.
+
+    Include gated attempts and return every kind in the window so
+    ``id='/decide-modes'`` shows modes even for kinds whose calls were
+    all blocked.
+    """
+    sql = (
+        "SELECT features->>'task_kind' FROM llm_call_log "
+        "WHERE ts > now() - (%s * interval '1 day') "
+        "AND features ? 'task_kind' AND features->>'task_kind' <> '' "
+        "GROUP BY 1 ORDER BY count(*) DESC, 1"
+    )
+    with store.pool.connection() as conn:
+        return [str(r[0]) for r in conn.execute(sql, (window_days,)).fetchall()]
+
+
 # ── local vs cloud share (routed vs landed) ─────────────────────────────
 
 
