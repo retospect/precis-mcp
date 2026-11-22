@@ -11,7 +11,9 @@ updates the note in place, never re-guids, so Anki's scheduling history
 survives); the guard allows FULL_DOWNLOAD but **refuses FULL_UPLOAD**, so
 precis can never overwrite the account's collection. Image attachments are
 fetched at card creation and stored with the ref so retries and rebuilt
-mirrors use the same bytes after the source changes or disappears. The
+mirrors use the same bytes after the source changes or disappears. Each
+image download attempt uses the web-fetch policy for its source host and
+reads into a fresh buffer within the card's shared download deadline. The
 worker writes content-addressed files through Anki's media manager and
 waits for separate, two-way media sync on accounts with attached cards.
 The initial transfer can download the account's existing media library
