@@ -8,10 +8,12 @@ The thread-session fleet (one window per roadmap thread) is
 ``scripts/fleet``; this is the per-wave kit beside it. Runbook: the
 ``gripe-fleet`` skill (.claude/skills/gripe-fleet/SKILL.md).
 
-    fleet-wave launch NAME --brief FILE [--tier R|W] [--devin [--devin-model ID]|
+    fleet-wave launch NAME --brief FILE [--tier R|W] [--todo tdN|meN ...]
+                                        [--devin [--devin-model ID]|
                                         --codex|--kimi [--kimi-model A]
                                         [--kimi-max N]]
-    fleet-wave launch NAME --batch SLUG [--tier R|W] [--devin|--codex|--kimi]
+    fleet-wave launch NAME --batch SLUG [--tier R|W] [--todo tdN|meN ...]
+                                        [--devin|--codex|--kimi]
                                         brief = the batch dossier rendered from
                                         the gripes (precis gripe-fix brief); the
                                         launch records host/session/tree on them
@@ -73,10 +75,14 @@ still ``status: ready`` is flipped to ``status: in-progress`` +
 ``claimed-by: <name>``, committed on main in the primary checkout and
 pushed — that file convention now covers only the one residual file
 (``se-protein-interface-first.md``); the transferred specs live in
-graph memory, so a brief that names a spec by handle claims the plan
-root todo's ``claimed-by:`` lease instead, through
+graph memory, and there only the builder's *own* handle takes the plan
+root todo's ``claimed-by:`` lease, through
 ``scripts/prod-precis tools``: ``td<N>`` names the plan todo directly
 and ``me<N>`` (the spec root) resolves through its ``plan-of`` link.
+Repeat ``--todo`` to select explicit handles. Without it, launch selects
+the first handle on the first ``todo:`` or ``claim:`` line containing one.
+An unmarked brief leases nothing (gr753257). A selection that names no
+handle warns and leases nothing.
 A todo whose claim is refused — already leased by another tree, no
 plan-of todo, unknown id — is skipped with a warning; a failed claim
 never blocks the launch (the inflight purpose/branch check in the
@@ -907,13 +913,18 @@ _NON_SPEC_STEMS = frozenset({"readme", "template", "index"})
 #: Leading ``--- … ---`` front-matter block (same shape as the fixer's
 #: intake parser — kept local, fleet-wave is a standalone script).
 _FM_RE = re.compile(r"\A(---\s*\n)(.*?)(\n---\s*\n)", re.DOTALL)
-#: Graph work-item handles in a brief (gr696034): ``td<N>`` names a plan
-#: todo directly; ``me<N>`` (a spec root) resolves through its
-#: ``plan-of`` link to the plan root todo. Any mention counts as claim
-#: intent — the same loose convention the docs/backlog path form always
-#: had — and a handle that resolves to nothing is skipped with a warning.
+#: Todo handles returned by the spec root's ``plan-of`` lookup (gr696034).
 _TODO_HANDLE_RE = re.compile(r"\btd(\d{1,9})\b")
-_MEM_HANDLE_RE = re.compile(r"\bme(\d{1,9})\b")
+#: Handles selected by ``--todo`` or a marked brief line (gr753257).
+_ANY_HANDLE_RE = re.compile(r"\b(td|me)(\d{1,9})\b")
+#: One ``--todo`` value is one complete handle — embedded handles in
+#: extra text (``td111 (blocked by td222)``) are rejected, not leased
+#: (review td754724).
+_FULL_HANDLE_RE = re.compile(r"(td|me)(\d{1,9})")
+#: Brief lines eligible to select the builder's first handle.
+_CLAIM_LINE_RE = re.compile(
+    r"^\s*(?:todo|claim)\s*:(.*)$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def _git_rc(*argv: str, cwd: Path) -> int:
@@ -1191,21 +1202,68 @@ def _claim_plan_todo(todo_id: int, name: str) -> bool:
     return True
 
 
-def _claim_graph_specs(f: Fleet, name: str, brief: str) -> list[str]:
-    """Claim the plan-root todo leases the brief's graph handles name.
+def _own_handles(brief: str, explicit: list[str]) -> tuple[list[str], list[str]]:
+    """The ``(td ids, me ids)`` the builder owns (gr753257).
+
+    A brief quotes gripes that name other todos in passing, so mentions
+    are not claim intent. Claim intent is explicit: each ``--todo`` value
+    must be exactly one handle — ``td111 (blocked by td222)`` warns and
+    is ignored, never partially leased — else the first handle of the
+    first ``todo:``/``claim:`` line that names one (later handles on
+    that line are not leased). An unmarked brief leases nothing; claim
+    intent that names no handle warns and leases nothing (review
+    td754724).
+    """
+    if explicit:
+        found = []
+        for value in explicit:
+            whole = _FULL_HANDLE_RE.fullmatch(value.strip())
+            if whole:
+                found.append((whole.group(1), whole.group(2)))
+            else:
+                print(
+                    f"fleet-wave: --todo expects one td/me handle, got "
+                    f"'{value}' — ignored",
+                    file=sys.stderr,
+                )
+        scope = "--todo"
+    else:
+        found = []
+        scope = ""
+        for m in _CLAIM_LINE_RE.finditer(brief):
+            scope = "todo:/claim: line"
+            first = _ANY_HANDLE_RE.search(m.group(1))
+            if first:
+                found = [(first.group(1), first.group(2))]
+                break
+    if scope and not found:
+        print(
+            f"fleet-wave: no td/me handle in {scope} — no todo leased",
+            file=sys.stderr,
+        )
+    tds = [n for k, n in dict.fromkeys(found) if k == "td"]
+    mes = [n for k, n in dict.fromkeys(found) if k == "me"]
+    return tds, mes
+
+
+def _claim_graph_specs(
+    f: Fleet, name: str, brief: str, explicit: list[str] | None = None
+) -> list[str]:
+    """Claim the builder's own plan-root todo lease (gr753257).
 
     ``td<N>`` names the todo directly; ``me<N>`` (a spec root) resolves
-    through its ``plan-of`` link. Each claimed todo gets one claims.tsv
-    row keyed ``todo:td<N>`` so ``close`` can drop the lease from the
-    ledger. No handles — no calls: briefs that name only files or
-    gripes never touch the prod CLI.
+    through its ``plan-of`` link. Only the handles :func:`_own_handles`
+    picks are leased, never every handle the brief mentions. Each
+    claimed todo gets one claims.tsv row keyed ``todo:td<N>`` so
+    ``close`` can drop the lease from the ledger. No handles — no calls.
     """
+    tds, mes = _own_handles(brief, explicit or [])
     todo_ids: list[int] = []
-    for handle in dict.fromkeys(_MEM_HANDLE_RE.findall(brief)):
+    for handle in mes:
         for todo_id in _plan_roots(f"me{handle}"):
             if todo_id not in todo_ids:
                 todo_ids.append(todo_id)
-    for handle in dict.fromkeys(_TODO_HANDLE_RE.findall(brief)):
+    for handle in tds:
         todo_id = int(handle)
         if todo_id not in todo_ids:
             todo_ids.append(todo_id)
@@ -1263,14 +1321,16 @@ def _claim_file_specs(f: Fleet, name: str, brief: str) -> list[str]:
     return [s for s, _r, _f in flips]
 
 
-def _claim_specs(f: Fleet, name: str, brief: str) -> list[str]:
+def _claim_specs(
+    f: Fleet, name: str, brief: str, explicit: list[str] | None = None
+) -> list[str]:
     """Claim the brief's specs, wherever they live (gr509461, gr696034).
 
     Returns the display items (``docs/backlog/<slug>.md`` paths and
     ``td<N>`` handles) for the purpose seed.
     """
     claimed = [f"docs/backlog/{s}.md" for s in _claim_file_specs(f, name, brief)]
-    claimed.extend(_claim_graph_specs(f, name, brief))
+    claimed.extend(_claim_graph_specs(f, name, brief, explicit))
     return claimed
 
 
@@ -1591,7 +1651,7 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     elif not _legacy_footers():
         codex = _apply_authority(tier, _ensure_tree(f, name))
     if not a.dry_run:
-        _mark_claim_purpose(f, name, _claim_specs(f, name, brief))
+        _mark_claim_purpose(f, name, _claim_specs(f, name, brief, a.todo))
     if a.kimi:
         return _launch_kimi(f, a, name=name, win=win, tier=tier, text=text)
     if a.devin:
@@ -3409,6 +3469,14 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("launch", help="start a builder window")
     s.add_argument("name")
     s.add_argument("--brief", default="", help="brief file (one-off task)")
+    s.add_argument(
+        "--todo",
+        action="append",
+        default=[],
+        help="the builder's own td/me handle to lease (repeatable); "
+        "otherwise leases the first handle on the first `todo:` or `claim:` line "
+        "containing one. An unmarked brief leases nothing.",
+    )
     s.add_argument(
         "--batch",
         default="",

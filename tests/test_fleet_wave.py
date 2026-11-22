@@ -1734,6 +1734,121 @@ def _tool_sources(env: dict[str, str]) -> list[str]:
     ]
 
 
+def test_launch_leases_only_own_todo_not_quoted_ones(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """Handles quoted from a gripe in the brief are not leased (gr753257)."""
+    env = _fills(_with_tools(env, tmp_path, plans={}))
+    _bare_origin(env)
+    _launch(
+        env,
+        tmp_path,
+        "g7",
+        "todo: td111\nQuoted gripe names td222, td333 and td444 in passing.\n",
+    )
+    adds = [c for c in _tool_calls(env) if c[0] == "tag"]
+    assert [c[c.index("--id") + 1] for c in adds] == ["111"]
+    claims = _claims(env)
+    assert "todo:td111" in claims and "td222" not in claims
+
+
+def test_launch_unmarked_brief_leases_nothing(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A handle only quoted in the brief is not claim intent (td754724)."""
+    env = _fills(_with_tools(env, tmp_path, plans={}))
+    _bare_origin(env)
+    _launch(env, tmp_path, "g8", "Do td555 now; see also td666.\n")
+    assert [c for c in _tool_calls(env) if c[0] == "tag"] == []
+
+
+def test_launch_marked_line_leases_only_first_handle(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """``todo: td111 (blocked by td222)`` leases td111 alone (td754724)."""
+    env = _fills(_with_tools(env, tmp_path, plans={}))
+    _bare_origin(env)
+    _launch(env, tmp_path, "g11", "todo: td111 (blocked by td222)\n")
+    adds = [c for c in _tool_calls(env) if c[0] == "tag"]
+    assert [c[c.index("--id") + 1] for c in adds] == ["111"]
+
+
+def test_launch_todo_flag_without_handle_leases_nothing(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A ``--todo`` that parses to no td/me handle (e.g. a bare-digits
+    typo) warns and never re-scans the brief (review td754724)."""
+    env = _fills(_with_tools(env, tmp_path, plans={}))
+    _bare_origin(env)
+    _windows(env, {})
+    brief = tmp_path / "g9.brief"
+    brief.write_text("Do td222 now.\n", encoding="utf-8")
+    proc = _run(
+        env,
+        "launch",
+        "g9",
+        "--brief",
+        str(brief),
+        "--tier",
+        "qland",
+        "--todo",
+        "754723",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "no td/me handle" in proc.stderr
+    assert [c for c in _tool_calls(env) if c[0] == "tag"] == []
+    assert "todo:td" not in _claims(env)
+
+
+def test_launch_todo_flag_rejects_embedded_handles(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """``--todo 'td111 (blocked by td222)'`` is not one handle: it warns
+    and is ignored whole — neither embedded handle is leased — while a
+    valid sibling flag still leases (review td754724)."""
+    env = _fills(_with_tools(env, tmp_path, plans={}))
+    _bare_origin(env)
+    _windows(env, {})
+    brief = tmp_path / "g12.brief"
+    brief.write_text("Do the work.\n", encoding="utf-8")
+    proc = _run(
+        env,
+        "launch",
+        "g12",
+        "--brief",
+        str(brief),
+        "--tier",
+        "qland",
+        "--todo",
+        "td111 (blocked by td222)",
+        "--todo",
+        "td333",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--todo expects one td/me handle" in proc.stderr
+    adds = [c for c in _tool_calls(env) if c[0] == "tag"]
+    assert [c[c.index("--id") + 1] for c in adds] == ["333"]
+    claims = _claims(env)
+    assert "todo:td333" in claims and "td111" not in claims and "td222" not in claims
+
+
+def test_launch_marked_line_without_handle_leases_nothing(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A ``todo:``/``claim:`` line that names no handle warns and never
+    re-scans the brief (review td754724)."""
+    env = _fills(_with_tools(env, tmp_path, plans={}))
+    _bare_origin(env)
+    _windows(env, {})
+    brief = tmp_path / "g10.brief"
+    brief.write_text("todo: see the board\nDo td333 now.\n", encoding="utf-8")
+    proc = _run(env, "launch", "g10", "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode == 0, proc.stderr
+    assert "no td/me handle" in proc.stderr
+    assert [c for c in _tool_calls(env) if c[0] == "tag"] == []
+    assert "todo:td" not in _claims(env)
+
+
 def test_launch_claims_graph_spec_plan_todo(
     env: dict[str, str], tmp_path: Path
 ) -> None:
@@ -1741,7 +1856,12 @@ def test_launch_claims_graph_spec_plan_todo(
     through the prod CLI — no repo file is touched (gr696034)."""
     env = _fills(_with_tools(env, tmp_path, plans={"me568172": [456]}))
     _bare_origin(env)
-    _launch(env, tmp_path, "g1", "Build the routing cache layer of me568172.\n")
+    _launch(
+        env,
+        tmp_path,
+        "g1",
+        "todo: me568172\nBuild the routing cache layer of me568172.\n",
+    )
     calls = _tool_calls(env)
     assert calls[0][:2] == ["get", "--kind"]
     assert calls[0][calls[0].index("--id") + 1] == "me568172"
@@ -1777,7 +1897,7 @@ def test_launch_claims_td_handle_directly(env: dict[str, str], tmp_path: Path) -
     lookup."""
     env = _fills(_with_tools(env, tmp_path))
     _bare_origin(env)
-    _launch(env, tmp_path, "g2", "Do the work item td789 now.\n")
+    _launch(env, tmp_path, "g2", "todo: td789\nDo the work item td789 now.\n")
     calls = _tool_calls(env)
     assert len(calls) == 1 and calls[0][0] == "tag"
     assert calls[0][calls[0].index("--id") + 1] == "789"
@@ -1796,7 +1916,19 @@ def test_launch_skips_unresolvable_or_refused_graph_claims(
     brief.write_text(
         "Build me568172 and also the unrelated me999999.\n", encoding="utf-8"
     )
-    proc = _run(env, "launch", "g3", "--brief", str(brief), "--tier", "qland")
+    proc = _run(
+        env,
+        "launch",
+        "g3",
+        "--brief",
+        str(brief),
+        "--tier",
+        "qland",
+        "--todo",
+        "me568172",
+        "--todo",
+        "me999999",
+    )
     assert proc.returncode == 0, proc.stderr
     assert "me999999 has no plan-of todo" in proc.stderr
     assert "td456 claim refused" in proc.stderr
@@ -1811,7 +1943,7 @@ def test_close_releases_graph_spec_claim(env: dict[str, str], tmp_path: Path) ->
     """close drops the plan todo lease recorded in the ledger."""
     env = _fills(_with_tools(env, tmp_path, plans={"me568172": [456]}))
     _bare_origin(env)
-    _launch(env, tmp_path, "g4", "Build me568172.\n")
+    _launch(env, tmp_path, "g4", "todo: me568172\nBuild me568172.\n")
     assert "\tclaim\tg4\ttodo:td456" in _claims(env)
     _windows(env, {"claude-g4": IDLE})
     proc = _run(env, "close", "g4")
