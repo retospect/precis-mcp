@@ -1018,6 +1018,37 @@ def test_select_dropped_and_over_cap_warn_on_stderr(
 # ── the refit script ─────────────────────────────────────────────────
 
 
+def test_refit_write_regenerates_both_shard_tables(
+    staged: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copyfile(REPO / "scripts" / "shard-weights", scripts / "shard-weights")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_ci_shards.py").touch()
+    (tests / "test_posix_only_guards.py").touch()
+    junit = tmp_path / "junit.xml"
+    shutil.copyfile(REPO / "tests" / "fixtures" / "junit-shard-a.xml", junit)
+    monkeypatch.setattr(staged.refit, "ROOT", tmp_path)
+    monkeypatch.setattr(staged.refit, "red_runs", lambda _since: [])
+    monkeypatch.setitem(staged.refit._GF, "contract_files", lambda _root: set())
+
+    assert (
+        staged.refit.main(
+            ["--junit", str(tmp_path), "--weights", str(tmp_path), "--write"]
+        )
+        == 0
+    )
+    tables = json.loads((tests / "shard_weights.json").read_text(encoding="utf-8"))[
+        "tables"
+    ]
+    assert tables == {
+        count: {"tests/test_ci_shards.py": 0, "tests/test_posix_only_guards.py": 1}
+        for count in ("10", "2")
+    }
+
+
 def test_failed_re_matches_mid_line_failed_and_error(staged: Any) -> None:
     """gh --log-failed prefixes ``job<TAB>step<TAB>ts  `` — the ids sit
     mid-line; a postgres ``ERROR: relation`` must not count."""

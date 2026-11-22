@@ -52,6 +52,10 @@ def _plan() -> ModuleType:
 
 _PLAN = _plan()
 COUNTS = (_PLAN.SHARDS,)
+#: check.yml's `test-other` macOS legs run `--shard K/2` — not a gate
+#: count, but its pins table ships in shard_weights.json all the same
+#: (gr647529: without one the split was crc32 luck).
+PINNED_COUNTS = (*COUNTS, 2)
 
 
 def test_shard_count_is_fixed_10() -> None:
@@ -555,8 +559,6 @@ def test_shard_weights_regenerates_from_junit(tmp_path: Path) -> None:
             str(REPO / "scripts" / "shard-weights"),
             "--out",
             str(out),
-            "--ns",
-            "2",
             *[str(f) for f in fixtures],
         ],
         cwd=REPO,
@@ -565,6 +567,7 @@ def test_shard_weights_regenerates_from_junit(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     data = json.loads(out.read_text(encoding="utf-8"))
+    assert set(data["tables"]) == {str(count) for count in PINNED_COUNTS}
     assert data["tables"]["2"] == {
         "tests/test_ci_shards.py": 0,
         "tests/test_posix_only_guards.py": 1,
@@ -599,7 +602,7 @@ def test_job_budget_fits_the_cap() -> None:
 def test_pinned_weights_cover_every_shard_count() -> None:
     from tests.conftest import _SHARD_PINS
 
-    assert set(_SHARD_PINS) == set(COUNTS), (
+    assert set(_SHARD_PINS) == set(PINNED_COUNTS), (
         "regenerate tests/shard_weights.json (scripts/shard-weights)"
     )
     for n, pins in _SHARD_PINS.items():

@@ -666,7 +666,8 @@ def pytest_addoption(
 
 def _load_shard_pins() -> dict[int, dict[str, int]]:
     """``{n: {test file: 0-based shard}}`` from tests/shard_weights.json, the
-    time-balanced file pins, one table per shard count the gate can run
+    time-balanced file pins, one table per shard count CI runs — the
+    gate's 10 and the macOS `test-other` legs' 2
     (scripts/shard-weights regenerates it; scripts/ci-shard-plan picks
     the count). Missing file → no pins."""
     path = Path(__file__).parent / "shard_weights.json"

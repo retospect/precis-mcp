@@ -11,10 +11,9 @@ runs; the shard partition is by file (tests/conftest.py::shard_index), so a
 file's total is what a shard pays — module fixtures included.
 
 Files are then pinned to shards greedy longest-processing-time-first, one
-table per count in NS (the gate's fixed 10; ``--ns`` overrides for a
-measurement run at another width — GATE_SHARD_COUNTS in
-scripts/lib/last_gated_main_sha.py is deliberately NOT the source: its
-extra counts exist to recognise historical check-runs, not to pin).
+table per count in NS (the gate's fixed 10 plus the ``test-other`` macOS
+legs' 2). The weights estimate the load on the runners that produced the
+JUnit inputs. Use ``--ns`` to override the counts for a measurement run.
 EVERY measured file is pinned; a file with no
 measurement (new, or deselected in the run like the ``nightly`` cluster)
 keeps hashing to crc32, so the partition stays exact. Predicted per-shard
@@ -36,7 +35,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests" / "shard_weights.json"
-NS = (10,)  # scripts/ci-shard-plan's fixed SHARDS
+NS = (10, 2)  # ci-shard-plan's fixed SHARDS + test-other's macOS shard count
 
 
 def nodeid(classname: str, name: str) -> str | None:
@@ -98,6 +97,30 @@ def pack(times: dict[str, float], n: int) -> tuple[dict[str, int], list[float]]:
     return dict(sorted(pinned.items())), load
 
 
+def build_payload(
+    times: dict[str, float], source: str, counts: tuple[int, ...] = NS
+) -> dict:
+    """Build the same pin tables for standalone regeneration and gate refits."""
+    tables: dict[str, dict[str, int]] = {}
+    for n in counts:
+        pinned, load = pack(times, n)
+        tables[str(n)] = pinned
+        mean = sum(load) / n
+        print(
+            f"n={n}: predicted shard seconds {[round(x, 1) for x in load]} "
+            f"(mean {mean:.1f})",
+            file=sys.stderr,
+        )
+    return {
+        "tables": tables,
+        "seconds": {p: round(t, 1) for p, t in sorted(times.items())},
+        "generated_from": {
+            "run": source,
+            "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    }
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("inputs", nargs="+", help="junit.xml files or run directories")
@@ -106,34 +129,17 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--ns",
         default=",".join(str(n) for n in NS),
-        help="comma-separated shard counts (default: GATE_SHARD_COUNTS)",
+        help="comma-separated shard counts (default: %(default)s)",
     )
     args = ap.parse_args(argv[1:])
     times = file_seconds(runs(args.inputs))
     if not times:
         print("no testcases resolved to repo files — weights not written", file=sys.stderr)
         return 1
-    ns = [int(x) for x in args.ns.split(",") if x]
-    tables: dict[str, dict[str, int]] = {}
-    for n in ns:
-        pinned, load = pack(times, n)
-        tables[str(n)] = pinned
-        mean = sum(load) / n
-        print(
-            f"n={n}: predicted shard seconds {[round(x, 1) for x in load]} "
-            f"(mean {mean:.1f}, max/mean {max(load) / mean:.4f})",
-            file=sys.stderr,
-        )
-    payload = {
-        "tables": tables,
-        "seconds": {p: round(t, 1) for p, t in sorted(times.items())},
-        "generated_from": {
-            "run": args.run_id or ",".join(args.inputs),
-            "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        },
-    }
-    args.out.write_text(json.dumps(payload, indent=0) + "\n", encoding="utf-8")
-    print(f"wrote {args.out} ({sum(len(t) for t in tables.values())} files pinned)", file=sys.stderr)
+    counts = tuple(int(x) for x in args.ns.split(",") if x)
+    payload = build_payload(times, args.run_id or ",".join(args.inputs), counts)
+    args.out.write_text(json.dumps(payload, indent=4) + "\n", encoding="utf-8")
+    print(f"wrote {args.out}", file=sys.stderr)
     return 0
 
 

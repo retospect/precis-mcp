@@ -279,20 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         grouped = sw["runs"]([str(args.weights)])
         times = sw["file_seconds"](grouped)
         if times:
-            pinned, load = sw["pack"](times, 10)
-            tables = {"10": pinned}
-            print(
-                f"weights n=10: predicted {[round(x,1) for x in load]}",
-                file=sys.stderr,
-            )
-            payload = {
-                "tables": tables,
-                "seconds": {p: round(t, 1) for p, t in sorted(times.items())},
-                "generated_from": {
-                    "run": args.run_id or str(args.weights),
-                    "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                },
-            }
+            payload = sw["build_payload"](times, args.run_id or str(args.weights))
             if args.write:
                 # indent=4 matches the committed table's style — a churn
                 # diff on 9k lines hides the real change.

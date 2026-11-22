@@ -243,7 +243,13 @@ never runs them. macOS splits the complete suite
 across two shards per Python version (td568389): the unsharded run expired
 at 67% after 72 minutes of tests plus 13 minutes of setup. The job cap is
 180 minutes: shard 1 finished in 49–86 minutes and shard 2 was cancelled at
-the old 90-minute cap on 17 legs between 2026-11-08 and 11-18. The full shape is 28 jobs; one gate's blocking leg
+the old 90-minute cap on 17 legs between 2026-11-08 and 11-18. In run
+44322386479, the nano board still occupied one of three workers when the
+cap hit. The long-board cases now run in their own nightly job. The 2-way
+split uses `tests/shard_weights.json`'s `"2"` table, initially estimated
+from the existing Linux timing snapshot. Use the `macos-diagnostics-*`
+artifacts to measure the split on macOS (gr647529).
+The full shape is 28 jobs; one gate's blocking leg
 beside it (12) fills the 40 slots exactly, and two concurrent gates
 with both soaks live fit at 34. Named test output, durations, JUnit and hang-stack
 artifacts expose failures and the slow tail.
