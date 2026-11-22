@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -31,8 +32,15 @@ import numpy as np
 
 from precis._result_budget import body_bytes
 from precis.cad import catalog
-from precis.cad.bulk import expr_aabb, expr_aabb_disjoint
+from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
+from precis.cad.cspace import (
+    AABBProbeLimit,
+    SweepLimit,
+    collision_windows,
+    has_sampled_field,
+    motion_bounds,
+)
 from precis.cad.dsl import FIELD_ALIAS, RELIEF_ALIAS, DslError, format_spec
 from precis.cad.dsl import parse as parse_shape
 from precis.cad.export import (
@@ -45,6 +53,7 @@ from precis.cad.export import (
     to_openscad,
 )
 from precis.cad.fit import component_gap as mesh_clearance
+from precis.cad.graph import Design
 from precis.cad.printability import (
     BuildCandidate,
     PrintFinding,
@@ -57,7 +66,7 @@ from precis.cad.probe import (
     probe_ray,
     probe_section_z,
 )
-from precis.cad.relate import CONTACT_TOL_REL, translational_dof
+from precis.cad.relate import CONTACT_TOL_REL, _governing_length, translational_dof
 from precis.cad.relate import _clearance as sdf_clearance
 from precis.cad.relate import connectivity as cad_connectivity
 from precis.cad.scene import (
@@ -77,7 +86,7 @@ from precis.cad.scene import (
     resolve_weld_group,
     welds_of,
 )
-from precis.cad.vec import Vec3, vec3
+from precis.cad.vec import Transform, Vec3, vec3
 from precis.cad_resolve import design_resolver
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
@@ -268,8 +277,18 @@ def _pitch_arg(args: dict[str, Any]) -> float | None:
     return parse_quantity(raw, "length", arg_name="args.pitch")
 
 
-#: view='sweep' samples per joint (args.n overrides, clamped here).
-_SWEEP_N_DEFAULT, _SWEEP_N_MIN, _SWEEP_N_MAX = 9, 3, 25
+#: view='sweep' exact gap-call budget per pair (excluding cheap AABB probes).
+_SWEEP_N_DEFAULT, _SWEEP_N_MAX = 512, 1000000
+
+
+def _sweep_quantity(value: float, dimension: Dimension) -> str:
+    """Keep the caller's display unit without rounding away a window edge."""
+    display = format_quantity(value, dimension)
+    match = re.fullmatch(r"[+-]?[\d.]+(?:e[+-]?\d+)?(.*)", display)
+    assert match is not None
+    suffix = match.group(1)
+    unit = parse_quantity("1" + suffix, dimension)
+    return f"{value / unit:.12g}{suffix}"
 
 
 _AXES = ("x", "y", "z")
@@ -567,6 +586,7 @@ class CadHandler(Handler):
         *,
         own_slug: str | None = None,
         state: dict[str, Any] | None = None,
+        joint_frames: dict[str, Transform] | None = None,
     ) -> SceneSpec:
         """The spec every probe / export / warning runs on: sub-assemblies
         inlined as real bodies, joints posed at ``state`` (default neutral).
@@ -585,7 +605,9 @@ class CadHandler(Handler):
                         next="a design cannot 'use' its own slug",
                     )
         try:
-            return expand_instances(spec, self._resolve, state)
+            return expand_instances(
+                spec, self._resolve, state, joint_frames=joint_frames
+            )
         except SceneError as exc:
             raise BadInput(
                 f"cad design error: {exc}",
@@ -1624,32 +1646,22 @@ class CadHandler(Handler):
 
     # ── sweep ────────────────────────────────────────────────────────
     def _render_sweep(self, spec: SceneSpec, args: dict[str, Any]) -> Response:
-        """``view='sweep'`` — "does anything hit anything, anywhere in the
-        travel?" Each joint is swept across its ``limits:`` (others held at
-        neutral), sampling ``args.n`` states; at each state the design is
-        rebuilt and its contact graph checked for interference between the
-        moving body and everything it doesn't move with. Also reports the
-        swept envelope (accumulated bbox) per moving component."""
+        """Collision windows for each independent joint and its coupled chain."""
         try:
-            joints: list[tuple[str, str, tuple[float, float] | None]] = [
+            joints = [
                 (m.instance, m.kind, m.limits)
                 for m in mates_of(spec)
                 if m.kind != "fixed"
             ] + [(j.component, j.kind, j.limits) for j in joints_of(spec)]
             driven = {c.driven: c for c in couples_of(spec)}
-        except SceneError as exc:  # pragma: no cover - malformed stored meta
+        except SceneError as exc:
             raise BadInput(
-                f"cad design error: {exc}",
-                next="file a gripe — put validates design meta on write; "
-                "stored meta failing to re-parse is a server-side break",
+                str(exc), next="check joint, mate and coupling declarations, then retry"
             ) from exc
         if not joints:
             raise BadInput(
                 "this design declares no joints — nothing to sweep",
-                next=(
-                    "declare 'joint <inst>.<port> to <anchor> revolute "
-                    "limits:-30deg..30deg' (or the component form) first"
-                ),
+                next="declare a joint with limits: first; see precis-cad-assembly-help",
             )
         only = args.get("joint")
         if only is not None:
@@ -1658,171 +1670,196 @@ class CadHandler(Handler):
             if not joints:
                 raise BadInput(
                     f"no joint {only!r} in this design — joints: {names}",
-                    options=[str(n) for n in names],
-                    next="omit args.joint to sweep every joint at once",
+                    options=names,
+                    next="omit args.joint to sweep every independent joint",
                 )
-        n = max(_SWEEP_N_MIN, min(_SWEEP_N_MAX, int(args.get("n", _SWEEP_N_DEFAULT))))
+        raw_n = args.get("n", _SWEEP_N_DEFAULT)
+        try:
+            n = int(raw_n)
+            if (
+                isinstance(raw_n, bool)
+                or float(raw_n) != n
+                or not 1 <= n <= _SWEEP_N_MAX
+            ):
+                raise ValueError
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise BadInput(
+                "args.n must be an integer cap on exact gap calls per pair",
+                next=f"use args.n between 1 and {_SWEEP_N_MAX}; default {_SWEEP_N_DEFAULT}",
+            ) from exc
 
-        couples = couples_of(spec)
-        # hit samples per (joint, a, b): (sample index, state) — indices keep
-        # non-contiguous collision windows separable in the report.
-        hit_states: dict[tuple[str, str, str], list[tuple[int, float]]] = {}
+        rows: list[dict[str, str]] = []
+        contacts: list[str] = []
         envelope: dict[str, list[float]] = {}
+        joint_envelopes: list[tuple[str, np.ndarray, np.ndarray]] = []
         swept: list[str] = []
         skipped: list[str] = []
         for name, kind, limits in joints:
             if name in driven:
-                c = driven[name]
-                skipped.append(f"{name} (driven {c.ratio:g}× by {c.drive})")
+                coupling = driven[name]
+                skipped.append(
+                    f"{name} (driven {coupling.ratio:g}× by {coupling.drive})"
+                )
                 continue
             if limits is None:
                 if kind == "prismatic":
                     raise BadInput(
-                        f"joint {name!r} is prismatic with no limits: — an "
-                        "unbounded slide has no sweepable range",
+                        f"joint {name!r} is prismatic with no limits:",
                         next="add limits:0mm..50mm to the joint line",
                     )
-                limits = (-math.pi, math.pi)  # a full turn, either way
+                limits = (-math.pi, math.pi)
             lo, hi = limits
-            rng = (
-                f"{format_quantity(lo, 'length')}..{format_quantity(hi, 'length')}"
-                if kind == "prismatic"
-                else f"{format_quantity(lo, 'angle')}..{format_quantity(hi, 'angle')}"
+            dimension: Dimension = "length" if kind == "prismatic" else "angle"
+            swept.append(
+                f"{name} {kind} {format_quantity(lo, dimension)}..{format_quantity(hi, dimension)}"
             )
-            swept.append(f"{name} {kind} {rng}")
-            # Sweeping this joint also moves everything gear/belt-coupled
-            # downstream of it — each such joint's subtree is its own rigid
-            # group (two coupled arms move *differently*, so they can hit
-            # each other, not just the static parts).
-            chain = {name}
-            grew = True
-            while grew:
-                grew = False
-                for cp in couples:
-                    if cp.drive in chain and cp.driven not in chain:
-                        chain.add(cp.driven)
-                        grew = True
-            for i in range(n):
-                q = lo + (hi - lo) * i / (n - 1)
+            frames: dict[str, Transform] = {}
+
+            def build(
+                q: float,
+                name: str = name,
+                kind: str = kind,
+                frames: dict[str, Transform] = frames,
+            ) -> Design:
                 state: dict[str, Any] = {name: [q, 0.0] if kind == "cylindrical" else q}
-                built = self._expand(spec, state=state)
-                design = build_design(built)
-                group: dict[str, str] = {}
-                for jn in chain:
-                    for comp in built.components:
-                        if comp == jn or comp.startswith(jn + "."):
-                            group[comp] = jn
-                # Score only pairs the hit filter below could ever report
-                # (gr561417): a pair inside one rigid group moves as one
-                # body and two unmoving parts contact identically at every
-                # state, and a pair whose material AABBs are disjoint
-                # cannot interfere — the full connectivity graph paid a
-                # clearance minimisation for all three cases.
-                comps = list(design.components)
-                for ia, ca in enumerate(comps):
-                    for cb in comps[ia + 1 :]:
-                        ga, gb = group.get(ca), group.get(cb)
-                        if ga == gb:
-                            continue
-                        if expr_aabb_disjoint(
-                            design, design.components[ca], design.components[cb]
-                        ):
-                            continue
-                        cl = sdf_clearance(design, ca, cb)
-                        if cl.interfering:
-                            a, b = sorted((ca, cb))
-                            hit_states.setdefault((name, a, b), []).append((i, q))
-                for comp in group:
-                    expr = design.components.get(comp)
-                    if expr is None:  # pragma: no cover - defensive
-                        continue
-                    lo3, hi3 = expr_aabb(design, expr)
-                    cur = envelope.setdefault(
-                        comp,
-                        [
-                            float(lo3[0]),
-                            float(lo3[1]),
-                            float(lo3[2]),
-                            float(hi3[0]),
-                            float(hi3[1]),
-                            float(hi3[2]),
-                        ],
+                return build_design(
+                    self._expand(spec, state=state, joint_frames=frames)
+                )
+
+            try:
+                initial = build(lo)
+                bounds = motion_bounds(spec, initial, frames, name, hi - lo)
+            except ValueError as exc:
+                raise BadInput(
+                    f"sweep {name}: {exc}",
+                    next="use bounded finite geometry and finite joint limits, then retry the sweep",
+                ) from exc
+            moving_boxes = []
+            for comp, bound in bounds.items():
+                if not bound.group:
+                    continue
+                low, high = bound.envelope
+                moving_boxes.append((low, high))
+                cur = envelope.setdefault(comp, [*map(float, low), *map(float, high)])
+                for k in range(3):
+                    cur[k] = min(cur[k], float(low[k]))
+                    cur[3 + k] = max(cur[3 + k], float(high[k]))
+            if moving_boxes:
+                joint_envelopes.append(
+                    (
+                        name,
+                        np.min([b[0] for b in moving_boxes], axis=0),
+                        np.max([b[1] for b in moving_boxes], axis=0),
                     )
-                    for k in range(3):
-                        cur[k] = min(cur[k], float(lo3[k]))
-                        cur[3 + k] = max(cur[3 + k], float(hi3[k]))
+                )
+            comps = list(initial.components)
+            field_components = {c for c in comps if has_sampled_field(initial, c)}
+            for ia, a in enumerate(comps):
+                for b in comps[ia + 1 :]:
+                    if bounds[a].group == bounds[b].group:
+                        continue
+                    if a in field_components or b in field_components:
+                        raise Unsupported(
+                            f"sweep {name}: {a} × {b} includes a sampled field; "
+                            "its gap gradient has no conservative advancement bound",
+                            next="use analytic primitives for the swept design, or "
+                            "inspect explicit states with view='clearance' "
+                            "(samples do not certify the whole travel)",
+                        )
+                    resolution = CONTACT_TOL_REL * _governing_length(
+                        initial, [initial.components[a], initial.components[b]]
+                    )
+                    try:
+                        result = collision_windows(
+                            build,
+                            (a, b),
+                            limits,
+                            # _clearance is twice min(max(SDF_a, SDF_b));
+                            # twice the summed point speeds is a safe bound.
+                            speed=2.0 * (bounds[a].speed + bounds[b].speed),
+                            resolution=resolution,
+                            max_evaluations=n,
+                            gap=lambda design, ca, cb: (
+                                sdf_clearance(design, ca, cb).gap
+                            ),
+                        )
+                    except SweepLimit as exc:
+                        raise BadInput(
+                            f"sweep {name}: {exc}; range not covered — no partial verdict",
+                            next=(
+                                "narrow the joint limits: to stay within the fixed AABB probe cap"
+                                if isinstance(exc, AABBProbeLimit)
+                                else f"increase args.n (up to {_SWEEP_N_MAX}) or narrow the joint limits:"
+                            ),
+                        ) from exc
+                    except ValueError as exc:
+                        raise BadInput(
+                            f"sweep {name}: {exc}",
+                            next="check finite geometry and joint limits, then retry the sweep",
+                        ) from exc
+                    pair = " ↔ ".join(sorted((a, b)))
+                    if result.contact_throughout:
+                        qualification = (
+                            "sampled, not certified; " if result.sampled_contact else ""
+                        )
+                        contacts.append(
+                            f"{name}: {pair}: in contact throughout — joint partners ({qualification}resolution {format_quantity(resolution, 'length')}; {result.evaluations} evaluations)"
+                        )
+                    if result.windows:
+                        rows.append(
+                            {
+                                "joint": name,
+                                "pair": pair,
+                                "collides_at": ", ".join(
+                                    f"{_sweep_quantity(start, dimension)}..{_sweep_quantity(end, dimension)}"
+                                    for start, end in result.windows
+                                ),
+                                "edge_tolerance": format_quantity(
+                                    result.tolerance, dimension
+                                ),
+                                "gap_calls": f"{result.exact_evaluations} exact / {result.evaluations} total",
+                            }
+                        )
 
         verdict = (
-            "no interference anywhere in the travel ✓"
-            if not hit_states
-            else f"⚠ {len(hit_states)} colliding pair(s) in the travel"
+            f"⚠ {len(rows)} colliding pair(s) in the travel"
+            if rows
+            else "no interference resolved in the travel"
         )
         lines = [
-            f"# sweep — {len(swept)} joint(s), {n} states each: {verdict}",
+            f"# sweep — {len(swept)} joint(s), up to {n} exact gap calls/pair: {verdict}",
             "swept: " + "; ".join(swept),
         ]
         if skipped:
             lines.append("coupled (swept via their drive): " + "; ".join(skipped))
-
-        kind_by_name = {name: kind for name, kind, _ in joints}
-
-        def _runs(samples: list[tuple[int, float]], dimension: Dimension) -> str:
-            """Contiguous collision windows ('-170°..-130°, 90°..130°'), not
-            one min..max band — an arm that clips near 90° and again near
-            270° is clear in between, and the table must say so."""
-
-            def fmt(q: float) -> str:
-                return format_quantity(q, dimension)
-
-            out: list[str] = []
-            start = prev_i = samples[0][0]
-            start_q = prev_q = samples[0][1]
-            for i, q in samples[1:]:
-                if i != prev_i + 1:
-                    out.append(
-                        fmt(start_q)
-                        if start == prev_i
-                        else f"{fmt(start_q)}..{fmt(prev_q)}"
-                    )
-                    start, start_q = i, q
-                prev_i, prev_q = i, q
-            out.append(
-                fmt(start_q) if start == prev_i else f"{fmt(start_q)}..{fmt(prev_q)}"
-            )
-            return ", ".join(out)
-
-        rows = [
-            {
-                "joint": jn,
-                "pair": f"{a} ↔ {b}",
-                "collides_at": _runs(
-                    qs, "length" if kind_by_name.get(jn) == "prismatic" else "angle"
-                ),
-                "states": f"{len(qs)}/{n}",
-            }
-            for (jn, a, b), qs in sorted(hit_states.items())
-        ]
         body = "\n".join(lines) + "\n"
         if rows:
             body += render_agent_table(
-                rows, schema=["joint", "pair", "collides_at", "states"]
+                rows,
+                schema=["joint", "pair", "collides_at", "edge_tolerance", "gap_calls"],
             )
+        if contacts:
+            body += "\n" + "\n".join(contacts) + "\n"
         env_rows = [
             {
                 "moving_part": comp,
-                "x": f"{format_quantity(v[0], 'length')}.."
-                f"{format_quantity(v[3], 'length')}",
-                "y": f"{format_quantity(v[1], 'length')}.."
-                f"{format_quantity(v[4], 'length')}",
-                "z": f"{format_quantity(v[2], 'length')}.."
-                f"{format_quantity(v[5], 'length')}",
+                "x": f"{format_quantity(v[0], 'length')}..{format_quantity(v[3], 'length')}",
+                "y": f"{format_quantity(v[1], 'length')}..{format_quantity(v[4], 'length')}",
+                "z": f"{format_quantity(v[2], 'length')}..{format_quantity(v[5], 'length')}",
             }
             for comp, v in sorted(envelope.items())
         ]
         if env_rows:
-            body += "\nswept envelope:\n" + render_agent_table(
+            body += "\nswept envelope (conservative AABB):\n" + render_agent_table(
                 env_rows, schema=["moving_part", "x", "y", "z"]
             )
+        body += "\nOne joint at a time; other independent joints held neutral. Windows use the signed-gap oracle, which can over-read. Persistent contact is sampled, not certified. Cylindrical joints sweep angle with slide=0.\n"
+        if any(
+            np.all(ahi >= blo) and np.all(bhi >= alo)
+            for i, (_, alo, ahi) in enumerate(joint_envelopes)
+            for _, blo, bhi in joint_envelopes[i + 1 :]
+        ):
+            body += "Independent swept envelopes overlap: simultaneous multi-joint collisions are not checked.\n"
         return Response(body=body)
 
     # ── delete ───────────────────────────────────────────────────────

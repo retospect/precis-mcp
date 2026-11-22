@@ -536,7 +536,7 @@ def test_out_of_limits_state_is_bad_input(cad):
 def test_sweep_reports_collision_and_envelope(cad):
     cad.put(id="motor_j", text=_MOTOR_J)
     cad.put(id="crank_rig", text=_CRANK_RIG)
-    resp = cad.get(id="crank_rig", view="sweep", args={"n": 9})
+    resp = cad.get(id="crank_rig", view="sweep", args={"n": 512})
     # the bar sweeps a circle of r 0..30 at z 0..6; the post pillar sits at
     # y=28 in that band, so somewhere near 90° they collide
     assert "colliding pair" in resp.body
@@ -610,14 +610,63 @@ gear a1 to a2 ratio:1
 
 @pytest.mark.timeout(30)  # ~0.4 s coverage+serial post-gr561417 (was CI worst
 # 179s pre-sweep speedup); headroom for runner variance (gr503084)
-def test_sweep_sees_gear_driven_collisions(cad):
+def test_sweep_sees_gear_driven_collisions(cad, monkeypatch):
     # finding-1 regression: sweeping the DRIVER must also score and
     # envelope the driven joint's parts — bar1 (r20) clears the post at
     # y=28, but the geared bar2 (r30) hits it near 90°.
     cad.put(id="geared_rig", text=_GEARED_RIG)
-    resp = cad.get(id="geared_rig", view="sweep", args={"n": 9})
+    import precis.handlers.cad as handler
+    from precis.cad.bulk import expr_aabb, expr_aabb_disjoint
+    from precis.cad.scene import build_design, expand_instances
+
+    # Compare the verdict with the former nine-state sampler. Only its
+    # overlapping-AABB pairs enter the exact-gap counter (one on this rig).
+    spec = parse_source(_GEARED_RIG)
+    sampled_hits = set()
+    sampled_calls = 0
+    for i in range(9):
+        q = -math.pi + i * math.pi / 4
+        design = build_design(expand_instances(spec, state={"a1": q}))
+        for a, b in (("a1", "post"), ("a2", "post"), ("a1", "a2")):
+            if expr_aabb_disjoint(design, design.components[a], design.components[b]):
+                continue
+            sampled_calls += 1
+            if handler.sdf_clearance(design, a, b).interfering:
+                sampled_hits.add((a, b))
+    assert sampled_calls == 1
+    assert sampled_hits == {("a2", "post")}
+    original = handler.sdf_clearance
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(handler, "sdf_clearance", counted)
+    # n caps exact gap calls, including bisection, not sampling density.
+    # Cheap broad-phase probes have their own fixed cap.
+    resp = cad.get(id="geared_rig", view="sweep", args={"n": 512})
+    assert 1 <= calls <= 96  # measured 69; bound includes numerical variance
     assert "colliding pair" in resp.body
+    assert "1 colliding pair(s)" in resp.body
     assert "a2" in resp.body and "post" in resp.body
+    row = next(line for line in resp.body.splitlines() if "a2 ↔ post" in line)
+    edges = [float(v.removesuffix("°")) for v in row.split("\t")[2].split("..")]
+    # First contact is the bar's long side against the nearest post corner.
+    # Derive both that corner and the bar half-width from the authored boxes.
+    neutral = build_design(expand_instances(spec, state={"a1": 0.0}))
+    post_low, post_high = expr_aabb(neutral, neutral.components["post"])
+    arm_low, arm_high = expr_aabb(neutral, neutral.components["a2"])
+    corner_x, corner_y = float(post_high[0]), float(post_low[1])
+    half_width = float(arm_high[1] - arm_low[1]) / 2
+    entry = math.degrees(
+        math.acos(half_width / math.hypot(corner_y, corner_x))
+        - math.atan2(corner_x, corner_y)
+    )
+    assert len(edges) == 2
+    assert edges[0] < 90 < edges[1]
+    assert edges == pytest.approx([entry, 180 - entry], abs=2)
     # the driven arm's swept envelope is reported too
     env = resp.body.split("swept envelope", 1)[1]
     assert "a2" in env
@@ -640,13 +689,79 @@ joint arm prismatic at:piv limits:-2mm..2mm
 
 def test_sweep_keeps_collision_hidden_in_a_blend_bulge(cad):
     cad.put(id="blend_rig", text=_BLEND_RIG)
-    resp = cad.get(id="blend_rig", view="sweep", args={"n": 5})
+    resp = cad.get(id="blend_rig", view="sweep", args={"n": 512})
     assert "colliding pair" in resp.body
     assert "arm" in resp.body and "base" in resp.body
-    # q = -2, -1 (inside the boxes) and 0 (bulge only, AABB-disjoint from
-    # the unpadded bound) all hit; q = 1, 2 are clear — "3/5" pins the
-    # q=0 state being scored (an unpadded bound would report "2/5").
-    assert "3/5" in resp.body
+    # Tighten the old "3/5 samples" assertion into actual window bounds:
+    # q=-2,-1,0 hit, including the bulge; q=1,2 must be outside.
+    from precis.utils.units import parse_quantity
+
+    row = next(line for line in resp.body.splitlines() if "arm ↔ base" in line)
+    start, end = [parse_quantity(v, "length") for v in row.split("\t")[2].split("..")]
+    assert start == pytest.approx(-0.002)
+    assert 0.0004 < end < 0.001
+
+
+def test_sweep_finds_obstacle_between_the_old_45_degree_samples(cad):
+    # Rotate the 6 mm post to 22.5 degrees: its complete collision window
+    # lies between the old 0 and 45 degree sample angles.
+    theta = math.radians(22.5)
+    source = _GEARED_RIG.replace(
+        "@0mm,28mm,0mm",
+        f"@{28 * math.cos(theta)}mm,{28 * math.sin(theta)}mm,0mm rot:0deg,0deg,-67.5deg",
+    )
+    cad.put(id="between_samples", text=source)
+    body = cad.get(id="between_samples", view="sweep").body
+    row = next(line for line in body.splitlines() if "a2 ↔ post" in line)
+    edges = [float(v.removesuffix("°")) for v in row.split("\t")[2].split("..")]
+    assert len(edges) == 2
+    assert 0 < edges[0] < 22.5 < edges[1] < 45
+
+
+@pytest.mark.parametrize("travel", [3, 180])
+def test_sweep_hinge_partners_contact_without_collision(cad, monkeypatch, travel):
+    import precis.handlers.cad as handler
+
+    cad.put(
+        id="contact_hinge",
+        text=f"""
+component sleeve
+outer add cyl:r8mmh10mm
+bore cut cyl:r5mmh12mm @0mm,0mm,-1mm
+component pin
+shaft add cyl:r5mmh10mm
+port axis of:pin
+joint pin revolute at:axis limits:-{travel}deg..{travel}deg
+""",
+    )
+    original = handler.sdf_clearance
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(handler, "sdf_clearance", counted)
+    body = cad.get(id="contact_hinge", view="sweep", args={"n": 256}).body
+    assert "in contact throughout — joint partners" in body
+    assert "sampled, not certified" in body
+    assert "colliding pair" not in body
+    assert 1 < calls <= 64
+
+
+def test_sweep_budget_exhaustion_is_an_explicit_refusal(cad):
+    cad.put(id="limited_rig", text=_GEARED_RIG)
+    with pytest.raises(BadInput, match="range not covered — no partial verdict") as exc:
+        cad.get(id="limited_rig", view="sweep", args={"n": 9})
+    assert "increase args.n" in str(exc.value.next)
+
+
+@pytest.mark.parametrize("budget", [0, -1, 2.5, True, "nan", 1000001])
+def test_sweep_rejects_invalid_budget(cad, budget):
+    cad.put(id="invalid_budget", text=_GEARED_RIG)
+    with pytest.raises(BadInput, match="integer cap on exact gap calls"):
+        cad.get(id="invalid_budget", view="sweep", args={"n": budget})
 
 
 _HINGE_P = """

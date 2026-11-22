@@ -2370,6 +2370,7 @@ def _solve_mates(
     resolve: Resolver | None,
     states: dict[str, JointState] | None = None,
     cworld: dict[str, Transform] | None = None,
+    joint_frames: dict[str, Transform] | None = None,
 ) -> SceneSpec:
     """Rewrite each mated/jointed instance node's ``loc``/``rot``.
 
@@ -2569,6 +2570,8 @@ def _solve_mates(
         if mate.flip:
             xf = xf.compose(rotation(math.pi, 0.0, 0.0))
             host_iface = host_iface.compose(rotation(math.pi, 0.0, 0.0))
+        if joint_frames is not None and mate.kind != "fixed":
+            joint_frames[inst] = xf
         if mate.kind != "fixed":
             xf = xf.compose(_joint_xform(mate.kind, states[inst], mate.pitch))
         xf = xf.compose(subject_port.frame().inverse())
@@ -2679,6 +2682,8 @@ def expand_instances(
     spec: SceneSpec,
     resolve: Resolver | None = None,
     state: dict[str, Any] | None = None,
+    *,
+    joint_frames: dict[str, Transform] | None = None,
 ) -> SceneSpec:
     """Inline every ``use <slug> as <name>`` into a flat, self-contained spec.
 
@@ -2696,6 +2701,10 @@ def expand_instances(
     ``state=`` addresses only *this* design's joints; an instanced
     sub-design's own joints pose at their defaults.
 
+    ``joint_frames``, when supplied, receives the world pivot frames
+    before each joint's own motion. The sweep uses these same solved
+    frames for speed bounds; it must not reconstruct mate axes separately.
+
     A spec with no instances, mates, or joints is returned **unchanged**
     (identity fast path), so plain designs are byte-identical through here.
     """
@@ -2710,7 +2719,11 @@ def expand_instances(
         return spec
     states = _resolve_states(spec, state)
     cworld = _component_joint_worlds(spec, states)
-    spec = _solve_mates(spec, resolve, states, cworld)
+    if joint_frames is not None:
+        own_ports = {p.name: p for p in ports_of(spec)}
+        for joint in joints_of(spec):
+            joint_frames[joint.component] = own_ports[joint.port].frame()
+    spec = _solve_mates(spec, resolve, states, cworld, joint_frames)
     spec = _pose_component_joints(spec, cworld)
 
     if has_instances(spec):

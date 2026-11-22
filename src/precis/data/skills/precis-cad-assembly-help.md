@@ -155,10 +155,8 @@ get(kind="cad", id="crane", view="sweep")
   conflicting value is an error.
 - A mate/joint anchored on a port `of:` a jointed component **follows**
   that component — a motor mated onto an articulated arm swings with it.
-- `view='sweep'` sweeps each joint across its `limits:` (others held
-  neutral, `args.n` samples, default 9), reporting every colliding pair
-  with the state range where it interferes, plus the swept envelope per
-  moving body. `args={'joint': 'jib'}` sweeps one joint only.
+- `view='sweep'`: see [[precis-cad-help]] §Probe it for collision windows,
+  call caps, and certification limits.
 
 ### Print-in-place joints — the `printed-` type convention
 

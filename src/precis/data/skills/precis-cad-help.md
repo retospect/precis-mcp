@@ -328,6 +328,26 @@ plus a `⚠ STALE analyses` warning when a pinned analysis has drifted —
 
 ## Probe it — `get(view=…, args={…})`
 
+**Joint travel:** `get(kind='cad', id='rig', view='sweep')` reports
+collision windows in the joint's unit, edge tolerance, exact/total
+gap-call counts, and conservative swept envelopes across `limits:`.
+`args={'joint': 'arm'}` selects one drive with gear/belt followers;
+independent joints stay neutral. Cylindrical joints sweep angle at slide=0.
+
+`args.n` caps **exact gap calls per pair**, including edge refinement
+(default 512, range 1..1000000); AABB-only probes have a separate 20000 cap.
+Either cap refuses without a partial verdict: narrow `limits:`, or raise
+`n` for exact calls. Initially touching pairs get 64 evenly spaced probes
+including endpoints: persistent contact is **sampled, not certified**;
+otherwise adaptive walking resumes. “Never skips” is relative to the
+`_clearance` reading, which can over-read the true gap; sampled contact
+and sub-resolution excursions are excluded. Unbounded geometry refuses:
+bound it. `field:` leaves refuse: use analytic primitives or explicit
+`view='clearance'` samples, which cannot certify travel. Overlapping
+independent envelopes warn that simultaneous multi-joint motion needs a
+separate check. Joint grammar and examples:
+[[precis-cad-assembly-help]].
+
 All probes are full-DOF (any origin / direction / orientation). Pass the
 geometry in `args=`. `args.component` scopes to one part (default: the
 whole design). **Positions carry an explicit unit per component** (`p`,

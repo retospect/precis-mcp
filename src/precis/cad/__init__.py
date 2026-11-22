@@ -54,6 +54,55 @@ exists. A ``field:`` leaf is resolved the
 same way — an injected :data:`~precis.cad.dsl.FieldLoader` riding on
 :attr:`~precis.cad.scene.SceneSpec.field_loader` (``Store.cad_load``
 binds the store's; the grid is never inlined in the DSL).
+
+One-dimensional motion checks live in :mod:`precis.cad.cspace`.
+``collision_windows`` walks a signed-gap oracle with conservative
+advancement: disjoint material AABBs supply a cheap gap lower bound;
+only overlapping boxes call the narrow phase. The sweep handler keeps
+the existing ``relate._clearance`` oracle (including its CSG/seed-grid
+limitations), so these are resolution-qualified windows, not a new
+exact geometric referee. "Never skips" holds relative to the
+``_clearance`` reading, which can over-read the true gap; it excludes
+sampled contact and sub-resolution excursions. The min-max SDF's factor two is included in
+the gap-change bound. Cross-group pairs containing a ``Field`` (including
+cutters) refuse: sign-correct grids can have arbitrary gradients, and
+even an exact grid's trilinear interpolant need not be 1-Lipschitz. They
+need a gradient-aware oracle before conservative advancement is valid.
+The motivation is collisions between the old nine
+sample states and useful entry/exit coordinates, not lower cost: the
+gear-rig regression allows at most 96 exact calls (the former sampler
+needed one after gr561417's broad phase).
+
+``scene.expand_instances(joint_frames=...)`` exposes the solver's own
+world pivot frames. ``cspace.motion_bounds`` uses AABB-corner radii,
+absolute cumulative coupling ratios and both bodies' speeds; fixed
+mates and neutral child joints follow their moving anchors. Enclosing
+a child's entire relative orbit before measuring its parent's radius
+keeps that bound valid for nested articulation. Screw pitch contributes
+axial speed. Swept envelopes enclose continuous corner orbits, including
+angular extrema; they are not sample-only boxes. Independent joints are
+swept separately; cylindrical sweeps hold slide at zero. Overlapping
+independent envelopes trigger a simultaneous-motion limitation notice.
+
+The resolution is ``CONTACT_TOL_REL`` times the pair's governing length
+at the first state, converted to joint coordinates by the gap-speed
+bound. It sets both the advancement floor and sign-change bisection
+tolerance. Negative runs require a witness deeper than resolution;
+pairs initially in contact get 64 evenly spaced probes including endpoints.
+If all stay in band, report joint partners as sampled, not certified:
+interference between probes can be missed. Otherwise reuse readings in
+the adaptive walk. This bounds a full-turn hinge at 64 exact calls instead
+of thousands of resolution steps. Sub-resolution excursions are unresolved.
+Unbounded components refuse with a next step because their motion radius
+and swept envelope cannot be certified. ``args.n`` is a strict per-pair
+exact gap-call budget, including exact calls during bisection
+(default 512, about 55 seconds at 108 ms/exact call; maximum 1000000),
+not the former sample count. Cheap AABB-only probes have a separate fixed
+cap of 20000: clear rigs do not spend the expensive-call budget, but the
+walk stays bounded. Exhaustion of either cap refuses with a next step and no
+partial verdict. Window coordinates retain precision beyond the usual
+three-significant-figure display so the stated edge tolerance survives
+rendering. Clearance, connectivity and DOF probes keep their own paths.
 """
 
 from __future__ import annotations

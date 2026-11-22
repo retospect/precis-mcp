@@ -9529,7 +9529,7 @@ def _pose_sweep_combo(
 def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
     """``view='sweep'`` — "does anything collide in ANY declared state?"
     (blocktree-library-build-plan.md §Slice 2's "Done when": "swept across
-    all states"). cad's ``view='sweep'`` samples a joint across its
+    all states"). cad's ``view='sweep'`` finds collision windows across a joint's
     continuous ``limits:``; se's discrete-domain mirror enumerates the
     cross product of every state-carrying block's declared states instead
     — same question, discrete domain, same report shape (per-combination
