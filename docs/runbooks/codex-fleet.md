@@ -72,9 +72,11 @@ A Claude session in window 0 has no Codex thread and does not register. While
 `STATE/registrations/coordinator.json` is absent, `send coordinator` writes
 one `STATE/inbox/<UTC time>-<id>.json` per message (schema version 1, name,
 message, sender worktree, `sent_at`) and prints its path; names sort by send
-time. The coordinator watches `STATE/inbox/*.json` (only that suffix: a write
-in progress is a temporary file without it) and moves or deletes what it has
-read. A registered window 0 keeps native queue delivery and its refusals.
+time. The coordinator watches the `<UTC time>-<id>` shape (glob
+`STATE/inbox/????????T????????????Z-????????.json`, not `*.json`: worker
+`.md`/`.json` notes share the directory, and a write in progress is a
+temporary file without the suffix) and moves or deletes what it has read.
+A registered window 0 keeps native queue delivery and its refusals.
 
 `STATE/workers/NAME.json` records schema version 1, roster fields, role, session,
 window/pane IDs, branch and worktree. `STATE/registrations/NAME.json` records
