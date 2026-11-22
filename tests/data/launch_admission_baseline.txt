@@ -130,6 +130,7 @@ src/precis/workers/heartbeat.py::_temp_from_macos_smc 1
 src/precis/workers/heartbeat.py::collect_worker_units 2
 src/precis/workers/job_types/_slice_adapters.py::devin_auth_status 1
 src/precis/workers/job_types/_slice_ws.py::seed_env 1
+src/precis/workers/job_types/_slice_ws.py::sync_build_env 1
 src/precis/workers/job_types/boundary_probe.py::_container_present 1
 src/precis/workers/job_types/boundary_probe.py::_rm_container 1
 src/precis/workers/job_types/boundary_probe.py::_rm_tagged 2

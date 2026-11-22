@@ -788,6 +788,54 @@ def seed_env(src_root: Path, tree: Path, *, notes: list[str] | None = None) -> N
         notes.append(f"seeded the .venv of {tree.name} from {src_root}")
 
 
+def sync_build_env(src_root: Path, tree: Path) -> str:
+    """Prepare the paper and web extras used by the precis builder gates.
+
+    Use the host checkout's lockfile and the shared uv cache. Installing
+    into the clone from the host checkout keeps the slice's build code in
+    the session. Keep extras already present in the seed.
+    Return a job note even if the dependency sync fails.
+    """
+    venv = tree.absolute() / ".venv"
+    tracked = _git(["ls-files", "--", ".venv"], tree)
+    if tracked.returncode != 0:
+        return f"could not check the .venv of {tree.name} ({_err(tracked)})"
+    if tracked.stdout or venv.is_symlink():
+        return f"skipped syncing the .venv of {tree.name}: checkout supplies .venv"
+
+    env = _rs()._git_env()
+    env["PATH"] = _rs().path_with_user_uv(env.get("PATH"))
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv)
+    args = [
+        "uv",
+        "sync",
+        "--frozen",
+        "--inexact",
+        "--no-install-project",
+        "--extra",
+        "paper",
+        "--extra",
+        "web",
+    ]
+    try:
+        env["UV_CACHE_DIR"] = str(_rs().uv_cache_dir())
+        proc = subprocess.run(
+            args,
+            cwd=str(src_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        proc = _failed(args, exc)
+    if proc.returncode != 0:
+        return f"syncing the .venv of {tree.name} with paper/web extras failed ({_err(proc)})"
+    return f"synced the .venv of {tree.name} with paper/web extras"
+
+
 @dataclass(frozen=True)
 class Pushed:
     """What :func:`finalize` found and did."""

@@ -831,6 +831,53 @@ def test_cut_seeds_the_environment_from_the_named_checkout(
     assert any("no .venv" in n for n in notes)
 
 
+def test_sync_build_env_installs_the_test_extras(
+    rig: _Rig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The build sync works without a seed and reports failures as notes."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    env_log = tmp_path / "uv-env.txt"
+    uv_log = tmp_path / "uv-argv.txt"
+    uv = fakebin / "uv"
+    uv.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{uv_log}"\n'
+        f'printf "%s\\n" "$PWD" "$UV_PROJECT_ENVIRONMENT" > "{env_log}"\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    tree = rig.tree()
+    ws.cut(rig.hub, tree, base="main", branch="slice/5", seed_from=tmp_path / "none")
+    assert not uv_log.exists()
+    assert "synced" in ws.sync_build_env(rig.root, tree)
+    assert uv_log.read_text(encoding="utf-8").split() == [
+        "sync",
+        "--frozen",
+        "--inexact",
+        "--no-install-project",
+        "--extra",
+        "paper",
+        "--extra",
+        "web",
+    ]
+
+    assert env_log.read_text(encoding="utf-8").splitlines() == [
+        str(rig.root.resolve()),
+        str(tree / ".venv"),
+    ]
+
+    uv.write_text(f'#!/bin/sh\ntouch "{uv_log}"\nexit 1\n', encoding="utf-8")
+    assert "failed" in ws.sync_build_env(rig.root, tree)
+
+    (tree / ".venv/bin").mkdir(parents=True)
+    _commit(tree, ".venv/bin/python", "slice-controlled interpreter")
+    uv_log.unlink()
+    assert "checkout supplies .venv" in ws.sync_build_env(rig.root, tree)
+    assert not uv_log.exists()
+
+
 def test_a_lock_in_one_clone_blocks_no_other_work(rig: _Rig) -> None:
     """The point of a clone per job: a git process killed in A leaves its
     index.lock in A's own .git. B must commit, and finalize on A must clear it

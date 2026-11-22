@@ -335,6 +335,11 @@ def _fake_workspaces(
                 (tree / rel).write_text(text, encoding="utf-8")
         return start.sha if start is not None else calls["cut_sha"]
 
+    def sync_build_env(root: Path, tree: Path) -> str:
+        assert tree.is_dir()
+        ws.append(("sync_build_env", (root, tree)))
+        return "synced build environment"
+
     def finalize(
         tree: Path,
         todo: int,
@@ -428,6 +433,7 @@ def _fake_workspaces(
         ("import_legacy", import_legacy),
         ("delete_builds", delete_builds),
         ("cut", cut),
+        ("sync_build_env", sync_build_env),
         ("finalize", finalize),
         ("drop", drop),
         ("sweep", sweep),
@@ -1643,6 +1649,7 @@ def test_analyst_brief_posts_one_analysis_and_mints_nothing(
         meta={"generate": {"role": "analyst", "from": "pr:9"}},
     )
     _submit(store, seams)
+    assert "sync_build_env" not in dict(seams["ws"])
     tree = _job_tree(tmp_path, 42)
     brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
     tail = brief[brief.index("## When done") :]
@@ -2394,6 +2401,7 @@ def test_submit_launches_and_claims(
         # GitHub before the switch is looked for once
         "import_legacy",
         "cut",
+        "sync_build_env",
     ]
     detail = dict(ws)
     assert detail["sync_hub"]["base"] == "main"
@@ -2401,6 +2409,7 @@ def test_submit_launches_and_claims(
     assert detail["sync_hub"]["private"] is False
     assert detail["resolve_start"] == {"todo": 42, "recorded": None, "floor": None}
     assert detail["cut"]["tree"] == tree
+    assert detail["sync_build_env"] == (tmp_path, tree)
     assert detail["cut"]["base"] == "main"
     assert detail["cut"]["branch"] == "slice/42"
     assert detail["cut"]["start"] is None and detail["cut"]["seed_from"] == tmp_path
@@ -14830,6 +14839,7 @@ def test_reviewer_of_a_second_repo_launches_in_a_clone_at_the_landed_sha(
     assert handle["review"] == {"head": full}
     # gr741695: a clone of the repository's own hub, cut at that commit
     ws = dict(seams["ws"])
+    assert "sync_build_env" not in ws
     assert ws["ensure_hub"] == root
     assert ws["cut"]["tree"] == tree and ws["cut"]["base"] == "main"
     assert ws["cut"]["start"] == _slice_ws.Start(sha=full, ref=None)

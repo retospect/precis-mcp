@@ -85,7 +85,10 @@ every pushed commit because even credentials deleted at the tip become
 fetchable when history is pushed. A folder is dropped once the hub holds
 its head; the next attempt, the review and the land start from the hub on
 the host named by ``meta.build_ref.host`` (a start-over answer deletes the
-task's attempts).
+task's attempts). After checkout and any rebase, precis code builders
+sync the host checkout's locked paper and web extras into their clone's
+venv for the mypy and pytest gates. Repository review, PR analysis and
+land use the shared clone setup, which only copies the host venv.
 
 ``run_slice`` delegates CLI argv, stdin and output parsing to
 ``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and

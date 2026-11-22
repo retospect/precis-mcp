@@ -8117,6 +8117,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         brief = render_brief(**brief_kwargs, read_mcp=read_scope)
         if not repo_review:
             _install_acceptance_tests(tree, artifacts, deny)
+        if profile is None and not is_generator and task_class == _DEFAULT_TASK_CLASS:
+            note = _slice_ws.sync_build_env(root, tree)
+            ctx.append_chunk("job_event", f"run_slice: td{todo_id} {note}")
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
