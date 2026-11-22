@@ -327,6 +327,138 @@ def delete_slot_holds_for_holder(
     return int(row[0]) if row is not None else 0
 
 
+# ── Job-owned holds (gr762788) ────────────────────────────────────────────
+#
+# A detached launch made on a job's behalf (``admission.spawn(job_id=…)``)
+# stamps ``holder = 'job:<job_id>'``, then ``'job:<job_id>:<pgid>'`` once
+# the child exists. The worker-exit hook matches ``host:pid`` and the
+# hold's NULL identity columns, so it can never refund these; the job's
+# poll path and the settled-job sweep below own them instead.
+
+#: One job's holds: the bare launch-time holder or any ``:<pgid>`` child.
+_JOB_HOLDS_WHERE = "(holder = %(bare)s OR holder LIKE %(child)s)"
+
+
+def _job_holder_params(job_id: int) -> dict[str, str]:
+    bare = f"job:{int(job_id)}"
+    return {"bare": bare, "child": f"{bare}:%"}
+
+
+def retag_slot_holds(conn: Connection, hold_ids: list[int], holder: str) -> int:
+    """Rewrite ``holder`` on the listed holds (a spawn naming its child's
+    pgid once Popen returned). Returns the rows still live and retagged."""
+    ids = [int(h) for h in hold_ids]
+    if not ids:
+        return 0
+    rows = conn.execute(
+        "UPDATE resource_slot_holds SET holder = %s WHERE id = ANY(%s) RETURNING id",
+        (holder, ids),
+    ).fetchall()
+    return len(rows)
+
+
+def job_slot_holds(conn: Connection, job_id: int, host: str) -> list[tuple[int, str]]:
+    """``(hold_id, holder)`` of every live hold ``job_id``'s launches own
+    on ``host``."""
+    rows = conn.execute(
+        "SELECT id, holder FROM resource_slot_holds "
+        f"WHERE host = %(host)s AND {_JOB_HOLDS_WHERE} ORDER BY id",
+        {"host": host, **_job_holder_params(job_id)},
+    ).fetchall()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+
+# Same delete + grouped capped-refund discipline as `_DELETE_HOLDS_FOR_HOLDER`,
+# keyed on the job's holder strings, optionally narrowed to `ids` (NULL = all).
+_DELETE_JOB_HOLDS = (
+    "WITH doomed AS ("
+    "  DELETE FROM resource_slot_holds "
+    f"  WHERE {_JOB_HOLDS_WHERE} "
+    "    AND (%(ids)s::bigint[] IS NULL OR id = ANY(%(ids)s::bigint[])) "
+    "  RETURNING host, resource, units"
+    "), grouped AS ("
+    "  SELECT host, resource, SUM(units) AS units_sum FROM doomed "
+    "  GROUP BY host, resource"
+    "), refunded AS ("
+    "  UPDATE resource_slots s SET free = LEAST(s.capacity, s.free + g.units_sum) "
+    "  FROM grouped g "
+    "  WHERE s.host = g.host AND s.resource = g.resource "
+    "  RETURNING s.host"
+    ") "
+    "SELECT (SELECT COUNT(*) FROM doomed), (SELECT COUNT(*) FROM refunded)"
+)
+
+
+def delete_job_slot_holds(
+    conn: Connection, job_id: int, hold_ids: list[int] | None = None
+) -> int:
+    """Close ``job_id``'s holds (all of them, or only ``hold_ids``) and
+    refund their units, capped at capacity. A hold another path already
+    closed (babysit release, TTL sweep) has no row left to match, so a
+    repeated or racing release never double-refunds. Returns holds closed."""
+    ids = None if hold_ids is None else [int(h) for h in hold_ids]
+    if ids is not None and not ids:
+        return 0
+    row = conn.execute(
+        _DELETE_JOB_HOLDS, {"ids": ids, **_job_holder_params(job_id)}
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+#: A ``job:`` holder's job id; the CASE keeps the cast off any holder the
+#: regex rejects (WHERE clauses carry no evaluation order).
+_HOLD_JOB_ID = (
+    "CASE WHEN h.holder ~ '^job:[0-9]{1,18}(:[0-9]+)?$' "
+    "THEN split_part(h.holder, ':', 2)::bigint END"
+)
+
+# The settled-job sweep: one statement deleting every `job:` hold whose job
+# is gone (no live kind='job' row) or has carried a terminal STATUS for
+# longer than the grace (the tag's `created_at`), then the same grouped
+# capped refund as the TTL sweep.
+_RECLAIM_SETTLED_JOB_HOLDS = (
+    "WITH doomed AS ("
+    "  DELETE FROM resource_slot_holds h "
+    "  WHERE h.holder LIKE 'job:%%' "
+    "    AND NOT EXISTS ("
+    "      SELECT 1 FROM refs r "
+    f"      WHERE r.ref_id = {_HOLD_JOB_ID} "
+    "        AND r.kind = 'job' AND r.retired_at IS NULL "
+    "        AND NOT EXISTS ("
+    "          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+    "          WHERE rt.ref_id = r.ref_id "
+    "            AND t.namespace = 'STATUS' AND t.value = ANY(%s)"
+    "            AND rt.created_at < now() - make_interval(secs => %s)"
+    "        )"
+    "    ) "
+    "  RETURNING h.host, h.resource, h.units"
+    "), grouped AS ("
+    "  SELECT host, resource, SUM(units) AS units_sum FROM doomed "
+    "  GROUP BY host, resource"
+    "), refunded AS ("
+    "  UPDATE resource_slots s SET free = LEAST(s.capacity, s.free + g.units_sum) "
+    "  FROM grouped g "
+    "  WHERE s.host = g.host AND s.resource = g.resource "
+    "  RETURNING s.host"
+    ") "
+    "SELECT (SELECT COUNT(*) FROM doomed), (SELECT COUNT(*) FROM refunded)"
+)
+
+
+def reclaim_settled_job_holds(
+    conn: Connection, terminal_statuses: list[str], grace_s: float
+) -> int:
+    """Delete every ``job:`` hold whose job is gone, or has been terminal
+    (a ``STATUS`` in ``terminal_statuses``) for over ``grace_s`` seconds,
+    refunding its units — the refund of a terminal job's footprint once
+    its child has had the orphan reaper's grace to exit. Returns holds
+    deleted."""
+    row = conn.execute(
+        _RECLAIM_SETTLED_JOB_HOLDS, (list(terminal_statuses), float(grace_s))
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 class ResourceSlotsMixin:
     """Mixin: assumes the concrete Store provides ``self.pool``."""
 
@@ -536,10 +668,14 @@ class ResourceSlotsMixin:
 __all__ = [
     "ResourceSlot",
     "ResourceSlotsMixin",
+    "delete_job_slot_holds",
     "delete_slot_hold",
     "delete_slot_holds_for_holder",
     "insert_slot_hold",
+    "job_slot_holds",
     "reclaim_expired_slot_holds",
+    "reclaim_settled_job_holds",
     "release_resource_slots",
     "reserve_resource_slots",
+    "retag_slot_holds",
 ]

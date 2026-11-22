@@ -1530,6 +1530,7 @@ def _launch(
     work_class: str = "slice",
     pid_file: Path | None = None,
     contain: _slice_limits.Containment | None = None,
+    job_id: int | None = None,
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
@@ -1553,6 +1554,9 @@ def _launch(
     the holds for the child's whole life. A full host raises
     :class:`admission.Refused` — the caller retries attempt-free, never
     treating capacity as the build's failure (review td702053).
+    ``job_id`` (the job the launch serves) makes the job, not this worker,
+    own the holds: its poll renews and releases them, so a worker crash
+    or restart neither leaks nor refunds them (gr762788).
     """
     preexec: Callable[[], object] | None = mem_limit_preexec()
     if contain is not None:
@@ -1573,6 +1577,7 @@ def _launch(
             pid_file=pid_file,
             pass_fds=pass_fds,
             preexec_fn=preexec,
+            job_id=job_id,
         )
     full_env = {
         **env,
@@ -8226,6 +8231,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             store=store,
             work_class="slice",
             contain=contain,
+            job_id=ctx.ref_id,
         )
         _record_launched_process(handle, pid, attempt_dir)
     except _HostRefusal as exc:
@@ -8928,6 +8934,7 @@ def _devin_acceptance_tests(
                 env=_acceptance_env(handle),
                 store=ctx.store,
                 work_class="acceptance",
+                job_id=ctx.ref_id,
             )
         except admission.Refused:
             # The host is full: stay pending — the next poll pass retries

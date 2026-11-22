@@ -602,6 +602,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             env=_child_env(),
             store=ctx.store,
             work_class="boundary_probe",
+            job_id=ctx.ref_id,
         )
     except admission.Refused as exc:
         # Host capacity, not a boundary verdict: fail soft so the

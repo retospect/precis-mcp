@@ -3751,6 +3751,19 @@ def test_launch_goes_through_spawn(
     assert kwargs["log_path"] == log
     assert kwargs["exit_file"] == exit_file
     assert kwargs["env"] == {"PATH": "/usr/bin"}
+    assert kwargs["job_id"] is None
+    # A job's launch hands its holds to the job, not this worker (gr762788).
+    run_slice._launch(
+        ["devin", "-p"],
+        cwd=tmp_path,
+        stdin=None,
+        log=log,
+        exit_file=exit_file,
+        env={"PATH": "/usr/bin"},
+        store=store,
+        job_id=77,
+    )
+    assert calls[-1][1]["job_id"] == 77
 
 
 def test_launch_without_pooled_store_keeps_the_legacy_path(

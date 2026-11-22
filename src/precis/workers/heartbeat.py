@@ -1068,6 +1068,18 @@ def _report_resource_slots(store: object, host: str) -> str:
             )
     except Exception:
         log.warning("heartbeat: expired-hold reclaim failed", exc_info=True)
+    # Job-owned spawn holds (gr762788) of a job gone, or terminal for longer
+    # than the orphan reaper's grace — whether the poll saw the transition
+    # or not (sweeper, cancel, a direct STATUS tag): one statement,
+    # fleet-wide. Separate try, same reasoning as above.
+    try:
+        from precis.workers.admission import reclaim_settled_job_holds
+
+        n = reclaim_settled_job_holds(store)
+        if n:
+            log.warning("heartbeat: reclaimed %d settled job's spawn hold(s)", n)
+    except Exception:
+        log.warning("heartbeat: settled-job hold reclaim failed", exc_info=True)
     # Advertise this host's local llama-swap models as served_by cards + llm: slots
     # so the router routes to them directly (self-gating: no local server ⇒ no-op).
     # Best-effort + separate try so a catalog blip never fails the heartbeat.

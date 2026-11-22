@@ -1105,13 +1105,15 @@ def _launch(
     store: Any = None,
     work_class: str = "land",
     pid_file: Path | None = None,
+    job_id: int | None = None,
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
     ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
     flock rides one so it is held for the ship's whole life (gr650484).
     With a real ``store`` the launch is admitted first
     (:func:`admission.spawn`); a full host raises
-    :class:`admission.Refused`. Returns the pid (= the process group)."""
+    :class:`admission.Refused`. ``job_id`` hands the holds to that job's
+    poll (gr762788). Returns the pid (= the process group)."""
     return _rs._launch(
         argv,
         cwd=cwd,
@@ -1123,6 +1125,7 @@ def _launch(
         store=store,
         work_class=work_class,
         pid_file=pid_file,
+        job_id=job_id,
     )
 
 
@@ -5227,6 +5230,7 @@ def _launch_ship(
                 store=ctx.store,
                 work_class="land",
                 pid_file=attempt_dir / "pid" if attempt_dir is not None else None,
+                job_id=ctx.ref_id,
             )
         except admission.Refused as exc:
             # The host cannot fit the gate right now — the wait shape of
@@ -6021,6 +6025,7 @@ def _launch_verify(
     run_tree: Path,
     argv: list[str] | None = None,
     store: Any = None,
+    job_id: int | None = None,
 ) -> dict[str, Any] | None:
     """Detached ``scripts/test <ids>`` in ``run_tree``, the log and exit
     file under the SLICE tree's ``scratch/`` so they outlive a probe
@@ -6055,6 +6060,7 @@ def _launch_verify(
             },
             store=store,
             work_class="verify",
+            job_id=job_id,
         )
     except admission.Refused:
         # The host is full, not the branch red: the caller defers
@@ -6234,6 +6240,7 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
             phase="main",
             run_tree=main_tree,
             store=ctx.store,
+            job_id=ctx.ref_id,
         )
     except admission.Refused:
         # Capacity, not evidence: drop the throwaway tree and let the
@@ -6512,7 +6519,13 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
     try:
         verify = _launch_verify(
-            tree, ids, phase="deselect", run_tree=tree, argv=argv, store=ctx.store
+            tree,
+            ids,
+            phase="deselect",
+            run_tree=tree,
+            argv=argv,
+            store=ctx.store,
+            job_id=ctx.ref_id,
         )
     except admission.Refused as exc:
         # The finished main probe's throwaway tree goes on every exit
@@ -6754,7 +6767,12 @@ def poll(ctx: Any, handle: Any) -> bool:
         ):
             try:
                 verify = _launch_verify(
-                    tree, ids, phase="alone", run_tree=tree, store=ctx.store
+                    tree,
+                    ids,
+                    phase="alone",
+                    run_tree=tree,
+                    store=ctx.store,
+                    job_id=ctx.ref_id,
                 )
             except admission.Refused as exc:
                 return _defer_admission_refused(ctx, handle, "verify", exc)

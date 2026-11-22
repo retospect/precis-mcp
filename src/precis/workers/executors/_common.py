@@ -106,6 +106,12 @@ CLAIMABLE = (QUEUED, YIELDED)
 # claimable. Waiting statuses are NOT terminal; they're paused.
 TERMINAL = (SUCCEEDED, FAILED, CANCELLED, TIMED_OUT)
 
+#: Seconds a job must have been terminal (its STATUS tag's ``created_at``)
+#: before its detached child counts as orphaned: the ssh_node reaper's
+#: grace, and the same wait before a terminal job's spawn holds are
+#: refunded under a child that may still be exiting (gr762788).
+ORPHAN_REAP_GRACE_S = 120
+
 #: Non-terminal values that mean the job LEFT ``STATUS:running``
 #: (checkpoint yield, park, requeue) — the footprint segment folds
 #: there. ``cancel_requested`` is absent on purpose: the job is still

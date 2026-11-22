@@ -10,6 +10,7 @@ unit bracketed by a TTL ``resource_slot_holds`` lease. ``mem_mb``,
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -1210,3 +1211,433 @@ def test_claude_subprocess_refusal_maps_to_its_error_cls(
             bootstrap_oauth=False,
         )
     assert _holds(store, host) == []
+
+
+# ── job-owned spawn holds (gr762788) ───────────────────────────────────────
+#
+# A launch made for a job is held by ``job:<id>:<pgid>``, not the launching
+# worker's ``host:pid``: the job's poll tends and releases it, so a worker
+# crash neither leaks it to the TTL nor a clean exit refunds it early. A
+# terminal job's possibly-live holds wait out the orphan reaper's grace.
+
+
+def _job(store: Store, status: str = "running") -> int:
+    from precis.store.types import Tag
+
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="held job",
+        meta={"executor": "ssh_node", "job_type": "fake_hold", "params": {}},
+    )
+    store.add_tag(ref.id, Tag.parse_strict(f"STATUS:{status}"), set_by="agent")
+    return int(ref.id)
+
+
+def _age_status(store: Store, rid: int, seconds: float) -> None:
+    """Back-date job ``rid``'s tags: it has been in its status ``seconds``."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - make_interval(secs => %s) "
+            "WHERE ref_id = %s",
+            (float(seconds), rid),
+        )
+        conn.commit()
+
+
+def _grace_s() -> float:
+    from precis.workers.executors._common import ORPHAN_REAP_GRACE_S
+
+    return float(ORPHAN_REAP_GRACE_S)
+
+
+def _job_holds(store: Store, host: str) -> list[tuple[str, int, str]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT resource, units, holder FROM resource_slot_holds "
+            "WHERE host = %s ORDER BY resource, holder",
+            (host,),
+        ).fetchall()
+    return [(str(r), int(u), str(h)) for r, u, h in rows]
+
+
+def _hold_ids(store: Store, host: str) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id FROM resource_slot_holds WHERE host = %s", (host,)
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _ttl_left_s(store: Store, host: str) -> list[float]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT EXTRACT(EPOCH FROM (expires_at - now())) "
+            "FROM resource_slot_holds WHERE host = %s ORDER BY resource",
+            (host,),
+        ).fetchall()
+    return [float(r[0]) for r in rows]
+
+
+def _launch_for_job(
+    store: Store,
+    rid: int,
+    argv: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    babysit: bool,
+) -> int:
+    """Launch ``argv`` through run_slice's real detached launcher for job
+    ``rid``. ``babysit=False`` stands in for a launching worker that died
+    (SIGKILL, OOM): no thread ever renews or releases the holds."""
+    from precis.workers.job_types import run_slice
+
+    if not babysit:
+        monkeypatch.setattr(admission, "_babysit", lambda *a, **k: None)
+    return run_slice._launch(
+        argv,
+        cwd=tmp_path,
+        stdin=None,
+        log=tmp_path / f"job{rid}.log",
+        exit_file=tmp_path / f"job{rid}.exit",
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        store=store,
+        work_class="slice",
+        job_id=rid,
+    )
+
+
+def _group_gone(pgid: int) -> None:
+    """Wait for the child's group to vanish, reaping it as init would for
+    a dead launcher's orphan (a zombie still answers ``killpg(_, 0)``)."""
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            os.waitpid(pgid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"process group {pgid} never exited")
+
+
+def _kill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    _group_gone(pgid)
+
+
+def _poll(
+    store: Store, rid: int, pid: int, monkeypatch: pytest.MonkeyPatch, *, done: bool
+) -> bool:
+    """One ssh_node poll of job ``rid`` — the path that settles its holds.
+    ``done`` makes the fake job_type drive the job terminal."""
+    from precis.workers.executors import ssh_node
+    from precis.workers.job_types import JobTypeSpec
+
+    def poll(ctx: Any, handle: Any) -> bool:
+        if done:
+            ctx.set_status("succeeded")
+        return done
+
+    spec = JobTypeSpec(
+        name="fake_hold",
+        params_schema={"type": "object"},
+        compatible_executors=frozenset({"ssh_node"}),
+        requires=frozenset(),
+        description="fake detached job for hold tests",
+        run=lambda *a, **k: "noop",
+        submit=lambda c, s: None,
+        poll=poll,
+    )
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    meta = {
+        "executor": "ssh_node",
+        "job_type": "fake_hold",
+        "params": {},
+        "compute_handle": {"pid": pid, "pgid": pid},
+    }
+    ctx = ssh_node._build_dispatch_context(store, rid, "held job", meta)
+    return ssh_node._poll_one(ctx)
+
+
+def _seed_job_host(store: Store, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    store.sync_host_resource_slots(host, {"mem_mb": 16384, "cpu_milli": 8000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+
+
+def test_job_spawn_holds_name_the_job_and_its_child(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = "jh1"
+    _seed_job_host(store, monkeypatch, host)
+    rid = _job(store)
+    pid = _launch_for_job(
+        store, rid, ["sleep", "30"], tmp_path, monkeypatch, babysit=True
+    )
+    try:
+        assert _job_holds(store, host) == [
+            ("cpu_milli", 2000, f"job:{rid}:{pid}"),
+            ("mem_mb", 4096, f"job:{rid}:{pid}"),
+        ]
+    finally:
+        _kill_group(pid)
+
+
+def test_dead_launcher_holds_refunded_by_the_terminal_poll(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The launching worker dies (no babysit), the child exits, and the
+    restarted worker's poll drives the job terminal: the footprint is
+    refunded there, not an hour later by the TTL."""
+    host = "jh2"
+    _seed_job_host(store, monkeypatch, host)
+    rid = _job(store)
+    pid = _launch_for_job(store, rid, ["true"], tmp_path, monkeypatch, babysit=False)
+    _group_gone(pid)
+    # Nothing released them: the dead launcher's leak the poll must close.
+    assert [r for r, _u, _h in _job_holds(store, host)] == ["cpu_milli", "mem_mb"]
+    assert _free(store, host) == {"cpu_milli": 6000, "mem_mb": 12288}
+
+    assert _poll(store, rid, pid, monkeypatch, done=True) is True
+
+    assert _job_holds(store, host) == []
+    assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
+
+
+def test_running_job_poll_releases_a_dead_childs_hold(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A job between phases: its first child is gone with its dead
+    launcher, the job still runs. The poll releases that child's hold."""
+    host = "jh3"
+    _seed_job_host(store, monkeypatch, host)
+    rid = _job(store)
+    pid = _launch_for_job(store, rid, ["true"], tmp_path, monkeypatch, babysit=False)
+    _group_gone(pid)
+
+    assert _poll(store, rid, pid, monkeypatch, done=False) is False
+
+    assert _job_holds(store, host) == []
+    assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
+
+
+def test_worker_exit_hook_keeps_a_running_jobs_holds(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A deploy's clean exit closes the worker's own holds but not a
+    detached ship's or slice's: the child still runs, so its footprint
+    stays reserved."""
+    from precis.liveness import reserve_host
+    from precis.store._resource_slots_ops import insert_slot_hold
+    from precis.utils.llm import local_serving
+
+    host = "jh4"
+    _seed_job_host(store, monkeypatch, host)
+    meter.bind_store(store)
+    rid = _job(store)
+    pid = _launch_for_job(
+        store, rid, ["sleep", "30"], tmp_path, monkeypatch, babysit=True
+    )
+    with store.pool.connection() as conn:
+        own = insert_slot_hold(
+            conn, host, "cpu_milli", 1, f"{reserve_host()}:{os.getpid()}", 600.0
+        )
+        conn.commit()
+    try:
+        assert local_serving.release_process_holds() == 1
+        assert own not in _hold_ids(store, host)
+        assert _job_holds(store, host) == [
+            ("cpu_milli", 2000, f"job:{rid}:{pid}"),
+            ("mem_mb", 4096, f"job:{rid}:{pid}"),
+        ]
+    finally:
+        _kill_group(pid)
+
+
+def test_readopting_poll_renews_a_live_childs_hold(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The launcher died with its child still running; the worker that
+    re-adopted the job renews the hold from its poll, so the TTL never
+    refunds a footprint whose child still runs."""
+    host = "jh5"
+    _seed_job_host(store, monkeypatch, host)
+    rid = _job(store)
+    pid = _launch_for_job(
+        store, rid, ["sleep", "30"], tmp_path, monkeypatch, babysit=False
+    )
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE resource_slot_holds "
+                "SET expires_at = now() + interval '5 seconds' WHERE host = %s",
+                (host,),
+            )
+            conn.commit()
+        assert all(left < 10 for left in _ttl_left_s(store, host))
+
+        assert _poll(store, rid, pid, monkeypatch, done=False) is False
+
+        left = _ttl_left_s(store, host)
+        assert len(left) == 2
+        assert all(s > admission.DEFAULT_TTL_S - 60 for s in left), left
+        assert _free(store, host) == {"cpu_milli": 6000, "mem_mb": 12288}
+    finally:
+        _kill_group(pid)
+
+
+def test_terminal_poll_leaves_a_live_childs_hold_to_the_graced_sweep(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The job went terminal while its child may still be exiting: the poll
+    does not refund a group it cannot prove gone. The sweep refunds it only
+    once the job has been terminal past the orphan reaper's grace."""
+    host = "jh8"
+    _seed_job_host(store, monkeypatch, host)
+    rid = _job(store)
+    pid = _launch_for_job(
+        store, rid, ["sleep", "30"], tmp_path, monkeypatch, babysit=False
+    )
+    try:
+        assert _poll(store, rid, pid, monkeypatch, done=True) is True
+        held = {"cpu_milli": 6000, "mem_mb": 12288}
+        assert _free(store, host) == held
+
+        _age_status(store, rid, _grace_s() - 30)
+        assert admission.reclaim_settled_job_holds(store) == 0
+        assert _free(store, host) == held
+
+        _age_status(store, rid, _grace_s() + 30)
+        assert admission.reclaim_settled_job_holds(store) == 2
+        assert _job_holds(store, host) == []
+        assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
+    finally:
+        _kill_group(pid)
+
+
+def test_settled_job_sweep_refunds_graced_terminal_and_gone_jobs(
+    store: Store,
+) -> None:
+    """The heartbeat sweep: holds of a job terminal past the grace and of a
+    job that no longer exists are refunded in one statement; a job terminal
+    inside the grace, a running job and a non-job hold are left alone."""
+    host = "jh6"
+    store.sync_host_resource_slots(host, {"mem_mb": 16384, "cpu_milli": 8000})
+    done = _job(store, status="succeeded")
+    _age_status(store, done, _grace_s() + 30)
+    fresh = _job(store, status="failed")
+    running = _job(store)
+    _age_status(store, running, _grace_s() + 30)
+    gone = running + 100_000
+    fp = Footprint(cpu_milli=1000, mem_mb=1024)
+    for holder in (
+        admission.job_holder(done, 4321),
+        admission.job_holder(fresh, 4323),
+        admission.job_holder(running, 4322),
+        admission.job_holder(gone),
+        "t:not-a-job",
+    ):
+        assert _admit(store, host, fp, holder) is not None
+    assert _free(store, host) == {"cpu_milli": 3000, "mem_mb": 11264}
+
+    assert admission.reclaim_settled_job_holds(store) == 4  # 2 jobs x 2 dims
+
+    assert sorted({h for _r, _u, h in _job_holds(store, host)}) == sorted(
+        [
+            admission.job_holder(fresh, 4323),
+            admission.job_holder(running, 4322),
+            "t:not-a-job",
+        ]
+    )
+    assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 13312}
+    assert admission.reclaim_settled_job_holds(store) == 0
+
+
+def test_job_hold_release_is_idempotent_with_the_babysit(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The poll's release of a gone child's holds, a repeat of it, the
+    graced sweep and the surviving babysit's own release at child exit
+    refund the footprint exactly once (another holder keeps free below
+    capacity, so a double refund would show)."""
+    host = "jh7"
+    _seed_job_host(store, monkeypatch, host)
+    other = _admit(store, host, Footprint(cpu_milli=1000, mem_mb=1024), "t:other")
+    assert other is not None
+    rid = _job(store, status="succeeded")
+    _age_status(store, rid, _grace_s() + 30)
+    child = _FakeChild(pid=4700, timeouts=0)
+    released = threading.Event()
+    real_release = admission._release_quietly
+
+    def spy_release(store_: object, adm: admission.Admission) -> None:
+        try:
+            real_release(store_, adm)
+        finally:
+            released.set()
+
+    monkeypatch.setattr(admission, "_release_quietly", spy_release)
+    monkeypatch.setattr(admission, "_group_alive", lambda pgid: False)
+    admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=2000, mem_mb=4096),
+        "t:ignored",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        popen=lambda *a, **k: child,
+        job_id=rid,
+    )
+    assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 11264}
+
+    assert admission.tend_job_holds(store, rid, renew=False) == (0, 2)
+    assert admission.tend_job_holds(store, rid, renew=False) == (0, 0)
+    assert admission.reclaim_settled_job_holds(store) == 0
+    child.finish.set()
+    assert released.wait(10), "babysit never released at child exit"
+
+    assert _free(store, host) == {"cpu_milli": 7000, "mem_mb": 15360}
+    assert _job_holds(store, host) == [
+        ("cpu_milli", 1000, "t:other"),
+        ("mem_mb", 1024, "t:other"),
+    ]
+
+
+def test_jobless_pooled_spawn_warns_once_naming_the_caller(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A spawn with a pooled store but no job_id keeps the worker's holder;
+    it says so once per call site, naming the site."""
+    host = "jh9"
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    monkeypatch.setattr(admission, "_jobless_warned", set())
+    with caplog.at_level("WARNING", logger="precis.workers.admission"):
+        for n in range(2):
+            child = _FakeChild(pid=4800 + n, timeouts=0)
+            admission.spawn(
+                store,
+                host,
+                Footprint(cpu_milli=1000, mem_mb=2048),
+                "t:jobless",
+                ["echo", "hi"],
+                log_path=tmp_path / "run.log",
+                exit_file=tmp_path / "exit",
+                popen=lambda *a, _c=child, **k: _c,
+            )
+            child.finish.set()
+    warned = [r.getMessage() for r in caplog.records if "no job_id" in r.getMessage()]
+    assert len(warned) == 1, warned
+    site = f"{__name__}.test_jobless_pooled_spawn_warns_once_naming_the_caller:"
+    assert site in warned[0]
+    assert "t:jobless" in warned[0]

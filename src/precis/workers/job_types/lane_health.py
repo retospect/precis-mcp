@@ -608,6 +608,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             env=_probe_child_env(ctx.store, adapters),
             store=ctx.store,
             work_class="lane_health",
+            job_id=ctx.ref_id,
         )
     except admission.Refused as exc:
         # Host capacity, not a lane verdict: fail soft so the scheduler

@@ -122,6 +122,9 @@ from precis.workers.executors._common import (
     claim_executor_jobs,
 )
 from precis.workers.executors._common import (
+    ORPHAN_REAP_GRACE_S as _ORPHAN_REAP_GRACE_S,
+)
+from precis.workers.executors._common import (
     RECLAIM_WHY_READOPT as _RECLAIM_WHY_READOPT,
 )
 from precis.workers.executors._common import (
@@ -253,9 +256,8 @@ _warned_legacy_job_types: set[str] = set()
 #: terminal backlog can't make a tick expensive; drains oldest-first.
 _ORPHAN_REAP_LIMIT = 25
 
-
-# Let a terminal poll finish exiting before considering its handle orphaned.
-_ORPHAN_REAP_GRACE_S = 120
+# ``_ORPHAN_REAP_GRACE_S`` (``_common.ORPHAN_REAP_GRACE_S``) lets a terminal
+# poll finish exiting before its handle counts as orphaned.
 
 
 #: The orphan-lookup statement, lifted out of
@@ -776,6 +778,7 @@ def _watch_in_flight(store: Store, node: str | None) -> tuple[int, int]:
         try:
             ctx = _build_dispatch_context(store, ref_id, title, meta)
             terminal = _cancel_one(ctx)
+            _settle_job_holds(ctx, terminal)
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1
             log.warning(
@@ -1579,7 +1582,26 @@ def _kill_and_terminalize(
     return True
 
 
+def _settle_job_holds(ctx: DispatchContext, terminal: bool) -> None:
+    """The job owns its launches' admission holds, not the worker that
+    launched them (gr762788). Whichever worker polls the job now, a
+    re-adopter included, releases the holds of children provably gone at
+    once; a running job's live ones are renewed. A terminal job's
+    possibly-live holds are not: the heartbeat's
+    :func:`admission.reclaim_settled_job_holds` refunds them once the job
+    has been terminal for the orphan reaper's grace."""
+    admission.tend_job_holds(ctx.store, ctx.ref_id, renew=not terminal)
+
+
 def _poll_one(ctx: DispatchContext) -> bool:
+    """Poll one in-flight detached job (:func:`_poll_step`), then settle
+    its spawn holds on the outcome (:func:`_settle_job_holds`)."""
+    terminal = _poll_step(ctx)
+    _settle_job_holds(ctx, terminal)
+    return terminal
+
+
+def _poll_step(ctx: DispatchContext) -> bool:
     """Poll one in-flight detached job via its job_type's ``poll``.
 
     Returns ``True`` once the plugin has driven the job to a terminal

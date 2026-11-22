@@ -85,6 +85,49 @@ def test_report_resource_slots_no_warning_when_nothing_expired(store, caplog) ->
     assert not any("reclaimed" in m for m in msgs)
 
 
+def test_report_resource_slots_sweeps_settled_job_holds(store, caplog) -> None:
+    """gr762788: the pass refunds the spawn holds of a job terminal past
+    the orphan reaper's grace."""
+    from precis.store._resource_slots_ops import insert_slot_hold
+    from precis.store.types import Tag
+    from precis.workers.admission import job_holder
+    from precis.workers.executors._common import ORPHAN_REAP_GRACE_S
+
+    host = "test-host-6"
+    store.sync_host_resource_slots(host, {"llm:heartbeat-test-3": 2})
+    ref = store.insert_ref(kind="job", slug=None, title="settled job", meta={})
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:succeeded"), set_by="agent")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - make_interval(secs => %s) "
+            "WHERE ref_id = %s",
+            (ORPHAN_REAP_GRACE_S + 30, int(ref.id)),
+        )
+        conn.execute(
+            "UPDATE resource_slots SET free = 1 "
+            "WHERE host = %s AND resource = 'llm:heartbeat-test-3'",
+            (host,),
+        )
+        conn.commit()
+        with conn.transaction():
+            insert_slot_hold(
+                conn,
+                host,
+                "llm:heartbeat-test-3",
+                1,
+                job_holder(int(ref.id), 4321),
+                3600.0,
+            )
+
+    with caplog.at_level("WARNING", logger="precis.workers.heartbeat"):
+        hb._report_resource_slots(store, host)
+
+    free = {s.resource: s.free for s in store.resource_slots_for_host(host)}
+    assert free["llm:heartbeat-test-3"] == 2
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("reclaimed 1 settled job's spawn hold" in m for m in msgs)
+
+
 def test_heartbeat_registered_as_a_system_profile_pass() -> None:
     from precis.workers.registry import SERVICES_BY_NAME
 

@@ -207,8 +207,10 @@ def _launch(
     log_path: Path,
     exit_file: Path,
     store: Any = None,
+    job_id: int | None = None,
 ) -> int:
-    """Start ``argv`` detached (run_slice's launcher, stdin from /dev/null)."""
+    """Start ``argv`` detached (run_slice's launcher, stdin from /dev/null);
+    ``job_id`` hands the holds to that job (gr762788)."""
     return _rs._launch(
         argv,
         cwd=cwd,
@@ -218,6 +220,7 @@ def _launch(
         env=dict(os.environ),
         store=store,
         work_class="dep_check",
+        job_id=job_id,
     )
 
 
@@ -433,7 +436,12 @@ def submit(ctx: Any, spec: Any) -> Any:
         if pr.get("head_sha"):
             argv += ["--head", str(pr["head_sha"])]
         pid = _launch(
-            argv, cwd=root, log_path=log_path, exit_file=exit_file, store=ctx.store
+            argv,
+            cwd=root,
+            log_path=log_path,
+            exit_file=exit_file,
+            store=ctx.store,
+            job_id=ctx.ref_id,
         )
     except admission.Refused as exc:
         # Host capacity, not the PR's failure: the plan tick retries the

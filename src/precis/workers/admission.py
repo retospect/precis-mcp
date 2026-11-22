@@ -39,6 +39,24 @@ same crash-backstop discipline as every other hold. A synchronous
 :func:`hold`'s holder IS the worker, so its holds keep the identity —
 epoch reclaim on restart is correct there.
 
+**A job's spawn holds follow the job (gr762788).** A launch made for a
+job (``spawn(job_id=…)``) is held as :func:`job_holder` —
+``job:<job_id>``, then ``job:<job_id>:<pgid>`` once the child exists —
+never the launching worker's ``host:pid``, so the worker-exit hook
+(``local_serving.release_process_holds``) cannot refund a footprint
+whose child still runs. Whichever worker polls the job on this host
+(the launcher, or the one that re-adopted it after a restart) calls
+:func:`tend_job_holds` each pass: a hold whose child group is gone is
+released at once, a live one renewed while the job runs. A terminal
+job's remaining holds — a child that may still be exiting — wait out
+the orphan reaper's grace (``_common.ORPHAN_REAP_GRACE_S``), then the
+heartbeat's :func:`reclaim_settled_job_holds` refunds them, along with
+holds of jobs terminalized by paths no poll saw or of jobs gone. The
+babysit stays the fast path while the launcher lives; every release
+deletes by row, so whichever lands second finds nothing and refunds
+nothing. A :func:`spawn` with a pooled store but no ``job_id`` warns
+once per caller: its holds stay the worker's.
+
 **Refused vs unheld.** :func:`spawn`/:func:`hold` raise
 :class:`Refused` only when the host publishes capacity rows but cannot
 fit the footprint right now. A process with no usable store (CLI, the
@@ -84,9 +102,10 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +138,25 @@ DEFAULT_TTL_S = 3600.0
 
 #: Slack over a predicted ``wall_s`` before the sweep may reclaim the hold.
 TTL_MARGIN_S = 60.0
+
+#: Holder prefix of a job's spawn holds (gr762788, :func:`job_holder`).
+JOB_HOLDER_PREFIX = "job:"
+
+
+def job_holder(job_id: int, pgid: int | None = None) -> str:
+    """The holder string of ``job_id``'s spawn holds: ``job:<job_id>`` at
+    admission, ``job:<job_id>:<pgid>`` once the child's process group is
+    known — what :func:`tend_job_holds` checks for liveness."""
+    bare = f"{JOB_HOLDER_PREFIX}{int(job_id)}"
+    return bare if pgid is None else f"{bare}:{int(pgid)}"
+
+
+def _holder_pgid(holder: str) -> int | None:
+    """The child pgid a :func:`job_holder` string names, else ``None``."""
+    parts = holder.split(":")
+    if len(parts) == 3 and parts[2].isdigit():
+        return int(parts[2])
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +432,139 @@ def _release_quietly(store: Any, adm: Admission) -> None:
         )
 
 
+def _name_child(store: Any, adm: Admission, holder: str) -> Admission:
+    """Stamp the child's pgid on a job launch's holds (``holder`` from
+    :func:`job_holder`) — best-effort: a miss leaves the bare
+    ``job:<id>`` holder, which :func:`tend_job_holds` renews while the
+    job runs and the terminal release still closes."""
+    try:
+        with store.pool.connection() as conn:
+            with conn.transaction():
+                _ops.retag_slot_holds(conn, [h.hold_id for h in adm.holds], holder)
+    except Exception:
+        log.warning(
+            "admission: naming the child on %s's holds failed", holder, exc_info=True
+        )
+        return adm
+    return replace(adm, holder=holder)
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether process group ``pgid`` still exists on this host. A pgid
+    this process cannot judge (``<= 1``, EPERM) reads as alive: the hold
+    is renewed, never refunded under a child that may still run."""
+    if pgid <= 1:
+        return True
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def tend_job_holds(
+    store: Any,
+    job_id: int,
+    *,
+    host: str | None = None,
+    ttl_s: float = DEFAULT_TTL_S,
+    renew: bool = True,
+) -> tuple[int, int]:
+    """Keep a job's spawn holds on ``host`` (default this one) honest from
+    its poll (gr762788): release each hold whose named child group is
+    gone, and (``renew``, the job still running) push the rest out to
+    ``ttl_s`` from now. A hold with no pgid named (the stamp missed)
+    counts as live. A terminal job's poll passes ``renew=False``: a gone
+    child's hold is refunded at once, a possibly-live one is left to
+    :func:`reclaim_settled_job_holds` after the orphan reaper's grace.
+    The poll runs on the job's own host, so a worker that re-adopted the
+    job after a restart does what the dead launcher's babysit no longer
+    can. Returns ``(renewed, released)``; a store fault returns ``(0, 0)``
+    and leaves the TTL as the backstop."""
+    if not job_id or getattr(store, "pool", None) is None:
+        return 0, 0
+    where = host or local_host()
+    try:
+        with store.pool.connection() as conn:
+            with conn.transaction():
+                held = _ops.job_slot_holds(conn, job_id, where)
+                dead = [
+                    hold_id
+                    for hold_id, holder in held
+                    if (pgid := _holder_pgid(holder)) is not None
+                    and not _group_alive(pgid)
+                ]
+                live = [hold_id for hold_id, _ in held if hold_id not in dead]
+                released = _ops.delete_job_slot_holds(conn, job_id, dead)
+                renewed = _ops.renew_slot_holds(conn, live, ttl_s) if renew else 0
+    except Exception:
+        log.warning(
+            "admission: tending job %s's holds failed; the TTL sweep is the backstop",
+            job_id,
+            exc_info=True,
+        )
+        return 0, 0
+    return renewed, released
+
+
+def reclaim_settled_job_holds(store: Any) -> int:
+    """Refund every ``job:`` hold whose job is gone, or has been terminal
+    longer than the orphan reaper's grace
+    (``_common.ORPHAN_REAP_GRACE_S``): the release of a terminal job's
+    footprint whose child the poll could not prove gone, and the backstop
+    for terminal transitions no poll saw (the sweeper, a direct STATUS
+    tag). The heartbeat's pass; one statement. Returns holds deleted, 0
+    for a store without a pool. Raises on a store fault (the heartbeat
+    logs and moves on)."""
+    from precis.workers.executors._common import ORPHAN_REAP_GRACE_S, TERMINAL
+
+    if getattr(store, "pool", None) is None:
+        return 0
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            return _ops.reclaim_settled_job_holds(
+                conn, list(TERMINAL), ORPHAN_REAP_GRACE_S
+            )
+
+
+#: Call sites already warned about a jobless pooled :func:`spawn` — one
+#: line per site per process, not one per launch.
+_jobless_warned: set[str] = set()
+
+
+def _spawn_caller() -> str:
+    """``module.function:line`` of the first frame outside this module and
+    the ``_launch`` wrappers that forward to :func:`spawn` — the site that
+    launched without a ``job_id``."""
+    frame: Any = sys._getframe(1)
+    while frame is not None and (
+        frame.f_globals.get("__name__") == __name__ or frame.f_code.co_name == "_launch"
+    ):
+        frame = frame.f_back
+    if frame is None:
+        return "<unknown>"
+    module = frame.f_globals.get("__name__", "?")
+    return f"{module}.{frame.f_code.co_name}:{frame.f_lineno}"
+
+
+def _warn_jobless_spawn(holder: str) -> None:
+    """A pooled :func:`spawn` with no ``job_id``: its holds stay the
+    launching worker's (``holder``), so a worker crash leaks them to the
+    TTL and a clean exit refunds them under a live child (gr762788)."""
+    caller = _spawn_caller()
+    if caller in _jobless_warned:
+        return
+    _jobless_warned.add(caller)
+    log.warning(
+        "admission: spawn from %s has no job_id; its holds stay with worker %s "
+        "and outlive or undercount the child (gr762788)",
+        caller,
+        holder,
+    )
+
+
 def _babysit(store: Any, proc: Any, adm: Admission, ttl_s: float) -> None:
     """Watch one admitted child: renew its holds on schedule, release at
     exit. Runs on a daemon thread started by :func:`spawn`.
@@ -431,6 +602,7 @@ def spawn(
     pass_fds: Sequence[int] = (),
     preexec_fn: Callable[[], object] | None = None,
     popen: Callable[..., Any] | None = None,
+    job_id: int | None = None,
 ) -> int:
     """The one admitted detached launcher (gr657245).
 
@@ -453,10 +625,18 @@ def spawn(
     child's *first* act writes its own pid — launch proof that survives
     a caller dead between ``spawn`` returning and the caller persisting
     the handle it built (gr708457); ``None`` writes it to ``/dev/null``.
-    Returns the process group pid. ``popen`` is the test seam for the
-    fake child.
+    ``job_id`` (a launch made for a job) replaces ``holder`` with
+    :func:`job_holder` and, once the child exists, stamps its pgid on the
+    holds, so the job's poll owns them past this worker's life (gr762788;
+    module docstring); a pooled store without one warns once per call
+    site, naming it. Returns the process group pid. ``popen`` is the
+    test seam for the fake child.
     """
     popen = subprocess.Popen if popen is None else popen
+    if job_id:
+        holder = job_holder(job_id)
+    elif getattr(store, "pool", None) is not None:
+        _warn_jobless_spawn(holder)
     adm = _try_admit(store, host, footprint, holder, detached=True)
     full_env = {
         **(dict(env) if env is not None else {}),
@@ -489,6 +669,8 @@ def spawn(
             _release_quietly(store, adm)
         raise
     if adm is not None:
+        if job_id:
+            adm = _name_child(store, adm, job_holder(job_id, int(proc.pid)))
         ttl = footprint.hold_ttl_s()
         try:
             threading.Thread(
@@ -544,6 +726,7 @@ __all__ = [
     "CPU_MILLI",
     "DEFAULT_TTL_S",
     "GPU",
+    "JOB_HOLDER_PREFIX",
     "MEM_MB",
     "TTL_MARGIN_S",
     "VRAM_CARD_MB",
@@ -554,8 +737,11 @@ __all__ = [
     "Refused",
     "admit",
     "hold",
+    "job_holder",
     "launch_fits",
     "local_host",
+    "reclaim_settled_job_holds",
     "release",
     "spawn",
+    "tend_job_holds",
 ]
