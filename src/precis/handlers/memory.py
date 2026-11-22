@@ -56,6 +56,11 @@ Semantics (`precis-memory-help`):
                                      bare ``get(view='toc')`` spells it
                                      too, and ``get(id=N, view='toc')``
                                      walks one node's part-of subtree
+    - get(id='/threads')           — the live-threads roster: top-level
+                                     ``section:threads`` nodes edited in
+                                     the last 14 days, the CLI index's
+                                     list; ``args={'days': N}`` widens
+                                     it (gr681310)
     - get(id=N, extent='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
                                    — the walk: link rings via
                                      ``eye_render.render_eye``; ``+recall``
@@ -527,6 +532,9 @@ _META_ALLOWED = ("hook", "type", "expires", "order")
 _EXPIRES_DURATION_RE = re.compile(r"^(\d+)\s*([mhdw])$")
 _EXPIRES_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 
+#: Upper bound of ``id='/threads'``'s ``args={'days': N}`` window.
+_THREADS_MAX_DAYS = 3650
+
 #: ``args={'scratch_for': '<owner>'}`` on ``put`` — the task-scratch pair
 #: (gr605669): ``SPACE:scratch`` plus the ``scratch-for:<owner>`` tag a
 #: ring ``tags`` filter or ``search(tags=[…])`` scopes to one task. The
@@ -981,8 +989,9 @@ class MemoryHandler(AuditedRetirementHandler):
         # view shows the union so the agent can see "what's pinned
         # right now" at a glance. /toc is the kind's generated table
         # of contents (gr568237): every root of the live graph, the
-        # same paged forest render ``search(view='toc')`` runs.
-        return ("recent", "sticky", "toc")
+        # same paged forest render ``search(view='toc')`` runs. /threads
+        # is the live-threads roster (gr681310): ``args={'days': N}``.
+        return ("recent", "sticky", "toc", "threads")
 
     #: ``id='/toc'`` pages under the byte budget like the tag forest —
     #: ``args={'page': N, 'page_size': M}`` (gr568237).
@@ -1015,7 +1024,54 @@ class MemoryHandler(AuditedRetirementHandler):
             return render_kind_toc(self.store, page=page, page_size=page_size)
         if view == "sticky":
             return self._render_sticky()
+        if view == "threads":
+            return self._render_threads()
         return super()._list_view(view)
+
+    def _render_threads(self, days: int | str | None = None) -> Response:
+        """``id='/threads'``: the live-threads roster (gr681310).
+
+        Top-level ``section:threads`` nodes of ``SPACE:repo-dev`` edited in
+        the last ``days`` days, newest first — the list ``precis memory
+        index`` renders, through the same ``_live_thread_lines``.
+        """
+        from precis.cli.memory import (
+            LIVE_THREAD_DAYS,
+            SPACE_TAG,
+            THREADS_TAG,
+            _live_thread_lines,
+            _load_nodes,
+        )
+
+        call = "get(kind='memory', id='/threads', args={'days': %d})"
+        try:
+            n = LIVE_THREAD_DAYS if days is None else int(str(days))
+        except ValueError:
+            n = 0
+        if not 1 <= n <= _THREADS_MAX_DAYS:
+            raise BadInput(
+                f"days= must be a positive integer up to {_THREADS_MAX_DAYS}, "
+                f"got {days!r}",
+                next=call % LIVE_THREAD_DAYS,
+            )
+        lines, total = _live_thread_lines(
+            self.store, _load_nodes(self.store), days=n, now=None
+        )
+        scope = f"{SPACE_TAG} {THREADS_TAG}"
+        out = [
+            f"# {len(lines)} live thread{'' if len(lines) == 1 else 's'} "
+            f"({scope}, edited ≤{n} days)"
+            if lines
+            else f"no threads edited in the last {n} days ({scope})",
+            *lines,
+        ]
+        older = total - len(lines)
+        if older:
+            out.append(
+                f"(+{older} older thread node{'' if older == 1 else 's'}: "
+                f"{call % min(2 * n, _THREADS_MAX_DAYS)})"
+            )
+        return Response(body="\n".join(out))
 
     def _render_sticky(self) -> Response:
         """Union of sticky:thread and sticky:global, recency-ordered."""
@@ -1090,8 +1146,24 @@ class MemoryHandler(AuditedRetirementHandler):
         # aliases ``limit``.
         page: int | str | None = None,
         page_size: int | str | None = None,
+        # ``id='/threads'``'s recency window (``args={'days': N}``,
+        # gr681310) — declared so the extras gate accepts it.
+        days: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if days is not None:
+            if id != "/threads":
+                raise BadInput(
+                    "days= only applies to get(kind='memory', id='/threads')",
+                    next="get(kind='memory', id='/threads', args={'days': 14})",
+                )
+            self._check_list_id_view(id, view)
+            if any(v is not None for v in (q, page, page_size, _kw.get("sort"))):
+                raise BadInput(
+                    "id='/threads' takes only args={'days': N}",
+                    next="get(kind='memory', id='/threads', args={'days': 14})",
+                )
+            return self._render_threads(days)
         if id == "/links" or (view == "links" and _kw.get("reason") == "missing"):
             return super().get(
                 id=id,

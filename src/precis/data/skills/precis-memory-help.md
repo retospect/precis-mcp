@@ -870,6 +870,13 @@ choices between two memories:
 `precis-relations` (the memory↔memory block); where each edge renders:
 `precis-fisheye-help`.
 
+## The live-threads roster
+
+The live-threads roster is `get(kind='memory', id='/threads')`: top-level
+`section:threads` nodes of `SPACE:repo-dev` edited in the last 14 days,
+newest first, each with its handle and `Left:` line; older ones are
+counted in the footer. Widen the window with `args={'days': 30}`.
+
 ## A `section:` tag was refused — the type set is closed per space
 ## Register a new `section:` type
 
