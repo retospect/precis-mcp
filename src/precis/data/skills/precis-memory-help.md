@@ -798,7 +798,8 @@ Levels: `confidence-tentative` → `confidence-moderate` →
 ## Hubs, part-of and qualifies
 
 A hub is a memory tagged `section:index`. Each other node in the space
-carries exactly one `part-of` edge to its subject hub and one type tag:
+carries exactly one `part-of` edge to its subject hub and one type tag
+(closed, next section):
 `section:threads|runbooks|gotchas|workflow|reference`. A gotcha links to
 the thread it applies to with `qualifies` (the thread reads `qualified-by`).
 
@@ -868,6 +869,27 @@ concept puts take `dry_run=True` too, without the kind line. The `rel=`
 choices between two memories:
 `precis-relations` (the memory↔memory block); where each edge renders:
 `precis-fisheye-help`.
+
+## A `section:` tag was refused — the type set is closed per space
+## Register a new `section:` type
+
+The type set is closed per space: it is the `section:<name>` values the
+space's root hub (no parent, other hubs under it) names in its body. `put`
+and `tag` refuse any other value with `[error:BadInput]` listing the set; a
+space whose root names none stays open. A new type is an edit of the root
+node's body, not a tag.
+
+The refusal names the rejected value, close matches, the registered set
+and the root node's handle. Pick a registered type, or register the new
+one by naming it in the root's body and then tag:
+
+```python
+edit(kind="memory", id="me1", mode="append", text=" Rulings carry section:rulings.")  # me1 = root hub
+tag(kind="memory", id="me12", add=["section:rulings"])
+```
+
+Removing an unregistered value a node already carries is not refused:
+`tag(kind="memory", id="me12", remove=["section:rulings"], add=["section:workflow"])`.
 
 ## Title a hub or sub-hub
 

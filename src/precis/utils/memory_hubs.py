@@ -9,6 +9,8 @@ gotcha links to a thread it applies to with ``qualifies`` (the thread reads
 ``put`` / ``edit`` on a memory and :func:`sub_hub_hints` the narrower
 ``link`` ack (``precis.handlers.memory``).
 Summaries past the eye's child cap need the hub tag, not pruned membership.
+:func:`refuse_unregistered_sections` closes the ``section:`` axis per space
+on ``put`` / ``tag``: the allowed set is what the space's root hub names.
 
 The placement, hub-less and thread-prefix hints read a :class:`MemoryDraft`
 (title, body, hook, tags, ``part-of`` parents), not the ref row, so
@@ -18,6 +20,7 @@ exists (gr548271): a duplicate caught after the write had to be deleted.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from collections.abc import Iterable, Mapping
@@ -25,6 +28,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.eye_render import (
     _HUB_TAG,
@@ -490,6 +494,80 @@ def draft_tag_values(tags: Iterable[str], *, kind: str = "memory") -> frozenset[
     return frozenset(values)
 
 
+_SECTION_NAME = re.compile(r"\bsection:([a-z0-9][a-z0-9_-]*)")
+
+
+def space_roots(store: Store, space: str) -> list[int]:
+    """Root hubs of ``space`` (``'SPACE:repo-dev'``): a hub with no live
+    ``part-of`` parent that another hub hangs off. A fresh hub not yet
+    linked has no sub-hub, so it never reads as a second root."""
+    hubs = [
+        int(r.id)
+        for r in store.list_refs(kind="memory", tags=[space, _HUB_TAG], limit=10_000)
+    ]
+    parents = parents_of(store, hubs)
+    with_sub_hub = {p for ps in parents.values() for p in ps}
+    return sorted(h for h in hubs if h not in parents and h in with_sub_hub)
+
+
+def registered_sections(store: Store, space: str) -> tuple[frozenset[str], list[int]]:
+    """The ``section:`` types ``space`` registers, and the root ids read.
+
+    ``section:`` is a closed axis per SPACE (gr688811): the set is every
+    ``section:<name>`` the space's root hub names in its body, so adding a
+    type is an explicit edit of that node, never a side effect of tagging.
+    Empty set = the axis is open in this space: it has no root, or its root
+    names no type besides the hub tag (research uses free chapter values).
+    """
+    roots = space_roots(store, space)
+    names: set[str] = set()
+    for rid in roots:
+        for block in store.chunks.list_chunks_for_ref_by_kind(rid, "memory_body"):
+            if block.ord >= 0:
+                names.update(_SECTION_NAME.findall(block.text))
+                break
+    hub = _HUB_TAG.removeprefix("section:")
+    if not names - {hub}:
+        return frozenset(), roots
+    return frozenset(names | {hub}), roots
+
+
+def refuse_unregistered_sections(
+    store: Store, tags: Iterable[str] | None, *, space: str | None
+) -> None:
+    """Raise ``BadInput`` when ``tags`` (the raw strings a write adds) carry
+    a ``section:`` value the node's space does not register. ``space`` is
+    the fallback when ``tags`` names no ``SPACE:`` itself (the node's own
+    space on ``tag``, the create default on ``put``)."""
+    wanted: list[str] = []
+    for raw in tags or []:
+        if not isinstance(raw, str):
+            continue
+        t = raw.strip()
+        if t.startswith("SPACE:"):
+            space = t
+        elif t.lower().startswith("section:"):
+            wanted.append(t.lower().removeprefix("section:"))
+    if not wanted or space is None:
+        return
+    allowed, roots = registered_sections(store, space)
+    bad = next((w for w in wanted if w not in allowed), None)
+    if not allowed or bad is None:
+        return
+    close = difflib.get_close_matches(bad, sorted(allowed), n=3, cutoff=0.6)
+    hint = f" — close matches: {', '.join(close)}" if close else ""
+    root = _memory_handle(roots[0])
+    raise BadInput(
+        f"invalid section: value for {space}: {bad!r}{hint}",
+        options=[f"section:{s}" for s in sorted(allowed)],
+        next=(
+            f"section: must be one of {sorted(allowed)} — the types "
+            f"{root}'s body names; a new type is registered by an edit of "
+            "that root node, not by tagging"
+        ),
+    )
+
+
 def sub_hub_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     """Only the sub-hub half of :func:`link_hints`: ``section:index``
     suggestion when the node lists more live part-of children than the
@@ -531,6 +609,11 @@ def _sub_hub_lines(
 
 def _space_tag(values: set[str]) -> str | None:
     return next((v for v in sorted(values) if v.startswith("SPACE:")), None)
+
+
+def space_tag_of(store: Store, ref_id: int) -> str | None:
+    """The ref's ``SPACE:<name>`` tag, ``None`` when it carries none."""
+    return _space_tag(_tag_values(store, ref_id))
 
 
 def _memory_handle(ref_id: int | None) -> str:

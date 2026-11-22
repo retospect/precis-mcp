@@ -247,6 +247,8 @@ from precis.utils.memory_hubs import (
     draft_thread_dup_hint,
     link_hints,
     narrowing_hints,
+    refuse_unregistered_sections,
+    space_tag_of,
     sub_hub_hints,
     thread_dup_hint,
 )
@@ -2064,6 +2066,9 @@ class MemoryHandler(AuditedRetirementHandler):
         # Automated writers cannot rephrase: mask here. Agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py) first.
         _refuse_system_dream(tags, verb="put")
+        refuse_unregistered_sections(
+            self.store, tags, space=self.default_tags_on_create[0]
+        )
         guard_thread = tags is not None and any(t in tags for t in _THREAD_TAGS)
         guard_deferred = guard_thread and idem_key is not None and not dry
         if guard_thread and not guard_deferred:
@@ -4380,6 +4385,15 @@ class MemoryHandler(AuditedRetirementHandler):
                         "id=N, view='argument') to read it, not tag() to set it"
                     ),
                 )
+        if not isinstance(id, list) and any(
+            isinstance(t, str) and t.strip().lower().startswith("section:")
+            for t in add or []
+        ):
+            # A batch reaches here once per id (``_tag_batch``).
+            ref_id = self._coerce_id(id)
+            refuse_unregistered_sections(
+                self.store, add, space=space_tag_of(self.store, ref_id)
+            )
         return super().tag(id=id, add=add, remove=remove, **_kw)
 
     # ── read: title header + body chunk ─────────────────────────────
