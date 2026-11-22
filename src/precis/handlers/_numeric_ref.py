@@ -100,6 +100,7 @@ from precis.store._search_cut import (
 from precis.store.types import _KIND_STATUS_VALUES
 from precis.utils import handle_registry, search_trace, tag_chips
 from precis.utils.embed_query import query_vec_for
+from precis.utils.eye_batch import EyeFocus
 from precis.utils.idem import (
     idem_lock_key,
     key_on_ref,
@@ -1089,42 +1090,48 @@ class NumericRefHandler(Handler):
 
     # ── get ─────────────────────────────────────────────────────────
 
-    def eye(
-        self,
-        *,
-        id: Any = None,
-        extent: Any = "fisheye",
-        q: str | None = None,
-        ring: Any = None,
-    ) -> Response:
-        """The eye ladder on one ref, resolved the way this kind's ``get``
+    def eye_focus(self, *, id: Any) -> EyeFocus:
+        """The eye's focus on one ref, resolved the way this kind's ``get``
         resolves it — ``kind:id`` link targets, pub-id slugs where the
         subclass overrides ``_coerce_id``, and ``Gone`` for a soft-deleted
-        row — before the shared render (:mod:`precis.handlers._eye`).
+        row — before the shared render (:mod:`precis.handlers._eye`). The
+        single eye and each id of a batch eye (one combined render,
+        gr659493) both resolve here.
 
         Chunk handles can arrive raw or as ``<id>~<ord>``. Resolve the
         owner first so its live-ref checks still apply, then focus the chunk;
         a missing chunk or a kind without chunk handles falls back to its ref.
+        This kind's record handle (``gr12``) resolves too: dispatch rewrites
+        a scalar one, but not the elements of a batch eye's list.
         """
+        id = self._own_record_pk(id)
         parsed = handle_registry.parse(id) if isinstance(id, str) else None
         if parsed is not None and parsed[0] == self.kind and parsed[1]:
             resolved = self.store.resolve_handle(id)
             if resolved is not None:
                 self._resolve_live_ref(resolved.ref_id)
-            return super().eye(id=id, extent=extent, q=q, ring=ring)
+            return super().eye_focus(id=id)
         if isinstance(id, str) and "~" in id:
             base, _, selector = id.partition("~")
             ref = self._resolve_live_ref(self._coerce_id(base))
             if handle_registry.try_format(self.kind, 0, chunk=True) is not None:
                 try:
-                    return super().eye(
-                        id=f"{ref.id}~{selector}", extent=extent, q=q, ring=ring
-                    )
+                    return super().eye_focus(id=f"{ref.id}~{selector}")
                 except NotFound:
                     pass
-            return super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
+            return super().eye_focus(id=int(ref.id))
         ref = self._resolve_live_ref(self._coerce_id(id))
-        return super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
+        return super().eye_focus(id=int(ref.id))
+
+    @classmethod
+    def _own_record_pk(cls, id: Any) -> Any:
+        """``id`` as this kind's integer pk when it is one of this kind's
+        record handles (``gr12`` → 12), else unchanged."""
+        if isinstance(id, str):
+            parsed = handle_registry.parse(id.strip())
+            if parsed is not None and parsed[0] == cls.kind and not parsed[1]:
+                return parsed[2]
+        return id
 
     def find_in_ref(
         self,

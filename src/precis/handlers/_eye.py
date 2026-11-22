@@ -25,10 +25,13 @@ This module is that plumbing, once:
 
 The dispatcher (:meth:`precis.runtime.dispatch.DispatchMixin._invoke_handler`)
 routes a ``get`` carrying ``extent=`` — or a ladder label in ``view=`` — to
-:meth:`precis.protocol.Handler.eye`, whose default calls
-:func:`eye_response`. A kind that needs more overrides ``eye``: ``finding``
-prefixes its trust posture, ``measure`` refuses (a row of a run is not a
-node), ``draft`` accepts its legacy ``¶`` anchors. The per-handler ``get``
+:meth:`precis.protocol.Handler.eye`, whose default resolves the id through
+:meth:`~precis.protocol.Handler.eye_focus` (:func:`eye_handle` here) and
+renders with :func:`eye_body`; a list of ids is one combined render
+(:mod:`precis.utils.eye_batch`). A kind that resolves differently overrides
+``eye_focus`` (numeric-ref live checks; ``finding`` adds its trust
+posture); one that needs more overrides ``eye``: ``measure`` refuses (a row
+of a run is not a node), ``draft`` accepts its legacy ``¶`` anchors. The per-handler ``get``
 branches that used to call the renderer directly now delegate to ``eye`` as
 well, so a direct handler call and the MCP door render the same thing.
 
@@ -243,8 +246,9 @@ def eye_response(
     ring: Any = None,
     stores_cache: bool = False,
 ) -> Response:
-    """Render the eye on ``(kind, id)`` at ``extent`` — the default body of
-    :meth:`precis.protocol.Handler.eye`. ``ring`` is
+    """Render the eye on ``(kind, id)`` at ``extent`` — what
+    :meth:`precis.protocol.Handler.eye` renders for a kind with the default
+    :meth:`~precis.protocol.Handler.eye_focus`. ``ring`` is
     :class:`precis.utils.eye_render.RingFilter`'s wire form: ``{'kinds':
     <csv|list>, 'space': <csv|list>, 'tags': <csv|list>}``, narrowing every
     ring a link or doc eye renders. ``stores_cache`` marks a fetch-cache

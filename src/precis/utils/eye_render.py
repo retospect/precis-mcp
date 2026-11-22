@@ -100,6 +100,8 @@ from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
+    from collections.abc import Collection, Sequence
+
     from precis.store.store import Store
 
 #: Fetch caches with record eyes. The verdict is stored on cache_state.
@@ -995,69 +997,99 @@ def _cluster_map(kind: str, clusters: list[tuple[list[Any], list[str]]]) -> str:
 def _fisheye_split(
     kind: str,
     clusters: list[tuple[list[Any], list[str]]],
-    eye_ord: int,
+    eye_ord: int | Sequence[int],
     ext: Extent,
+    *,
+    body_cap: int = _VERBATIM_CAP,
 ) -> str:
     """A chunk eye: the fisheye *within* its cluster. Other clusters collapse to
     labels; the home cluster splits into before-chunks (summary) / the eye chunk
     (verbatim, or a summary at ``summary``) / after-chunks (summary) — each chunk
-    its own ``pc`` handle to drill next."""
-    home = next(
-        (
-            i
-            for i, (bucket, _) in enumerate(clusters)
-            if bucket and bucket[0].ord <= eye_ord <= bucket[-1].ord
-        ),
-        None,
-    )
-    if home is None:  # eye ord fell outside every cluster — degrade to the map
+    its own ``pc`` handle to drill next.
+
+    ``eye_ord`` may name several chunks — a batch eye's foci on one doc
+    (gr659493, :mod:`precis.utils.eye_batch`): every cluster holding one
+    opens, showing the union of the foci's windows, so five chunks of one
+    paper render as one split rather than five. ``body_cap`` bounds each
+    verbatim center (a batch passes a short excerpt cap)."""
+    eyes = [eye_ord] if isinstance(eye_ord, int) else list(eye_ord)
+    homes = {
+        i
+        for i, (bucket, _) in enumerate(clusters)
+        if bucket and any(bucket[0].ord <= e <= bucket[-1].ord for e in eyes)
+    }
+    if not homes:  # every eye ord fell outside every cluster — degrade to the map
         return _cluster_map(kind, clusters)
+    eye_set = set(eyes)
 
     lines: list[str] = []
-    for bucket, kws in clusters[:home]:
-        lines.append(_cluster_label(kind, bucket, kws))
+    for home, (home_bucket, kws) in enumerate(clusters):
+        if home not in homes:
+            lines.append(_cluster_label(kind, home_bucket, kws))
+            continue
+        lines.append("— cluster —")
+        lines.extend(
+            _home_window(kind, home_bucket, eyes, eye_set, ext, body_cap=body_cap)
+        )
+    return "\n".join(lines)
 
-    home_bucket, _kws = clusters[home]
-    lines.append("— cluster —")
-    # A forward-biased window around the eye within its cluster; the far tail of
-    # a big keyword-homogeneous section collapses rather than dumping every line.
-    eye_i = next((i for i, b in enumerate(home_bucket) if b.ord == eye_ord), 0)
-    lo = max(0, eye_i - _HOME_BACK)
-    hi = min(len(home_bucket), eye_i + _HOME_FWD + 1)
-    if lo > 0:
-        lines.append(f"  ⋯ {lo} more ⋯")
-    for b in home_bucket[lo:hi]:
+
+def _home_window(
+    kind: str,
+    home_bucket: list[Any],
+    eyes: list[int],
+    eye_set: set[int],
+    ext: Extent,
+    *,
+    body_cap: int = _VERBATIM_CAP,
+) -> list[str]:
+    """The opened rows of one home cluster: a forward-biased window around
+    each eye in it (their union), the far tail of a big keyword-homogeneous
+    section collapsed to ``⋯ N more ⋯`` rather than dumping every line."""
+    lines: list[str] = []
+    shown: set[int] = set()
+    lo_ord, hi_ord = home_bucket[0].ord, home_bucket[-1].ord
+    for e in eyes:
+        if not lo_ord <= e <= hi_ord:
+            continue
+        eye_i = next((i for i, b in enumerate(home_bucket) if b.ord == e), 0)
+        lo = max(0, eye_i - _HOME_BACK)
+        hi = min(len(home_bucket), eye_i + _HOME_FWD + 1)
+        shown.update(range(lo, hi))
+    prev = -1
+    for j in sorted(shown):
+        if j - prev > 1:
+            lines.append(f"  ⋯ {j - prev - 1} more ⋯")
+        prev = j
+        b = home_bucket[j]
         # ``pc<N> ~<ord>`` like the ``#`` chunk-get header — the decimal
         # handle alone hides the block's ``~ord`` selector (gr520328).
         # The ``<ref>~<ord>`` fallback form already carries its ord.
         h = _chunk_handle(kind, b)
         if not h.endswith(f"~{b.ord}"):
             h += f" ~{b.ord}"
-        if b.ord == eye_ord:
+        if b.ord in eye_set:
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
             else:
-                body = _cap(b.text, _VERBATIM_CAP)
+                body = _cap(b.text, body_cap)
                 total = len((b.text or "").strip())
-                if total > _VERBATIM_CAP:
+                if total > body_cap:
                     # The center is the orientation read, capped like every
                     # eye body — name the call that returns it whole, or a
                     # long block's head passes for the block (the marker the
                     # note eye already prints).
                     body += "\n" + _cut_marker(
-                        kind, _chunk_handle(kind, b), _VERBATIM_CAP, total
+                        kind, _chunk_handle(kind, b), body_cap, total
                     )
                 lines.append(f"▸ {h} [{b.chunk_kind}]\n{body}")
         else:
             sz = size_cell(len((b.text or "").encode("utf-8")))
             row = f"  · {h}  {_chunk_summary(b)}"
             lines.append(f"{row} · {sz}" if sz else row)
-    if hi < len(home_bucket):
-        lines.append(f"  ⋯ {len(home_bucket) - hi} more ⋯")
-
-    for bucket, kws in clusters[home + 1 :]:
-        lines.append(_cluster_label(kind, bucket, kws))
-    return "\n".join(lines)
+    if prev < len(home_bucket) - 1:
+        lines.append(f"  ⋯ {len(home_bucket) - 1 - prev} more ⋯")
+    return lines
 
 
 def _render_doc_eye(
@@ -1082,32 +1114,53 @@ def _render_doc_eye(
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
-    head = _head(ref, kind, _head_chips(store, ref, kind))
     if ext <= Extent.TOC:
-        return f"· {head}"
-
-    blocks = store.chunks.list_chunks_for_ref(ref_id)
-    if blocks:
-        from precis.utils.toc_db import cluster_blocks
-
-        clusters = cluster_blocks(blocks)
-        if is_chunk and rh.chunk_ord is not None:
-            body = _fisheye_split(kind, clusters, int(rh.chunk_ord), ext)
-        else:
-            body = _cluster_map(kind, clusters)
-            lead = _abstract_lead(store, ref, ref_id)
-            if lead:
-                body = f"{lead}\n\n{body}"
-        block = f"{head}\n{body}"
-    else:
-        block = head  # no body chunks yet — head alone, but the ring still shows
-
+        return _doc_block(store, ref, kind, ext, chunk_ords=[], whole=True)
+    ords = [int(rh.chunk_ord)] if is_chunk and rh.chunk_ord is not None else []
+    block = _doc_block(store, ref, kind, ext, chunk_ords=ords, whole=not ords)
     # The reference ring is a property of the ref, not its body — an empty
     # paper linked to a note still surfaces that note at fisheye+1hop.
     sections = _rings(
         store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring, handle=handle
     )
     return "\n\n".join([block, *sections])
+
+
+def _doc_block(
+    store: Store,
+    ref: Any,
+    kind: str,
+    ext: Extent,
+    *,
+    chunk_ords: Sequence[int],
+    whole: bool,
+    body_cap: int = _VERBATIM_CAP,
+) -> str:
+    """A doc eye's focus block, rings excluded: the head, then the fisheye
+    split around ``chunk_ords`` or (no ords) the cluster map. ``whole``
+    leads with the abstract — a whole-doc focus; a batch eye
+    (:mod:`precis.utils.eye_batch`) passes every chunk focus on one doc
+    at once, plus ``whole`` when the record itself was asked for too, and
+    a short ``body_cap`` for each verbatim center."""
+    ref_id = int(ref.id)
+    head = _head(ref, kind, _head_chips(store, ref, kind))
+    if ext <= Extent.TOC:
+        return f"· {head}"
+    blocks = store.chunks.list_chunks_for_ref(ref_id)
+    if not blocks:
+        return head  # no body chunks yet — head alone, but the ring still shows
+    from precis.utils.toc_db import cluster_blocks
+
+    clusters = cluster_blocks(blocks)
+    if chunk_ords:
+        body = _fisheye_split(kind, clusters, chunk_ords, ext, body_cap=body_cap)
+    else:
+        body = _cluster_map(kind, clusters)
+    if whole:
+        lead = _abstract_lead(store, ref, ref_id)
+        if lead:
+            body = f"{lead}\n\n{body}"
+    return f"{head}\n{body}"
 
 
 def _abstract_lead(store: Store, ref: Any, ref_id: int) -> str:
@@ -1264,6 +1317,26 @@ def _render_note_eye(
     are the fields a task handoff reads first, and neither rides the chip
     row. A quest log chunk focuses its entry text, not the quest's gist;
     its rings still belong to the owning quest."""
+    ref = _live_note_ref(store, handle, kind)
+    block, body = _note_block(store, ref, kind, ext, handles=[handle], recall=recall)
+    if ext <= Extent.TOC and not recall:
+        return block
+    sections = _rings(
+        store,
+        int(ref.id),
+        kind,
+        ext,
+        recall=recall,
+        expand=expand,
+        ring=ring,
+        body=body if kind == "memory" else "",
+        handle=handle,
+    )
+    return "\n\n".join([block, *sections])
+
+
+def _live_note_ref(store: Store, handle: str, kind: str) -> Any:
+    """The live ref a note-eye handle focuses, read-scope gated for conv."""
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
@@ -1277,21 +1350,48 @@ def _render_note_eye(
         from precis.handlers.conversation import deny_out_of_scope_conv
 
         deny_out_of_scope_conv(ref)
+    return ref
+
+
+def _note_block(
+    store: Store,
+    ref: Any,
+    kind: str,
+    ext: Extent,
+    *,
+    handles: Sequence[str],
+    recall: bool,
+    body_cap: int = _VERBATIM_CAP,
+) -> tuple[str, str]:
+    """``(focus block, body)`` of a note eye, rings excluded: the head, the
+    kind's state lines, then one body per handle — the note body for the
+    record, the entry text for a quest log chunk. A batch eye
+    (:mod:`precis.utils.eye_batch`) passes every handle it holds on one
+    ref, so the head renders once above them, and a short ``body_cap``
+    (the verbatim cap above the summary rung; a cut names the full read)."""
     chips = _head_chips(store, ref, kind)
     if ext <= Extent.TOC and not recall:
-        return f"· {_head(ref, kind, chips)}"
-    cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
-    parsed = handle_registry.parse(handle)
-    if kind == "quest" and parsed is not None and parsed[1]:
-        text = store.chunks.chunk_text_by_id(parsed[2]) or ""
-        body, total = _cap(text, cap), len(text)
-    else:
-        body, total = _note_body(store, ref, kind, cap=cap)
-    if cap == _VERBATIM_CAP and total > _VERBATIM_CAP:
-        marker = _cut_marker(
-            kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
-        )
-        body = f"{body}\n{marker}"
+        return f"· {_head(ref, kind, chips)}", ""
+    cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else body_cap
+    bodies: list[str] = []
+    for handle in handles:
+        parsed = handle_registry.parse(handle)
+        if kind == "quest" and parsed is not None and parsed[1]:
+            text = store.chunks.chunk_text_by_id(parsed[2]) or ""
+            one, total = _cap(text, cap), len(text)
+        else:
+            one, total = _note_body(store, ref, kind, cap=cap)
+        if ext > Extent.SUMMARY and total > cap:
+            marker = _cut_marker(
+                kind,
+                handle_registry.format_handle(kind, int(ref.id)),
+                cap,
+                total,
+            )
+            one = f"{one}\n{marker}"
+        if one not in bodies:
+            bodies.append(one)
+    body = "\n\n".join(b for b in bodies if b)
     lines = [_head(ref, kind, chips)]
     if kind == "todo":
         lines.append(_todo_state(store, ref))
@@ -1307,19 +1407,7 @@ def _render_note_eye(
             lines.append(ground)
     if body:
         lines.append(body)
-    block = "\n".join(lines)
-    sections = _rings(
-        store,
-        int(ref.id),
-        kind,
-        ext,
-        recall=recall,
-        expand=expand,
-        ring=ring,
-        body=body if kind == "memory" else "",
-        handle=handle,
-    )
-    return "\n\n".join([block, *sections])
+    return "\n".join(lines), body
 
 
 #: Per-store cache for :func:`_relation_reading`, dropped with its store.
@@ -1399,6 +1487,12 @@ class _RingNeighbour:
     #: The ``considered`` verdict slug when a folded edge carries one
     #: (gr662069) — what the Considered group counts per verdict.
     verdict: str | None = None
+
+
+def ring_row_key(n: _RingNeighbour) -> tuple[int, int | None]:
+    """A ring row's identity: the far ref, plus the quest log chunk for a
+    log-entry row (one quest's entries are separate rows)."""
+    return n.ref_id, (n.passages[0][0] if n.log_entry is not None else None)
 
 
 def _why_parts(why: Any) -> tuple[str | None, str | None]:
@@ -2338,9 +2432,22 @@ def _render_first_hop(
     more_hint: Any = None,
     hub_handle: str | None = None,
     via_kind: str | None = None,
+    sources: dict[tuple[int, int | None], str] | None = None,
+    cap_scale: int = 1,
 ) -> str:
+    """The ``— linked (1 hop) —`` section from the collected first hop.
+    ``sources`` (a batch eye's merged ring, :mod:`precis.utils.eye_batch`)
+    maps a row's :func:`ring_row_key` to the requested foci that reach it;
+    each row then ends ``  ← <foci>``. ``cap_scale`` multiplies the
+    per-label row cap (a batch: one cap's worth of rows per focus)."""
     chips = chips or {}
     sizes = sizes or {}
+    named = sources or {}
+
+    def src(n: _RingNeighbour) -> str:
+        names = named.get(ring_row_key(n))
+        return f"  ← {names}" if names else ""
+
     order = {group: i for i, group in enumerate(RING_GROUPS)}
     lines = ["— linked (1 hop) —"]
     heading = None
@@ -2362,6 +2469,7 @@ def _render_first_hop(
                 if by_id[oid].suspect:
                     row += "  · suspect"
                 row += link_reason_suffix(" · ".join(by_id[oid].reasons))
+                row += src(by_id[oid])
                 lines.append(
                     f"  {label}: {row} — {hook}" if hook else f"  {label}: {row}"
                 )
@@ -2378,6 +2486,7 @@ def _render_first_hop(
                     if by_id[oid].suspect:
                         row += "  · suspect"
                     row += link_reason_suffix(" · ".join(by_id[oid].reasons))
+                    row += src(by_id[oid])
                     lines.append(f"    {row} — {hook}" if hook else f"    {row}")
                 if len(live_ids) > len(listed):
                     lines.append(
@@ -2391,12 +2500,15 @@ def _render_first_hop(
             lines.append(
                 f"  {label}: "
                 f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
+                f"{src(n)}"
             )
             continue
         # gr662069 / me626853: the scope's judged-out candidates are a
         # count first and a short list second — they never spend the
         # per-group row budget the useful rows get.
-        cap = _CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP
+        cap = cap_scale * (
+            _CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP
+        )
         counts = _verdict_counts(live_ids) if group == "Considered" else ""
         # gr627629: targets and edges are different counts — a chunk-
         # pinned fan-in folds into one target row but is still N edges,
@@ -2408,6 +2520,7 @@ def _render_first_hop(
         for n in live_ids[:shown]:
             lines.append(
                 f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
+                f"{src(n)}"
             )
         if len(live_ids) > cap:
             more = more_hint(label, live_ids) if more_hint is not None else ""
@@ -2492,6 +2605,8 @@ def _second_hop(
     ring: RingFilter | None = None,
     body_handles: list[str] | None = None,
     states: dict[str, str] | None = None,
+    foci: Collection[int] | None = None,
+    expand_how: str = "q='<kind>:<label>'",
 ) -> str:
     """The ``fisheye+2hop`` layer: what the first-hop neighbours link to.
 
@@ -2507,7 +2622,13 @@ def _second_hop(
     group, but ``more()`` only ever paged an over-long body (removed with
     the transport pager) and had no notion of a named group, so the
     expansion is the same call with a filter — decided 2026-10-02.
+
+    ``foci`` widens "the focus itself" to every requested ref of a batch
+    eye's merged ring (:mod:`precis.utils.eye_batch`); default
+    ``{ref_id}``. ``expand_how`` is the heading's expansion hint — a batch,
+    which refuses ``q=``, names the single-id call instead.
     """
+    exclude = set(foci) if foci is not None else {ref_id}
     hop1_ids = {n.ref_id for ns in hop1.values() for n in ns}
     if not hop1_ids:
         return ""
@@ -2540,7 +2661,7 @@ def _second_hop(
             (src, dst, dst_kind, dst_live, True),
             (dst, src, src_kind, src_live, False),
         ):
-            if near not in hop1_ids or far == ref_id or far in hop1_ids:
+            if near not in hop1_ids or far in exclude or far in hop1_ids:
                 continue
             if not far_live:
                 continue
@@ -2587,7 +2708,7 @@ def _second_hop(
     ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     lines = [
         f"— second hop ({len(hop1_ids)} neighbours out; counts — "
-        "expand one with q='<kind>:<label>') —"
+        f"expand one with {expand_how}) —"
     ]
     for (kind, label), ids in ranked[:_SECOND_HOP_LINE_CAP]:
         lines.append(f"  {floor}{len(ids)} {kind} via {label}")
@@ -2700,14 +2821,22 @@ def _recall_promote(ref_id: int, kind: str, hits: list[Any]) -> str:
     return render_next_section(calls)
 
 
-def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) -> str:
+def _recall(
+    store: Store,
+    ref_id: int,
+    kind: str,
+    *,
+    ring: RingFilter | None,
+    label: str = "",
+) -> str:
     """The ``+recall`` rung: the k nearest chunks by embedding, same kind +
     ``finding``, each with its gist line. Similarity, not edges — the ring
     above says what is linked; this says what is *about* the same thing and
     was never linked (``refeye``'s module docstring draws the same line),
     so refs already linked to the focus are excluded in the query and each
     hit carries a promote-to-``link`` call (:func:`_recall_promote`,
-    gr555999).
+    gr555999). ``label`` (``" · fi12"``) names the focus in the heading —
+    a batch eye renders one recall section per requested ref.
     A ring filter narrows this rung too: kinds intersect the same-kind +
     ``finding`` leg, ``spaces`` override the focus's own partition, and
     ``tags`` AND onto the tag clause — ``scratch-for:td<N>`` scopes the
@@ -2716,7 +2845,7 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
     seed = store.chunks.seed_chunk_for_ref(ref_id)
     vec = store.chunks.get_chunk_vector(seed) if seed is not None else None
     if vec is None:
-        return "— recall: no embedded chunk on this ref yet —"
+        return f"— recall{label}: no embedded chunk on this ref yet —"
     kinds = sorted({kind, "finding"})
     if ring is not None and ring.kinds is not None:
         kinds = sorted(set(kinds) & ring.kinds)
@@ -2728,7 +2857,10 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
     else:
         space = [str(t) for t in store.tags_for(ref_id) if t.prefix == "SPACE"]
     if not kinds:
-        return "— recall (nearest by embedding) —\n  — the filter excludes this leg —"
+        return (
+            f"— recall{label} (nearest by embedding) —\n"
+            "  — the filter excludes this leg —"
+        )
     want_tags = [
         *space,
         *(sorted(ring.tags) if ring is not None and ring.tags is not None else []),
@@ -2754,7 +2886,9 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
     )
     seen: set[int] = set()
     kept: list[Any] = []
-    lines = [f"— recall (nearest by embedding, {'+'.join(kinds)}, k≤{_RECALL_K}) —"]
+    lines = [
+        f"— recall{label} (nearest by embedding, {'+'.join(kinds)}, k≤{_RECALL_K}) —"
+    ]
     for block, ref, dist in hits:
         rid = int(ref.id)
         if rid in seen:
@@ -2790,6 +2924,10 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         lines.append("  — nothing within the similarity floor —")
         return "\n".join(lines)
     return "\n".join(lines) + _recall_promote(ref_id, kind, kept)
+
+
+#: The ``— tree —`` ring of a todo with no parent, peers or children.
+TODO_LONE_LEAF = "— tree —\nlone leaf — no parent, peers or children"
 
 
 def _rings(
@@ -2892,5 +3030,5 @@ def _rings(
         # The ``— tree —`` ring is promised on every todo eye at ≥1hop
         # (gr568413): a lone leaf gets an explicit empty-ring line, so a
         # missing ring can't be mistaken for an unimplemented one.
-        sections.append(tree or "— tree —\nlone leaf — no parent, peers or children")
+        sections.append(tree or TODO_LONE_LEAF)
     return [s for s in sections if s]

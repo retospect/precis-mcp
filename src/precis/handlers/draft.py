@@ -982,7 +982,10 @@ class DraftHandler(Handler):
         """The eye ladder on a draft section. A ``dc<id>`` handle takes the
         shared path; the legacy ``¶<base58>`` anchor (which no registry
         parser decodes) renders directly, since the tree renderer resolves
-        it itself. A whole draft has no eye — the shared path says so."""
+        it itself. A whole draft has no eye — the shared path says so. A
+        list of ids is the shared batch eye (gr659493)."""
+        if isinstance(id, (list, tuple)):
+            return super().eye(id=id, extent=extent, q=q, ring=ring)
         s = str(id or "").strip()
         if "~" in s and _is_draft_chunk_handle(s.partition("~")[2]) and ".." not in s:
             s = self._chunk_of_selector(s)

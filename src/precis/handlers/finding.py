@@ -98,6 +98,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -132,6 +133,7 @@ from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import normalize_dry_run
+from precis.utils.eye_batch import EyeFocus
 from precis.utils.glyph_health import glyph_caveat
 from precis.utils.link_tag_ops import (
     apply_tag_ops,
@@ -1306,19 +1308,13 @@ class FindingHandler(AuditedRetirementHandler):
                 )
             )
 
-    def eye(
-        self,
-        *,
-        id: Any = None,
-        extent: Any = "fisheye",
-        q: str | None = None,
-        ring: Any = None,
-    ) -> Response:
-        """The eye ladder on a finding: the shared render led by the
-        claim-hub posture header (:func:`_hub_eye_header`); a ``pub_id``
-        slug resolves like it does on ``get``."""
-        ref = self._resolve_live_ref(self._coerce_id(self._resolve_pub_id_slug(id)))
-        resp = super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
+    def eye_focus(self, *, id: Any) -> EyeFocus:
+        """The eye's focus on a finding, led by the claim-hub posture header
+        (:func:`_hub_eye_header`) — on the single eye and on each finding of
+        a batch eye; a ``pub_id`` slug resolves like it does on ``get``."""
+        pk = self._resolve_pub_id_slug(self._own_record_pk(id))
+        ref = self._resolve_live_ref(self._coerce_id(pk))
+        focus = super().eye_focus(id=int(ref.id))
         header = _hub_eye_header(self.store, ref)
         # gr515633: the categorizer hint line, but only once the operator
         # opted the kind in (``categorize_kind:finding`` — findings are
@@ -1328,7 +1324,7 @@ class FindingHandler(AuditedRetirementHandler):
         hint = ref_hint_line(self.store, ref)
         if hint:
             header += hint + "\n\n"
-        return Response(body=header + resp.body)
+        return replace(focus, header=header + focus.header)
 
     def _find_resolve_ref(self, id: Any) -> Ref:
         """pub_id slug resolves like it does on ``get``."""

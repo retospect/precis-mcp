@@ -3528,7 +3528,7 @@ class StructureHandler(Handler):
     def eye(
         self,
         *,
-        id: str | int | None = None,
+        id: Any = None,
         extent: Any = "fisheye",
         q: str | None = None,
         ring: Any = None,
@@ -3537,7 +3537,10 @@ class StructureHandler(Handler):
         (default), ``<ref>~<focus>`` the spatial eye
         (:mod:`precis.handlers._structure_eye`; structure-workspaces 2e).
         ``st<id>#<label>`` is the ``~`` form's alias
-        (precis-structure-help's atom addressing)."""
+        (precis-structure-help's atom addressing). A list of ids is the
+        shared batch eye on the note eyes (gr659493)."""
+        if isinstance(id, (list, tuple)):
+            return super().eye(id=id, extent=extent, q=q, ring=ring)
         from precis.handlers._eye import EYE_NEXT
         from precis.handlers._structure_eye import recall_refusal, render
         from precis.utils.eye_render import parse_extent

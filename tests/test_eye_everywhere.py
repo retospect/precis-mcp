@@ -353,30 +353,22 @@ class TestMemoryBatchEye:
         assert lines[:-1] == oversized.splitlines()[: len(lines) - 1]
         assert f"BEGIN me{second.id}" not in out
 
-    def test_other_numeric_kind_eye_refusal_describes_view_specific_support(
-        self, runtime_with_store: Any, store: Any
-    ) -> None:
-        finding = _ref(store, "finding", "Finding remains scalar")
-        out, err = _get(
-            runtime_with_store,
-            kind="finding",
-            id=[finding.id],
-            extent="fisheye+1hop",
-        )
-        assert err and "[error:BadInput]" in out
-        assert "plain get(kind='finding', id=[...]) accepts a list" in out
-        assert "not every view or operation does" in out
+
+#: The read chip on a head line counts reads, so it differs between calls.
+_CHIP = re.compile(r"  \[created [^\]]*\]")
 
 
 class TestBatchEye:
-    """gr659493: ``get(id=[...], extent=…)`` on a kind that takes the base
-    eye (paper) is one eye block per id, never the ``str()`` of the list
-    looked up as one slug."""
+    """gr659493 comment 7 (td760288): ``get(kind=K, id=[...], extent=…)`` is
+    ONE combined render on every kind — requested items on one parent
+    grouped under it, a neighbour reached from several requested items
+    shown once naming them — never one block per id, never the ``str()``
+    of the list looked up as one slug, never a refusal."""
 
-    def _paper_chunks(self, store: Any) -> tuple[Any, list[str]]:
+    def _paper_chunks(self, store: Any, n: int = 4) -> tuple[Any, list[str]]:
         paper = _ref(store, "paper", "Rigidity percolation", slug="mao18")
         store.chunks.insert_chunks(
-            paper.id, [ChunkInsert(ord=i, text=f"body of chunk {i}") for i in range(4)]
+            paper.id, [ChunkInsert(ord=i, text=f"body of chunk {i}") for i in range(n)]
         )
         with store.pool.connection() as conn:
             rows = conn.execute(
@@ -385,29 +377,98 @@ class TestBatchEye:
             ).fetchall()
         return paper, [f"pc{row[0]}" for row in rows]
 
+    def test_finding_list_is_one_combined_render(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        a = _ref(store, "finding", "Claim alpha")
+        b = _ref(store, "finding", "Claim beta")
+        for focus, title in ((a, "Note on alpha"), (b, "Note on beta")):
+            note = _ref(store, "memory", title)
+            store.add_link(
+                src_ref_id=focus.id, dst_ref_id=note.id, relation="related-to"
+            )
+        out, err = _get(
+            runtime_with_store, kind="finding", id=[a.id, b.id], extent="fisheye+1hop"
+        )
+        assert not err, out
+        assert out.startswith("# 2 finding (batch, extent='fisheye+1hop')\n\n")
+        assert out.index(f"fi{a.id} [finding] Claim alpha") < out.index(
+            f"fi{b.id} [finding] Claim beta"
+        )
+        # one ring for the whole batch, each row naming who reaches it
+        assert out.count("— linked (1 hop) —") == 1
+        assert re.search(rf"Note on alpha.*  ← fi{a.id}$", out, re.M), out
+        assert re.search(rf"Note on beta.*  ← fi{b.id}$", out, re.M), out
+
     @pytest.mark.parametrize("with_kind", [True, False])
-    def test_chunk_handles_render_one_block_per_id_in_caller_order(
+    def test_five_chunks_of_one_paper_render_under_one_paper_heading(
         self, runtime_with_store: Any, store: Any, with_kind: bool
     ) -> None:
-        _, chunks = self._paper_chunks(store)
-        ids = [chunks[2], chunks[1]]
+        paper, chunks = self._paper_chunks(store, n=7)
+        ids = [chunks[5], chunks[1], chunks[3], chunks[0], chunks[6]]
         kind = {"kind": "paper"} if with_kind else {}
         out, err = _get(runtime_with_store, id=ids, extent="fisheye", **kind)
         assert not err, out
-        assert out.startswith("# 2 paper (batch, extent='fisheye')\n\n")
-        assert out.index(f"▸ {chunks[2]}") < out.index(f"▸ {chunks[1]}")
-        # the header chip counts reads, so it differs between the two calls
-        chip = re.compile(r"  \[created [^\]]*\]")
-        singles = []
+        assert out.startswith("# 5 paper (batch, extent='fisheye')\n\n")
+        assert out.count(f"pa{paper.id} [paper] Rigidity percolation") == 1
         for ident in ids:
-            single, single_err = _get(
-                runtime_with_store, id=ident, extent="fisheye", **kind
-            )
-            assert not single_err
-            singles.append(chip.sub("", single))
-        assert chip.sub("", out).split("\n\n", 1)[1] == "\n\n".join(singles)
+            assert out.count(f"▸ {ident} ") == 1, ident
+        # the split is the doc's own reading order, so every focus sits
+        # in place among its unfocused neighbours
+        focused = [out.index(f"▸ {ident} ") for ident in sorted(ids, key=chunks.index)]
+        assert focused == sorted(focused)
+        for unfocused in (chunks[2], chunks[4]):
+            assert re.search(rf"^  · {unfocused}\b", out, re.M), unfocused
+        assert out.index(f"pa{paper.id} [paper]") < min(focused)
 
-    def test_a_missing_id_is_a_block_between_live_eyes(
+    def test_a_neighbour_of_three_requested_items_shows_once_naming_all(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        foci = [_ref(store, "finding", f"Claim {name}") for name in "abc"]
+        d = _ref(store, "memory", "Shared context d")
+        for focus in foci:
+            store.add_link(src_ref_id=focus.id, dst_ref_id=d.id, relation="related-to")
+        ids = [f"fi{focus.id}" for focus in foci]
+        out, err = _get(
+            runtime_with_store, kind="finding", id=ids, extent="fisheye+1hop"
+        )
+        assert not err, out
+        assert out.count(f"me{d.id}") == 1, out
+        (row,) = [line for line in out.splitlines() if f"me{d.id}" in line]
+        assert "Shared context d" in row
+        assert row.endswith(f"  ← {', '.join(ids)}"), row
+        for focus in foci:
+            assert f"fi{focus.id} [finding] {focus.title}" in out
+
+    def test_missing_and_deleted_ids_are_one_line_entries_in_caller_order(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        first = _ref(store, "finding", "Live before")
+        deleted = _ref(store, "finding", "Deleted batch member")
+        last = _ref(store, "finding", "Live after")
+        store.retire_ref(deleted.id)
+        missing = last.id + 100_000
+        out, err = _get(
+            runtime_with_store,
+            kind="finding",
+            id=[first.id, missing, deleted.id, last.id],
+            extent="fisheye+1hop",
+        )
+        assert not err, out
+        lines = out.splitlines()
+        assert f"fi{missing}  not found" in lines
+        assert f"fi{deleted.id}  deleted" in lines
+        assert "Deleted batch member" not in out
+        markers = [
+            f"fi{first.id} [finding] Live before",
+            f"fi{missing}  not found",
+            f"fi{deleted.id}  deleted",
+            f"fi{last.id} [finding] Live after",
+        ]
+        positions = [out.index(marker) for marker in markers]
+        assert positions == sorted(positions)
+
+    def test_a_missing_chunk_is_a_one_line_entry_after_its_paper_group(
         self, runtime_with_store: Any, store: Any
     ) -> None:
         _, chunks = self._paper_chunks(store)
@@ -419,9 +480,176 @@ class TestBatchEye:
             extent="fisheye",
         )
         assert not err, out
-        markers = [f"▸ {chunks[0]}", f"{missing}  not found", f"▸ {chunks[3]}"]
+        assert f"{missing}  not found" in out.splitlines()
+        # chunks[3] joins chunks[0]'s paper group, ahead of the entry
+        markers = [f"▸ {chunks[0]}", f"▸ {chunks[3]}", f"{missing}  not found"]
         positions = [out.index(marker) for marker in markers]
         assert positions == sorted(positions)
+
+    def test_the_id_cap_refuses_a_finding_batch(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        from precis.handlers._numeric_ref import BATCH_ID_CAP
+
+        focus = _ref(store, "finding", "Must not render over the cap")
+        out, err = _get(
+            runtime_with_store,
+            kind="finding",
+            id=[focus.id] * (BATCH_ID_CAP + 1),
+            extent="fisheye+1hop",
+        )
+        assert err and "[error:BadInput]" in out
+        assert f"takes at most {BATCH_ID_CAP} ids" in out
+        assert "Must not render over the cap" not in out
+
+    def test_a_single_id_keeps_the_single_eye(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        focus = _ref(store, "finding", "Single claim")
+        note = _ref(store, "memory", "Single note")
+        store.add_link(src_ref_id=focus.id, dst_ref_id=note.id, relation="related-to")
+        scalar, err = _get(
+            runtime_with_store, kind="finding", id=focus.id, extent="fisheye+1hop"
+        )
+        assert not err, scalar
+        assert not scalar.startswith("# ")
+        assert f"related-to: me{note.id} — Single note" in scalar
+        assert "←" not in scalar
+        listed, err = _get(
+            runtime_with_store, kind="finding", id=[focus.id], extent="fisheye+1hop"
+        )
+        assert not err, listed
+        assert _CHIP.sub("", listed) == _CHIP.sub("", scalar)
+
+    def test_q_has_no_batch_meaning_and_refuses(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        a = _ref(store, "finding", "Alpha")
+        b = _ref(store, "finding", "Beta")
+        out, err = _get(
+            runtime_with_store,
+            kind="finding",
+            id=[a.id, b.id],
+            extent="fisheye+1hop",
+            q="related-to",
+        )
+        assert err and "[error:BadInput]" in out and "batch eye takes no q=" in out
+
+    def test_each_focus_keeps_its_own_rows_and_overflow_names_its_call(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        """5 papers x 10 cites each: the pooled label must not cap the whole
+        batch at one focus's 8 rows — each paper keeps the 8 its own eye
+        shows, and the overflow names a per-paper call that lists the rest."""
+        papers = [_ref(store, "paper", f"Hub {i}", slug=f"hub{i}") for i in range(5)]
+        for i, paper in enumerate(papers):
+            for j in range(10):
+                cited = _ref(store, "paper", f"Cited {i}-{j}", slug=f"cited{i}x{j}")
+                store.add_link(
+                    src_ref_id=paper.id, dst_ref_id=cited.id, relation="cites"
+                )
+        out, err = _get(
+            runtime_with_store,
+            kind="paper",
+            id=[paper.id for paper in papers],
+            extent="fisheye+1hop",
+        )
+        assert not err, out
+        rows = [line for line in out.splitlines() if " — Cited " in line]
+        assert len(rows) == 40, out
+        for i, paper in enumerate(papers):
+            mine = [row for row in rows if row.endswith(f"  ← pa{paper.id}")]
+            assert len(mine) == 8, (i, out)
+            assert all(f"Cited {i}-" in row for row in mine)
+        (overflow,) = [line for line in out.splitlines() if "… +10 more" in line]
+        assert "showing 40 of 50" in overflow
+        calls = re.findall(r"get\(kind='paper', id='(pa\d+)', [^)]*\)", overflow)
+        assert calls == [f"pa{paper.id}" for paper in papers], overflow
+        call = f"get(kind='paper', id='pa{papers[2].id}', extent='fisheye+1hop', q='cites')"
+        assert call in overflow
+        expanded, err = _get(
+            runtime_with_store,
+            kind="paper",
+            id=f"pa{papers[2].id}",
+            extent="fisheye+1hop",
+            q="cites",
+        )
+        assert not err, expanded
+        assert all(f"Cited 2-{j}" in expanded for j in range(10)), expanded
+
+    def test_long_bodies_are_excerpted_so_the_ring_survives(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        from precis.utils.eye_batch import BATCH_BODY_CAP
+
+        foci = [_ref(store, "finding", f"Long claim {i}") for i in range(7)]
+        for i, focus in enumerate(foci):
+            store.chunks.insert_chunks(
+                focus.id, [ChunkInsert(ord=0, text=f"claim {i} " + "x" * 3992)]
+            )
+            note = _ref(store, "memory", f"Context note {i}")
+            store.add_link(
+                src_ref_id=focus.id, dst_ref_id=note.id, relation="related-to"
+            )
+        out, err = _get(
+            runtime_with_store,
+            kind="finding",
+            id=[focus.id for focus in foci],
+            extent="fisheye+1hop",
+        )
+        assert not err, out
+        assert "— linked (1 hop) —" in out, out[-500:]
+        for i, focus in enumerate(foci):
+            assert f"Context note {i}" in out
+            assert (
+                f"… cut: {BATCH_BODY_CAP} of 4000 chars — full body: "
+                f"get(kind='finding', id='fi{focus.id}')"
+            ) in out
+        # the single eye still reads the body to its own cap
+        single, err = _get(
+            runtime_with_store, kind="finding", id=foci[0].id, extent="fisheye+1hop"
+        )
+        assert not err and "… cut:" not in single and "x" * 3000 in single
+
+    def test_batch_second_hop_names_the_single_id_call(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        foci = [_ref(store, "finding", f"Claim {i}") for i in range(2)]
+        for focus in foci:
+            near = _ref(store, "memory", f"Near {focus.title}")
+            far = _ref(store, "memory", f"Far {focus.title}")
+            store.add_link(
+                src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to"
+            )
+            store.add_link(src_ref_id=near.id, dst_ref_id=far.id, relation="related-to")
+        out, err = _get(
+            runtime_with_store,
+            kind="finding",
+            id=[focus.id for focus in foci],
+            extent="fisheye+2hop",
+        )
+        assert not err, out
+        (heading,) = [line for line in out.splitlines() if "— second hop" in line]
+        handles = ", ".join(f"fi{focus.id}" for focus in foci)
+        assert (
+            f"expand one with get(id=<one of {handles}>, extent='fisheye+2hop', "
+            "q='<kind>:<label>')"
+        ) in heading
+        assert "expand one with q=" not in out
+
+    def test_a_todo_batch_with_tree_rings_and_no_links_prints_no_empty_ring(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        todos = [_ref(store, "todo", f"Lone task {i}") for i in range(2)]
+        out, err = _get(
+            runtime_with_store,
+            kind="todo",
+            id=[todo.id for todo in todos],
+            extent="fisheye+1hop",
+        )
+        assert not err, out
+        assert out.count("— tree —") == 2, out
+        assert "no structural neighbours" not in out
 
     @pytest.mark.parametrize("invalid", ["empty", "over-cap", "window"])
     def test_an_invalid_list_refuses_the_whole_call_with_bad_input(

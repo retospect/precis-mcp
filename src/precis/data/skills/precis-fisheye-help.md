@@ -41,7 +41,15 @@ get(kind="draft", id="dc41", extent="fisheye+1hop")  # a section + reading order
 get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: the body alone
 get(kind="skill", id="precis-get-help", extent="verbatim", q="find")  # search the body (find-in-ref)
 get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # a skill: the section map + its wikilink ring
+get(kind="finding", id=["fi12", "fi40", "fi41"], extent="fisheye+1hop")  # one combined eye
 ```
+
+A list `id=[…]` (up to 50) is **one combined eye**, not one per id:
+items of one parent render under its head (five `pc` chunks of a paper
+open in one split), and the batch shares one ring where a neighbour
+reached from several items shows once, its row ending `← fi12, fi40`.
+A missing or deleted id is a one-line entry; a one-id list is the single
+eye; `q=` takes one id. Memory keeps its paged batch (`Memory rings`).
 
 `extent=` is the one size dial. A rung label on `view=` (`view='fisheye'`,
 `view='fisheye+1hop'`, …) is the deprecated spelling — it still routes,

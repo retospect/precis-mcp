@@ -19,6 +19,7 @@ from precis.response import Response
 
 if TYPE_CHECKING:
     from precis.dispatch import Hub
+    from precis.utils.eye_batch import EyeFocus
     from precis.utils.search_merge import SearchHit
     from precis.utils.toc import ChunksForToc
 
@@ -573,33 +574,49 @@ class Handler(ABC):
         default resolves ``(kind, id)`` to the node's handle and renders it
         with :func:`precis.utils.eye_render.render_eye`; a kind with no
         graph node gets ``Unsupported`` with the reason in one sentence.
-        Override to add a header (``finding``'s trust posture), accept a
-        legacy address (``draft``'s ``¶`` anchors) or refuse (``measure``).
-        A list of ids is one eye block per id (:meth:`_eye_each`); an
-        override that resolves ``id`` before delegating here keeps its own
-        list behaviour (``memory`` pages a batch, the other numeric-ref
-        kinds refuse).
+        The id → handle step is :meth:`eye_focus`: override that to resolve
+        the way the kind's ``get`` does (numeric-ref live checks, pub-id
+        slugs) or to add a lead (``finding``'s trust posture), and the
+        single and the batch eye both get it. Override ``eye`` itself to
+        accept a legacy address (``draft``'s ``¶`` anchors) or refuse
+        (``measure``). A list of ids is ONE combined render
+        (:meth:`_eye_combined`); ``memory`` keeps its own paged batch.
         """
         if isinstance(id, (list, tuple)):
-            return self._eye_each(list(id), extent=extent, q=q, ring=ring)
-        from precis.handlers._eye import eye_response
+            return self._eye_combined(list(id), extent=extent, q=q, ring=ring)
+        from precis.handlers._eye import eye_body
 
+        focus = self.eye_focus(id=id)
+        body = eye_body(self._eye_store(), focus.handle, extent, q=q, ring=ring)
+        return Response(body=focus.header + body)
+
+    def _eye_store(self) -> Any:
+        """The store the eye renders from, or ``Unsupported``."""
         store = getattr(self, "store", None) or getattr(self.hub, "store", None)
         if store is None:
             raise Unsupported(
                 f"no eye on kind={self.spec.kind!r}: this process has no store bound"
             )
-        return eye_response(
-            store,
-            kind=self.spec.kind,
-            id=id,
-            extent=extent,
-            q=q,
-            ring=ring,
-            stores_cache=self.stores_cached_refs,
+        return store
+
+    def eye_focus(self, *, id: Any) -> EyeFocus:
+        """One id → the :class:`~precis.utils.eye_batch.EyeFocus` the eye
+        renders: the handle (:func:`precis.handlers._eye.eye_handle`) and
+        the kind's lead text (none by default). ``NotFound``/``Gone`` for a
+        dead id, ``BadInput``/``Unsupported`` for one the eye can't focus."""
+        from precis.handlers._eye import eye_handle
+        from precis.utils.eye_batch import EyeFocus
+
+        return EyeFocus(
+            eye_handle(
+                self._eye_store(),
+                kind=self.spec.kind,
+                id=id,
+                stores_cache=self.stores_cached_refs,
+            )
         )
 
-    def _eye_each(
+    def _eye_combined(
         self,
         ids: list[Any],
         *,
@@ -607,16 +624,21 @@ class Handler(ABC):
         q: str | None,
         ring: Any,
     ) -> Response:
-        """``get(kind=K, id=[...], extent=<rung>)``: :meth:`eye` mapped over
-        the ids in caller order, one block per id (gr659493 — the list used
-        to be ``str()``-ed and looked up as one slug).
+        """``get(kind=K, id=[...], extent=<rung>)``: ONE combined render
+        (:func:`precis.utils.eye_batch.render_eye_batch`, gr659493 comment
+        7) — requested items on one ref grouped under it, each neighbour
+        shown once naming the requested items that reach it.
 
-        A missing or deleted id is a one-line block; any other refusal (a
-        window selector, a kind with no graph node) fails the whole call.
-        The id count is capped like the plain batch get. No dedupe and no
-        paging: the result budget bounds the body.
+        Each id resolves through :meth:`eye_focus`; a missing or deleted id
+        is a one-line entry, any other refusal (a window selector, a kind
+        with no graph node) fails the whole call. The id count is capped
+        like the plain batch get. A one-id list is the single eye exactly;
+        ``q=`` expands one group of one focus, so a batch refuses it.
         """
+        from precis.handlers._eye import EYE_NEXT
         from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
+        from precis.utils import handle_registry
+        from precis.utils.eye_batch import render_eye_batch
 
         kind = self.spec.kind
         if not ids:
@@ -635,16 +657,35 @@ class Handler(ABC):
                     f"id[{pos}] must be one id or handle, got {type(ident).__name__}",
                     next=f"get(kind={kind!r}, id=[<id>, ...], extent={extent!r})",
                 )
-        blocks: list[str] = []
+        if len(ids) == 1:
+            return self.eye(id=ids[0], extent=extent, q=q, ring=ring)
+        if q is not None:
+            raise BadInput(
+                "q= expands one group of one eye; a batch eye takes no q=",
+                next=f"get(kind={kind!r}, id={ids[0]!r}, extent={extent!r}, q={q!r})",
+            )
+        store = self._eye_store()
+        items: list[EyeFocus | str] = []
         for ident in ids:
+            label = (
+                handle_registry.try_format(kind, ident) or str(ident)
+                if isinstance(ident, int)
+                else str(ident)
+            )
             try:
-                blocks.append(self.eye(id=ident, extent=extent, q=q, ring=ring).body)
+                items.append(self.eye_focus(id=ident))
             except NotFound:
-                blocks.append(f"{ident}  not found")
+                items.append(f"{label}  not found")
             except Gone:
-                blocks.append(f"{ident}  deleted")
+                items.append(f"{label}  deleted")
+        try:
+            body = render_eye_batch(store, items, extent, ring=ring)
+        except BadInput:
+            raise
+        except ValueError as e:
+            raise BadInput(str(e), next=EYE_NEXT) from e
         header = f"# {len(ids)} {kind} (batch, extent={extent!r})\n\n"
-        return Response(body=header + "\n\n".join(blocks), result_count=len(blocks))
+        return Response(body=header + body, result_count=len(ids))
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         """Per-kind list of accepted ``view=`` values.

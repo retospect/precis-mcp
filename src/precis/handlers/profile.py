@@ -46,6 +46,7 @@ from precis.response import Response
 from precis.store import Tag
 from precis.store.types import Ref
 from precis.utils import handle_registry
+from precis.utils.eye_batch import EyeFocus
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 
@@ -175,16 +176,10 @@ class ProfileHandler(NumericRefHandler):
             out.append(int(ref.id))
         return out
 
-    def eye(
-        self,
-        *,
-        id: Any = None,
-        extent: Any = "fisheye",
-        q: str | None = None,
-        ring: Any = None,
-    ) -> Response:
+    def eye_focus(self, *, id: Any) -> EyeFocus:
+        """Owner-gated per id, so a batch eye checks every profile."""
         (rid,) = self._owned_ids(id, write=False)
-        return super().eye(id=rid, extent=extent, q=q, ring=ring)
+        return super().eye_focus(id=rid)
 
     def find_in_ref(
         self,
