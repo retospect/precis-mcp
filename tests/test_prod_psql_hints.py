@@ -1,7 +1,8 @@
 """scripts/prod-psql's discovery affordances (gr514333): ``--help`` prints the
 usage + schema cheat sheet, and a `column/relation … does not exist` on
-psql's stderr is answered with the schema.md pointer and the ``\\d`` recipe
-(interactive shell — scripted SQL never reaches the meta lexer, gr521223).
+psql's stderr is answered with the schema.md pointer and the one-shot column
+listing that stands in for ``\\d`` (scripted SQL never reaches the meta lexer,
+gr521223; an agent has no tty for the interactive shell, gr676941).
 
 ``ssh`` is faked on PATH: it drains the caller's SQL from stdin — the text
 the remote shell reads into ``-c "$(cat)"`` — and emits ``FAKE_PSQL_ERR``
@@ -217,6 +218,118 @@ def test_other_errors_get_no_schema_hint(tmp_path: Path) -> None:
 def test_clean_run_prints_no_hint(tmp_path: Path) -> None:
     r = _run(tmp_path, "--ro", "SELECT 1")
     assert r.returncode == 0 and r.stderr == ""
+
+
+# ── gr676941: advice an agent can run, and the tag/slug/status/job arms ───
+
+
+def test_hint_has_no_interactive_advice(tmp_path: Path) -> None:
+    """A non-interactive agent cannot type into a session, and a bare
+    scripts/prod-psql is a write-capable agent_rw one: the fallback hint, the
+    leading-backslash refusal and --help all name the one-shot column
+    listing instead."""
+    hint = _run(
+        tmp_path,
+        "--ro",
+        "SELECT nope FROM refs",
+        FAKE_PSQL_ERR='ERROR:  column "nope" does not exist',
+    )
+    refusal = _run(tmp_path, "--ro", "\\d refs")
+    assert refusal.returncode == 2
+    usage = _run(tmp_path, "--help")
+    for text in (hint.stderr, refusal.stderr, usage.stdout):
+        assert "interactively" not in text, text
+        assert "interactive shell" not in text, text
+        assert "scripts/prod-psql --ro" in text, text
+        assert "information_schema.columns" in text, text
+
+
+def test_tag_column_hint(tmp_path: Path) -> None:
+    r = _run(
+        tmp_path,
+        "--ro",
+        "SELECT rt.tag FROM ref_tags rt WHERE rt.ref_id = 1",
+        FAKE_PSQL_ERR="ERROR:  column rt.tag does not exist",
+    )
+    assert "`ref_tags` has no `tag` column" in r.stderr
+    assert "JOIN `tags` ON tag_id" in r.stderr
+    assert "`tags.namespace` + `tags.value`" in r.stderr
+    assert "namespace='OPEN'" in r.stderr
+
+
+def test_tags_column_on_refs_gets_the_join(tmp_path: Path) -> None:
+    r = _run(
+        tmp_path,
+        "--ro",
+        "SELECT tags FROM refs WHERE ref_id = 1",
+        FAKE_PSQL_ERR='ERROR:  column "tags" does not exist',
+    )
+    assert "`refs` has no `tags` column" in r.stderr
+    assert "`ref_tags`" in r.stderr and "tag_id" in r.stderr
+
+
+def test_slug_column_hint(tmp_path: Path) -> None:
+    r = _run(
+        tmp_path,
+        "--ro",
+        "SELECT slug FROM refs WHERE kind = 'gripe'",
+        FAKE_PSQL_ERR='ERROR:  column "slug" does not exist',
+    )
+    assert "`refs` has no `slug`" in r.stderr
+    assert "`handle`" in r.stderr and "kinds/providers" in r.stderr
+
+
+def test_status_column_hint(tmp_path: Path) -> None:
+    r = _run(
+        tmp_path,
+        "--ro",
+        "SELECT ref_id FROM refs WHERE status = 'open'",
+        FAKE_PSQL_ERR='ERROR:  column "status" does not exist',
+    )
+    assert "status is a tag" in r.stderr
+    assert "namespace='STATUS'" in r.stderr and "ref_tags" in r.stderr
+
+
+def test_job_field_hint(tmp_path: Path) -> None:
+    r = _run(
+        tmp_path,
+        "--ro",
+        "SELECT job_type FROM refs WHERE kind = 'job'",
+        FAKE_PSQL_ERR='ERROR:  column "job_type" does not exist',
+    )
+    assert "refs.meta" in r.stderr and "meta->>'job_type'" in r.stderr
+    # Only a job query gets it: the same miss on another kind stays generic.
+    other = _run(
+        tmp_path,
+        "--ro",
+        "SELECT job_type FROM refs WHERE kind = 'gripe'",
+        FAKE_PSQL_ERR='ERROR:  column "job_type" does not exist',
+    )
+    assert "refs.meta" not in other.stderr
+    assert "information_schema.columns" in other.stderr
+
+
+def _schema_columns(table: str) -> set[str]:
+    block = re.search(
+        rf"^    {table} \{{$(.*?)^    \}}$",
+        _SCHEMA_MD.read_text(encoding="utf-8"),
+        re.M | re.S,
+    )
+    assert block, table
+    return {line.split()[1] for line in block.group(1).strip().splitlines()}
+
+
+def test_hint_arms_name_columns_in_the_generated_schema() -> None:
+    """The arms state schema facts by hand; pin each one to the generated
+    docs/reference/schema.md so a regen that moves a column fails here."""
+    refs = _schema_columns("refs")
+    assert {"handle", "title", "meta", "prio", "kind"} <= refs
+    assert not {"slug", "status", "tag", "tags"} & refs
+    assert {"ref_id", "tag_id"} <= _schema_columns("ref_tags")
+    assert "tag" not in _schema_columns("ref_tags")
+    assert {"tag_id", "namespace", "value"} <= _schema_columns("tags")
+    assert "slug" in _schema_columns("kinds")
+    assert "slug" in _schema_columns("providers")
 
 
 # ── gr513882: --explain — a read-only EXPLAIN agent_ro can actually run ────

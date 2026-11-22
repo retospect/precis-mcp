@@ -46,7 +46,8 @@
 # as ONE -c argument — "-c "$(cat)"" fed from ssh's stdin — and psql lexes
 # a -c as a meta-command ONLY when its first byte is a backslash, so text
 # whose first non-space character is a backslash is refused (exit 2) before
-# any ssh. Run \d and friends in the interactive shell. This replaces the
+# any ssh. There is no \d on these paths; the refusal names the one-shot
+# column listing instead (gr676941). This replaces the
 # earlier allowlist+regex filter, which could never match psql's real
 # lexer (backtick shells inside allowlisted commands, comment/literal
 # mis-stripping, \gset variable smuggling). One -c is one Query message: a
@@ -75,8 +76,9 @@
 #
 # Schema: docs/reference/schema.md is the generated map of prod (every
 # table's columns, PK/FK, comments) — grep it before guessing a column
-# name (gr514333). To list one table's columns live, type \d <table> in the
-# interactive shell.
+# name (gr514333). To list one table's columns live, run the
+# information_schema.columns one-shot in COLUMNS_RECIPE below (gr676941: an
+# agent has no tty for \d, and a bare call is a write-capable session).
 # Frequently mistyped: refs has no `id` (PK is ref_id), embeddings live in
 # chunk_embeddings not chunks, events are in ref_events, links use
 # src_ref_id/dst_ref_id.
@@ -105,8 +107,9 @@
 # chunks c ON c.ref_id = r.ref_id for text.
 #
 # Name-resolution errors get a hint (gr514333): a `column/relation … does not
-# exist` on stderr is answered with the schema.md pointer and the `\d` recipe —
-# prod-psql runs psql for you, so nobody has to memorize the table shapes.
+# exist` on stderr is answered with the schema.md pointer and the one-shot
+# column listing (COLUMNS_RECIPE) — prod-psql runs psql for you, so nobody
+# has to memorize the table shapes.
 #
 # Row cap (.claude/fleet/authority.md, 2026-10-15): a one-shot or piped SQL
 # text without --ro that mentions UPDATE or DELETE runs inside BEGIN; the
@@ -223,12 +226,13 @@ assume it committed. Refusals and bad arguments exit 2 before any ssh.
 Backslash meta-commands never reach the remote psql (gr521223): your SQL
 is sent as ONE -c argument, and psql meta-lexes a -c only when its first
 byte is a backslash — so SQL whose first non-space character is a
-backslash exits 2 before ssh. Run \d and friends in the interactive
-shell (scripts/prod-psql with no arguments). One -c is one Query message:
+backslash exits 2 before ssh. There is no \d on this path; the column
+listing below replaces it. One -c is one Query message:
 a multi-statement text runs all-or-nothing, not statement-by-statement.
 
 Schema — docs/reference/schema.md is GENERATED from prod (scripts/gen-schema);
-grep it, or type \d <table> in the interactive shell.
+grep it. One table live (what \d <table> shows):
+  scripts/prod-psql --ro "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='<table>' ORDER BY ordinal_position"
 Names that bite:
   refs              PK is ref_id — no `id` column; kind='job'|'alert' rows are
                     the ops queues (jobs/alerts are not tables)
@@ -455,11 +459,15 @@ refuse_session_set() {
 # --ro's agent_ro, and `\!`/`\o`/`\gexec` can never run. Refuse a leading
 # (after whitespace) backslash so the caller's -c slot can never be one;
 # meta-commands belong to the interactive shell, which keeps its own path.
+# The refusal and the name-resolution hint both point at COLUMNS_RECIPE
+# (gr676941): a non-interactive caller cannot type \d into a session, and a
+# bare scripts/prod-psql is agent_rw — so neither message suggests one.
+COLUMNS_RECIPE="scripts/prod-psql --ro \"SELECT column_name, data_type FROM information_schema.columns WHERE table_name='<table>' ORDER BY ordinal_position\""
 refuse_leading_meta() {
     if [[ "$1" =~ ^[[:space:]]*\\[^[:space:]]* ]]; then
         local cmd="${BASH_REMATCH[0]}"
         cmd="${cmd#"${cmd%%[![:space:]]*}"}"
-        printf "prod-psql: refused for safety — caller SQL may not begin with the psql meta-command '%s'. The -c slot that carries your SQL would run it as a meta-command. Run \\d and friends in the interactive shell instead: scripts/prod-psql (no arguments).\n" "$cmd" >&2
+        printf "prod-psql: refused for safety — caller SQL may not begin with the psql meta-command '%s'. The -c slot that carries your SQL would run it as a meta-command. For what \\\\d <table> shows, run: %s — or grep docs/reference/schema.md.\n" "$cmd" "$COLUMNS_RECIPE" >&2
         exit 2
     fi
 }
@@ -586,10 +594,14 @@ EOF
 # the run for the classic `column/relation … does not exist`, and answered
 # with where the schema actually lives — plus the specific name when the
 # mistake is a known one (refs has ref_id, not id; embeddings live in
-# chunk_embeddings; jobs/alerts are refs rows, not tables). Prints a hint or
-# nothing; the exit code is the caller's, unchanged.
+# chunk_embeddings; jobs/alerts are refs rows, not tables; gr676941: tag text
+# is tags.namespace+value behind ref_tags, refs has handle not slug, a status
+# is a STATUS tag, a job's fields sit in refs.meta). Each arm states a schema
+# fact by hand — tests/test_prod_psql_hints.py pins them to schema.md. Prints
+# a hint or nothing; the exit code is the caller's, unchanged.
 prod_psql_error_hint() {
     local sql="$1" err="$2" col rel hint=""
+    local tag_text="the tag is \`tags.namespace\` + \`tags.value\` ('STATUS:open' is namespace='STATUS', value='open'; free-form tags are namespace='OPEN')"
     col="$(sed -nE 's/.*column "?[A-Za-z_][A-Za-z0-9_.]*\."?([A-Za-z_][A-Za-z0-9_]*)"? (of relation "[^"]+" )?does not exist.*/\1/p; s/.*column "?([A-Za-z_][A-Za-z0-9_.]*)"? (of relation "[^"]+" )?does not exist.*/\1/p' "$err" | head -1)"
     rel="$(sed -nE 's/.*relation "([^"]+)" does not exist.*/\1/p' "$err" | head -1)"
     if [[ -n "$col" ]]; then
@@ -610,7 +622,27 @@ prod_psql_error_hint() {
                 if printf '%s' "$sql" | grep -qiw chunks; then
                     hint="\`chunks\` has no \`embedding\` column — embeddings live in \`chunk_embeddings\` (JOIN on chunk_id)"
                 fi ;;
+            tag|tags)
+                if printf '%s' "$sql" | grep -qiw ref_tags; then
+                    hint="\`ref_tags\` has no \`$col\` column — JOIN \`tags\` ON tag_id; $tag_text"
+                elif printf '%s' "$sql" | grep -qiw refs; then
+                    hint="\`refs\` has no \`$col\` column — JOIN \`ref_tags\` ON ref_id, then \`tags\` ON tag_id; $tag_text"
+                elif printf '%s' "$sql" | grep -qiw tags; then
+                    hint="\`tags\` has no \`$col\` column — $tag_text"
+                fi ;;
+            slug)
+                if printf '%s' "$sql" | grep -qiw refs; then
+                    hint="\`refs\` has no \`slug\` — use \`handle\` (or \`title\`); \`slug\` exists on kinds/providers"
+                fi ;;
+            status)
+                if printf '%s' "$sql" | grep -qiwE 'refs|ref_tags'; then
+                    hint="\`refs\` has no \`status\` column — a ref's status is a tag: JOIN ref_tags/tags ON tag_id and filter namespace='STATUS', value='open'|…"
+                fi ;;
         esac
+        if [[ -z "$hint" ]] && printf '%s' "$sql" | grep -qiw refs &&
+            printf '%s' "$sql" | grep -qiE "kind[[:space:]]*=[[:space:]]*'job'"; then
+            hint="a job's fields are not columns — they live in \`refs.meta\` (jsonb): meta->>'$col' (its priority is \`refs.prio\`)"
+        fi
     elif [[ -n "$rel" ]]; then
         case "$rel" in
             jobs|alerts)
@@ -621,7 +653,7 @@ prod_psql_error_hint() {
     if [[ -n "$hint" ]]; then
         printf 'prod-psql: hint — %s.\n' "$hint"
     fi
-    printf 'prod-psql: hint — the generated schema is docs/reference/schema.md (scripts/gen-schema); one table up close: run scripts/prod-psql interactively and type \\d <table> (e.g. \\d refs).\n'
+    printf 'prod-psql: hint — the generated schema is docs/reference/schema.md (scripts/gen-schema) — grep it; one table up close (what \\d <table> shows): %s\n' "$COLUMNS_RECIPE"
 }
 
 # --explain (gr513882): agent_ro cannot EXPLAIN a FOR UPDATE tail or a
@@ -651,7 +683,7 @@ explain_rewrite() {
     printf '%s\n' "$s"
 }
 
-# Run one SQL text non-interactively. The caller's text is piped to ssh's
+# Run one SQL text as a one-shot (no tty). The caller's text is piped to ssh's
 # stdin and the remote command reads it into ONE -c "$(cat)" — the -c args
 # before and after it are the fixed wrapper's. --ro gets BEGIN READ ONLY /
 # COMMIT; a capped write gets the cap_pre/cap_post pair. A capped run tees
