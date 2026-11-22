@@ -6,6 +6,9 @@ modules (:mod:`precis.handlers._numeric_ref`).
 Staged findings retain the URL and verbatim quote without fetching.
 Gripe themes span unrelated defects. Automatic merges require matching
 project and cluster scope, and filing receipts suggest out-of-scope keepers.
+Gripe batch and cohort exports fit whole UTF-8 blocks against the runtime
+budget so re-fitting preserves the cursor. An oversized block has its own
+character cursor; the cohort cursor still advances to the next gripe.
 Paper import promotes source-and-quote matches (:mod:`precis.finding_drafts`).
 Hub-mint concurrency awaits production timing measurements.
 Cached record selectors preserve ref identity despite numeric slug collisions.

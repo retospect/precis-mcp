@@ -390,12 +390,15 @@ distinctive terms, narrow `scope=`, or use
 still read as `page_size=` on an `interpreted:` line; `offset=0` is a
 no-op, `offset>0` and `page=` refuse with a canonical next call.
 
-The one exception is the source search (`sort=` top-level,
+The source search (`sort=` top-level,
 `since=`/`until=` inside `args=`):
 its pages continue via `args={'page': N}` — a page that fits but has
 more hits names `args={'page': 2}` in its Next: block, and a truncated
 page's own `next:` call spells the exact resume
 (`args={'offset': M}`).
+
+Queryless gripe exports (`view='full'` or `view='body'`) also continue
+through the printed `args={'offset': N}` call. See [[precis-gripe-help]].
 
 `skill` searches trim the default menu when one hit clearly outscores the
 tail. An explicit `page_size=` shows the full bounded set; `mode='verbatim'`

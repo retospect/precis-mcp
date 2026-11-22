@@ -145,6 +145,7 @@ from precis.handlers._numeric_ref import (
     _BROWSE_TERMINALS,
     _PUT_IDEM_KEY,
     NumericRefHandler,
+    _export_offset,
     _parse_window_bound,
     plain_listing_view,
 )
@@ -366,6 +367,13 @@ _BODY_HEAD_CHARS = 1500
 #: renders the whole comments that fit the remainder, then names the
 #: ``args={'comments': 'A-B'}`` window holding the rest.
 _FULL_VIEW_CHARS = 3500
+
+#: The comments a spec writer needs (``args={'comments': 'rulings'}``,
+#: gr676097): a ``Reto <date>:`` ruling and the needs-spec/spec/resolved
+#: notes; triage boilerplate (dup-suggest, recommend, re-evaluate) drops.
+_SPEC_COMMENT_RE = re.compile(
+    r"(?:Ruling\b|needs-spec:|spec:|resolved:)", re.IGNORECASE
+)
 
 #: Below this much leftover inside :data:`_FULL_VIEW_CHARS`, a comments
 #: section would squeeze in a fraction of one comment — 'full' lists
@@ -700,6 +708,7 @@ class GripeHandler(NumericRefHandler):
     # surfaces the parent gripe). Salience stays cold — bug reports must
     # not enter the dream frontier. Shared machinery in NumericRefHandler.
     search_body_chunks: ClassVar[bool] = True
+    cohort_read: ClassVar[bool] = True
 
     # ── list-view filters (id='/<view>') ────────────────────────────
 
@@ -824,7 +833,8 @@ class GripeHandler(NumericRefHandler):
         return replace(
             resp,
             body=resp.body
-            + "\nbatch-read: get(kind='gripe', id=[<ids>], view='body'|'full')",
+            + "\nbatch-read: get(kind='gripe', id=[<ids>], view='body'|'full') · "
+            "cohort: search(kind='gripe', status='<status>', view='full')",
         )
 
     def _list_summary(
@@ -2983,8 +2993,17 @@ class GripeHandler(NumericRefHandler):
         # tag-prefix selector (td702062); declared here so the dispatcher's
         # own-signature args= gate admits it, then forwarded to the base.
         tag_prefixes: Any = ...,
+        block_offset: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        export_start = None
+        if block_offset is not None:
+            if not isinstance(id, list) or len(id) != 1 or view not in ("full", "body"):
+                raise BadInput(
+                    "block_offset continues a single oversized gripe export block",
+                    next="copy the get call from the gripe block truncation note",
+                )
+            export_start = _export_offset(block_offset, "block_offset")
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
         # base reads it back out of the forwarded kwargs (gr497175).
         if id == "/stats":
@@ -3140,11 +3159,15 @@ class GripeHandler(NumericRefHandler):
                     ],
                 )
             if view is not None:
+                resume = (
+                    {"block_offset": export_start} if export_start is not None else {}
+                )
                 return self._get_batch_view(
                     self._coerce_ids(id),
                     view=view,
                     comment=comment,
                     comments=comments,
+                    **resume,
                 )
             return super().get(id=id, view=view, q=q, **_kw)
         readings: list[str] = []
@@ -3250,6 +3273,27 @@ class GripeHandler(NumericRefHandler):
                 raise
             resp = self._render_tombstone(self._coerce_id(id))
         return interpreted(resp, readings)
+
+    def _batch_block(self, rid: int, *, view: str, **kw: Any) -> str:
+        """One batch/cohort block: ``view='full'`` renders whole (no body
+        clip, no comment elision — gr676097) and ``args={'comments':
+        'rulings'}`` keeps only the ruling/spec comments."""
+        comments = kw.get("comments")
+        rulings = isinstance(comments, str) and comments.strip().lower() == "rulings"
+        if view == "body" and rulings and kw.get("comment") is None:
+            return super()._batch_block(rid, view=view)
+        if view != "full":
+            return super()._batch_block(rid, view=view, **kw)
+        ref = self._resolve_live_ref(rid)
+        return self._render_ref_view(
+            ref,
+            self.store.tags_for(ref.id),
+            view=view,
+            comment=kw.get("comment"),
+            comments=None if rulings else comments,
+            uncapped=True,
+            rulings=rulings,
+        )
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         """The bare get: title card plus the body (gr514351).
@@ -3505,13 +3549,47 @@ class GripeHandler(NumericRefHandler):
         view: str,
         comment: int | str | None,
         comments: int | str | None,
+        uncapped: bool = False,
+        rulings: bool = False,
     ) -> str:
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
         cblocks = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
         head = "\n".join(self._header_lines(ref, tags))
+        dropped = 0
+        if uncapped:
+            hidden = tl.hidden_comments(ref)
+            cblocks = [c for c in cblocks if c.ord not in hidden]
+        if rulings:
+            kept = [
+                c
+                for c in cblocks
+                if _RETO_RULING_RE.match(c.text)
+                or _SPEC_COMMENT_RE.match(c.text.lstrip())
+            ]
+            dropped = len(cblocks) - len(kept)
+            cblocks = kept
         if view == "body":
             return f"{head}\n\n{body}"
+        if uncapped and view == "full":
+            # The batch/cohort block (gr676097): whole body, every comment
+            # whole — no clip, no elision; the packer pages whole blocks.
+            w = self._comment_window(ref, cblocks, comment, comments)
+            section = tl.render_comment_view(
+                ref,
+                cblocks,
+                kind=self.kind,
+                last=w.last,
+                only=w.only,
+                lo=w.lo,
+                hi=w.hi,
+                budget=None,
+            )
+            if rulings:
+                note = f"{dropped} comments hidden (rulings filter)"
+                section = f"{section}\n\n{note}" if section else note
+            top = f"{head}\n\n{body}"
+            return top + (f"\n\n{section}" if section else "")
         if view == "full":
             # The bounded complete read (gr514350): the body clips
             # naming view='body'; the timeline fills the rest of

@@ -66,7 +66,7 @@ from psycopg import Connection
 from psycopg.errors import QueryCanceled
 
 from precis import slice_tokens, word_handle_session, worktree_server
-from precis._result_budget import size_cell
+from precis._result_budget import body_bytes, size_cell
 from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
 from precis.errors import (
@@ -75,6 +75,7 @@ from precis.errors import (
     Internal,
     NotFound,
     PrecisError,
+    ResultBudgetExceeded,
     Unsupported,
     nearest_option,
 )
@@ -641,12 +642,11 @@ def _tag_response_body(
 #: here, so they fold to the default view (gr492994, gr492996).
 _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 
-#: Page budget (chars) for the batch ``view=`` read (gr515524): only
-#: whole per-id blocks go on a page, so a block (a gripe's body or
-#: comment timeline) is never cut mid-text. Sized under the agent-context
-#: budget (~4 KiB) with headroom for the batch header and ``next:`` ids;
-#: a single block over budget still renders whole.
+#: Legacy batch view page budget (gr515524).
 BATCH_VIEW_PAGE_CHARS = 3500
+
+#: Gripe export target, leaving room for headers, cursors and runtime notes.
+GRIPE_EXPORT_PAGE_BYTES = 20_000
 
 #: UTF-8 byte budget for one ``view='titles'`` batch page (gr685126).
 #: Under the runtime's 24,576-byte result cap with headroom for the
@@ -722,6 +722,19 @@ def plain_listing_view(view: str | None, own_views: Any) -> str | None:
 #: ``_create`` with a fixed arg set, and one handler instance serves
 #: concurrent calls, so nothing goes on ``self``.
 _PUT_IDEM_KEY: RequestState[str | None] = RequestState("precis_put_idem_key", None)
+
+
+def _export_offset(value: int | str, key: str) -> int:
+    try:
+        offset = int(str(value))
+    except ValueError:
+        offset = -1
+    if not 0 <= offset <= 2**63 - 1:
+        raise BadInput(
+            f"args={{{key!r}: …}} must be a non-negative integer, got {value!r}",
+            next="use the offset printed in the export continuation",
+        )
+    return offset
 
 
 class NumericRefHandler(Handler):
@@ -884,6 +897,10 @@ class NumericRefHandler(Handler):
     #: Queryless browse order when the caller passes no ``sort=``
     #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
     browse_default_sort: ClassVar[str] = "recency"
+
+    #: ``search(view='full'|'body')`` with no ``q=`` reads the whole filtered
+    #: cohort through the batch packer (gr676097); opt-in per kind.
+    cohort_read: ClassVar[bool] = False
 
     #: :meth:`Store.list_refs` ``order_by`` key behind ``sort='prio'``.
     #: The default breaks PRIO ties newest-update first; gripe uses
@@ -1596,6 +1613,11 @@ class NumericRefHandler(Handler):
         # Base refuses (:meth:`_fold_project_arg`); gripe overrides it.
         project: str | None = None,
         tag_prefixes: Any = ...,
+        # ``args={'offset': N}`` — the cohort read's (view='full'|'body')
+        # continuation cursor (gr676097); other listings page by page=.
+        offset: int | str | None = None,
+        comments: int | str | None = None,
+        _cohort_scope: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         # Fold the ``q='*'`` match-all spelling before any view dispatch
@@ -1635,6 +1657,7 @@ class NumericRefHandler(Handler):
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
         # stray page=0 doesn't blow the query up. Mirrors the convention
         # in _paper_search.py's ranked search path.
+        cohort_offset = offset
         try:
             offset = max(0, (int(page) - 1) * int(page_size))
         except (TypeError, ValueError):
@@ -1695,6 +1718,72 @@ class NumericRefHandler(Handler):
         # ranked paths above resolved (status default, browse-terminal
         # exclusion, tags=, link=, ref-id include/exclude), so its
         # numbers match those views' "N of K" headers.
+        if (
+            view in ("full", "body")
+            and self.cohort_read
+            and not (q and q.strip())
+            and link is None
+        ):
+            start = (
+                _export_offset(cohort_offset, "offset")
+                if cohort_offset is not None
+                else offset
+            )
+            if since is not None or until is not None:
+                raise BadInput(
+                    "gripe exports take closure bounds, not creation bounds",
+                    next="use args={'closed_since': '30d'} or drop since=/until=",
+                )
+            filters = {
+                "exclude_tags": excluded or None,
+                "include_ref_ids": include_ref_ids,
+                "exclude_ref_ids": exclude_ref_ids,
+                "closed_after": closed_after_dt,
+                "closed_before": closed_before_dt,
+                "closed_values": self._closed_status_values() if closed_given else None,
+                "id_min": id_lo,
+                "id_max": id_hi,
+            }
+            # Keep the original selectors. A resolved default project or a
+            # graph scope cannot be reconstructed from the positive tags.
+            selectors = {
+                "sort": sort,
+                "id_min": id_lo,
+                "id_max": id_hi,
+                "closed_since": closed_after_dt.isoformat()
+                if closed_after_dt
+                else None,
+                "closed_until": closed_before_dt.isoformat()
+                if closed_before_dt
+                else None,
+                "project": project,
+                "comments": comments,
+                **(
+                    _cohort_scope
+                    if _cohort_scope is not None
+                    else {
+                        "include_ref_ids": include_ref_ids,
+                        "exclude_ref_ids": exclude_ref_ids,
+                    }
+                ),
+            }
+            return self._cohort_view(
+                normalized_tags or [],
+                view=view,
+                offset=start,
+                order_key="closed_desc"
+                if closed_given
+                else self._order_key_for_sort(sort or self.browse_default_sort),
+                filters=filters,
+                status=status,
+                original_tags=tags,
+                selectors={k: v for k, v in selectors.items() if v is not None},
+            )
+        if comments is not None or cohort_offset is not None:
+            raise BadInput(
+                "comments and offset search args belong to queryless gripe exports",
+                next="search(kind='gripe', status='needs_spec', view='full')",
+            )
         if view is not None:
             if view != "count":
                 raise BadInput(
@@ -5427,40 +5516,185 @@ class NumericRefHandler(Handler):
         a self-describing cursor, instead of letting the result budget
         cut a block mid-text in a fitted body.
         """
-        blocks: list[str] = []
-        for rid in ref_ids:
-            handle = handle_registry.try_format(self.kind, rid) or str(rid)
-            try:
-                blocks.append(self.get(id=rid, view=view, **kw).body)
-            except NotFound:
-                blocks.append(f"{handle}  not found")
-            except Gone:
-                blocks.append(f"{handle}  deleted")
+        if self.cohort_read and view in ("body", "full"):
+            block_offset = kw.pop("block_offset", None)
+
+            def header(count: int) -> str:
+                return f"# gripes 1-{count} of {len(ref_ids)} (batch, view={view!r})"
+
+            def footer(count: int) -> str:
+                rest = ref_ids[count:]
+                return (
+                    f"{len(rest)} more — next: {self._batch_view_call(rest, view, kw)}"
+                    if rest
+                    else ""
+                )
+
+            return self._export_page(
+                ref_ids,
+                view=view,
+                header=header,
+                footer=footer,
+                selectors=kw,
+                block_offset=block_offset,
+            )
+
+        blocks = [self._read_batch_block(rid, view, kw) for rid in ref_ids]
         shown: list[str] = []
         used = 0
         for block in blocks:
             if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
                 break
             shown.append(block)
-            used += len(block) + 2  # the "\n\n" join
+            used += len(block) + 2
         rest = ref_ids[len(shown) :]
         body = (
             f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
             + "\n\n".join(shown)
         )
         if rest:
-            # The selectors kw carries (memory's rel/of_kind/direction,
-            # gripe's comment/comments, job's file/point/frames) ride the
-            # continuation as args= — dropping them would resume the
-            # batch unfiltered.
-            args = {k: v for k, v in kw.items() if v is not None}
-            cont = f", args={args!r}" if args else ""
             body += (
-                f"\n\n{len(rest)} more — next: "
-                f"get(kind={self.kind!r}, "
-                f"id=[{', '.join(str(i) for i in rest)}], view={view!r}{cont})"
+                f"\n\n{len(rest)} more — next: {self._batch_view_call(rest, view, kw)}"
             )
         return Response(body=body, result_count=len(shown))
+
+    def _batch_view_call(
+        self, ids: list[int], view: str, selectors: dict[str, Any]
+    ) -> str:
+        args = {k: v for k, v in selectors.items() if v is not None}
+        cont = f", args={args!r}" if args else ""
+        return f"get(kind={self.kind!r}, id={ids!r}, view={view!r}{cont})"
+
+    def _batch_block(self, rid: int, *, view: str, **kw: Any) -> str:
+        return self.get(id=rid, view=view, **kw).body
+
+    def _read_batch_block(self, rid: int, view: str, selectors: dict[str, Any]) -> str:
+        handle = handle_registry.try_format(self.kind, rid) or str(rid)
+        try:
+            return self._batch_block(rid, view=view, **selectors)
+        except NotFound:
+            return f"{handle}  not found"
+        except Gone:
+            return f"{handle}  deleted"
+
+    def _export_page(
+        self,
+        ids: list[int],
+        *,
+        view: str,
+        header: Callable[[int], str],
+        footer: Callable[[int], str],
+        selectors: dict[str, Any],
+        block_offset: int | None = None,
+    ) -> Response:
+        """Pack whole UTF-8 blocks; re-fit with the actual cap and runtime suffix."""
+        blocks: list[str] = []
+        used = 0
+        for rid in ids:
+            block = self._read_batch_block(rid, view, selectors)
+            size = body_bytes(block)
+            if blocks and used + size > GRIPE_EXPORT_PAGE_BYTES:
+                break
+            blocks.append(block)
+            used += size + 2
+        start = block_offset or 0
+
+        def page(count: int, payload: str, extra: str = "") -> str:
+            return "\n\n".join(
+                filter(None, (header(count), payload, extra, footer(count)))
+            )
+
+        def fit(cap: int) -> str:
+            for count in range(len(blocks), 0, -1):
+                payload = "\n\n".join(blocks[:count])[start:]
+                body = page(count, payload)
+                if body_bytes(body) <= cap:
+                    return body
+
+            # A single block cannot fit. Resume the same rendering, including
+            # the body and selected comments, at a Unicode character boundary.
+            payload = blocks[0][start:]
+
+            def cut_note(end: int) -> str:
+                call = self._batch_view_call(
+                    ids[:1], view, {**selectors, "block_offset": end}
+                )
+                return f"… gripe block truncated — rest of gr{ids[0]}: {call}"
+
+            room = cap - body_bytes(page(1, "", cut_note(len(blocks[0])))) - 2
+            prefix = payload.encode("utf-8")[: max(0, room)].decode(
+                "utf-8", errors="ignore"
+            )
+            if not prefix:
+                raise ResultBudgetExceeded(
+                    "gripe export header and continuation leave no room for text",
+                    next="increase the result byte budget or narrow the export filters",
+                )
+            return page(1, prefix, cut_note(start + len(prefix)))
+
+        count = len(blocks)
+        body = page(count, "\n\n".join(blocks)[start:])
+        return Response(
+            body=body,
+            result_count=count,
+            result_ids=ids[:count],
+            budget_fit=fit,
+        )
+
+    def _cohort_view(
+        self,
+        tags: list[str],
+        *,
+        view: str,
+        offset: int,
+        order_key: str,
+        filters: dict[str, Any],
+        status: str | None,
+        original_tags: list[str] | None,
+        selectors: dict[str, Any],
+    ) -> Response:
+        total = self.store.count_refs(kind=self.kind, tags=tags, **filters)
+        refs = self.store.list_refs(
+            kind=self.kind,
+            tags=tags,
+            limit=BATCH_ID_CAP,
+            offset=offset,
+            order_by=order_key,
+            **filters,
+        )
+        scope = " ".join(tags) or (
+            "all statuses" if status == "*" else "filtered gripes"
+        )
+        if not refs:
+            return Response(
+                body=f"# gripes 0 of {total} · {scope}\n\ncomplete", result_count=0
+            )
+
+        def header(count: int) -> str:
+            return f"# gripes {offset + 1}-{offset + count} of {total} · {scope} (cohort, view={view!r})"
+
+        def footer(count: int) -> str:
+            end = offset + count
+            if end >= total:
+                return "complete"
+            status_arg = f"status={status!r}, " if status is not None else ""
+            tag_arg = f"tags={original_tags!r}, " if original_tags else ""
+            args = {"offset": end, **selectors}
+            return (
+                f"next: search(kind={self.kind!r}, {status_arg}{tag_arg}"
+                f"view={view!r}, args={args!r})"
+            )
+
+        render_args = (
+            {"comments": selectors["comments"]} if "comments" in selectors else {}
+        )
+        return self._export_page(
+            [r.id for r in refs],
+            view=view,
+            header=header,
+            footer=footer,
+            selectors=render_args,
+        )
 
     def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
         """``tag(id=[...])``: the same edit on every id, all or nothing.

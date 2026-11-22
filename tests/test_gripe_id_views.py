@@ -255,7 +255,7 @@ def test_batch_get_view_body_is_title_and_body_only(
     second = id_of(handler.put(text="batch body two\ntwo detail").body)
     handler.put(id=second, text="a comment on two")
     body = handler.get(id=[first, second], view="body").body
-    assert body.startswith("# 2 gripe (batch, view='body')")
+    assert body.startswith("# gripes 1-2 of 2 (batch, view='body')")
     assert "batch body one\none detail" in body
     assert "batch body two\ntwo detail" in body
     # the batch body read carries no comment timeline

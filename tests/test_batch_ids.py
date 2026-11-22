@@ -26,7 +26,9 @@ below, so a new kind that adds ``edit`` must pick a policy.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,8 @@ from precis.handlers.quest import QuestHandler
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
+from precis.tools import core
+from precis.tools.mcp_slim import make_slim_verb
 from tests.conftest import id_of
 
 
@@ -562,10 +566,13 @@ def test_get_batch_view_gripe_comments_and_missing(hub: Hub) -> None:
     assert f"gr{missing}  not found" in body
 
 
-def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
+def test_get_batch_view_pages_whole_blocks(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr515524: a batch view join that would overflow the fold emits the
     whole per-id blocks that fit and names the unread ids as the next
     call — never a mid-text cut behind a more() cursor."""
+    monkeypatch.setattr("precis.handlers._numeric_ref.GRIPE_EXPORT_PAGE_BYTES", 3500)
     handler = GripeHandler(hub=hub)
     ids = [
         id_of(handler.put(text=f"paged batch {i}\n" + "x" * 1200).body)
@@ -573,7 +580,7 @@ def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
     ]
     resp = handler.get(id=_batch(*ids), view="full")
     body = resp.body
-    assert body.startswith("# 4 gripe (batch, view='full')")
+    assert body.startswith("# gripes 1-2 of 4 (batch, view='full')")
     assert f"# gripe {ids[0]}" in body and f"# gripe {ids[1]}" in body
     assert f"# gripe {ids[2]}" not in body and f"# gripe {ids[3]}" not in body
     assert (
@@ -584,7 +591,7 @@ def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
     # The named continuation is the remaining ids verbatim — re-issuing
     # it returns them whole, no cursor needed.
     rest = handler.get(id=_batch(ids[2], ids[3]), view="full").body
-    assert rest.startswith("# 2 gripe (batch, view='full')")
+    assert rest.startswith("# gripes 1-2 of 2 (batch, view='full')")
     assert f"# gripe {ids[2]}" in rest and f"# gripe {ids[3]}" in rest
     assert "more — next:" not in rest
 
@@ -1160,3 +1167,197 @@ def test_get_batch_view_titles_pages_whole_entries_through_dispatch(
     rest_part = body.split("id=[", 1)[1].split("]", 1)[0]
     assert rest_part == ", ".join(str(i) for i in ids[len(shown) :])
     assert all("E" * 498 in ln for ln in body.splitlines() if ln.startswith("fi"))
+
+
+def _big_gripes(hub: Hub, n: int, size: int = 2000) -> tuple[GripeHandler, list[int]]:
+    handler = GripeHandler(hub=hub)
+    return handler, [
+        id_of(handler.put(text=f"big {i}\n" + "x" * size).body) for i in range(n)
+    ]
+
+
+def test_batch_view_packs_to_budget(hub: Hub) -> None:
+    handler, ids = _big_gripes(hub, 10)
+    seen: list[int] = []
+    call: list[int] = ids
+    first = True
+    for _ in range(10):
+        body = handler.get(id=_batch(*call), view="full").body
+        blocks = body.count("# gripe ")
+        if first:
+            assert blocks >= 8
+            first = False
+        assert "chars cut" not in body
+        seen += [i for i in call if f"# gripe {i}\n" in body]
+        if "more — next:" not in body:
+            break
+        tail = body.rsplit("id=[", 1)[1].split("]")[0]
+        call = [int(x) for x in tail.split(",")]
+    assert seen == ids
+
+
+def test_batch_full_blocks_are_uncut(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="long\n" + "b" * 6000).body)
+    for i in range(8):
+        handler.put(id=gid, text=f"comment {i} " + "c" * 300)
+    batch = handler.get(id=_batch(gid, gid), view="full").body
+    assert "b" * 6000 in batch
+    assert "chars cut" not in batch and "elided" not in batch
+    for i in range(8):
+        assert f"comment {i} " in batch
+    single = handler.get(id=gid, view="full").body
+    assert "chars cut" in single or "elided" in single
+
+
+def _cursor(body: str, prefix: str) -> dict[str, Any]:
+    line = next(line for line in body.splitlines() if line.startswith(prefix))
+    node = ast.parse(line[len(prefix) :], mode="eval").body
+    assert isinstance(node, ast.Call)
+    return {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg}
+
+
+def test_cohort_full_view_pages_whole_cohort(
+    hub: Hub,
+    store: Store,
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler, ids = _big_gripes(hub, 30, size=3000)
+    root = store.insert_ref(kind="memory", slug=None, title="cohort scope").id
+    for rid in ids:
+        handler.tag(id=rid, add=["STATUS:needs_spec"])
+        if rid != ids[-2]:
+            store.add_link(src_ref_id=rid, dst_ref_id=root, relation="part-of")
+    for rid in ids[1:3]:
+        handler.put(id=rid, text="Reto 2026-11-14: keep this ruling")
+        handler.put(id=rid, text="dup-suggest: omit this comment")
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    search = make_slim_verb("search", core.search)
+    scope = {
+        "under": f"me{root}",
+        "id_min": ids[1],
+        "id_max": ids[-2],
+        "sort": "recency",
+    }
+    call: dict[str, Any] = {
+        "kind": "gripe",
+        "status": "needs_spec",
+        "view": "full",
+        "args": {**scope, "comments": "rulings"},
+    }
+    expected = store.list_refs(
+        kind="gripe",
+        tags=["STATUS:needs_spec"],
+        order_by="updated_desc",
+        id_min=ids[1],
+        id_max=ids[-2],
+        include_ref_ids=ids[:-2],
+        limit=50,
+    )
+    seen: list[int] = []
+    for _ in range(30):
+        body = search(**call)
+        assert isinstance(body, str), body
+        assert "of 27 · STATUS:needs_spec" in body
+        assert "dup-suggest:" not in body
+        page_ids = [int(x) for x in re.findall(r"^# gripe (\d+)$", body, re.M)]
+        assert page_ids
+        assert body.count("x" * 3000) == len(page_ids)
+        tag_lines = [line for line in body.splitlines() if line.startswith("tags: ")]
+        assert len(tag_lines) == len(page_ids)
+        assert all("STATUS:needs_spec" in line for line in tag_lines)
+        if ids[1] in page_ids:
+            assert "Reto 2026-11-14: keep this ruling" in body
+        seen.extend(page_ids)
+        if "next: search(" not in body:
+            assert "complete" in body.splitlines()
+            break
+        call = _cursor(body, "next: ")
+        assert call["args"]["offset"] == len(seen)
+        assert call["args"]["comments"] == "rulings"
+        assert all(call["args"][key] == value for key, value in scope.items())
+    assert seen == [ref.id for ref in expected]
+
+
+def test_export_fits_utf8_blocks_and_replays_oversized_block(
+    hub: Hub, runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handler = GripeHandler(hub=hub)
+    large = "🍎" * 5400
+    large_id = id_of(handler.put(text="oversized\n" + large).body)
+    handler.put(id=large_id, text="spec: keep this comment")
+    small = "é" * 1750
+    small_ids = [id_of(handler.put(text=f"small {i}\n" + small).body) for i in range(3)]
+    handler.tag(id=[large_id, *small_ids], add=["STATUS:needs_spec"])
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "9000")
+    get = core.get
+    search = make_slim_verb("search", core.search)
+    body = search(
+        kind="gripe", status="needs_spec", view="full", args={"comments": "rulings"}
+    )
+    prefix = f"… gripe block truncated — rest of gr{large_id}: "
+    seen = ""
+    cohort_cursor = _cursor(body, "next: ")
+    for _ in range(5):
+        assert isinstance(body, str), body
+        assert len(body.encode("utf-8")) <= 9000
+        seen += "".join(c for c in body if c == "🍎")
+        if prefix not in body:
+            assert "spec: keep this comment" in body
+            break
+        body = get(**_cursor(body, prefix))
+    assert seen == large
+    body = search(**cohort_cursor)
+    assert isinstance(body, str), body
+    assert len(body.encode("utf-8")) <= 9000
+    assert body.count(small) == 2
+    assert "truncated" not in body
+    body = search(**_cursor(body, "next: "))
+    assert isinstance(body, str), body
+    assert body.count(small) == 1
+    assert "complete" in body.splitlines()
+
+
+def test_gripe_cohort_applies_closure_bounds(
+    hub: Hub,
+    store: Store,
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _handler, ids = _big_gripes(hub, 4)
+    for rid in (ids[0], ids[2]):
+        store.add_tag(
+            rid, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+        )
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    monkeypatch.setattr("precis.handlers._numeric_ref.GRIPE_EXPORT_PAGE_BYTES", 2500)
+    search = make_slim_verb("search", core.search)
+    body = search(kind="gripe", view="body", args={"closed_since": "2000-01-01"})
+    assert isinstance(body, str), body
+    assert f"# gripe {ids[2]}\n" in body
+    assert "1-1 of 2" in body
+    cursor = _cursor(body, "next: ")
+    assert "closed_since" in cursor["args"]
+    body = search(**cursor)
+    assert isinstance(body, str), body
+    assert f"# gripe {ids[0]}\n" in body
+    assert "2-2 of 2" in body
+    assert "complete" in body.splitlines()
+    empty = search(kind="gripe", view="body", args={"closed_since": "2999-01-01"})
+    assert isinstance(empty, str), empty
+    assert "# gripes 0 of 0" in empty
+    assert "complete" in empty.splitlines()
+
+
+def test_rulings_filter_keeps_ruling_and_spec_comments(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="ruled\nbody").body)
+    handler.put(id=gid, text="Reto 2026-11-14: do it")
+    handler.put(id=gid, text="dup-suggest: gr1 maybe")
+    handler.put(id=gid, text="spec: build the thing")
+    body = handler.get(id=_batch(gid), view="full", comments="rulings").body
+    assert "Reto 2026-11-14: do it" in body and "spec: build the thing" in body
+    assert "dup-suggest" not in body
+    assert "1 comments hidden" in body

@@ -412,6 +412,17 @@ id — the comment timeline is not included. A batch whose joined view
 would overflow the page returns the whole blocks that fit and names the
 rest verbatim — `next: get(kind='gripe', id=[<unread ids>], view='full')`
 — so re-issuing that call continues where the first left off.
+Batch `view='full'` blocks are whole (no body clip, no comment elision). A
+whole status cohort reads the same way: `search(kind='gripe',
+status='needs_spec', view='full')` packs many gripes per page under `gripes
+1-7 of 88`; follow `next: search(kind='gripe', status='needs_spec',
+view='full', args={'offset': 7})` until `complete`. Substitute `tags=[...]` for `status=` to export a
+tagged cohort. Use `view='body'` for bodies and tags alone. A gripe too large for a
+page appears alone. If it exceeds the result cap, follow the exact
+`get(..., args={'block_offset': N})` call in its cut note to finish that
+gripe, then use the original page's `next:` to resume the remaining gripes.
+`args={'comments': 'rulings'}` keeps only `Reto <date>:`, Ruling,
+`needs-spec:`, `spec:` and `resolved:` comments and says how many it hid.
 `view='index'` is accepted and equals the default listing; use `view='count'` /
 `'meta'` for aggregates.
 <!-- write -->

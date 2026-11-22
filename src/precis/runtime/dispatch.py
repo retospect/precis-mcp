@@ -2800,7 +2800,18 @@ class DispatchMixin(RuntimeShape):
         if note is not None:
             from dataclasses import replace as _replace
 
-            response = _replace(response, body=f"{note}\n\n{response.body}")
+            prefix = f"{note}\n\n"
+            fit = response.budget_fit
+
+            def fit_with_note(cap: int) -> str:
+                assert fit is not None
+                return prefix + fit(cap - len(prefix.encode("utf-8")))
+
+            response = _replace(
+                response,
+                body=prefix + response.body,
+                budget_fit=fit_with_note if fit else None,
+            )
         return response
 
     def _resolve_canon(self, args: dict[str, Any]) -> CanonState | None:
@@ -3635,6 +3646,19 @@ class DispatchMixin(RuntimeShape):
                 kind if kind is not None else _CROSS_KIND_WILDCARD,
                 dict(args),
             )
+
+        from precis.utils.browse_sort import gripe_export
+
+        if (
+            verb == "search"
+            and gripe_export(kind, args)
+            and args.get("folder") is not None
+        ):
+            self._note_channel_value(args, "include_ref_ids")
+            folder = args.pop("folder")
+            folder_scope, _ = self._resolve_folder_scope(folder)
+            self._note_facet_origin(args, "include_ref_ids", "folder", folder)
+            self._intersect_include_ref_ids(args, folder_scope)
 
         # ``folder=`` scope: any folder-scoped search runs
         # through the cross-kind fan-out — the structured SearchHit
@@ -4689,7 +4713,23 @@ class DispatchMixin(RuntimeShape):
         # The resolved-facets marker (``uncited=``/``under=`` origins
         # recorded for ``next=`` hint rendering) is dispatch-internal —
         # never let it reach a handler kwargs gate.
-        args.pop(_RESOLVED_FACETS_KEY, None)
+        origins = args.pop(_RESOLVED_FACETS_KEY, None)
+        if (
+            origins
+            and verb == "search"
+            and kind == "gripe"
+            and args.get("view") in ("full", "body")
+        ):
+            args["_cohort_scope"] = {
+                **{
+                    k: args[k]
+                    for k in ("include_ref_ids", "exclude_ref_ids")
+                    if k in args and k not in origins
+                },
+                **{
+                    key: value for entries in origins.values() for key, value in entries
+                },
+            }
         extras = args.pop(_EXTRAS_KEY, None)
         if verb == "get" and isinstance(extras, dict) and "retired" in extras:
             # ``args={'retired': True}`` spells ``view='retired'``

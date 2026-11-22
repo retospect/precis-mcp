@@ -274,7 +274,7 @@ def render_comment_view(
     only: int | None = None,
     lo: int | None = None,
     hi: int | None = None,
-    budget: int = COMMENT_PAGE_CHARS,
+    budget: int | None = COMMENT_PAGE_CHARS,
     number_of: Callable[[ChunkRow], int] | None = None,
 ) -> str:
     """The selectable ``view='comments'`` render (gr499040, gr515093).
@@ -315,7 +315,7 @@ def render_comment_view(
     used = 0
     for c in window:
         piece_len = len(_comment_piece(c, hidden, num(c)))
-        if shown and used + piece_len > budget:
+        if budget is not None and shown and used + piece_len > budget:
             break
         shown.append(c)
         used += piece_len
