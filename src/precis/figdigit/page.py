@@ -89,6 +89,7 @@ def render_page_png(
     *,
     page: int,
     dpi: float = 200.0,
+    clip: tuple[float, float, float, float] | None = None,
 ) -> tuple[bytes, int]:
     """One whole PDF page → ``(PNG bytes, page_count)``.
 
@@ -103,6 +104,10 @@ def render_page_png(
     numbering Marker ``page-N`` spans and ``chunks.page_first`` carry.
     ``doc[page]`` raises ``IndexError`` out of range; the caller maps
     that to its not-found semantics.
+
+    ``clip`` is ``(x0, y0, x1, y1)`` as fractions of the page (0-1, origin
+    top-left): only that region is rendered, at ``dpi``, so a small table
+    or glyph run comes out sharper than a whole-page render.
     """
     from precis.utils.optional_deps import require_optional
 
@@ -111,10 +116,21 @@ def render_page_png(
     doc = fitz.open(path)
     try:
         pg = doc[page]
-        edge = max(pg.rect.width, pg.rect.height)
+        rect = pg.rect
+        region = None
+        if clip is not None:
+            w, h = rect.width, rect.height
+            region = fitz.Rect(
+                rect.x0 + clip[0] * w,
+                rect.y0 + clip[1] * h,
+                rect.x0 + clip[2] * w,
+                rect.y0 + clip[3] * h,
+            )
+            rect = region
+        edge = max(rect.width, rect.height)
         if edge * zoom > _MAX_PAGE_EDGE_PX:
             zoom = _MAX_PAGE_EDGE_PX / edge
-        pix = pg.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        pix = pg.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=region, alpha=False)
         return pix.tobytes("png"), doc.page_count
     finally:
         doc.close()

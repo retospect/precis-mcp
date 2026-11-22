@@ -410,6 +410,7 @@ _SUPPORTED_VIEWS = (
     "figures",
     "measures",
     "page_image",
+    "read_region",
     "comments",
     "retired",
     "tags",
@@ -476,6 +477,19 @@ class _NoteWindow(NamedTuple):
 #: (gr520326: 835 claimed vs. ~857 actual), the nearest real span
 #: brackets much tighter.
 _PAGE_SPAN_WINDOW = 6
+
+#: ``view='read_region'`` extractor identity (gr719555): stored/printed
+#: with every reading so a later re-read with a newer version compares.
+_READ_REGION_EXTRACTOR = "paper.read_region"
+_READ_REGION_VERSION = "1"
+_READ_REGION_DPI = 300.0
+_READ_REGION_MAX_USD = 0.10
+_READ_REGION_PROMPT = (
+    "You are reading a crop of a scientific paper page. Transcribe exactly "
+    "what is printed: tables as Markdown tables, numbers digit for digit, "
+    "Greek letters and symbols as Unicode. Mark any glyph you cannot make "
+    "out as [?] rather than guessing. Reply with the transcription only."
+)
 
 #: What ``view='page_image'`` may put in the result itself (gr719555).
 #: Raster types only — the set the ``/files/blob`` route serves — and a
@@ -1014,6 +1028,10 @@ class PaperHandler(Handler):
                 # it, and the dispatcher forwards the key into
                 # ``find_in_ref`` on the ``q=`` path.
                 "queue",
+                # ``view='read_region'``: page-fraction crop + focusing
+                # question for the server-side reading.
+                "bbox",
+                "question",
             }
         ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
@@ -10941,8 +10959,139 @@ class PaperHandler(Handler):
         ]
         return Response(body="\n".join(lines), images=images)
 
+    def _render_read_region_view(
+        self, ref: Ref, args: dict[str, Any] | None = None
+    ) -> Response:
+        """``view='read_region'`` — a checked reading of one page region
+        (gr719555): the crop goes to a server-side vision model and the
+        transcribed text comes back with its provenance, so a client with
+        no way to look at pixels can still verify a glyph-damaged table.
+
+        ``args={'page': N}`` (0-based) or ``{'ord': N}`` names the page;
+        ``args={'bbox': [x0, y0, x1, y1]}`` is the region as page
+        fractions 0-1 from the top-left (default: the whole page);
+        ``args={'question': '…'}`` focuses the reading. The reply names
+        the extractor — engine, model, version, settings — so the same
+        region can be re-read later and the readings compared. The crop
+        rides in the result as an image block for multimodal clients.
+        """
+        from precis.figdigit import render_page_png  # noqa: F401  (dep probe)
+        from precis.utils.llm.router import LlmImage, LlmRequest, Tier, route
+
+        handle = _pa(ref)
+        a = args or {}
+        nxt = f"get(id='{handle}', view='read_region', args={{'page': 0}})"
+        page_raw: Any = a.get("page")
+        ord_raw: Any = a.get("ord")
+        if (page_raw is None) == (ord_raw is None):
+            raise BadInput(
+                "read_region wants exactly one of args={'page': N} "
+                "(0-based PDF page) or args={'ord': N} (a body chunk)",
+                next=nxt,
+            )
+        if ord_raw is not None:
+            try:
+                ord_i = int(ord_raw)
+            except (TypeError, ValueError, OverflowError):
+                raise BadInput(
+                    f"args['ord'] must be a chunk ord, got {ord_raw!r}", next=nxt
+                ) from None
+            chunk = self.store.chunks.get_chunk(ref.id, pos=ord_i)
+            if chunk is None:
+                raise NotFound(
+                    f"no body chunk at ~{ord_i} in {handle}",
+                    next=f"get(id='{handle}', view='toc')",
+                )
+            page_raw, _exact = self._chunk_page_hint(ref.id, chunk)
+            if page_raw is None:
+                raise NotFound(
+                    f"no page can be derived for ~{ord_i} in {handle}", next=nxt
+                )
+        try:
+            page = int(page_raw)
+        except (TypeError, ValueError, OverflowError):
+            raise BadInput(
+                f"args['page'] must be a 0-based PDF page, got {page_raw!r}",
+                next=nxt,
+            ) from None
+        if page < 0:
+            raise BadInput(f"args['page'] must be >= 0, got {page}", next=nxt)
+        bbox_raw = a.get("bbox")
+        clip: tuple[float, float, float, float] | None = None
+        if bbox_raw is not None:
+            try:
+                x0, y0, x1, y1 = (float(v) for v in bbox_raw)
+            except (TypeError, ValueError, OverflowError):
+                raise BadInput(
+                    f"args['bbox'] must be [x0, y0, x1, y1], got {bbox_raw!r}",
+                    next=nxt,
+                ) from None
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise BadInput(
+                    "args['bbox'] is page fractions 0-1 with x0<x1 and y0<y1 "
+                    f"(origin top-left), got {bbox_raw!r}",
+                    next=nxt,
+                )
+            clip = (x0, y0, x1, y1)
+        question = str(a.get("question") or "").strip()
+        sha = getattr(ref, "pdf_sha256", None)
+        if not sha:
+            raise BadInput(
+                f"{handle} holds no PDF — no page to read",
+                next=(
+                    f"put(kind='{ref.kind}', id='{handle}', "
+                    "args={'pdf_url': 'https://…/x.pdf'})"
+                ),
+            )
+        dpi = _READ_REGION_DPI
+        png, missing = self._local_page_png(ref, sha, page, clip=clip, dpi=dpi)
+        if png is None:
+            raise BadInput(
+                f"cannot read the region: {missing}",
+                next=f"get(id='{handle}', view='page_image', args={{'page': {page}}})",
+            )
+        prompt = _READ_REGION_PROMPT + (
+            f"\nQuestion to answer from the image: {question}\n" if question else ""
+        )
+        res = route(
+            LlmRequest(
+                tier=Tier.BIG,
+                source="paper:read_region",
+                prompt=prompt,
+                images=(LlmImage(data=png),),
+                max_usd=_READ_REGION_MAX_USD,
+                timeout_s=120.0,
+            )
+        )
+        if res.error or not (res.text or "").strip():
+            raise BadInput(
+                f"the reading model gave no answer ({res.error or 'empty reply'})",
+                next=f"get(id='{handle}', view='page_image', args={{'page': {page}}})",
+            )
+        images, image_line = _inline_image(png, "image/png", "")
+        region = "whole page" if clip is None else f"bbox {list(clip)}"
+        lines = [
+            f"# {handle} — reading of page {page} ({region})",
+            "",
+            res.text.strip(),
+            "",
+            "## provenance",
+            f"extractor: {_READ_REGION_EXTRACTOR} v{_READ_REGION_VERSION}",
+            f"model: {res.model or 'unknown'} (tier {res.tier or Tier.BIG.value})",
+            f"settings: dpi={dpi:g}, region={region}, "
+            f"question={question!r}, max_usd={_READ_REGION_MAX_USD}",
+            "status: unchecked machine reading — verify before it becomes a correction",
+            image_line,
+        ]
+        return Response(body="\n".join(lines), images=images)
+
     def _local_page_png(
-        self, ref: Ref, sha: str, page: int
+        self,
+        ref: Ref,
+        sha: str,
+        page: int,
+        clip: tuple[float, float, float, float] | None = None,
+        dpi: float = 200.0,
     ) -> tuple[bytes | None, str]:
         """``(PNG, '')`` for one page of the ref's held PDF rendered on
         this node, or ``(None, why)`` when it cannot be — the caller then
@@ -10981,7 +11130,7 @@ class PaperHandler(Handler):
                 return None, "the stored bytes no longer match the record"
         handle = _pa(ref)
         try:
-            png, _page_count = render_page_png(path, page=page)
+            png, _page_count = render_page_png(path, page=page, clip=clip, dpi=dpi)
         except IndexError:
             raise BadInput(
                 f"page {page} is past the end of {handle}'s PDF",
@@ -11141,6 +11290,8 @@ class PaperHandler(Handler):
             return self._render_pdf_link_view(ref, args)
         if view == "page_image":
             return self._render_page_image_view(ref, args)
+        if view == "read_region":
+            return self._render_read_region_view(ref, args)
         if view == "log":
             # Per-ref chronological event log across every subsystem
             # that writes to ref_events (chase, fetcher, provenance,
