@@ -179,10 +179,16 @@ class AnkiHandler(NumericRefHandler):
     emits_card: ClassVar[bool] = True
     accepts_put_meta: ClassVar[bool] = True
 
-    def put(self, *, image: str | None = None, **kw: Any) -> Response:
+    def put(
+        self,
+        *,
+        image: str | None = None,
+        auto_refresh_days: int | None = None,
+        **kw: Any,
+    ) -> Response:
         # Only the typed attachment option feeds the numeric create hook.
         kw["meta"] = {"image": image} if image is not None else None
-        return super().put(**kw)
+        return super().put(auto_refresh_days=auto_refresh_days, **kw)
 
     def _merge_put_meta(
         self, text: str, initial_meta: dict[str, Any], put_meta: dict[str, Any]

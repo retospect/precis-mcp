@@ -528,19 +528,20 @@ def test_report_resource_slots_threads_per_resource_soft_capacity(monkeypatch) -
 
 def test_report_resource_slots_retracts_dropped_soft_gauge(monkeypatch) -> None:
     """A retractable soft gauge absent from the probe (container_agent once a
-    host opts out, upload_staging once PRECIS_UPLOAD_STAGING stops resolving)
+    host opts out, anki_sync once AnkiConnect stops answering, upload_staging once PRECIS_UPLOAD_STAGING stops resolving)
     is DELETEd, so the console stops showing a stale chip. mem, always
     present, is never retracted."""
     from precis.workers import capability_probe
 
     monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {})
-    # container_agent + upload_staging have dropped out; only mem remains.
+    # container_agent, upload_staging and anki_sync have dropped out; only mem remains.
     monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": 2})
     store = _RecordingStore()
     heartbeat._report_resource_slots(store, "maple")
     # Retraction iterates the RETRACTABLE_SOFT_SIGNALS frozenset — order
     # is hash-dependent, not part of the contract.
     assert sorted(store.deleted) == [
+        ("maple", "anki_sync"),
         ("maple", "container_agent"),
         ("maple", "upload_staging"),
     ]
@@ -558,7 +559,12 @@ def test_report_resource_slots_no_retract_when_gauge_present(monkeypatch) -> Non
     monkeypatch.setattr(
         capability_probe,
         "probe_soft_signals",
-        lambda: {"mem": 2, "container_agent": 1, "upload_staging": 1},
+        lambda: {
+            "mem": 2,
+            "container_agent": 1,
+            "upload_staging": 1,
+            "anki_sync": 1,
+        },
     )
     store = _RecordingStore()
     heartbeat._report_resource_slots(store, "maple")

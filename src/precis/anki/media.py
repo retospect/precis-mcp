@@ -10,7 +10,14 @@ from typing import Any
 import httpx
 
 from precis.errors import BadInput, Upstream
-from precis.utils.http import http_client
+from precis.utils.http import (
+    POLICIES,
+    VendorUnavailable,
+    call_with_backoff,
+    http_client,
+    netloc_provider,
+)
+from precis.utils.rate_limit import RateLimited
 from precis.utils.safe_fetch import DnsTimeout, SsrfBlocked, safe_stream
 
 _MAX_BYTES = 1024 * 1024
@@ -27,8 +34,11 @@ def fetch_image(url: Any) -> dict[str, str]:
         raise BadInput("expected a public HTTPS image URL", next=_NEXT)
 
     deadline = time.monotonic() + 15
-    data = bytearray()
-    try:
+
+    def download() -> tuple[bytearray, str]:
+        if time.monotonic() >= deadline:
+            raise Upstream("Anki image download timed out", next=_NEXT)
+        data = bytearray()
         with (
             http_client(timeout=5.0, headers={"Accept-Encoding": "identity"}) as client,
             safe_stream(client, "GET", url) as response,
@@ -48,9 +58,25 @@ def fetch_image(url: Any) -> dict[str, str]:
             mime = (
                 response.headers.get("Content-Type", "").split(";")[0].strip().lower()
             )
+        return data, mime
+
+    try:
+        data, mime = call_with_backoff(
+            download,
+            service=netloc_provider(url) or "web-fetch",
+            policy=POLICIES["web-fetch"],
+            url=url,
+            deadline=deadline,
+        )
     except SsrfBlocked as exc:
         raise BadInput("Anki image URL or redirect was blocked", next=_NEXT) from exc
-    except (DnsTimeout, httpx.HTTPError, httpx.InvalidURL) as exc:
+    except (
+        DnsTimeout,
+        httpx.HTTPError,
+        httpx.InvalidURL,
+        RateLimited,
+        VendorUnavailable,
+    ) as exc:
         raise Upstream("could not download the Anki image", next=_NEXT) from exc
 
     if mime == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"):
