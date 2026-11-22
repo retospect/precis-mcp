@@ -689,3 +689,47 @@ def test_unmarked_complaint_is_reported_not_minted(store: Store, caplog: Any) ->
         f"gr{gid}" in r.getMessage() and f"me{mem}" in r.getMessage()
         for r in caplog.records
     )
+
+
+def _legacy_done_review(store: Store, mem: int) -> None:
+    """A done memory-review todo with a bare, pin-less body (pre-gr732271)."""
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert
+    from precis.utils.memory_hubs import REVIEW_TAG
+
+    ref = store.insert_ref(kind="todo", slug=None, title=f"review me{mem}", meta={})
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0, text="no action needed", meta={"chunk_kind": TODO_BODY_KIND}
+            )
+        ],
+    )
+    for tag in (Tag.parse_strict("STATUS:done", kind="todo"), Tag.open(REVIEW_TAG)):
+        store.add_tag(ref.id, tag, set_by="system")
+    store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=mem,
+        relation="raises-concern-about",
+        set_by="system",
+    )
+
+
+def test_unstamped_done_review_without_pin_suppresses_re_raise(
+    store: Store,
+) -> None:
+    """A closed pin-less review that never stamped trust still stops the
+    dangling_mention evaluator re-raising on the unchanged memory."""
+    mem = _memory(store, "A claim mentioning a retired handle.")
+    _legacy_done_review(store, mem)
+    candidate = cand.GardenCandidate(
+        detector="dangling_mention",
+        action="rewrite",
+        target_kind="ref",
+        target_id=mem,
+        title="me mentions retired handles",
+        evidence={"content_sha": "abc123"},
+        payload={"base_sha": "abc123"},
+    )
+    runner._file_review_todo(store, candidate, Verdict(accept=False, ask="review"))
+    assert len(store.list_refs(kind="todo", tags=["memory-review"], limit=10)) == 1

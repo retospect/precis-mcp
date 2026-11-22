@@ -121,13 +121,20 @@ def _gripe_review_filed(store: Store, memory_id: int, gripe_id: int) -> bool:
 def _completed_review_filed(
     store: Store, memory_id: int, detector: str, sha: str
 ) -> bool:
-    """A completed review at the same pin already settled this detector's ask."""
+    """A completed review at the same pin already settled this detector's ask.
+
+    Backstop for a review that never stamped trust: a done review todo
+    whose body carries no pin at all (minted before pins) and was last
+    touched no earlier than the memory suppresses the re-ask too, so a
+    forgotten ``edit(mode='trust')`` cannot spawn duplicate reviews.
+    """
     from precis.store.types import TODO_BODY_KIND
     from precis.utils.memory_hubs import REVIEW_TAG
 
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id "
+            "JOIN refs m ON m.ref_id = l.dst_ref_id "
             "WHERE l.dst_ref_id = %s AND l.relation = 'raises-concern-about' "
             "AND t.kind = 'todo' AND t.retired_at IS NULL "
             "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
@@ -136,14 +143,18 @@ def _completed_review_filed(
             "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
             "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
             "AND g.namespace = 'STATUS' AND g.value = 'done') "
-            "AND EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = t.ref_id "
+            "AND (EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = t.ref_id "
             "AND c.chunk_kind = %s AND strpos(c.text, %s) > 0) "
+            "OR (t.updated_at >= m.updated_at "
+            "AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = t.ref_id "
+            "AND c.chunk_kind = %s AND strpos(c.text, 'Pinned content sha:') > 0))) "
             "LIMIT 1",
             (
                 memory_id,
                 REVIEW_TAG,
                 TODO_BODY_KIND,
                 f"\n{_review_pin(detector, sha)}\n",
+                TODO_BODY_KIND,
             ),
         ).fetchone()
     return row is not None
