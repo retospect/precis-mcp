@@ -230,6 +230,9 @@ Learning and Anki review share `precis.reading.known` for card dismissal and
 undo. `anki_known_undo` records the owner's retirement set and the prior
 shared mastery fields. Undo restores the original card refs and queues their
 notes for the next sync.
+Page selections queue through `precis.reading.asked`. The selected text lives
+in `anki_highlight_context` for the requesting login. Forge publication and
+Undo acquire the same concept row lock.
 
 Anki card creation can snapshot a public image with the ref. The per-owner
 Anki sync worker adds the snapshot to the mirror's media collection, embeds

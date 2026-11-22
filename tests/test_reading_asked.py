@@ -21,9 +21,11 @@ from precis.reading.asked import (
     extract_asked_term,
     first_sentence,
     queue_asked_term,
+    unqueue_asked_term,
 )
 from precis.reading.flashcards import (
     _cardless_concepts,
+    author_card,
     effective_cards_per_day,
     mint_daily_cards,
     run_card_forge,
@@ -164,6 +166,114 @@ class TestQueueAskedTerm:
         out = queue_asked_term(store, alias.upper())
         assert out["created"] is False and out["ref_id"] == cid
 
+    def test_source_and_asked_mint_stamp_on_a_fresh_concept(self, store: Any) -> None:
+        """The highlight queue's provenance: meta.source names the capture
+        door and meta.asked_mint marks the mint as the queue's own, so
+        Undo can retire it (gr743234)."""
+        term = f"term-{uuid.uuid4().hex[:8]}"
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        out = queue_asked_term(
+            store,
+            term,
+            owner_login="reto",
+            definition="highlighted text",
+            source="highlight",
+        )
+        ref = store.get_ref(kind="concept", id=out["ref_id"])
+        assert ref.meta["source"] == "highlight"
+        assert ref.meta["asked_mint"] is True
+
+    def test_every_queue_files_an_undoable_submission(self, store: Any) -> None:
+        """``out["submission"]`` is the undo handle: the ledger entry
+        records who asked, through which door, with what context and
+        from which page (gr743234)."""
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        page = store.insert_ref(
+            kind="conv", slug=f"page/{uuid.uuid4().hex[:8]}", title="p", meta={}
+        )
+        term = f"term-{uuid.uuid4().hex[:8]}"
+        out = queue_asked_term(
+            store,
+            term,
+            owner_login="reto",
+            conv_ref_id=page.id,
+            definition="the highlighted sentence",
+            source="highlight",
+        )
+        ref = store.get_ref(kind="concept", id=out["ref_id"])
+        entry = ref.meta["asked_submissions"][out["submission"]]
+        assert entry["owner"] == "reto"
+        assert entry["source"] == "highlight"
+        assert entry["ref"] == page.id
+        assert "the highlighted sentence" not in json.dumps(ref.meta)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT context FROM anki_highlight_context "
+                "WHERE concept_id = %s AND owner_login = %s AND submission = %s",
+                (ref.id, "reto", out["submission"]),
+            ).fetchone()
+            linked = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "AND relation = 'related-to'",
+                (ref.id, page.id),
+            ).fetchone()
+        assert row == ("the highlighted sentence",)
+        assert linked is not None
+
+    def test_a_capture_on_an_existing_node_keeps_its_context(self, store: Any) -> None:
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        name = f"ctx-{uuid.uuid4().hex[:8]}"
+        shared_id = _concept(store, name)
+        out = queue_asked_term(
+            store,
+            name,
+            owner_login="reto",
+            definition="what the page said about it",
+            source="highlight",
+        )
+        assert out["created"] is True
+        assert out["ref_id"] != shared_id
+        assert store.get_ref(kind="concept", id=out["ref_id"]).owner_login == "reto"
+        shared = store.get_ref(kind="concept", id=shared_id)
+        assert "asked_submissions" not in shared.meta
+        assert shared.meta["definition"] == "a seeded test idea"
+
+    def test_a_self_link_is_skipped_not_fatal(self, store: Any) -> None:
+        """Highlighting a concept's own name on its own page must not
+        self-link: the links CHECK would roll the whole queue write
+        back (gr743234)."""
+        name = f"self-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, name)
+        out = queue_asked_term(store, name, conv_ref_id=cid)
+        assert out["created"] is False
+        ref = store.get_ref(kind="concept", id=cid)
+        assert ref.meta["asked_count"] == 1
+        assert ASKED_TAG in _tags(store, cid)
+        with store.pool.connection() as conn:
+            link = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (cid, cid),
+            ).fetchone()
+        assert link is None
+
+    def test_the_related_link_lands_on_an_existing_node_too(self, store: Any) -> None:
+        """A highlight queue that matches a pre-existing concept still
+        records which page it came from — the related-to edge is not a
+        mint-only privilege."""
+        name = f"linked-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, name)
+        page = store.insert_ref(
+            kind="conv", slug=f"page/{uuid.uuid4().hex[:8]}", title="p", meta={}
+        )
+        out = queue_asked_term(store, name, conv_ref_id=page.id)
+        assert out["created"] is False
+        with store.pool.connection() as conn:
+            link = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (cid, page.id),
+            ).fetchone()
+        assert link is not None
+
     def test_a_taxon_match_wins_before_minting(self, store: Any) -> None:
         name = f"taxon-{uuid.uuid4().hex[:8]}"
         tid = store.insert_ref(
@@ -300,3 +410,306 @@ def _open_tag() -> Any:
     from precis.store import Tag
 
     return Tag.open(ASKED_TAG)
+
+
+class TestUnqueueAskedTerm:
+    def test_retires_a_concept_the_queue_minted_for_this_owner(
+        self, store: Any
+    ) -> None:
+        """Undo on a highlight queue's own mint (asked_mint + matching
+        owner + a single ask) retires the concept outright (gr743234)."""
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        term = f"term-{uuid.uuid4().hex[:8]}"
+        out = queue_asked_term(store, term, owner_login="reto", source="highlight")
+        assert unqueue_asked_term(
+            store,
+            out["ref_id"],
+            submission=out["submission"],
+            owner_login="reto",
+        ) == {"undone": True, "retired": True}
+        assert store.get_ref(kind="concept", id=out["ref_id"]) is None
+        assert unqueue_asked_term(
+            store, out["ref_id"], submission=out["submission"], owner_login="reto"
+        ) == {"undone": False}
+
+    def test_another_login_cannot_clear_the_owners_ask(self, store: Any) -> None:
+        """Undo binds the token to its recorded owner: a different login
+        holding it — or guessing the ref — undoes nothing; the owner's
+        ask stands untouched (gr743234 review)."""
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        term = f"term-{uuid.uuid4().hex[:8]}"
+        out = queue_asked_term(store, term, owner_login="reto", source="highlight")
+        res = unqueue_asked_term(
+            store,
+            out["ref_id"],
+            submission=out["submission"],
+            owner_login="alice",
+        )
+        assert res == {"undone": False}
+        ref = store.get_ref(kind="concept", id=out["ref_id"])
+        assert ref is not None
+        assert ref.meta["asked_count"] == 1
+        assert out["submission"] in ref.meta["asked_submissions"]
+        assert ASKED_TAG in _tags(store, ref.id)
+
+    def test_a_consumed_token_cannot_eat_another_ask(self, store: Any) -> None:
+        """One submission, one reversal: replaying the same token after a
+        successful Undo cannot consume a second, independent ask — the
+        bug a ref-id-only Undo had (gr743234 review)."""
+        name = f"replay-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, name)
+        first = queue_asked_term(store, name, owner_login="reto")
+        second = queue_asked_term(store, name, owner_login="reto")
+        assert first["submission"] != second["submission"]
+        res = unqueue_asked_term(
+            store, cid, submission=first["submission"], owner_login="reto"
+        )
+        assert res == {"undone": True, "retired": False, "asked_count": 1}
+        # The replay undoes nothing — the second ask survives intact.
+        assert unqueue_asked_term(
+            store, cid, submission=first["submission"], owner_login="reto"
+        ) == {"undone": False}
+        ref = store.get_ref(kind="concept", id=cid)
+        assert ref.meta["asked_count"] == 1
+        assert ASKED_TAG in _tags(store, cid)
+
+    def test_decrements_and_lifts_the_tag_at_zero(self, store: Any) -> None:
+        """Undo on a pre-existing concept the queue merely tagged drops
+        the ask count; at zero the twin:asked tag lifts but the node
+        stays live."""
+        name = f"undo-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, name)
+        out = queue_asked_term(store, name, owner_login="reto")
+        res = unqueue_asked_term(
+            store, cid, submission=out["submission"], owner_login="reto"
+        )
+        assert res == {"undone": True, "retired": False, "asked_count": 0}
+        assert ASKED_TAG not in _tags(store, cid)
+        meta = store.get_ref(kind="concept", id=cid).meta
+        assert meta["asked_count"] == 0
+        assert meta["asked_submissions"] == {}
+
+    def test_keeps_the_tag_while_an_ask_remains(self, store: Any) -> None:
+        """One Undo undoes one ask — a concept asked twice keeps the tag."""
+        name = f"undo2-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, name)
+        queue_asked_term(store, name, owner_login="reto")
+        out = queue_asked_term(store, name, owner_login="reto")
+        res = unqueue_asked_term(
+            store, cid, submission=out["submission"], owner_login="reto"
+        )
+        assert res == {"undone": True, "retired": False, "asked_count": 1}
+        assert ASKED_TAG in _tags(store, cid)
+
+    def test_a_wrong_token_is_not_an_undo(self, store: Any) -> None:
+        """Ref id plus a token nobody issued undoes nothing."""
+        name = f"tok-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, name)
+        queue_asked_term(store, name, owner_login="reto")
+        res = unqueue_asked_term(store, cid, submission="0" * 32, owner_login="reto")
+        assert res == {"undone": False}
+        assert store.get_ref(kind="concept", id=cid).meta["asked_count"] == 1
+
+    def test_a_manual_mint_survives_a_later_highlight_undo(self, store: Any) -> None:
+        """The manual queue's mint is out of Undo reach: a highlight ask
+        on the same term can undo itself (count drops, tag survives on
+        the manual ask) but never retires a mint it didn't create
+        (gr743234 review)."""
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        term = f"term-{uuid.uuid4().hex[:8]}"
+        mint = queue_asked_term(store, term, owner_login="reto")  # manual door
+        assert mint["created"] is True
+        cid = mint["ref_id"]
+        hl = queue_asked_term(store, term, owner_login="reto", source="highlight")
+        res = unqueue_asked_term(
+            store, cid, submission=hl["submission"], owner_login="reto"
+        )
+        assert res == {"undone": True, "retired": False, "asked_count": 1}
+        ref = store.get_ref(kind="concept", id=cid)
+        assert ref is not None
+        assert ASKED_TAG in _tags(store, cid)
+        # The manual submission's token is still the only live one — and
+        # it is unissued, so nothing on the page can retire this mint.
+        assert list(ref.meta["asked_submissions"]) == [mint["submission"]]
+
+    def test_none_for_a_missing_or_wrong_kind(self, store: Any) -> None:
+        conv = store.insert_ref(
+            kind="conv", slug=f"c/{uuid.uuid4().hex[:8]}", title="c", meta={}
+        )
+        assert (
+            unqueue_asked_term(store, conv.id, submission="x", owner_login="reto")
+            is None
+        )
+        assert (
+            unqueue_asked_term(store, 999999999, submission="x", owner_login="reto")
+            is None
+        )
+
+
+class TestForgeCardOwnership:
+    """gr743234 review: the forge must carry the requesting login onto
+    the minted card — cards are per-login rows, so an ownerless card is
+    outside that login's review list and sync queries."""
+
+    def test_existing_card_does_not_block_forge_or_undo(self, store: Any) -> None:
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        term = f"recapture-{uuid.uuid4().hex}"
+        original = queue_asked_term(store, term, owner_login="reto")
+        cid = original["ref_id"]
+        store.update_ref(cid, meta_patch={"cohorts": [term]})
+        existing = author_card(
+            store,
+            concept_id=cid,
+            text="An {{c1::existing card}}.",
+            deck="Older",
+            owner_login="reto",
+        )
+        page = store.insert_ref(kind="conv", slug=term, title="Source page")
+
+        def capture() -> dict[str, Any]:
+            return queue_asked_term(
+                store,
+                term,
+                owner_login="reto",
+                conv_ref_id=page.id,
+                definition="new context",
+                source="highlight",
+            )
+
+        def undo(out: dict[str, Any]) -> dict[str, Any] | None:
+            return unqueue_asked_term(
+                store, cid, submission=out["submission"], owner_login="reto"
+            )
+
+        def linked() -> bool:
+            with store.pool.connection() as conn:
+                return (
+                    conn.execute(
+                        "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                        "AND relation = 'related-to'",
+                        (cid, page.id),
+                    ).fetchone()
+                    is not None
+                )
+
+        first, second = capture(), capture()
+        assert undo(first) == {"undone": True, "retired": False, "asked_count": 2}
+        assert linked()
+        assert undo(second) == {"undone": True, "retired": False, "asked_count": 1}
+        assert not linked()
+        store.add_link(src_ref_id=cid, dst_ref_id=page.id, relation="related-to")
+        assert undo(capture()) == {"undone": True, "retired": False, "asked_count": 1}
+        assert linked()
+
+        pending, published = capture(), capture()
+        client = _FakeClient({"cards": [{"text": "A {{c1::new card}}."}]})
+        report = mint_daily_cards(store, client=client, per_day=2, cohort=term)
+        assert [concept for concept, _ in report.minted] == [cid]
+        assert "HIGHLIGHT CONTEXT: new context" in client.calls[0][-1]["content"]
+        assert undo(published) == {"undone": False}
+        assert undo(pending) == {"undone": True, "retired": False, "asked_count": 2}
+        assert linked()
+        assert store.get_ref(kind="anki", id=existing) is not None
+
+        queued, refused = capture(), capture()
+        declining = _FakeClient({"skip_reason": "not suitable"})
+        report = mint_daily_cards(store, client=declining, per_day=3, cohort=term)
+        assert report.refused == [(cid, "the forge declined the captured term")]
+        report = mint_daily_cards(store, client=client, per_day=3, cohort=term)
+        assert [concept for concept, _ in report.minted] == [cid]
+        assert undo(queued) == {"undone": False}
+        assert undo(refused) == {"undone": True, "retired": False, "asked_count": 3}
+
+    def test_the_card_belongs_to_the_queue_mints_owner(self, store: Any) -> None:
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        co = f"own-{uuid.uuid4().hex[:8]}"
+        out = queue_asked_term(
+            store, f"term-{uuid.uuid4().hex[:8]}", owner_login="reto"
+        )
+        store.update_ref(out["ref_id"], meta_patch={"cohorts": [co]})
+        client = _FakeClient({"cards": [{"text": "A {{c1::b}}."}]})
+        report = mint_daily_cards(store, client=client, per_day=5, cohort=co)
+        card_id = report.minted[0][1][0]
+        assert store.get_ref(kind="anki", id=card_id).owner_login == "reto"
+
+    @pytest.mark.parametrize("kind", ["concept", "taxon"])
+    def test_each_requester_gets_their_own_context_and_card(
+        self, store: Any, kind: str
+    ) -> None:
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        store.create_web_user(login="alice", abbrev="al", password=hash_password("pw"))
+        co = f"scoped-{uuid.uuid4().hex[:8]}"
+        name = f"shared-{uuid.uuid4().hex[:8]}"
+        shared = store.insert_ref(
+            kind=kind,
+            slug=None,
+            title=name,
+            meta={"name": name, "cohorts": [co], "state": "mastered"},
+        )
+        reto = queue_asked_term(
+            store,
+            name,
+            owner_login="reto",
+            definition="context for Reto",
+            source="highlight",
+        )
+        alice = queue_asked_term(
+            store,
+            name,
+            owner_login="alice",
+            definition="context for Alice",
+            source="highlight",
+        )
+        assert len({shared.id, reto["ref_id"], alice["ref_id"]}) == 3
+        # Even a legacy link from the queue's concept to another login's card
+        # must leave the requester's own candidate eligible.
+        author_card(
+            store,
+            concept_id=reto["ref_id"],
+            text="The {{c1::older card}}.",
+            deck="Older",
+            owner_login="alice",
+        )
+        client = _FakeClient({"cards": [{"text": "A {{c1::b}}."}]})
+        report = mint_daily_cards(store, client=client, per_day=3, cohort=co)
+        for (concept_id, cards), call in zip(report.minted, client.calls, strict=True):
+            owner = "reto" if concept_id == reto["ref_id"] else "alice"
+            assert (
+                "HIGHLIGHT CONTEXT: context for " + owner.title() in call[-1]["content"]
+            )
+            assert (
+                "context for Alice" if owner == "reto" else "context for Reto"
+            ) not in call[-1]["content"]
+            assert store.get_ref(kind="anki", id=cards[0]).owner_login == owner
+        assert {cid for cid, _ in report.minted} == {reto["ref_id"], alice["ref_id"]}
+        assert unqueue_asked_term(
+            store, reto["ref_id"], submission=reto["submission"], owner_login="reto"
+        ) == {"undone": False}
+        assert store.get_ref(kind="concept", id=reto["ref_id"]) is not None
+
+    def test_undo_during_authoring_prevents_publish(self, store: Any) -> None:
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        co = f"undo-race-{uuid.uuid4().hex[:8]}"
+        out = queue_asked_term(
+            store,
+            co,
+            owner_login="reto",
+            definition="context to withdraw",
+            source="highlight",
+        )
+        store.update_ref(out["ref_id"], meta_patch={"cohorts": [co]})
+
+        class UndoingClient(_FakeClient):
+            def complete(self, messages: list[dict[str, str]]) -> Any:
+                assert unqueue_asked_term(
+                    store,
+                    out["ref_id"],
+                    submission=out["submission"],
+                    owner_login="reto",
+                ) == {"undone": True, "retired": True}
+                return super().complete(messages)
+
+        client = UndoingClient({"cards": [{"text": "A {{c1::b}}."}]})
+        report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
+        assert client.calls
+        assert report.minted == []

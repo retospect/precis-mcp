@@ -350,12 +350,17 @@ def _handle_target(handle: str, store: Any = None) -> dict[str, Any] | None:
         normalized = handle_registry.normalize(base)
         parsed = handle_registry.parse(normalized)
         if parsed is not None:
-            return {"kind": parsed[0], "id": h}
+            return {"kind": parsed[0], "id": h, "page_ref": normalized}
         if store is not None:
             for kind in ("se", "structure"):
                 try:
-                    if store.get_ref(kind=kind, id=base) is not None:
-                        return {"kind": kind, "id": h}
+                    ref = store.get_ref(kind=kind, id=base)
+                    if ref is not None:
+                        return {
+                            "kind": kind,
+                            "id": h,
+                            "page_ref": handle_registry.format_handle(kind, ref.id),
+                        }
                 except Exception:
                     continue
         return None
@@ -620,6 +625,7 @@ async def eye_focus(
         if q:
             href += "&q=" + quote(q, safe="")
         return timed_response(request, RedirectResponse(href, status_code=303), t0)
+    page_ref = target.pop("page_ref", target["id"])
     args: dict[str, Any] = {**target, "extent": extent}
     if q:
         args["q"] = q
@@ -648,6 +654,7 @@ async def eye_focus(
             "eye/focus.html.j2",
             {
                 "handle": canonical,
+                "highlight_page_ref": page_ref,
                 "extent": extent,
                 "q": q or "",
                 "body": _linkify_second_hop(

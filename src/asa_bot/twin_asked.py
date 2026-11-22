@@ -7,7 +7,8 @@ message matches the what-is grammar (:func:`precis.reading.asked.
 extract_asked_term`):
 
 - a live concept/taxon named the term (case-insensitive, aliases included)
-  gets tagged ``twin:asked`` and its ``meta.asked_count`` bumped;
+  gets tagged ``twin:asked`` and its ``meta.asked_count`` bumped if it is
+  shared or belongs to the speaker;
 - otherwise a ``twin:asked`` concept is minted via the ``put`` door —
   ``<term> — <first sentence of the assistant's reply>`` — ``related-to``
   the conv, owned by the asking user's login (``refs.owner_login``).
@@ -35,6 +36,7 @@ _CREATED_RE = re.compile(r"\bcn(\d+)\b")
 _FIND_SQL = """
     SELECT kind, ref_id FROM refs
     WHERE kind IN ('concept', 'taxon') AND retired_at IS NULL
+      AND (owner_login IS NULL OR owner_login = %s)
       AND (
             meta->>'norm_name' = %s
          OR lower(meta->>'name') = lower(%s)
@@ -43,7 +45,8 @@ _FIND_SQL = """
                     COALESCE(meta->'aliases', '[]'::jsonb)) a
                 WHERE lower(a) = lower(%s))
       )
-    ORDER BY CASE WHEN kind = 'concept' THEN 0 ELSE 1 END, ref_id
+    ORDER BY CASE WHEN kind = 'concept' THEN 0 ELSE 1 END,
+             owner_login NULLS LAST, ref_id
     LIMIT 1
 """
 
@@ -60,14 +63,17 @@ async def _connect(dsn: str) -> Any:
     return await psycopg.AsyncConnection.connect(dsn, autocommit=True)
 
 
-async def _find_named(dsn: str, term: str) -> tuple[str, int] | None:
-    """``(kind, ref_id)`` for the term's live concept/taxon — same predicate
-    as :func:`precis.reading.asked.find_named_term`, async."""
+async def _find_named(
+    dsn: str, term: str, *, owner_login: str | None
+) -> tuple[str, int] | None:
+    """Match a live shared term or one owned by the resolved speaker."""
     from precis.reading.concepts import normalize_name
 
     conn = await _connect(dsn)
     try:
-        cur = await conn.execute(_FIND_SQL, (normalize_name(term), term, term))
+        cur = await conn.execute(
+            _FIND_SQL, (owner_login, normalize_name(term), term, term)
+        )
         row = await cur.fetchone()
     finally:
         await conn.close()
@@ -135,7 +141,7 @@ async def capture(
         await _login_for(dsn, account_abbrev) if (account_abbrev and dsn) else None
     )
 
-    found = await _find_named(dsn, term) if dsn else None
+    found = await _find_named(dsn, term, owner_login=owner_login) if dsn else None
     if found is not None:
         kind, ref_id = found
         await precis.call_tool("tag", {"kind": kind, "id": ref_id, "add": [_TAG]})

@@ -23,6 +23,12 @@ package holds the concept-graph layer:
   for the Back Extra symbol glossary (``_GLOSSARY_RULE``, ``precis-cloze``
   rule 7) and tell the model to repair a missing line before it replies; no
   code checks the reply for undefined symbols.
+- `asked` — the ``twin:asked`` capture queue (what-is grammar, the ``/anki``
+  textarea and the page-selection "Card this" chip, gr743234). Every ask
+  files a ``meta.asked_submissions`` token — the highlight toast's Undo is
+  bound to that one submission and its owner — and the forge's
+  ``_cardless_concepts`` carries ``meta.asked_by`` onto the minted card's
+  ``refs.owner_login`` so the card lands in the asker's review and sync.
 - `term_quality` — the non-concept filter (the ``precis-cloze`` rule-0
   taxonomy), gating both the glossary build and the promotion chokepoint so
   topic-labels / stock phrases / front-matter never become concepts
@@ -31,6 +37,12 @@ package holds the concept-graph layer:
   paragraphs, with chunk-level cites and rail-only reader display. Validate
   markers before storing prose: the Claims rail resolves text directly, so
   omitting an unsupplied handle's graph edge alone cannot prevent attribution.
+- `asked` — page highlights queue against a concept owned by the requester.
+  The forge reads the selected text from the owner-scoped queue table and
+  rechecks its submission under the same row lock as Undo before publishing
+  one card batch per capture, including for concepts with older cards.
+  Undo removes a queue-created page edge once its last supporting submission
+  is withdrawn. Shared concept and taxon matches provide graph references.
 
 Remaining: graph-edge inference, mastery-from-Anki, embedding routing,
 booklet. Anki is a **renderer, not the brain** — the concept

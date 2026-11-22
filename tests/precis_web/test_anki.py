@@ -305,3 +305,220 @@ def test_cap_rejects_a_non_number() -> None:
     )
     assert r.status_code == 200
     assert "whole number" in r.text
+
+
+def test_highlight_queues_the_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chip's POST: the selection becomes the minted card's
+    definition, source stamps 'highlight', and the page handle resolves
+    to the related-to target (gr743234)."""
+    store = FakeStore()
+    store.refs[7] = SimpleNamespace(id=7, kind="paper", meta={})
+    seen: list[dict[str, Any]] = []
+    from precis_web.routes import anki as anki_routes
+
+    def _queue(store: Any, term: str, **kw: Any) -> Any:
+        seen.append({"term": term, **kw})
+        return {"kind": "concept", "ref_id": 42, "name": term, "created": True}
+
+    monkeypatch.setattr(anki_routes, "queue_asked_term", _queue)
+    r = _client(store).post(
+        "/anki/highlight",
+        data={
+            "term": "band gap",
+            "context": "the band gap sets which photons a solid absorbs",
+            "ref": "pa7",
+        },
+        headers={**_auth(), "Accept": "application/json"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["ref_id"] == 42
+    assert seen == [
+        {
+            "term": "band gap",
+            "owner_login": "reto",
+            "conv_ref_id": 7,
+            "definition": "the band gap sets which photons a solid absorbs",
+            "source": "highlight",
+        }
+    ]
+
+
+def test_highlight_without_a_page_ref_skips_the_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A page with no record handle (or a malformed one) queues fine —
+    the related-to edge is decoration, not a gate."""
+    seen: list[dict[str, Any]] = []
+    from precis_web.routes import anki as anki_routes
+
+    def _queue(store: Any, term: str, **kw: Any) -> Any:
+        seen.append(kw)
+        return {"kind": "concept", "ref_id": 9, "name": term, "created": True}
+
+    monkeypatch.setattr(anki_routes, "queue_asked_term", _queue)
+    for handle in ("", "not-a-handle", "pa404"):
+        r = _client(FakeStore()).post(
+            "/anki/highlight",
+            data={"term": "entropy", "context": "entropy again", "ref": handle},
+            headers={**_auth(), "Accept": "application/json"},
+        )
+        assert r.status_code == 200 and r.json()["ok"] is True
+    assert [kw["conv_ref_id"] for kw in seen] == [None, None, None]
+
+
+def test_highlight_validates_the_bounds() -> None:
+    """Term is required; context is the 2–2000 char selection window."""
+    base = {"term": "entropy", "context": "some highlighted text", "ref": ""}
+    heads = {**_auth(), "Accept": "application/json"}
+    for data in (
+        {**base, "term": ""},
+        {**base, "term": "x" * 201},
+        {**base, "context": ""},
+        {**base, "context": "x"},
+        {**base, "context": "x" * 2001},
+    ):
+        r = _client(FakeStore()).post("/anki/highlight", data=data, headers=heads)
+        assert r.status_code == 400, data
+        assert r.json()["ok"] is False
+
+
+def test_highlight_plain_form_post_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Accept: application/json (a non-chip form post) falls back to
+    the review page like the textarea queue."""
+    from precis_web.routes import anki as anki_routes
+
+    monkeypatch.setattr(
+        anki_routes,
+        "queue_asked_term",
+        lambda *a, **k: {"kind": "concept", "ref_id": 1, "name": "x", "created": True},
+    )
+    r = _client(FakeStore()).post(
+        "/anki/highlight",
+        data={"term": "entropy", "context": "highlighted bit", "ref": ""},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/anki?queued=1"
+
+
+def test_highlight_is_behind_the_gate() -> None:
+    r = _client(FakeStore()).post(
+        "/anki/highlight",
+        data={"term": "entropy", "context": "highlighted bit", "ref": ""},
+    )
+    assert r.status_code == 401
+
+
+def test_highlight_undo_passes_the_owner_and_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The toast's Undo binds one submission: the route hands the ref id,
+    the chip's submission token and the session login to
+    unqueue_asked_term (gr743234)."""
+    seen: list[dict[str, Any]] = []
+    from precis_web.routes import anki as anki_routes
+
+    def _unqueue(
+        store: Any, ref_id: int, *, submission: str = "", owner_login: Any = None
+    ) -> Any:
+        seen.append({"ref_id": ref_id, "submission": submission, "owner": owner_login})
+        return {"undone": True, "retired": True}
+
+    monkeypatch.setattr(anki_routes, "unqueue_asked_term", _unqueue)
+    r = _client(FakeStore()).post(
+        "/anki/highlight/undo",
+        data={"ref": "42", "submission": "a" * 32},
+        headers={**_auth(), "Accept": "application/json"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "undone": True, "retired": True}
+    assert seen == [{"ref_id": 42, "submission": "a" * 32, "owner": "reto"}]
+
+
+def test_highlight_undo_surfaces_a_stale_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumed or foreign token answers ``undone: False`` — still a
+    200, the toast just reports nothing left to undo."""
+    from precis_web.routes import anki as anki_routes
+
+    monkeypatch.setattr(
+        anki_routes, "unqueue_asked_term", lambda *a, **k: {"undone": False}
+    )
+    r = _client(FakeStore()).post(
+        "/anki/highlight/undo",
+        data={"ref": "42", "submission": "a" * 32},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "undone": False}
+
+
+def test_highlight_undo_404s_an_unknown_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_web.routes import anki as anki_routes
+
+    monkeypatch.setattr(anki_routes, "unqueue_asked_term", lambda *a, **k: None)
+    r = _client(FakeStore()).post(
+        "/anki/highlight/undo",
+        data={"ref": "42"},
+        headers=_auth(),
+    )
+    assert r.status_code == 404
+
+
+def test_highlight_page_ref_needs_to_be_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The posted page handle only links what this login could see:
+    another owner's per-login ref and an owner-private profile both
+    resolve to no link (gr743234 review)."""
+    store = FakeStore()
+    store.refs[9] = SimpleNamespace(id=9, kind="anki", meta={}, owner_login="alice")
+    store.refs[5] = SimpleNamespace(id=5, kind="profile", meta={})
+    seen: list[dict[str, Any]] = []
+    from precis_web.routes import anki as anki_routes
+
+    def _queue(store: Any, term: str, **kw: Any) -> Any:
+        seen.append(kw)
+        return {"kind": "concept", "ref_id": 1, "name": term, "created": True}
+
+    monkeypatch.setattr(anki_routes, "queue_asked_term", _queue)
+    for handle in ("ak9", "pf5"):
+        r = _client(store).post(
+            "/anki/highlight",
+            data={"term": "entropy", "context": "highlighted bit", "ref": handle},
+            headers={**_auth(), "Accept": "application/json"},
+        )
+        assert r.status_code == 200 and r.json()["ok"] is True
+    assert [kw["conv_ref_id"] for kw in seen] == [None, None]
+
+
+def test_card_this_chip_is_on_the_signed_in_page() -> None:
+    """The /anki page (like every authenticated page via base.html.j2)
+    ships the chip, the popover and the toast scaffold (gr743234)."""
+    r = _client(FakeStore()).get("/anki", headers=_auth())
+    assert r.status_code == 200
+    assert 'id="cardthis-chip"' in r.text
+    assert 'id="cardthis-pop"' in r.text
+    assert 'id="cardthis-toast"' in r.text
+    assert 'data-shortcut="c"' in r.text
+
+
+def test_card_this_chip_stays_off_a_logged_out_render() -> None:
+    """base.html.j2 gates the whole chip block on nav_user — a logged-out
+    (or auth-off) render ships none of it."""
+    from precis_web.deps import templates
+
+    tpl = templates.env.get_template("base.html.j2")
+    off = tpl.render(nav_user=None)
+    on = tpl.render(nav_user=SimpleNamespace(login="reto", abbrev="rs"))
+    for marker in ("cardthis-chip", "cardthis-pop", "cardthis-toast"):
+        assert f'id="{marker}"' not in off
+        assert f'id="{marker}"' in on

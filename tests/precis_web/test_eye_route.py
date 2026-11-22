@@ -509,6 +509,34 @@ def _seed_reto_profile(store: Any) -> Any:
     )
 
 
+def test_eye_focus_exports_highlight_provenance(
+    authed_client: TestClient, store: Any
+) -> None:
+    store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+    todo, _ = _seed(store)
+    page = authed_client.get(f"/eye/td{todo.id}", headers=_basic("reto", "pw"))
+    assert page.status_code == 200
+    assert f'data-page-ref="td{todo.id}"' in page.text
+
+
+def test_eye_workspace_slug_exports_canonical_highlight_provenance(
+    authed_client: TestClient, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def render_workspace(request: Any, verb: str, args: dict[str, Any]) -> Any:
+        assert args["id"] == "example-workspace~aC12"
+        assert "page_ref" not in args
+        return "Selected atom", False
+
+    monkeypatch.setattr("precis_web.routes.eye.await_dispatch", render_workspace)
+    store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+    ref = store.insert_ref(kind="structure", slug="example-workspace", title="Example")
+    page = authed_client.get(
+        "/eye/example-workspace~aC12", headers=_basic("reto", "pw")
+    )
+    assert page.status_code == 200
+    assert f'data-page-ref="st{ref.id}"' in page.text
+
+
 def test_eye_profile_is_hidden_from_another_owner(
     authed_client: TestClient, store: Any
 ) -> None:

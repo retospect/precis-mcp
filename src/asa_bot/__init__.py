@@ -47,6 +47,8 @@ variable, so no client of the shared HTTP MCP can claim a user. Unmapped
 speakers and cron turns write as ``agent``, as do asa's own bookkeeping
 writes over the long-lived client (conv capture, the per-user placeholder
 memory), which carry the speaker in ``author`` / ``user:<handle>`` instead.
+``twin_asked`` uses the resolved login to match shared terms and the
+speaker's own concepts. An unmapped speaker can match shared terms.
 
 **Paper attachments.** :mod:`asa_bot.attachments`: a PDF attached to a message
 in a served channel is fetched (``safe_stream``, 50 MB, ``%PDF`` magic) into

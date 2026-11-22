@@ -35,10 +35,11 @@ _GLOSSARY_KIND = "card_glossary"
 
 
 def _find_existing(store: Store, name: str) -> int | None:
-    """Corpus-wide concept with the same normalized name, or None."""
+    """Match the corpus concept, leaving personal highlight concepts alone."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'concept' AND retired_at IS NULL "
+            "AND meta->>'source' IS DISTINCT FROM 'highlight' "
             "AND meta->>'norm_name' = %s ORDER BY ref_id LIMIT 1",
             (normalize_name(name),),
         ).fetchone()

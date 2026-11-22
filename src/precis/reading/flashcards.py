@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Any
@@ -48,6 +49,7 @@ from precis.anki.work_tracking import (
 )
 from precis.errors import NotFound
 from precis.handlers.anki import _split_extra, _strip_cloze
+from precis.reading.asked import LIVE_CARD_SQL, live_card_exists
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
     DEFAULT_MASTERY_THRESHOLD,
@@ -60,6 +62,8 @@ from precis.reading.memory_match import backfill_memory_matches
 from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
@@ -243,6 +247,8 @@ def author_card(
     concept_id: int,
     deck: str,
     extra_meta: dict[str, Any] | None = None,
+    owner_login: str | None = None,
+    conn: Connection | None = None,
 ) -> int:
     """Write one authored cloze card the way `AnkiHandler._create` does — ref +
     stripped `card_combined` + the concept `represents` link — plus the pass's
@@ -268,24 +274,31 @@ def author_card(
     }
     stripped = _strip_cloze(cloze_text)
     card_text = f"{stripped}\n\n{extra}".rstrip() if extra else stripped
-    with store.tx() as conn:
+    with store.tx() if conn is None else nullcontext(conn) as tx:
         # Row-lock the concept so a concurrent ``retire_ref`` (which cascades
         # to its cards) either waits for this write or is seen here: no card
         # is minted against a concept that retired meanwhile (gr742735).
-        live = conn.execute(
+        live = tx.execute(
             "SELECT 1 FROM refs WHERE ref_id = %s AND kind = 'concept' "
             "AND retired_at IS NULL FOR SHARE",
             (concept_id,),
         ).fetchone()
         if live is None:
             raise ConceptGoneError(f"concept {concept_id} is retired or missing")
-        ref = store.insert_ref(kind="anki", slug=None, title=text, meta=meta, conn=conn)
-        store.chunks.upsert_card_combined(ref.id, card_text, conn=conn)
+        ref = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title=text,
+            meta=meta,
+            owner_login=owner_login,
+            conn=tx,
+        )
+        store.chunks.upsert_card_combined(ref.id, card_text, conn=tx)
         store.add_link(
             src_ref_id=concept_id,
             dst_ref_id=ref.id,
             relation="represents",
-            conn=conn,
+            conn=tx,
         )
     return int(ref.id)
 
@@ -295,7 +308,7 @@ def _deck_for(cohort: str | None) -> str:
 
 
 def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> int:
-    """Concepts already carded today by this pass — makes a re-run top up to
+    """Batches already authored today by this pass — makes a re-run top up to
     the cap instead of doubling it. Scoped to the cohort when given (a
     cohort-scoped forge isn't starved by another cohort's mints)."""
     midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
@@ -311,7 +324,8 @@ def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> 
     )
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT COUNT(DISTINCT a.meta->>'concept_ref_id') FROM refs a "
+            "SELECT COUNT(DISTINCT COALESCE(a.meta->>'highlight_submission', "
+            "a.meta->>'concept_ref_id')) FROM refs a "
             "WHERE a.kind='anki' AND a.retired_at IS NULL "
             f"AND a.meta->>'authored_by' = %s AND a.created_at >= %s {cohort_clause}",
             params,
@@ -319,30 +333,35 @@ def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> 
     return int(row[0] or 0) if row else 0
 
 
+_LATEST_HIGHLIGHT = """
+    SELECT submission, context
+    FROM anki_highlight_context h
+    WHERE h.concept_id = c.ref_id AND h.owner_login = c.owner_login
+      AND c.meta->'asked_submissions'->h.submission->>'forge_skipped' IS NULL
+    ORDER BY queued_at DESC, submission DESC
+    LIMIT 1
+"""
+_CARD_OWNER = "COALESCE(c.owner_login, c.meta->>'asked_by')"
+
+
 def _cardless_concepts(
     store: Store, *, cohort: str | None, limit: int
-) -> list[tuple[int, str, str]]:
-    """Unmastered concepts with no live card yet, ``twin:asked`` first then
-    newest first. A concept the mint pass has judged un-cardable
-    (``meta.card_forge_skip``) is excluded so the daily pass doesn't re-spend
-    a model call refusing it forever. ``twin:asked`` is the queue a human
-    (the ``/anki`` page) or asa ("what is X?" capture) pushes terms onto —
-    those jump the recency order, capped with everything else."""
+) -> list[tuple[int, str, str, str | None, str | None, str]]:
+    """Pending highlights and unmastered concepts without a live owner card."""
     cohort_clause = "AND jsonb_exists(c.meta->'cohorts', %s)" if cohort else ""
+    live_card = LIVE_CARD_SQL.format(concept="c.ref_id", owner=_CARD_OWNER)
     sql = f"""
-        SELECT c.ref_id, c.meta->>'name', c.meta->>'definition'
+        SELECT c.ref_id, c.meta->>'name', c.meta->>'definition',
+               {_CARD_OWNER}, h.submission, h.context
         FROM refs c
+        LEFT JOIN LATERAL ({_LATEST_HIGHLIGHT}) h ON true
         WHERE c.kind='concept' AND c.retired_at IS NULL
-          AND COALESCE(c.meta->>'state','candidate') != 'mastered'
-          AND NOT (c.meta ? 'card_forge_skip')
           {cohort_clause}
-          AND NOT EXISTS (
-            SELECT 1 FROM links l
-            JOIN refs a ON a.kind='anki' AND a.retired_at IS NULL
-                       AND a.ref_id = CASE WHEN l.src_ref_id = c.ref_id
-                                           THEN l.dst_ref_id ELSE l.src_ref_id END
-            WHERE (l.src_ref_id = c.ref_id AND l.relation='represents')
-               OR (l.dst_ref_id = c.ref_id AND l.relation='represented-by'))
+          AND (h.submission IS NOT NULL OR (
+              COALESCE(c.meta->>'state','candidate') != 'mastered'
+              AND NOT (c.meta ? 'card_forge_skip')
+              AND NOT EXISTS ({live_card})
+          ))
         ORDER BY EXISTS (
             SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
             WHERE rt.ref_id = c.ref_id
@@ -352,8 +371,38 @@ def _cardless_concepts(
     """
     params: tuple[Any, ...] = (cohort, limit) if cohort else (limit,)
     with store.pool.connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [(int(r[0]), r[1] or "", r[2] or "") for r in rows]
+        return [
+            (int(cid), name or "", definition or "", owner, submission, context or "")
+            for cid, name, definition, owner, submission, context in conn.execute(
+                sql, params
+            )
+        ]
+
+
+def _current_mint_state(
+    conn: Connection, concept_id: int, owner: str | None, submission: str | None
+) -> str | None:
+    # Get the row lock before reading the current capture. Queue/Undo may
+    # have committed while we waited for the lock or for the model.
+    row = conn.execute(
+        f"SELECT {_CARD_OWNER}, COALESCE(c.meta->>'state', 'candidate'), "
+        "c.meta ? 'card_forge_skip' FROM refs c WHERE c.ref_id = %s "
+        "AND c.retired_at IS NULL FOR NO KEY UPDATE",
+        (concept_id,),
+    ).fetchone()
+    if row is None or row[0] != owner:
+        return None
+    _, state, skipped = row
+    if submission is None and (
+        skipped or state == STATE_MASTERED or live_card_exists(conn, concept_id, owner)
+    ):
+        return None
+    latest = conn.execute(
+        f"SELECT h.submission FROM refs c "
+        f"JOIN LATERAL ({_LATEST_HIGHLIGHT}) h ON true WHERE c.ref_id = %s",
+        (concept_id,),
+    ).fetchone()
+    return str(state) if (latest[0] if latest else None) == submission else None
 
 
 def _concept_is_work_tracking(
@@ -404,7 +453,7 @@ def mint_daily_cards(
     now: datetime | None = None,
     report: ForgeReport | None = None,
 ) -> ForgeReport:
-    """Author today's new cards: up to ``per_day`` cardless concepts, 1–3 cloze
+    """Author today's new cards: up to ``per_day`` batches, 1–3 cloze
     cards each. Idempotent per day (a re-run tops up to the cap)."""
     now = now or datetime.now(UTC)
     report = report or ForgeReport()
@@ -413,109 +462,110 @@ def mint_daily_cards(
         return report
     system = f"{skill_preamble}\n\n{_MINT_SYS}".strip() if skill_preamble else _MINT_SYS
     deck = _deck_for(cohort)
-    for concept_id, name, definition in _cardless_concepts(
+    for concept_id, name, definition, owner, submission, context in _cardless_concepts(
         store, cohort=cohort, limit=remaining
     ):
-        if _concept_is_work_tracking(store, concept_id, name, definition):
-            # Work tracking is not a fact (precis-cloze rule 0): refuse before
-            # spending a model call, and stamp so the pass never retries it.
-            why = "work tracking (a to-do or gap about our own system), not a fact"
-            try:
-                store.update_ref(concept_id, meta_patch={"card_forge_skip": why})
-            except NotFound:
-                # Retired between the scan and the stamp (gr742735) —
-                # moot: nothing left to stamp or retry.
-                log.info("cards: concept %s retired mid-mint", concept_id)
-            else:
-                report.refused.append((concept_id, why))
-            continue
-        lines = [f"CONCEPT: {name}"]
-        if definition:
-            lines.append(f"DEFINITION: {definition}")
-        neighbors = _neighbor_names(store, concept_id, mastered_only=False)
-        if neighbors:
-            lines.append("RELATED CONCEPTS: " + ", ".join(neighbors))
-        out = client.complete(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": "\n".join(lines)},
-            ]
-        )
-        data = extract_json_object(getattr(out, "text", "") or "")
-        cards = (data or {}).get("cards") or []
-        skip_reason = str((data or {}).get("skip_reason") or "").strip()
+        if _concept_is_work_tracking(
+            store, concept_id, name, definition
+        ) or is_work_item_text(context):
+            cards: list[Any] = []
+            skip_reason = (
+                "work tracking (a to-do or gap about our own system), not a fact"
+            )
+        else:
+            lines = [f"CONCEPT: {name}"]
+            if definition:
+                lines.append(f"DEFINITION: {definition}")
+            if context:
+                lines.append(f"HIGHLIGHT CONTEXT: {context}")
+            neighbors = _neighbor_names(store, concept_id, mastered_only=False)
+            if neighbors:
+                lines.append("RELATED CONCEPTS: " + ", ".join(neighbors))
+            out = client.complete(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": "\n".join(lines)},
+                ]
+            )
+            data = extract_json_object(getattr(out, "text", "") or "")
+            cards = (data or {}).get("cards") or []
+            skip_reason = str((data or {}).get("skip_reason") or "").strip()
+            if submission and skip_reason:
+                skip_reason = "the forge declined the captured term"
         minted: list[int] = []
-        concept_gone = False
-        for card in cards[:_MAX_CARDS_PER_CONCEPT]:
-            if not isinstance(card, dict):
+        extra_meta = {"highlight_submission": submission} if submission else {}
+        with store.tx() as conn:
+            state = _current_mint_state(conn, concept_id, owner, submission)
+            if state is None:
                 continue
-            check = str(card.get("check") or "").strip()
-            if _check_failed(check):
-                # The model's own recoverability verdict failed (gr743086):
-                # a blank with no single recoverable answer — mint nothing
-                # rather than ship an unanswerable card.
-                log.info(
-                    "cards: dropped self-check-failing card for concept %s: %s",
-                    concept_id,
-                    check,
-                )
-                continue
-            text = str(card.get("text") or "").strip()
-            extra = str(card.get("back_extra") or "").strip()
-            if extra:
-                text = f"{text}\n---\n{extra}"
-            try:
-                if is_work_item_text(_strip_cloze(_split_extra(text)[0])):
-                    raise ValueError("card is a to-do or gap about our own system")
-                minted.append(
-                    author_card(
-                        store,
-                        text=text,
-                        concept_id=concept_id,
-                        deck=deck,
-                        # The verdict rides the card so the mint is auditable.
-                        extra_meta={"recoverability_check": check or "unchecked"},
+            for card in cards[:_MAX_CARDS_PER_CONCEPT]:
+                if not isinstance(card, dict):
+                    continue
+                check = str(card.get("check") or "").strip()
+                if _check_failed(check):
+                    # The model's own recoverability verdict failed (gr743086):
+                    # a blank with no single recoverable answer — mint nothing
+                    # rather than ship an unanswerable card.
+                    log.info(
+                        "cards: dropped self-check-failing card for concept %s: %s",
+                        concept_id,
+                        check if submission is None else "failed",
                     )
-                )
-            except ConceptGoneError:
-                # The concept retired mid-mint (gr742735) — not a model
-                # refusal: drop its remaining cards uncounted.
-                log.info("cards: concept %s retired mid-mint", concept_id)
-                concept_gone = True
-                break
-            except ValueError as exc:
-                log.info("cards: dropped card for concept %s: %s", concept_id, exc)
-        if concept_gone:
+                    continue
+                text = str(card.get("text") or "").strip()
+                extra = str(card.get("back_extra") or "").strip()
+                if extra:
+                    text = f"{text}\n---\n{extra}"
+                try:
+                    if is_work_item_text(_strip_cloze(_split_extra(text)[0])):
+                        raise ValueError("card is a to-do or gap about our own system")
+                    minted.append(
+                        author_card(
+                            store,
+                            text=text,
+                            concept_id=concept_id,
+                            deck=deck,
+                            owner_login=owner,
+                            conn=conn,
+                            # The verdict rides the card so the mint is auditable.
+                            extra_meta={
+                                **extra_meta,
+                                "recoverability_check": check or "unchecked",
+                            },
+                        )
+                    )
+                except ValueError as exc:
+                    log.info(
+                        "cards: dropped card for concept %s: %s",
+                        concept_id,
+                        exc if submission is None else "invalid card",
+                    )
             if minted:
-                # Cards committed before the retire were swept by its
-                # cascade, but the audit still shows the pass minted
-                # them (gr742735).
-                report.minted.append((concept_id, minted))
-            continue
+                if state != STATE_MASTERED:
+                    store.update_ref(
+                        concept_id, meta_patch={"state": STATE_ACTIVE}, conn=conn
+                    )
+                if submission:
+                    conn.execute(
+                        "DELETE FROM anki_highlight_context "
+                        "WHERE concept_id = %s AND owner_login = %s AND submission = %s",
+                        (concept_id, owner, submission),
+                    )
+            elif skip_reason and submission:
+                conn.execute(
+                    "UPDATE refs SET meta = jsonb_set(meta, %s, 'true'::jsonb) "
+                    "WHERE ref_id = %s",
+                    (["asked_submissions", submission, "forge_skipped"], concept_id),
+                )
+            elif skip_reason:
+                store.update_ref(
+                    concept_id, meta_patch={"card_forge_skip": skip_reason}, conn=conn
+                )
         if minted:
             report.minted.append((concept_id, minted))
-            # A carded concept is being learned — it leaves the candidate pool.
-            try:
-                store.update_ref(concept_id, meta_patch={"state": STATE_ACTIVE})
-            except NotFound:
-                # Retired after author_card committed (gr742735): the
-                # cascade retired the new cards with it; the stamp is
-                # moot and the pass must not die on it.
-                log.info("cards: concept %s retired mid-mint", concept_id)
-                continue
             backfill_memory_matches(store, concept_ids=[concept_id])
         elif skip_reason:
-            # The model judged this concept un-cardable (a topic label, stock
-            # phrase, or front-matter). Stamp it so the daily pass stops
-            # re-spending a call to refuse it again — see `_cardless_concepts`.
-            try:
-                store.update_ref(
-                    concept_id, meta_patch={"card_forge_skip": skip_reason}
-                )
-            except NotFound:
-                log.info("cards: concept %s retired mid-mint", concept_id)
-            else:
-                report.refused.append((concept_id, skip_reason))
+            report.refused.append((concept_id, skip_reason))
         else:
             report.skipped += 1
     return report
@@ -747,6 +797,7 @@ def rework_stale_cards(
                     text=text,
                     concept_id=concept_id,
                     deck=deck,
+                    owner_login=getattr(old, "owner_login", None) if old else None,
                     extra_meta={
                         "rework_of": card_id,
                         "recoverability_check": check or "unchecked",

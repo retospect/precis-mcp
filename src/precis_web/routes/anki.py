@@ -23,6 +23,20 @@ teach, and the daily mint cap for heavy mornings.
                           it (case-insensitive) is tagged ``twin:asked``;
                           otherwise a ``twin:asked`` concept is minted. The
                           next ``card_forge`` mints asked concepts first.
+* ``POST /anki/highlight`` — the base-template "Card this" chip (gr743234):
+                          ``term`` + the 2–2000 char selection as ``context``
+                          + the page's record handle as ``ref``. Owner-scoped
+                          by login. The selection supplies forge context,
+                          ``meta.source`` stamps
+                          ``"highlight"``, and the page's ref gains a
+                          ``related-to`` edge. JSON answers the chip's
+                          fetch; a plain form post falls back to ``/anki``.
+* ``POST /anki/highlight/undo`` — the toast's Undo, bound to the
+                          ``submission`` token the queue POST issued for
+                          this owner: consumed once, a foreign or stale
+                          token undoes nothing; a queue-minted concept is
+                          retired once its last ask leaves if no live card
+                          represents it.
 * ``POST /anki/cap``    — write ``app_settings`` key
                           ``reading.cards_per_day`` (or the dated
                           ``reading.cards_per_day:<YYYY-MM-DD>`` for
@@ -43,15 +57,16 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
-from precis.reading.asked import queue_asked_term
+from precis.reading.asked import queue_asked_term, unqueue_asked_term
 from precis.reading.concepts import STATE_MASTERED
 from precis.reading.flashcards import CARDS_PER_DAY_KEY, effective_cards_per_day
 from precis.reading.known import known_undo_entries, mark_known, undo_known
 from precis.users import WebUser
+from precis.utils import handle_registry
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
 
@@ -412,6 +427,123 @@ async def queue(request: Request, terms: str = Form("")) -> Response:
     if not queued:
         return _render(request, user=user, error="No term could be queued.")
     return RedirectResponse(f"/anki?queued={queued}", status_code=303)
+
+
+#: Provenance stamp a highlight-queue mint carries in ``meta.source`` —
+#: distinguishes the selection chip's cards from the textarea queue's.
+_HIGHLIGHT_SOURCE = "highlight"
+
+#: Bounds the chip already enforces client-side; the POST re-checks them
+#: because a form body is not the chip.
+_HIGHLIGHT_CONTEXT_MAX = 2000
+_HIGHLIGHT_TERM_MAX = 200
+
+
+def _form_str(form: Any, key: str) -> str:
+    """One form field as a stripped string (``""`` when absent or a file)."""
+    value = form.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _wants_json(request: Request) -> bool:
+    """The chip's fetch asks for JSON; a plain form post gets the 303."""
+    return "application/json" in request.headers.get("accept", "")
+
+
+def _page_ref_id(store: Store, handle: str, *, owner: str) -> int | None:
+    """ref_id for the record handle the chip posted, or ``None``.
+
+    A chunk handle resolves to its containing record. The ``related-to``
+    edge is decoration, so a missing or malformed handle skips it and the
+    queue itself must never fail on it. The visibility check mirrors the
+    detail readers (gr490266): a ``profile`` is owner-private, and a
+    per-login ref another login owns is not this user's page either, so a
+    forged post naming one links nothing.
+    """
+    parsed = handle_registry.parse(handle.strip())
+    if parsed is None or parsed[0] == "profile":
+        return None
+    kind, is_chunk, pk = parsed
+    try:
+        if is_chunk:
+            resolved = store.resolve_handle(handle)
+            if resolved is None or resolved.kind == "profile":
+                return None
+            kind, pk = resolved.kind, resolved.ref_id
+        ref = store.get_ref(kind=kind, id=pk)
+    except Exception:
+        log.debug("anki highlight: page ref lookup failed", exc_info=True)
+        return None
+    if ref is None:
+        return None
+    ref_owner = getattr(ref, "owner_login", None)
+    if ref_owner is not None and ref_owner != owner:
+        return None
+    return int(ref.id)
+
+
+@router.post("/highlight")
+async def highlight(request: Request) -> Response:
+    """Queue a term captured from page text (gr743234)."""
+    user = _require_user(request)
+    form = await request.form()
+    term = " ".join(_form_str(form, "term").split())
+    context = _form_str(form, "context")
+    error = ""
+    if not term:
+        error = "Enter a term to card."
+    elif len(term) > _HIGHLIGHT_TERM_MAX:
+        error = f"terms are at most {_HIGHLIGHT_TERM_MAX} characters."
+    elif not 2 <= len(context) <= _HIGHLIGHT_CONTEXT_MAX:
+        error = f"context must be 2–{_HIGHLIGHT_CONTEXT_MAX} characters."
+    if error:
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": error}, status_code=400)
+        return _render(request, user=user, error=error)
+    store = get_store(request)
+    try:
+        out = await run_in_threadpool(
+            queue_asked_term,
+            store,
+            term,
+            owner_login=user.login,
+            conv_ref_id=_page_ref_id(store, _form_str(form, "ref"), owner=user.login),
+            definition=context,
+            source=_HIGHLIGHT_SOURCE,
+        )
+    except Exception:
+        log.warning("anki highlight: queue failed", exc_info=True)
+        if _wants_json(request):
+            return JSONResponse(
+                {"ok": False, "error": "queue failed — try again"},
+                status_code=500,
+            )
+        return _render(request, user=user, error="The term could not be queued.")
+    if _wants_json(request):
+        return JSONResponse({"ok": True, **out})
+    return RedirectResponse("/anki?queued=1", status_code=303)
+
+
+@router.post("/highlight/undo")
+async def highlight_undo(
+    request: Request,
+    ref: int = Form(..., gt=0, lt=2**63),
+    submission: str = Form("", max_length=64),
+) -> Response:
+    """Toast Undo for one highlight submission (gr743234). The token the
+    queue POST issued binds the reversal to that one ask and this login —
+    consumed once, so a replay or a foreign token undoes nothing."""
+    user = _require_user(request)
+    out = await run_in_threadpool(
+        unqueue_asked_term,
+        get_store(request),
+        ref,
+        submission=submission,
+        owner_login=user.login,
+    )
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"ref id={ref} not found")
+    return JSONResponse({"ok": True, **out})
 
 
 @router.post("/cap", response_class=HTMLResponse)

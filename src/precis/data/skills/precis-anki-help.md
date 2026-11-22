@@ -75,6 +75,18 @@ Everything before `---` is the cloze card; everything after is Back Extra.
 Anki renders Back Extra as HTML: the list holds the definitions, `<hr>`
 separates them from the note.
 
+## Card highlighted text on a page
+
+On any signed-in precis web page, selecting 2–2000 characters shows a floating
+"Card this" chip (shortcut `c`; not in inputs, not when logged out). The
+popover takes a term (prefilled when the selection is ≤60 chars) and keeps the
+selection as context. It posts to `/anki/highlight`, which queues the term for
+you only (`twin:asked`, `meta.source="highlight"`), keeps the selection as
+forge context in your own per-owner store, and links the page's ref
+`related-to`. Each capture can yield new cards even if you already have cards
+for the term. The toast's **Undo** (`/anki/highlight/undo`) withdraws that
+pending submission and its page link if nothing else uses the link.
+
 ## Attach a photo to a card
 
 ```python
@@ -230,8 +242,9 @@ the reading-prep card loop — installed by `precis cast schedule`:
    **rewrite** (new card, curve resets — the old one wasn't working anyway).
    Observe-first: with `PRECIS_CARD_FORGE_AUTONOMY=report` (default) it only
    logs what it *would* do; set `act` to let it write.
-3. **Mint** — up to `PRECIS_READING_CARDS_PER_DAY` (5) cardless concepts get
-   1–3 fresh cloze cards each, linked `concept —represents→ card`, deck
+3. **Mint** — up to `PRECIS_READING_CARDS_PER_DAY` (5) batches across pending
+   highlights and cardless concepts get 1–3 fresh cloze cards each, linked
+   `concept —represents→ card`, deck
    `Precis::<cohort>`, riding the next `anki-sync` to your phone.
 
 Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on

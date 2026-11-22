@@ -527,6 +527,215 @@
       }
     });
   </script>
+  {% if nav_user %}
+  {# "Card this" — a floating chip on a 2–2000 char text selection
+     (gr743234): the highlight queues as a twin:asked concept without
+     leaving the page. The chip button is also the ``c`` shortcut's
+     target — shortcuts.js clicks data-shortcut elements and already
+     ignores typing inside fields. The popover takes a term (prefilled
+     when the selection is short enough to BE one) with the selection
+     riding along as the card's context, POSTs to /anki/highlight, and
+     the toast offers Undo via /anki/highlight/undo — bound to the
+     submission token the queue POST returned, so a replay or a foreign
+     call can only ever reverse that one ask. Native right-click
+     and copy stay untouched; the chip never shows inside inputs,
+     textareas or editable surfaces, and the whole block exists only for
+     a signed-in page — a logged-out or auth-off render ships none of
+     it. ``data-page-ref`` carries the focus or reader handle for the
+     queue's related-to edge. #}
+  <div id="cardthis-chip" data-page-ref="{{ highlight_page_ref or eye_handle or '' }}" class="hidden absolute z-50">
+    <button type="button" data-shortcut="c" title="Card this (c)"
+            class="rounded-full border border-chrome bg-chrome-raised px-3 py-1 text-xs font-medium text-chrome-strong shadow-lg">
+      Card this
+    </button>
+  </div>
+  <div id="cardthis-pop" class="hidden absolute z-50 w-80 max-w-[calc(100vw-1rem)] rounded-lg border border-line bg-surface p-3 shadow-xl">
+    <form id="cardthis-form" method="post" action="/anki/highlight" class="space-y-2">
+      <label for="cardthis-term" class="block text-xs font-medium">Term</label>
+      <input id="cardthis-term" name="term" type="text" required maxlength="200"
+             placeholder="term to learn"
+             class="w-full rounded border border-line bg-canvas px-2 py-1 text-sm focus:border-info-emphasis focus:outline-none" />
+      <input id="cardthis-context" name="context" type="hidden" />
+      <input id="cardthis-ref" name="ref" type="hidden" />
+      <div id="cardthis-ctx" class="max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-line-subtle bg-canvas px-2 py-1 text-xs text-fg-subtle"></div>
+      <div>
+        <button type="submit"
+                class="rounded bg-info-solid px-3 py-1.5 text-xs text-on-solid transition hover:bg-info-solid-strong">Queue card</button>
+      </div>
+    </form>
+  </div>
+  <div id="cardthis-toast" role="status" class="hidden fixed bottom-4 right-4 z-50 rounded-lg border border-line bg-chrome-raised px-4 py-2 text-xs text-chrome-strong shadow-xl"></div>
+  <script>
+    // The selection-to-card loop (gr743234). selText enforces the 2–2000
+    // char window and the no-editable-surfaces rule; evaluate re-shows
+    // the chip at the selection's rect (rAF-coalesced like the headroom
+    // script above, a fast drag fires dozens of selectionchange events
+    // per frame). The empty-argument-list ban from the popover script
+    // above applies here too — zero-arg calls go through .call and every
+    // helper takes a named parameter.
+    {
+      const chipWrap = document.getElementById('cardthis-chip');
+      const chipBtn = chipWrap && chipWrap.querySelector('button');
+      const pop = document.getElementById('cardthis-pop');
+      const toast = document.getElementById('cardthis-toast');
+      const form = document.getElementById('cardthis-form');
+      const termInput = document.getElementById('cardthis-term');
+      const ctxField = document.getElementById('cardthis-context');
+      const ctxBox = document.getElementById('cardthis-ctx');
+      const refField = document.getElementById('cardthis-ref');
+      if (chipBtn && pop && toast && form && termInput && ctxField && ctxBox && refField) {
+        // Editable surfaces — and the chip's own UI — never raise it.
+        const SKIP = 'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"], #cardthis-pop, #cardthis-chip, #cardthis-toast';
+        const hide = el => el.classList.add('hidden');
+        const show = el => el.classList.remove('hidden');
+        const insideSkip = node => {
+          const el = node && (node.nodeType === 1 ? node : node.parentElement);
+          return !!(el && el.closest && el.closest(SKIP));
+        };
+        const selText = _src => {
+          const sel = window.getSelection.call(window);
+          if (!sel || sel.isCollapsed || sel.rangeCount === 0) return '';
+          if (insideSkip(sel.anchorNode) || insideSkip(sel.focusNode)) return '';
+          const text = sel.toString.call(sel).trim();
+          const length = Array.from(text).length;
+          return length >= 2 && length <= 2000 ? text : '';
+        };
+        const place = (el, rect, fallbackWidth) => {
+          const width = el.offsetWidth || fallbackWidth;
+          const left = rect.left + window.scrollX;
+          const maxLeft = window.scrollX + window.innerWidth - width - 8;
+          const lo = window.scrollX + 8;
+          el.style.left = Math.max(lo, Math.min(left, Math.max(maxLeft, lo))) + 'px';
+          el.style.top = rect.bottom + window.scrollY + 6 + 'px';
+        };
+        let selTick = false;
+        const evaluate = _t => {
+          selTick = false;
+          if (!pop.classList.contains('hidden') || !selText(0)) {
+            hide(chipWrap);
+            return;
+          }
+          const sel = window.getSelection.call(window);
+          const range = sel.getRangeAt(0);
+          const rect = range.getBoundingClientRect.call(range);
+          place(chipWrap, rect, 96);
+          show(chipWrap);
+        };
+        const schedule = _e => {
+          if (selTick) return;
+          selTick = true;
+          window.requestAnimationFrame(evaluate);
+        };
+        document.addEventListener('selectionchange', schedule);
+        document.addEventListener('mouseup', schedule);
+        document.addEventListener('keyup', schedule);
+
+        const openPop = _e => {
+          const text = selText(0);
+          if (!text) return;
+          ctxField.value = text;
+          ctxBox.textContent = text;
+          refField.value = chipWrap.dataset.pageRef || '';
+          termInput.value = Array.from(text).length <= 60 ? text : '';
+          const sel = window.getSelection.call(window);
+          const range = sel.getRangeAt(0);
+          const rect = range.getBoundingClientRect.call(range);
+          place(pop, rect, 288);
+          hide(chipWrap);
+          show(pop);
+          termInput.focus.call(termInput);
+        };
+        // A mousedown outside the selection would collapse it before the
+        // click could read it — the one event this feature suppresses.
+        chipBtn.addEventListener('mousedown', e => {
+          if (e.button === 0) e.preventDefault.call(e);
+        });
+        chipBtn.addEventListener('click', openPop);
+        document.addEventListener('keydown', e => {
+          if (e.key === 'Escape' && !pop.classList.contains('hidden')) hide(pop);
+        });
+        document.addEventListener('mousedown', e => {
+          if (pop.classList.contains('hidden')) return;
+          if (pop.contains(e.target) || chipWrap.contains(e.target)) return;
+          hide(pop);
+        });
+
+        let toastTimer = 0;
+        // Undo is bound to the submission token the queue POST issued —
+        // ref id alone would let a replay or a forged call eat another
+        // asker's queue entry (gr743234 review).
+        const toastSay = (msg, undoRef, undoToken) => {
+          toast.textContent = '';
+          const span = document.createElement('span');
+          span.textContent = msg;
+          toast.appendChild(span);
+          if (undoRef && undoToken) {
+            const undo = document.createElement('button');
+            undo.type = 'button';
+            undo.textContent = 'Undo';
+            undo.className = 'ml-3 font-medium text-chrome-link underline';
+            undo.addEventListener('click', e2 => {
+              const undoBody = new URLSearchParams({
+                ref: String(undoRef),
+                submission: String(undoToken),
+              });
+              fetch('/anki/highlight/undo', {
+                method: 'POST',
+                headers: { Accept: 'application/json' },
+                credentials: 'same-origin',
+                body: undoBody,
+              })
+                .then(r => r.json.call(r))
+                .then(d => {
+                  toast.textContent = d && d.ok
+                    ? (d.undone === false ? 'Nothing left to undo.' : 'Undone.')
+                    : 'Undo failed.';
+                })
+                .catch(e3 => { toast.textContent = 'Undo failed.'; });
+            });
+            toast.appendChild(undo);
+          }
+          show(toast);
+          if (toastTimer) window.clearTimeout(toastTimer);
+          toastTimer = window.setTimeout(_u => hide(toast), 8000);
+        };
+
+        form.addEventListener('submit', e => {
+          e.preventDefault.call(e);
+          if (!/\S/.test(termInput.value)) {
+            termInput.focus.call(termInput);
+            return;
+          }
+          const body = new URLSearchParams({
+            term: termInput.value,
+            context: ctxField.value,
+            ref: refField.value,
+          });
+          fetch('/anki/highlight', {
+            method: 'POST',
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+            body: body,
+          })
+            .then(r => r.json.call(r).then(d => ({ status: r.status, data: d })))
+            .then(res => {
+              if (!res.data || !res.data.ok) {
+                toastSay((res.data && res.data.error) || 'Queue failed.', 0, 0);
+                return;
+              }
+              hide(pop);
+              toastSay(
+                'Queued ' + (res.data.name || termInput.value) + ' — the forge mints asked terms first.',
+                res.data.ref_id,
+                res.data.submission,
+              );
+            })
+            .catch(e2 => toastSay('Queue failed — try again.', 0, 0));
+        });
+      }
+    }
+  </script>
+  {% endif %}
   {# In-app guided tour overlay (docs/backlog/user-guide-demo.md): a no-op on
      every page unless ?tour=<slug> is present, in which case it fetches
      /manual/tour/<slug>.json (routes/manual.py) and renders the callouts.

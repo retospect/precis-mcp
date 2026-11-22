@@ -41,6 +41,24 @@ count the attempt. Your answer text is discarded.
 
 The panel is yours alone: it lists only the signed-in account's cards.
 
+## Card what you highlight
+
+When signed in, select 2–2,000 characters of page text and click **Card
+this** or press `c`. The form shows the selection as context. Selections of
+up to 60 characters also fill the **term** field, which you can edit.
+
+**Queue card** files your request and links it to its source record when the
+page has one. A matching shared concept or taxonomy term can supply the
+name and definition. The forge uses your selection when writing cards for
+your review list and Anki sync, including for terms you already have cards for.
+
+The confirmation toast offers **Undo** for a few seconds. It cancels that
+submission while it is queued. A concept created for your request is removed
+when it has no remaining asks or cards. Undo also removes a page link created
+solely by that submission. Once the forge writes a card for a submission, the
+card stays in your review list. Copy and the native context menu
+work as usual.
+
 ## Your recent walk
 
 **Your recent walk** shows the pages you visited through `/eye` while signed

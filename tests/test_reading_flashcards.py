@@ -323,81 +323,23 @@ class TestMint:
         report2 = mint_daily_cards(store, client=again, per_day=1, cohort=co)
         assert report2.minted == [] and again.calls == []
 
-    def test_concept_retired_mid_mint_is_not_a_model_skip(
-        self, store: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_concept_retired_mid_mint_is_not_a_model_skip(self, store: Any) -> None:
         """gr742735: a concept that retires between the cardless scan and
         the write is not "the model gave no valid card" — it is dropped
-        from the pass uncounted."""
-        import precis.reading.flashcards as flashcards
-
+        from the pass uncounted. The mint transaction row-locks the concept
+        before it writes, so a retire can only land before that lock."""
         co = f"mint-{uuid.uuid4().hex[:8]}"
         cid = _concept(store, cohort=co)
-        real_author = flashcards.author_card
 
-        def retire_then_author(st: Any, **kw: Any) -> int:
-            st.retire_ref(cid)
-            return real_author(st, **kw)
+        class _RetiringClient(_FakeClient):
+            def complete(self, messages: list[dict[str, str]]) -> Any:
+                store.retire_ref(cid)
+                return super().complete(messages)
 
-        monkeypatch.setattr(flashcards, "author_card", retire_then_author)
-        client = _FakeClient({"cards": [{"text": "A {{c1::b}}."}]})
+        client = _RetiringClient({"cards": [{"text": "A {{c1::b}}."}]})
         report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
         assert report.minted == [] and report.skipped == 0
-
-    def test_concept_retired_after_author_write_does_not_abort_mint(
-        self, store: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """gr742735: the concept can retire after author_card commits but
-        before the pass stamps it active — the follow-up write raises
-        NotFound and must not abort the pass. The mint is still recorded;
-        the cascade already retired the fresh card."""
-        import precis.reading.flashcards as flashcards
-
-        co = f"mint-{uuid.uuid4().hex[:8]}"
-        cid = _concept(store, cohort=co)
-        real_author = flashcards.author_card
-
-        def author_then_retire(st: Any, **kw: Any) -> int:
-            card_id = real_author(st, **kw)
-            st.retire_ref(cid)
-            return card_id
-
-        monkeypatch.setattr(flashcards, "author_card", author_then_retire)
-        client = _FakeClient({"cards": [{"text": "A {{c1::b}}."}]})
-        report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
-        assert len(report.minted) == 1 and report.skipped == 0
-        _cid, cards = report.minted[0]
-        assert store.get_ref(kind="anki", id=cards[0]) is None
-
-    def test_concept_gone_after_first_card_keeps_the_audit_entry(
-        self, store: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """gr742735: a concept retiring between two minted cards sweeps
-        the committed one via the cascade — but the audit entry stays,
-        so the report still records what the pass wrote. The unwritten
-        cards drop uncounted."""
-        import precis.reading.flashcards as flashcards
-
-        co = f"mint-{uuid.uuid4().hex[:8]}"
-        cid = _concept(store, cohort=co)
-        real_author = flashcards.author_card
-        calls: list[int] = []
-
-        def retire_on_second_call(st: Any, **kw: Any) -> int:
-            calls.append(1)
-            if len(calls) == 2:
-                st.retire_ref(cid)
-            return real_author(st, **kw)
-
-        monkeypatch.setattr(flashcards, "author_card", retire_on_second_call)
-        client = _FakeClient(
-            {"cards": [{"text": "A {{c1::b}}."}, {"text": "C {{c1::d}}."}]}
-        )
-        report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
-        assert len(report.minted) == 1 and report.skipped == 0
-        _cid, cards = report.minted[0]
-        assert len(cards) == 1
-        assert store.get_ref(kind="anki", id=cards[0]) is None  # cascade-swept
+        assert report.refused == []
 
 
 class TestRework:

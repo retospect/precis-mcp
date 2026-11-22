@@ -32,10 +32,13 @@ class _FakeConn:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = list(rows)
         self.writes: list[tuple[str, Any]] = []
+        self.queries: list[tuple[str, Any]] = []
 
     async def execute(self, sql: str, params: Any = None) -> _Cursor:
         if "UPDATE" in sql or "INSERT" in sql:
             self.writes.append((sql, params))
+        else:
+            self.queries.append((sql, params))
         rows = self._rows.pop(0) if self._rows else []
         return _Cursor([rows] if rows else [])
 
@@ -85,6 +88,9 @@ def test_existing_concept_is_tagged_and_bumped(
         )
     )
     assert term == "entropy"
+    sql, params = find_conn.queries[0]
+    assert "owner_login IS NULL OR owner_login = %s" in sql
+    assert params == ("reto", "entropy", "entropy", "entropy")
     assert precis.calls == [
         ("tag", {"kind": "concept", "id": 55, "add": ["twin:asked"]})
     ]
