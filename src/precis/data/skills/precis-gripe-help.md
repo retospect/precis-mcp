@@ -53,8 +53,10 @@ anything can be filed (a gripe is against `precis` (default) or
 complaint; an area of this repository is named with `topic:<area>`, not
 `project:`). Omitted means `precis` — and no `project:` tag is
 written, so the triage tick may *correct* a wrong default with a
-`project: precis -> <slug>, because …` comment. A `project:` tag the
-filer set is never overridden.
+`project: precis -> <slug>, because …` comment — but only to `autocatpath`
+(code in that separate repository) or `memory`; any other slug it names
+stays `precis`, and areas such as deploy, CI or platform go in `cluster:`.
+A `project:` tag the filer set is never overridden.
 
 ```python
 put(kind="gripe", text="catpath import drops unicode filenames",
@@ -750,7 +752,8 @@ resolved `gripe_triage` service_config prio is > 0 (an exact-host row
 beats `*`, so a `prio 0` host skips even under a fleet-wide light). It leases up to 40 oldest
 `STATUS:open` gripes (`reopened` first) once the parents pass has run
 (or the row is an hour old), makes one Sonnet-class batch call, and
-writes `fix:<type>`, `cluster:<slug>`, `size:S|M|L`, a computed PRIO
+writes `fix:<type>` (repository fixes — CI, deploy, scripts, hooks,
+tests, workers — are `fix:code`; `infra` is no longer offered), `cluster:<slug>`, `size:S|M|L`, a computed PRIO
 and `STATUS:triaged`. It can also CLOSE: a `fixed` verdict backed by a
 commit citing the gripe writes `STATUS:done` when the commit is
 provably deployed (ancestor of `origin/prod`, or listed in the
