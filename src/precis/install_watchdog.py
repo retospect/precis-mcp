@@ -9,10 +9,10 @@ The observed *recoverable* failure mode is a clean exit: the MCP client
 logs "server process exited cleanly" and restarts a fresh server on the
 next connection, which then runs the new code.
 
-So: fingerprint the installed package at boot, poll it from a daemon
-thread, and ``os._exit(0)`` the moment it changes. Worst case is a
-~:data:`_DEFAULT_INTERVAL_S`-second blip instead of a half-hour wedge —
-and servers stop serving stale code after a deploy as a side effect.
+Fingerprint the installed package at boot and poll it from a daemon
+thread. When it changes, wait for session quiet, drain in-flight calls,
+and exit cleanly (gr628277). Stopping the install watchdog cancels either
+wait so a retired watchdog cannot trigger a later restart.
 
 Only real installs are watched: when ``precis.__file__`` is not under a
 ``site-packages`` directory (a source checkout / editable install, where
@@ -30,9 +30,7 @@ whose source is reset under it by ``scripts/ship``. It is opted into by
 ``PRECIS_CHECKOUT_WATCHDOG=<path>`` and keyed on that tree's resolved HEAD
 sha, *not* mtimes — mtime churn is exactly why :func:`_fingerprint_for`
 refuses source trees, and a sha fires on ship/sync/qland while staying
-silent on editor saves. See :class:`CheckoutWatchdog`; unlike the install
-arm it quiesces in-flight tool calls before exiting, because its process
-serves every session on the machine rather than one. The same drained
+silent on editor saves. See :class:`CheckoutWatchdog`. The same drained
 exit is available on demand: under the supervisor, :data:`DRAIN_SIGNAL`
 (SIGHUP) triggers it — see :func:`install_drain_signal` (gr460711).
 
@@ -75,8 +73,7 @@ from weakref import WeakKeyDictionary
 
 log = logging.getLogger(__name__)
 
-#: Poll cadence. Low enough that a post-deploy stale server is gone in
-#: well under a minute; high enough that the stat is free.
+#: Poll cadence for detecting a replaced install before deferral and drain.
 _DEFAULT_INTERVAL_S = 20.0
 
 Fingerprint = tuple[str, int, int, int, int]
@@ -457,7 +454,7 @@ class InstallWatchdog(threading.Thread):
         self._stop_event = threading.Event()
 
     def stop(self, timeout: float | None = 5.0) -> None:
-        """Ask the loop to end and wait for it (a no-op if never started)."""
+        """Cancel polling or a pending restart and wait for the thread."""
         self._stop_event.set()
         if self.is_alive():
             self.join(timeout)
@@ -469,19 +466,28 @@ class InstallWatchdog(threading.Thread):
                     current = install_fingerprint()
                 except OSError:
                     current = None
-                _write_exit_breadcrumb(
-                    "install-swapped",
-                    old_fingerprint=self._baseline,
-                    new_fingerprint=current,
-                )
                 log.warning(
-                    "install watchdog: %s replaced by %s on disk — exiting "
-                    "cleanly so the MCP client restarts a fresh server (gr338977)",
+                    "install watchdog: %s replaced by %s on disk — draining "
+                    "in-flight calls, then exiting cleanly so the MCP client "
+                    "restarts a fresh server (gr338977)",
                     self._baseline[0],
                     current[0] if current else "?",
                 )
-                sys.stderr.flush()
-                os._exit(0)
+                # gr628277: a bare exit here dropped every in-memory session
+                # and killed calls mid-flight; defer to a quiet window and
+                # drain like the checkout arm does.
+                drain_then_exit(
+                    reason="install-swapped",
+                    detail="install replaced on disk",
+                    why="install swapped — exiting cleanly so the client restarts",
+                    drain_timeout_s=resolved_drain_timeout_s(),
+                    quiet_s=resolved_respawn_quiet_s(),
+                    defer_cap_s=resolved_respawn_defer_cap_s(),
+                    old_fingerprint=self._baseline,
+                    new_fingerprint=current,
+                    stop_event=self._stop_event,
+                )
+                return
 
 
 #: ``PRECIS_CHECKOUT_WATCHDOG=<path>`` opts a process into the source-tree
@@ -705,12 +711,15 @@ def drain_then_exit(
     drain_timeout_s: float,
     quiet_s: float = 0.0,
     defer_cap_s: float = _DEFAULT_RESPAWN_DEFER_CAP_S,
+    old_fingerprint: Fingerprint | None = None,
+    new_fingerprint: Fingerprint | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Wait for session quiet, quiesce in-flight calls, breadcrumb, ``os._exit(0)``.
 
-    The one exit path for a supervised shared server that wants to be
-    replaced (checkout moved, restart requested). Exit 0 tells the
-    supervisor to respawn at once rather than back off. Never returns.
+    Shared by install swaps, checkout changes and requested restarts.
+    Exit 0 tells the supervisor to respawn at once. Setting
+    ``stop_event`` before exit bookkeeping cancels the restart.
 
     ``quiet_s`` is the gr548248 deferral: the exit itself drops every
     in-memory MCP session, so while a call is in flight — or dispatch ran
@@ -720,6 +729,9 @@ def drain_then_exit(
     wait entirely (the drain below still bounds in-flight calls).
     """
     from precis import inflight
+
+    if stop_event is not None and stop_event.is_set():
+        return
 
     if quiet_s > 0 and inflight.busy(quiet_s):
         deadline = time.monotonic() + max(defer_cap_s, 0.0)
@@ -739,7 +751,10 @@ def drain_then_exit(
                 )
                 why += f" (FORCED — deferral cap {defer_cap_s:.0f}s reached)"
                 break
-            time.sleep(_DEFER_POLL_S)
+            if stop_event is None:
+                time.sleep(_DEFER_POLL_S)
+            elif stop_event.wait(_DEFER_POLL_S):
+                return
         else:
             log.warning("%s — sessions went quiet; proceeding", why)
 
@@ -752,10 +767,14 @@ def drain_then_exit(
     # against it and retry.
     mark = inflight.high_water()
     pending = inflight.pending_at(mark)
-    drained = inflight.wait_for_drain(drain_timeout_s, mark=mark)
+    drained = inflight.wait_for_drain(drain_timeout_s, mark=mark, stop_event=stop_event)
     stuck = inflight.pending_at(mark)
+    if stop_event is not None and stop_event.is_set():
+        return
     _write_exit_breadcrumb(
         reason,
+        old_fingerprint=old_fingerprint,
+        new_fingerprint=new_fingerprint,
         detail=detail + ("" if drained else f"; {stuck} call(s) still in flight"),
     )
     log.warning(

@@ -1,11 +1,8 @@
 """Count tool calls currently executing, so a watchdog can quiesce before exit.
 
-The install watchdog's ``os._exit(0)`` was designed for a process serving
-exactly one MCP client: killing an in-flight call was the same blast radius
-as the wedge it was avoiding. The checkout watchdog
-(:mod:`precis.install_watchdog`) runs in a process serving *every* session on
-the machine, so an exit that lands mid-dispatch fails a dozen callers at once.
-This module lets the watchdog wait for dispatch to drain first.
+Install and checkout watchdogs (:mod:`precis.install_watchdog`) use this
+module to let active tool calls finish before a restart. An exit during
+dispatch can interrupt calls from several sessions at once.
 
 **Plain ``threading`` primitives, deliberately.** The obvious mechanism —
 draining ``server._get_tool_semaphore()`` — does not work and must not be
@@ -36,6 +33,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 _cond = threading.Condition()
+
+#: Maximum wait between cancellation checks for a stoppable drain.
+_DRAIN_STOP_POLL_S = 0.5
 
 #: Tickets handed out by :func:`enter` and not yet returned by :func:`leave`.
 _active: set[int] = set()
@@ -105,10 +105,17 @@ def busy(quiet_s: float) -> bool:
         return time.monotonic() - _last_activity < quiet_s
 
 
-def wait_for_drain(timeout: float, *, mark: int | None = None) -> bool:
+def wait_for_drain(
+    timeout: float,
+    *,
+    mark: int | None = None,
+    stop_event: threading.Event | None = None,
+) -> bool:
     """Block until every call in flight *at entry* has finished.
 
-    Returns True if that set drained, False on timeout.
+    Returns True if that set drained, False on timeout or cancellation
+    while calls are still pending. Callers with a stop event check it
+    before proceeding with exit.
 
     **The bound is on the calls already running, not on the process going
     idle.** Waiting for ``count() == 0`` is what the first version did, and
@@ -135,8 +142,11 @@ def wait_for_drain(timeout: float, *, mark: int | None = None) -> bool:
             mark = _issued
         while any(ticket <= mark for ticket in _active):
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if remaining <= 0 or (stop_event is not None and stop_event.is_set()):
                 return False
+            if stop_event is not None:
+                # Setting an Event does not wake waiters on the condition.
+                remaining = min(remaining, _DRAIN_STOP_POLL_S)
             _cond.wait(remaining)
         return True
 

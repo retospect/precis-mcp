@@ -1,7 +1,6 @@
 """Install watchdog (gr338977) — a live server whose venv is replaced
-must decide "exit cleanly", never wedge. These pin the decision logic;
-the thread itself is a sleep-loop around :func:`_install_replaced` plus
-``os._exit`` and isn't run here."""
+must decide "exit cleanly", never wedge. These tests cover the polling,
+drain, cancellation and exit breadcrumb."""
 
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ if sys.platform == "win32":
         allow_module_level=True,
     )
 
-from precis import install_watchdog
+from precis import inflight, install_watchdog
 from precis.install_watchdog import (
     CheckoutWatchdog,
     InstallWatchdog,
@@ -295,12 +294,19 @@ def _breadcrumb_in_tmp(
     # (it is served once per MCP session, not once per process — see
     # ``consume_last_exit_breadcrumb``). Without this reset the first test
     # to read one would poison every later test in the file.
+    # ``inflight`` is reset too: the install-swap exit now defers on
+    # ``inflight.busy(quiet_s)``, and ``quiet_s`` defaults to 120 s, so a
+    # stale ``_last_activity`` stamp left by any earlier dispatch on the
+    # same xdist worker would park the watchdog thread in the
+    # quiet-deferral loop until the defer cap.
     install_watchdog._reset_breadcrumb_state_for_tests()
+    inflight._reset_for_tests()
     monkeypatch.setattr(install_watchdog, "_hooks_installed", False)
     monkeypatch.setattr(install_watchdog, "_crash_detail", None)
     original_excepthook = sys.excepthook
     yield target
     install_watchdog._reset_breadcrumb_state_for_tests()
+    inflight._reset_for_tests()
     sys.excepthook = original_excepthook
     atexit.unregister(install_watchdog._atexit_breadcrumb)
 
@@ -507,3 +513,73 @@ def test_legacy_breadcrumb_is_consumed_once_for_one_release(
     crumb = consume_last_exit_breadcrumb()
     assert crumb is not None and crumb["reason"] == "exit"
     assert not legacy.exists()
+
+
+def test_install_swap_exit_goes_through_the_drain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr628277: the install arm must defer/drain via ``drain_then_exit``
+    rather than a bare ``os._exit`` that kills in-flight calls."""
+    init = _fake_install(tmp_path)
+    baseline = _fingerprint_for(init)
+    assert baseline is not None
+    seen: dict[str, object] = {}
+    fired = threading.Event()
+
+    def _fake_drain(**kwargs: object) -> None:
+        seen.update(kwargs)
+        fired.set()
+        raise SystemExit
+
+    monkeypatch.setattr(install_watchdog, "drain_then_exit", _fake_drain)
+    monkeypatch.setattr(install_watchdog, "install_fingerprint", lambda: None)
+    thread = InstallWatchdog(baseline=baseline, interval_s=0.05)
+    thread.start()
+    assert fired.wait(10.0)
+    thread.join(5.0)
+    assert seen["reason"] == "install-swapped"
+    assert seen["old_fingerprint"] == baseline
+    assert seen["quiet_s"] == install_watchdog.resolved_respawn_quiet_s()
+
+
+@pytest.mark.parametrize("quiet_s", [60.0, 0.0], ids=["quiet-window", "drain"])
+def test_stop_cancels_install_restart_after_swap(
+    quiet_s: float,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _breadcrumb_in_tmp: Path,
+) -> None:
+    baseline = _fingerprint_for(_fake_install(tmp_path))
+    assert baseline is not None
+    waiting = threading.Event()
+    exits: list[int] = []
+    wait_for_drain = inflight.wait_for_drain
+
+    def busy(_quiet_s: float) -> bool:
+        waiting.set()
+        return inflight.count() > 0
+
+    def drain(
+        timeout: float, *, mark: int, stop_event: threading.Event | None = None
+    ) -> bool:
+        waiting.set()
+        return wait_for_drain(timeout, mark=mark, stop_event=stop_event)
+
+    monkeypatch.setattr(inflight, "busy", busy)
+    monkeypatch.setattr(inflight, "wait_for_drain", drain)
+    monkeypatch.setattr(install_watchdog, "install_fingerprint", lambda: None)
+    monkeypatch.setattr(install_watchdog, "resolved_respawn_quiet_s", lambda: quiet_s)
+    monkeypatch.setattr(install_watchdog, "resolved_respawn_defer_cap_s", lambda: 60.0)
+    monkeypatch.setattr(install_watchdog, "resolved_drain_timeout_s", lambda: 60.0)
+    monkeypatch.setattr(install_watchdog.os, "_exit", exits.append)
+    thread = InstallWatchdog(baseline=baseline, interval_s=0.05)
+    try:
+        with inflight.tracked():
+            thread.start()
+            assert waiting.wait(5.0)
+            thread.stop(timeout=2.0)
+            assert not thread.is_alive()
+    finally:
+        thread.stop()
+    assert exits == []
+    assert not _breadcrumb_in_tmp.exists()

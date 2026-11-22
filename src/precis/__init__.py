@@ -63,6 +63,9 @@ plugins and bridges sharing the repo:
 register from the in-tree ``BUILTINS``, plugins load last through
 ``dispatch._load_plugins``. Config is loaded once at startup and frozen
 (``config.py``).
+The install watchdog waits for quiet and drains active tool calls before
+exiting after a deploy, to limit disruption to sessions. Stopping the
+watchdog cancels the pending restart (``install_watchdog.py``).
 
 ``__version__`` is read from the installed distribution metadata, so it cannot
 drift from ``pyproject.toml``; the literal is a fallback for a bare source tree.
