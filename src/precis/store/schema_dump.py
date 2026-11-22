@@ -102,7 +102,6 @@ SEED_TABLES: tuple[str, ...] = (
     "chunk_kinds",
     "embedders",
     "summarizers",
-    "artifact_kinds",
     # component kind (0093/0152/0163): categories before specs (FK).
     "component_categories",
     "component_specs",

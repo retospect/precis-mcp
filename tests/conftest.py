@@ -37,7 +37,7 @@ Within a process, per-test isolation is by ``TRUNCATE … CASCADE``
 of every data table at ``store`` fixture entry — fast (ms scale),
 and preserves the seeded vocabulary tables (``kinds``,
 ``chunk_kinds``, ``relations``, ``actors``, ``providers``,
-``embedders``, ``summarizers``, ``artifact_kinds``) the migration
+``embedders``, ``summarizers``) the migration
 installs and that almost every handler test depends on.
 
 Why not ephemeral DBs per test? Per-test CREATE DATABASE +
@@ -1793,7 +1793,6 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "providers",
         "embedders",
         "summarizers",
-        "artifact_kinds",
         "kind_provider",  # vocab mapping, seeded by 0022
         # 0185: which kind list the revision triggers were last built from;
         # truncating it would desync it from the (preserved) triggers.

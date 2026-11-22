@@ -65,6 +65,10 @@ def _migration_files() -> list[Path]:
 #: reason, so a new unconditional vocabulary seed can't hide here by
 #: mistake.
 NOT_VOCAB: dict[str, str] = {
+    "artifact_kinds": (
+        "0002/0004: seeded the artifact registry, dropped by 0349 "
+        "(gr690192) — the table no longer exists after the chain."
+    ),
     "chunk_claims": (
         "0045_chunk_claims.sql: heals pre-lease chunk_summaries 'failed' "
         "rows into lease rows — SELECTs FROM chunk_summaries, which is "

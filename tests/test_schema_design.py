@@ -347,7 +347,6 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_routes.topology",
         "pcb_routes.tree",
         "provenance_rw_cache.raw",
-        "ref_artifacts.payload",
         "ref_events.payload",
         "refs.authors",
         "refs.meta",
