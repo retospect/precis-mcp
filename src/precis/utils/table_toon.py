@@ -474,7 +474,13 @@ def table_toon(
         rid = str(rowmeta[ri].get("id") or "")
         lines.append(
             "\t".join(
-                [rid, *(_toon._encode_cell(data[ri][ci], "\t") for ci in col_idx)]
+                [
+                    rid,
+                    *(
+                        _toon._encode_cell(data[ri][ci], "\t", escape=False)
+                        for ci in col_idx
+                    ),
+                ]
             )
         )
     return "\n".join(lines)

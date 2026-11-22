@@ -149,25 +149,26 @@ class TestScalarEncoding:
 
 
 class TestEscapeRules:
-    """The dump-side quoting rules.
+    """The dump-side escape and quoting rules.
 
-    The audience for our TOON output is an LLM, not a parser. We
-    only wrap cells in ``"..."`` when the wrapper is *strictly
-    necessary* to preserve the columnar shape — i.e. when the cell
-    contains the separator, a newline, or a CR. Bare double quotes
-    pass through verbatim because they don't break the column
-    structure: an LLM reads ``He said X`` (with literal quotes
-    around X) more easily than the RFC 4180 escape with doubled
-    inner quotes wrapped in an outer pair.
+    The audience for our TOON output is an LLM, not a parser. A tab
+    or line break in a cell is written as a visible escape, never
+    raw and never quoted (gr740128): a quoted raw newline still read
+    as a broken row. We only wrap cells in ``"..."`` when the cell
+    contains a non-tab separator. Bare double quotes pass through
+    verbatim because they don't break the column structure: an LLM
+    reads ``He said X`` (with literal quotes around X) more easily
+    than the RFC 4180 escape with doubled inner quotes wrapped in an
+    outer pair.
     """
 
-    def test_cell_with_separator_is_quoted(self):
+    def test_cell_with_tab_is_escaped(self):
         out = dump([{"a": "ab\tcd"}])
-        assert out == '{a}\n"ab\tcd"'
+        assert out == "{a}\nab\\tcd"
 
-    def test_cell_with_newline_is_quoted(self):
+    def test_cell_with_newline_is_escaped(self):
         out = dump([{"a": "line1\nline2"}])
-        assert out == '{a}\n"line1\nline2"'
+        assert out == "{a}\nline1\\nline2"
 
     def test_cell_with_double_quote_passes_through_literally(self):
         # An LLM reads bare quotes inside cells without confusion;
@@ -185,15 +186,20 @@ class TestEscapeRules:
         assert out == '{a}\n"already-quoted"'
 
     def test_cell_with_embedded_quotes_inside_wrapped_cell(self):
-        # When a cell *does* need wrapping (because of \t / \n / \r),
-        # embedded quotes inside the wrapper still follow RFC 4180:
-        # double them so the closing-wrapper boundary is unambiguous.
-        out = dump([{"a": 'he said "hi"\nthen left'}])
-        assert out == '{a}\n"he said ""hi""\nthen left"'
+        # When a cell *does* need wrapping (it holds a non-tab
+        # separator), embedded quotes inside the wrapper still follow
+        # RFC 4180: double them so the closing-wrapper boundary is
+        # unambiguous. The line break inside is escaped all the same.
+        out = dump([{"a": 'he said "hi",\nthen left'}], sep=",")
+        assert out == '{a}\n"he said ""hi"",\\nthen left"'
 
-    def test_cell_with_carriage_return_is_quoted(self):
+    def test_cell_with_line_break_and_quotes_is_not_wrapped(self):
+        out = dump([{"a": 'he said "hi"\nthen left'}])
+        assert out == '{a}\nhe said "hi"\\nthen left'
+
+    def test_cell_with_carriage_return_is_escaped(self):
         out = dump([{"a": "x\ry"}])
-        assert out == '{a}\n"x\ry"'
+        assert out == "{a}\nx\\ry"
 
     def test_normal_cell_not_quoted(self):
         # Sanity: a clean string passes through unmodified. Quoting
@@ -201,12 +207,12 @@ class TestEscapeRules:
         out = dump([{"a": "hello world"}])
         assert out == "{a}\nhello world"
 
-    def test_header_cell_with_separator_is_quoted(self):
+    def test_header_cell_with_tab_is_escaped(self):
         # Header keys can in principle contain a tab too. Unlikely
         # in our column names, but the format stays internally
         # consistent.
         out = dump([{"weird\tkey": "v"}])
-        assert out == '{"weird\tkey"}\nv'
+        assert out == "{weird\\tkey}\nv"
 
 
 class TestSeparatorOverride:
@@ -218,9 +224,10 @@ class TestSeparatorOverride:
 
     def test_separator_drives_escape_rule(self):
         # With sep="," a cell containing a comma must be quoted but
-        # a cell containing a tab is *not* quoted any more.
+        # a cell containing a tab is *not* quoted any more: the tab
+        # is escaped whatever the separator.
         out = dump([{"a": "x,y", "b": "x\ty"}], sep=",")
-        assert out == '{a,b}\n"x,y",x\ty'
+        assert out == '{a,b}\n"x,y",x\\ty'
 
 
 class TestNumpyScalars:

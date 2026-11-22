@@ -17,10 +17,20 @@ The audience is an LLM, not a parser. The dump rules are tuned
 for token frugality and human-/agent-readability rather than
 strict RFC 4180 round-trippability:
 
+* A cell never carries a tab or a line break (gr740128). Each is
+  written as a visible escape — ``\\t``, ``\\n``, ``\\r``, ``\\v``,
+  ``\\f`` and ``\\uXXXX`` for the rest (:data:`_CELL_ESCAPES`) — so a
+  title holding one cannot fake a row, shift a column or read as the
+  end of the table. Quoting such a cell kept the raw character on
+  the wire, which a line-based reader still saw as a broken row.
+* A backslash already in the cell is **not** doubled: a call recipe
+  (``text='a\\nb'``) or a LaTeX command (``\\nu``) reaches the reader
+  exactly as stored. The price is that ``load`` reads a stored
+  backslash-``n`` as a line break — one more shape that does not
+  round-trip, below.
 * A cell is wrapped in ``"..."`` **only** when it contains the
-  separator, a newline, or a carriage return — characters that
-  would otherwise confuse the column / row structure the LLM
-  reads off the wire.
+  separator, which after the escape step can only be a non-tab
+  ``sep``.
 * Bare double quotes inside cells are passed through verbatim.
   An LLM reads ``The "Bayes Factor" Revisited`` as a single cell
   far more readily than the RFC 4180 escape ``"The ""Bayes
@@ -37,17 +47,26 @@ strict RFC 4180 round-trippability:
 ``load()`` retains the full RFC 4180 grammar (it understands
 ``""``-escaped quotes inside wrapped cells) so any well-formed
 TOON input parses; it just won't see the unnecessary escapes
-from our own dumps. Round-trip is best-effort for cells we
-control: any cell starting with a literal ``"`` is the only
-known shape that ``load`` cannot reverse, since the leading
-quote is indistinguishable from a wrapper open. That trade is
-intentional — see ``b10-toon-output`` (git-only).
+from our own dumps, and it reverses the cell escapes. Round-trip
+is best-effort for cells we control. Two shapes ``load`` cannot
+reverse: a cell starting with a literal ``"`` (the leading quote is
+indistinguishable from a wrapper open) and a cell holding a literal
+backslash escape such as ``\\n`` (indistinguishable from an escaped
+line break). Both trades are intentional — see ``b10-toon-output``
+(git-only) and gr740128.
+
+The draft-table grid (:mod:`precis.utils.table_toon`) is the one
+caller that opts out (``_encode_cell(..., escape=False)``): its TOON
+is also the write channel, and reading a typed ``\\nu`` back as a
+line break would corrupt LaTeX cells. It keeps the quoted raw form
+until that grammar is ruled.
 
 The implementation is pure Python with no external dependency.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -56,8 +75,40 @@ from typing import Any
 # cell and an LLM would mis-count columns. The separator itself is
 # added to the trigger set at runtime via the ``sep`` argument.
 # Note: ``"`` is *not* a trigger — see the module docstring for
-# the LLM-audience reasoning.
+# the LLM-audience reasoning. Only the ``escape=False`` path can
+# still reach these: the escape step removes them first.
 _QUOTE_TRIGGERS_FIXED = ("\n", "\r")
+
+#: Tab plus every line break ``str.splitlines`` honours → the visible
+#: escape a cell carries instead (gr740128).
+_CELL_ESCAPES = {
+    "\t": "\\t",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\v": "\\v",
+    "\f": "\\f",
+    "\x1c": "\\u001c",
+    "\x1d": "\\u001d",
+    "\x1e": "\\u001e",
+    "\x85": "\\u0085",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+}
+_CELL_ESCAPE_TABLE = str.maketrans(_CELL_ESCAPES)
+_CELL_UNESCAPES = {v: k for k, v in _CELL_ESCAPES.items()}
+_CELL_UNESCAPE_RE = re.compile("|".join(re.escape(e) for e in _CELL_UNESCAPES))
+
+
+def escape_cell(text: str) -> str:
+    """Replace every row- or column-breaking character in *text* with
+    its visible escape. The one escape step for every table renderer."""
+    return text.translate(_CELL_ESCAPE_TABLE)
+
+
+def unescape_cell(text: str) -> str:
+    """Reverse :func:`escape_cell`. A stored literal backslash escape
+    comes back as the control character (module docstring)."""
+    return _CELL_UNESCAPE_RE.sub(lambda m: _CELL_UNESCAPES[m.group()], text)
 
 
 def dump(
@@ -169,7 +220,7 @@ def load(text: str, *, sep: str = "\t") -> list[dict[str, str]]:
     # walks character-by-character, tracking whether we're inside a
     # `"..."` quoted field and whether the current quote is being
     # escaped by a following `"`.
-    records = _tokenise(text, sep=sep)
+    records = [[unescape_cell(c) for c in rec] for rec in _tokenise(text, sep=sep)]
     if not records:
         return []
 
@@ -219,8 +270,12 @@ def _resolve_columns(
     return list(seen)
 
 
-def _encode_cell(value: Any, sep: str) -> str:
-    """Render a single cell value to its serialised string form."""
+def _encode_cell(value: Any, sep: str, *, escape: bool = True) -> str:
+    """Render a single cell value to its serialised string form.
+
+    ``escape=False`` keeps the pre-gr740128 quoted raw form; only the
+    draft-table grid uses it (module docstring).
+    """
     if value is None:
         return ""
     if type(value).__module__ == "numpy" and hasattr(value, "item"):
@@ -238,6 +293,8 @@ def _encode_cell(value: Any, sep: str) -> str:
     else:
         text = str(value)
 
+    if escape:
+        text = escape_cell(text)
     if any(t in text for t in _QUOTE_TRIGGERS_FIXED) or sep in text:
         escaped = text.replace('"', '""')
         return f'"{escaped}"'
@@ -350,4 +407,4 @@ def _tokenise(text: str, *, sep: str) -> list[list[str]]:
     return records
 
 
-__all__ = ["dump", "load"]
+__all__ = ["dump", "escape_cell", "load", "unescape_cell"]

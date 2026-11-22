@@ -74,12 +74,27 @@ the leading rows that fit and a `next:` line naming a targeted TOC,
 section, or more-specific search call. Use that call to retrieve only
 the rows you need; there is no `more()` continuation.
 
-## Cell-escape rules — when quoting kicks in
+## Cell-escape rules — tabs and line breaks never reach a cell
 
-A cell is wrapped in `"…"` only when it contains a tab, a newline,
-or a carriage return. Bare `"` characters pass through verbatim — a
-cell like `He said "hi"` is a single unquoted cell. When a cell does
-get wrapped, inner `"` is doubled (`""`).
+One line is one row and one tab is one column boundary, always. A tab
+or line break in the source text is written as a visible escape:
+
+| In the source | In the cell |
+|---|---|
+| tab | `\t` |
+| newline, carriage return | `\n`, `\r` |
+| vertical tab, form feed | `\v`, `\f` |
+| U+001C to U+001E, NEL U+0085, U+2028, U+2029 | `\u001c` … `\u2029` |
+
+So `\n` in a cell means the source had a line break there, or held the
+two characters `\n` already: a backslash is never doubled, and a call
+recipe or LaTeX command reads exactly as stored.
+
+Cells are not quoted. Bare `"` characters pass through verbatim — a
+cell like `He said "hi"` is a single unquoted cell. The exception is
+the draft-table grid ([[precis-table-help]]), which still wraps a cell
+holding a tab, newline or carriage return in `"…"` (inner `"` doubled)
+and keeps the raw character.
 
 Empty cells render as the empty string. `None` → empty;
 `True`/`False` → `true`/`false`.

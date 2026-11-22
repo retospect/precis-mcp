@@ -27,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from precis.format.toon import escape_cell
+
 # Box-drawing glyphs (`U+2500` family). ASCII-printable in any
 # monospace terminal. Listed here so a future change is one spot,
 # not search-and-replace across the file.
@@ -125,7 +127,9 @@ def _stringify(value: Any) -> str:
 
     Kept aligned with `precis.format.toon._encode_cell` (minus the
     quoting step) so an operator who switches between ``--format
-    toon`` and ``--format table`` sees the same cell contents.
+    toon`` and ``--format table`` sees the same cell contents — the
+    tab and line-break escapes included, so a cell cannot break a box
+    row (gr740128).
     """
     if value is None:
         return ""
@@ -135,9 +139,7 @@ def _stringify(value: Any) -> str:
         return "false"
     if isinstance(value, float):
         return repr(value)
-    if isinstance(value, str):
-        return value
-    return str(value)
+    return escape_cell(value if isinstance(value, str) else str(value))
 
 
 __all__ = ["render"]
