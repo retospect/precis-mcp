@@ -213,7 +213,9 @@ link(kind="todo", id=<slice A id>, rel="blocked-by", target="todo:<slice B id>")
   those requirements change. A copied brief never becomes an independent
   specification.
 - Status, landed sha, lease and lane live on the todo (`STATUS:`,
-  `landed:` comment, `claimed-by:` lease, lane comment).
+  `landed:` comment, `claimed-by:` lease, lane comment); `factory:build`
+  on a leaf is the ready step's offer to the build dispatcher
+  (`precis-spec-help~11`).
 - Next doable slice for a programme:
   `search(kind='todo', view='doable', args={'under': <programme todo root>})`.
 
@@ -340,7 +342,17 @@ built. Run it after a transfer and repeat it as code lands.
   a concrete trigger, expected result and acceptance evidence. Missing
   fixtures or thresholds must already be named decisions on the plan; if
   they are hidden assumptions, the spec is not ready and the ready agent
-  says so instead of smoothing them over.
+  says so instead of smoothing them over. Its verdict write also offers
+  the plan's leaves to the factory: each leaf todo it judges buildable —
+  code class, the body naming the scoped files and the test that proves
+  the slice, and no open question on it — gets `factory:build` in the
+  same write (`tag(kind='todo', id=<leaf>, add=['factory:build'])`), the
+  tag `workers/todo_dispatch.py` picks up. A leaf it does not pass gets
+  a one-line comment naming what is missing instead
+  (`put(kind='todo', id=<leaf>, text='not offered: <why>')`). The plan
+  root and its asks are never tagged, and neither is a leaf whose files
+  touch a lane deny path or a `governs: factory` skill — the
+  dispatcher's fenced-path refusal would spend an ask on it anyway.
 - **Builder** — reads its slice todo, follows it to the section node for
   the acceptance contract, and works from a self-contained brief (a
   named-revision snapshot) when the graph is unreachable. It records
