@@ -19,7 +19,10 @@ package holds the concept-graph layer:
   as the last dismissal's reversal of the shared mastery stamp.
 - `flashcards` — mint and rework record the model's recoverability verdict.
   Missing verdicts are marked ``unchecked`` to preserve compatibility with
-  older replies and distinguish them from explicit passes.
+  older replies and distinguish them from explicit passes. Both prompts ask
+  for the Back Extra symbol glossary (``_GLOSSARY_RULE``, ``precis-cloze``
+  rule 7) and tell the model to repair a missing line before it replies; no
+  code checks the reply for undefined symbols.
 - `term_quality` — the non-concept filter (the ``precis-cloze`` rule-0
   taxonomy), gating both the glossary build and the promotion chokepoint so
   topic-labels / stock phrases / front-matter never become concepts

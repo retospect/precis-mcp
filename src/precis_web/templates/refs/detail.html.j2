@@ -148,8 +148,9 @@
 <div class="rounded-lg border border-danger bg-danger-subtle p-4 text-sm text-danger-deep whitespace-pre-wrap">{{ body | linkify_refs }}</div>
 {% elif kind == "anki" %}
 {# Cloze cards: render {{cN::answer::hint}} deletions as highlighted spans
-   rather than leaking the raw double-brace markup at the reader. #}
-<div class="rounded-lg border border-line bg-surface p-4 text-sm text-fg-secondary overflow-x-auto whitespace-pre-wrap leading-relaxed">{{ body | render_cloze }}</div>
+   rather than leaking the raw double-brace markup at the reader, and the
+   Back Extra list tags (the symbol glossary) as a list. #}
+<div class="rounded-lg border border-line bg-surface p-4 text-sm text-fg-secondary overflow-x-auto whitespace-pre-wrap leading-relaxed">{{ body | render_cloze(card_html=true) }}</div>
 {% else %}
 {# Tab-separated runs (TOON ``Next:`` blocks, tab-delimited oracle shares)
    render as aligned tables via ``linkify_toon``; prose stays whitespace-

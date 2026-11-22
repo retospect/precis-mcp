@@ -2,11 +2,12 @@
 id: precis-cloze
 family: memory
 title: precis — authoring excellent Anki cloze cards
-summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering on new cards only (never renumber reviewed cards), hint/prose non-duplication (cut "The term"-style lead-ins), specific uniquely-recoverable answers, telegraphic with no in-sentence context (context lives in tags), contextual Back Extra; with language/math worked examples
+summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering on new cards only (never renumber reviewed cards), hint/prose non-duplication (cut "The term"-style lead-ins), specific uniquely-recoverable answers, telegraphic with no in-sentence context (context lives in tags), contextual Back Extra that defines every symbol, variable and acronym; with language/math worked examples
 answers:
   - how do I write a good spaced-repetition cloze card instead of a bad one?
   - how do I decide which deck a card goes in?
   - what belongs in Back Extra vs the card front?
+  - do I have to define the symbols, Greek letters and acronyms on a card?
   - how do I make cloze cards for language characters or math notation?
 applies-to: put/search (kind='anki')
 status: active
@@ -172,7 +173,7 @@ to — a term, number, name, mechanism. Never cloze:
   one interchangeable instance of it. If the *category* is the point, cloze the
   category, not a sample member.
 
-## How do I write good anki cards? — rules 5–6
+## How do I write good anki cards? — rules 5–7
 
 ### 5. No cloze gives away another on the same card
 
@@ -197,6 +198,24 @@ Anki viewer shows tags, and tags can be re-grouped across the whole
 collection at once. Keep the sentence the bare fact; file the card with
 `deck-<topic>` and topic tags instead.
 
+### 7. Define every symbol in Back Extra
+
+Every symbol, variable and acronym on the card or in its Back Extra gets a
+Back Extra line `symbol = meaning (units)` — Greek letters, formula
+variables, abbreviations. No exceptions for "obvious" ones: `k` and `T`
+included. A learner reviewing the card alone must be able to decode it.
+
+- **Units** — SI or the field's customary unit (mol/kg, S/cm, eV). A
+  quantity without a unit gives its range instead: `θ (theta) = fractional
+  coverage (0–1)`.
+- **Greek letters** carry their spoken name in parentheses, capitalised to
+  match the letter's case: `Γ (Gamma)`, `ν (nu)`, `Ω (Omega)`, `ω (omega)`,
+  `μ (mu)`, `Λ (Lambda)`.
+- **Acronyms** — `MSD = mean squared displacement`, also when the expansion
+  is a cloze answer on the front (rule 4).
+- **One symbol per line**, never a run-on `;` list. The layout is in "What
+  goes in Back Extra".
+
 ## How do I write good anki cards? — the final check
 
 ### Before you save: check each cN in turn
@@ -210,6 +229,11 @@ learner could recover it — not a vague phrase, not one of many
 equally-valid fillers? Drop the cloze (leave it as plain text) — or the
 whole card — if any answer is no. If dropping the clozes leaves nothing
 worth testing, the concept failed rule 0: refuse the card entirely.
+
+Then check the notation (rule 7): list every symbol, variable and acronym on
+the front and in Back Extra, and find each one's Back Extra line
+`symbol = meaning (units)` — Greek letters with their spoken name, one
+symbol per line. Add every missing line before you save.
 
 ### Aim for ~3–4 cards per concept
 
@@ -226,21 +250,43 @@ auto-creates it); no tag → the base `Precis` deck. Keep authored cards under t
 ```python
 put(
     kind="anki",
-    text="{{c1::Mitochondrion::term}} makes ATP ({{c2::adenosine triphosphate::expansion}}).",
+    text="""\
+{{c1::Mitochondrion::term}} makes ATP ({{c2::adenosine triphosphate::expansion}}).
+---
+<ul><li>ATP = adenosine triphosphate</li></ul>""",
     tags=["deck-cell-biology"],
 )  # → deck Precis::cell-biology
 ```
 
 ## What goes in Back Extra
 
-Not just a source/mnemonic footnote — use it to carry the **context** that
-makes the card efficient to study standalone: a prerequisite fact, how this
-connects to material you're already learning, a pointer to the paper/deck it
-came from. Terse still applies (rule 6), but richer than "aka X" when the
-card needs it. If a card only makes sense alongside something else you're
-studying, put that bridge in Back Extra rather than stretching the front
-sentence to carry it — the front stays a clean cloze, the context lives where
-it belongs.
+Two parts, in this order: the symbol glossary, then the context.
+
+**Glossary (rule 7).** One line per symbol, variable and acronym on the card
+or in Back Extra itself: `symbol = meaning (units)`, Greek letters with their
+spoken name. One symbol per line, written as an HTML list: Anki renders the
+field as HTML, so a raw newline collapses and a markdown bullet shows as
+plain text. Close the list with `<hr>` when context follows.
+
+```python
+put(
+    kind="anki",
+    text="""\
+Hop rate Γ = {{c1::ν::prefactor}}·exp(−{{c2::E_a::barrier}}/(k·T)).
+---
+<ul><li>Γ (Gamma) = hop rate (1/s)</li><li>ν (nu) = attempt frequency (1/s)</li><li>E_a = activation energy (eV)</li><li>k = Boltzmann constant (eV/K)</li><li>T = temperature (K)</li></ul><hr>Arrhenius law for a thermally activated hop.""",
+    tags=["deck-diffusion"],
+)
+```
+
+**Context.** Not just a source/mnemonic footnote — use it to carry the
+**context** that makes the card efficient to study standalone: a
+prerequisite fact, how this connects to material you're already learning, a
+pointer to the paper/deck it came from. Terse still applies (rule 6), but
+richer than "aka X" when the card needs it. If a card only makes sense
+alongside something else you're studying, put that bridge in Back Extra
+rather than stretching the front sentence to carry it — the front stays a
+clean cloze, the context lives where it belongs.
 
 ## Worked example — a language-learning scheme (Chinese/Japanese characters)
 

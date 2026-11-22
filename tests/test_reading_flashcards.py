@@ -9,6 +9,7 @@ Anki dependency (stats are patched straight into ``meta.anki_stats``).
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -17,9 +18,12 @@ from typing import Any
 import pytest
 
 from precis.reading.flashcards import (
+    _MINT_SYS,
+    _REWORK_SYS,
     ForgeReport,
     _stale_leeches,
     author_card,
+    cloze_skill_preamble,
     mint_daily_cards,
     rework_stale_cards,
 )
@@ -440,3 +444,72 @@ class TestReportLines:
         assert "minted 1 card(s) for concept cn5" in text
         assert "did rewrite ak9" in text and "→ ak10" in text
         assert "skipped 1" in text
+
+
+def _flat(text: str) -> str:
+    """Whitespace-collapsed, so a pinned phrase matches across a line wrap."""
+    return " ".join(text.split())
+
+
+class TestSymbolGlossary:
+    """gr745846: every symbol, variable and acronym on a card is defined in
+    Back Extra as ``symbol = meaning (units)``, Greek letters with their spoken
+    name, one symbol per line. Pinned in both authoring prompts and in the
+    ``precis-cloze`` skill the forge prepends to them."""
+
+    #: The rule's wording, matched case-insensitively.
+    _RULE = (
+        "symbol, variable and acronym",
+        "symbol = meaning (units)",
+        "spoken name",
+        "one symbol per line",
+    )
+    #: The Back Extra shape: an HTML list, a rule, then context. Exact case —
+    #: the spoken name is capitalised to match the letter.
+    _LAYOUT = ("<ul><li>Γ (Gamma) = hop rate (1/s)</li>", "</li></ul><hr>")
+
+    def _assert_states(self, text: str, needles: tuple[str, ...], where: str) -> None:
+        flat = _flat(text).casefold()
+        missing = [n for n in needles if n.casefold() not in flat]
+        assert not missing, f"{where} does not say {missing}"
+
+    def _skill_section(self, heading: str) -> str:
+        """One section of the skill the forge prepends: from ``heading`` to the
+        next heading of the same or a higher level."""
+        body = cloze_skill_preamble()
+        assert heading in body, f"precis-cloze has no section {heading!r}"
+        rest = body[body.index(heading) + len(heading) :]
+        level = len(heading.split(" ", 1)[0])
+        end = re.search(rf"^#{{2,{level}}} ", rest, re.MULTILINE)
+        return rest[: end.start()] if end else rest
+
+    @pytest.mark.parametrize(
+        ("name", "prompt"),
+        [("mint", _MINT_SYS), ("rework", _REWORK_SYS)],
+        ids=["mint", "rework"],
+    )
+    def test_prompt_asks_for_the_glossary(self, name: str, prompt: str) -> None:
+        self._assert_states(prompt, self._RULE, f"the {name} prompt")
+        for needle in self._LAYOUT:
+            assert needle in prompt, f"the {name} prompt lacks the layout {needle!r}"
+
+    def test_mint_prompt_no_longer_makes_back_extra_optional(self) -> None:
+        assert "Optionally add a terse Back Extra" not in _MINT_SYS
+
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            "### 7. Define every symbol in Back Extra",
+            "## What goes in Back Extra",
+            "### Before you save: check each cN in turn",
+        ],
+    )
+    def test_skill_states_the_rule(self, heading: str) -> None:
+        self._assert_states(
+            self._skill_section(heading), self._RULE, f"precis-cloze {heading!r}"
+        )
+
+    def test_skill_back_extra_section_shows_the_html_layout(self) -> None:
+        section = self._skill_section("## What goes in Back Extra")
+        for needle in self._LAYOUT:
+            assert needle in section, f"Back Extra section lacks {needle!r}"

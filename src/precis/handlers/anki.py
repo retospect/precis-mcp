@@ -25,7 +25,8 @@ Authoring conventions (taught by ``precis-anki-help``):
   (``{{c1::x}} {{c2::y}}`` → two cards; ``{{c1::x::hint}}`` → a hint).
 - **Optional terse "Back Extra"**: a short answer-side note — a source, a
   mnemonic, a gotcha. Supply it after a lone ``---`` line at the end of the
-  body. Used sparingly ("terse or omit").
+  body. Terse; omitted only when the card carries no symbol, variable or
+  acronym, because each one is defined there (``precis-cloze`` rule 7).
 - **Put-time lint (non-fatal)**: when the words just before a cloze already
   announce its hint (*"The term {{c1::…::term}}"*), the ack carries a
   cut-the-lead-in note pointing at ``precis-cloze`` rule 4.

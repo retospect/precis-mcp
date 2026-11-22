@@ -1091,6 +1091,29 @@ def test_render_cloze_no_deletion_is_plain_escaped_text() -> None:
     assert str(render_cloze("no cloze here <b>")) == "no cloze here &lt;b&gt;"
 
 
+def test_render_cloze_card_html_renders_the_back_extra_list() -> None:
+    """gr745846: a card's Back Extra carries the symbol glossary as
+    ``<ul><li>…</li></ul><hr>``. The card's detail page asks for those
+    attribute-less list tags to render; everything else stays escaped."""
+    body = (
+        "Hop rate Γ = {{c1::ν::prefactor}}·exp(−E_a/(k·T)).\n---\n"
+        "<ul><li>Γ (Gamma) = hop rate (1/s)</li></ul><hr>Arrhenius law.<br />"
+        '<script>alert(1)</script> <a href="x">l</a> <li onclick="x"> <b>'
+    )
+    out = str(render_cloze(body, card_html=True))
+    assert "<ul><li>Γ (Gamma) = hop rate (1/s)</li></ul><hr>Arrhenius law.<br />" in out
+    for live in ("<script", "<a ", "<li onclick", "<b>"):
+        assert live not in out
+    assert "&lt;li onclick=&quot;x&quot;&gt;" in out
+    # The default keeps every tag escaped (the /learning and /anki card text).
+    assert "&lt;ul&gt;&lt;li&gt;" in str(render_cloze(body))
+
+
+def test_render_cloze_card_html_leaves_math_source_escaped() -> None:
+    out = str(render_cloze(r"\(a <br> b\) {{c1::x}}", card_html=True))
+    assert '<span data-cloze-math="inline">a &lt;br&gt; b</span>' in out
+
+
 # ── render_cloze_masked: every gap masked until hover (gr664414) ─────────
 # The /learning current-context list quizzes instead of displaying answers:
 # the answer stays in the DOM (a hidden .cloze-answer span the page CSS

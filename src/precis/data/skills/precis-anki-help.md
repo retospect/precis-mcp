@@ -57,7 +57,9 @@ For *how to write good cards* (dedup-first, cN ordering, hints, deck naming), se
 ### Optional terse "Back Extra"
 
 Add a short answer-side note — a source, a mnemonic, a gotcha — after a lone
-`---` line at the end of the body. Keep it terse, or omit it:
+`---` line at the end of the body. Keep it terse. Omit it only when the card
+carries no symbol, variable or acronym: each one is defined there
+([[precis-cloze]] rule 7):
 
 ```python
 put(
@@ -65,11 +67,13 @@ put(
     text="""\
 The {{c1::Krebs}} cycle occurs in the mitochondrial matrix.
 ---
-aka the citric-acid / TCA cycle""",
+<ul><li>TCA = tricarboxylic acid</li></ul><hr>aka the citric-acid / TCA cycle""",
 )
 ```
 
 Everything before `---` is the cloze card; everything after is Back Extra.
+Anki renders Back Extra as HTML: the list holds the definitions, `<hr>`
+separates them from the note.
 
 ## Attach a photo to a card
 

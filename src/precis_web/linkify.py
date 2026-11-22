@@ -1892,11 +1892,21 @@ _CLOZE_DISPLAY_RE = re.compile(
 )
 
 
-def _render_card_text(text: str) -> str:
+#: Attribute-less list tags a card's Back Extra carries (the symbol glossary,
+#: ``precis-cloze`` rule 7), restored after escaping when a caller asks. None
+#: is a formatting element, so an unclosed one ends with its container.
+_CARD_HTML_RE = re.compile(r"&lt;(/?(?:ul|ol|li)|(?:hr|br) ?/?)&gt;", re.IGNORECASE)
+
+
+def _render_card_text(text: str, *, card_html: bool = False) -> str:
+    def prose(raw: str) -> str:
+        escaped = escape(raw)
+        return _CARD_HTML_RE.sub(r"<\1>", escaped) if card_html else escaped
+
     out: list[str] = []
     pos = 0
     for match in _ANKI_MATH_RE.finditer(text):
-        out.append(escape(text[pos : match.start()]))
+        out.append(prose(text[pos : match.start()]))
         math = match[0]
         if math.startswith("<anki-mathjax>"):
             tex = unescape(
@@ -1907,22 +1917,24 @@ def _render_card_text(text: str) -> str:
         mode = "block" if math.startswith(r"\[") else "inline"
         out.append(f'<span data-cloze-math="{mode}">{escape(tex)}</span>')
         pos = match.end()
-    out.append(escape(text[pos:]))
+    out.append(prose(text[pos:]))
     return "".join(out)
 
 
-def render_cloze(text: str) -> Markup:
+def render_cloze(text: str, *, card_html: bool = False) -> Markup:
     """Render an Anki cloze body legibly instead of printing raw markup.
 
     ``{{c1::answer::hint}}`` → the *answer*, styled as a highlighted
     deletion with the cloze index as a small superscript and the hint (if
     any) on hover. Both prose and formula source are HTML-escaped. Complete
     Anki math spans become targets for the shared client-side KaTeX renderer.
+    ``card_html`` renders the Back Extra list tags (``ul``, ``ol``, ``li``,
+    ``hr``, ``br``, no attributes) in the prose; every other tag stays escaped.
     """
     out: list[str] = []
     pos = 0
     for m in _CLOZE_DISPLAY_RE.finditer(text or ""):
-        out.append(_render_card_text(text[pos : m.start()]))
+        out.append(_render_card_text(text[pos : m.start()], card_html=card_html))
         idx, answer, hint = m.group(1), m.group(2), m.group(3)
         title = f"cloze c{escape(idx)}"
         if hint:
@@ -1930,12 +1942,12 @@ def render_cloze(text: str) -> Markup:
         out.append(
             f'<span class="rounded bg-warning-muted text-warning-deep px-1 '
             f'border-b border-dotted border-warning-emphasis" title="{title}">'
-            f"{_render_card_text(answer)}"
+            f"{_render_card_text(answer, card_html=card_html)}"
             f'<sup class="text-[0.6em] text-warning-soft ml-0.5">c{escape(idx)}</sup>'
             f"</span>"
         )
         pos = m.end()
-    out.append(_render_card_text(text[pos:] if text else ""))
+    out.append(_render_card_text(text[pos:] if text else "", card_html=card_html))
     return Markup("".join(out))
 
 

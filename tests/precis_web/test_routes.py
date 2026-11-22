@@ -3579,6 +3579,26 @@ def test_refs_detail_slug_kind_addresses_by_slug(client, runtime) -> None:
     assert args == {"kind": "oracle", "id": "planck-constant"}
 
 
+def test_anki_detail_renders_the_back_extra_list(client, runtime) -> None:
+    """gr745846: the card detail page renders the Back Extra symbol glossary
+    (``<ul><li>…</li></ul><hr>``) as a list instead of printing the tags."""
+    from .conftest import make_ref
+
+    card = (
+        "Hop rate Γ = {{c1::ν::prefactor}}·exp(−E_a/(k·T)).\n---\n"
+        "<ul><li>Γ (Gamma) = hop rate (1/s)</li></ul><hr>Arrhenius law."
+    )
+    runtime.store.memories.append(make_ref(id=77, kind="anki", title=card))
+    runtime.dispatch_with_status = lambda verb, args, **_kw: (
+        f"# anki card 77\n\n{card} <script>x</script>",
+        False,
+    )
+    resp = client.get("/refs/anki/77")
+    assert resp.status_code == 200
+    assert "<ul><li>Γ (Gamma) = hop rate (1/s)</li></ul><hr>Arrhenius law." in resp.text
+    assert "<script>x</script>" not in resp.text
+
+
 def test_refs_detail_wrong_kind_404(client) -> None:
     # id 20 is a memory; requesting it under /refs/oracle must not match.
     resp = client.get("/refs/oracle/20")

@@ -75,6 +75,23 @@ _HINT_RULE = (
     "Never hide the short form with its expansion as the hint. "
 )
 
+_GLOSSARY_RULE = (
+    "Back Extra defines every symbol, variable and acronym that appears on "
+    "the card or in Back Extra itself, as 'symbol = meaning (units)' — no "
+    "exceptions for obvious ones (k and T included); units in SI or the "
+    "field's customary unit (mol/kg, S/cm, eV). A Greek letter carries its "
+    "spoken name in parentheses, capitalised to match the letter's case: "
+    "'Γ (Gamma)', 'ν (nu)', 'Ω (Omega)', 'ω (omega)'. One symbol per line "
+    "as an HTML list, then <hr>, then any terse context (source, mnemonic, "
+    "gotcha): <ul><li>Γ (Gamma) = hop rate (1/s)</li><li>ν (nu) = attempt "
+    "frequency (1/s)</li><li>E_a = activation energy (eV)</li></ul><hr>"
+    "context. Anki renders the field as HTML: no raw newlines, no markdown "
+    "bullets, no run-on '; ' list. Before replying, re-read the card text "
+    "and its Back Extra and add a line for every symbol still undefined. "
+    "Back Extra is empty only when the card has no symbol, variable or "
+    "acronym and needs no context. "
+)
+
 _MINT_SYS = (
     "You author Anki cloze cards from a concept (name, definition, related "
     "concepts).\n"
@@ -123,9 +140,9 @@ _MINT_SYS = (
     "required 'check' field: 'pass' or 'fail: <which blank and why>' — a recoverability "
     "verdict, NOT a difficulty score: the learner's own grades are the "
     "difficulty signal, and you already know the fact, so you cannot rank "
-    "difficulty for them. " + _HINT_RULE + "Optionally add a terse Back "
-    "Extra (source, mnemonic, gotcha) or omit it. Reply with ONLY JSON: "
-    '{"cards":[{"text":"<cloze>","back_extra":"<terse or empty>",'
+    "difficulty for them. " + _HINT_RULE + _GLOSSARY_RULE + "Reply with ONLY JSON: "
+    '{"cards":[{"text":"<cloze>",'
+    '"back_extra":"<glossary list, <hr>, context; or empty>",'
     '"check":"pass|<fail: which blank and why>"}],'
     '"skip_reason":"<empty, or why you refused>"}'
 )
@@ -147,8 +164,9 @@ _REWORK_SYS = (
     "If the underlying "
     "concept is not actually a learnable fact (a topic label, stock phrase, or "
     "front-matter), do not manufacture another card — reply with an empty "
-    "text. " + _HINT_RULE + "Reply with ONLY JSON: "
-    '{"text":"<cloze sentence or empty>","back_extra":"<terse or empty>",'
+    "text. " + _HINT_RULE + _GLOSSARY_RULE + "Reply with ONLY JSON: "
+    '{"text":"<cloze sentence or empty>",'
+    '"back_extra":"<glossary list, <hr>, context; or empty>",'
     '"check":"pass|<fail: why>"}'
 )
 
