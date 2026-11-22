@@ -594,7 +594,7 @@ WORKER_COMMITTED = "worker committed"
 #: Parent-env names the session inherits; everything else is dropped, so
 #: no ``PRECIS_DB_*``/``PG*``/``DATABASE_URL`` DSN and no vault variable
 #: reaches it. ``PRECIS_MCP_TOKEN`` is how the session reaches the precis
-#: MCP (``.mcp.json``'s ``bearerTokenEnvVar``).
+#: MCP (``.mcp.json``'s bearer header references it).
 ENV_ALLOWLIST: tuple[str, ...] = (
     "PATH",
     "HOME",

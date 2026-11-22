@@ -324,6 +324,14 @@ says LEGACY) yourself afterwards.
   `scripts/mcp-token-check` asserts both files' owner/mode plus one
   authenticated call. The mounted `secrets/PRECIS_MCP_TOKEN` must be owned
   by the uid the container runs as or the 0600 mode locks the server out.
+- Project entry: the checked-in `.mcp.json` carries the same Claude Code
+  entry `--config` emits (`type`, `url`, the `${PRECIS_MCP_TOKEN}` header)
+  plus `bearerTokenEnvVar`, Kimi's key for the same variable (Kimi reads the
+  project `.mcp.json` and lets that key replace the header). Claude Code
+  skips a `url` entry without `type` with a config warning; with it the
+  project entry wins over the user-scope one of the same name, so a session
+  in a checkout authenticates from its environment only and a missing
+  `PRECIS_MCP_TOKEN` is a 401, not a fallback.
 - Docker's default address pools hold about thirty networks. A machine with
   many compose test stacks can exhaust them ("all predefined address pools have
   been fully subnetted", seen with 30 present); the script then retries with an

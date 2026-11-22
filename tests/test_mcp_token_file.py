@@ -102,6 +102,16 @@ def test_ensure_config_emits_the_env_reference_not_the_token(
     assert stat.S_IMODE(minted.stat().st_mode) == 0o600
     value = minted.read_text(encoding="utf-8").strip()
     assert value and value not in res.stdout + res.stderr
+    # The checked-in project entry is the same Claude Code entry. Without
+    # ``type`` Claude Code skips it with a config warning; with ``type``
+    # it is live and shadows the user-scope entry, so it must carry the
+    # bearer reference itself. ``bearerTokenEnvVar`` is Kimi's key for the
+    # same variable (Kimi reads the project ``.mcp.json`` and lets it
+    # replace the header); Claude Code ignores it.
+    project = json.loads((REPO / ".mcp.json").read_text(encoding="utf-8"))
+    precis = project["mcpServers"]["precis"]
+    assert {k: precis[k] for k in entry} == entry
+    assert precis["bearerTokenEnvVar"] == "PRECIS_MCP_TOKEN"
 
 
 # --- scripts/mcp-token-env ---------------------------------------------------

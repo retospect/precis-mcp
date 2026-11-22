@@ -7,8 +7,9 @@ session uses, so its calls were indistinguishable from any other
 agent's. This module is the per-slice credential: at submit the worker
 mints a token, writes its SHA-256 digest to a grant file in the
 host-side registry dir, exports the token as the session's
-``PRECIS_MCP_TOKEN`` (``.mcp.json``'s ``bearerTokenEnvVar`` — no client
-change needed), and deletes the file at poll or kill — the revoke. The
+``PRECIS_MCP_TOKEN`` (the variable ``.mcp.json``'s bearer header
+references — no client change needed), and deletes the file at poll or
+kill — the revoke. The
 serving container mounts the same dir read-only; its auth middleware
 validates a ``td<id>.<hex>`` bearer against the file's digest and
 stamps the grant (``precis.slice_id`` /
