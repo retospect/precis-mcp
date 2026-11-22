@@ -1233,6 +1233,18 @@ follow [[precis-fix-memory-gripe-help]]: classify the disagreement and replay
 the routes around a sha-pinned, undoable repair. Ask for evidence when the
 claim cannot be verified and preserve still-true claims.
 
+If the python kind answers `Unsupported … disabled in this build`, the repo
+check cannot run in this session: do not retry it
+([[precis-kinds-disabled-help]]). Cross-check the claim against the memory's
+sibling hub and its linked memories instead: the `part-of`, `derived-from`,
+`related-to` and `qualifies` neighbours the `fisheye+1hop` read listed, and
+any dated recheck they record. Say in the closing comment that the repo
+check was not run and why. Agreement between memories is corroboration, not
+a repo check: a review whose claim needed the repo and settled without it
+records no `kg-review` verdict, neither `ok` nor `fixed`. Skip step 2, leave
+the trust line as it is and close with step 3. No corroboration, or a
+contradiction, leaves the review unsettled.
+
 When the review is settled:
 
 1. Check `get(kind='memory', id=N, view='links')` for an earlier closed
@@ -1248,8 +1260,9 @@ When the review is settled:
    the end of the `kg-review:` reason string; `confidence` itself only
    takes `considered` or `hunch`. The structured reason is what
    review-due and fresh-review checks read.
-3. Once the stamp succeeds, summarize what you checked, the evidence and
-   any change you made. Use
+3. Once the stamp succeeds, or step 2 was skipped because the repo check
+   could not run, summarize what you checked, the evidence and any change
+   you made. Use
    `put(kind='todo', id=<this todo>, text=<review comment>, tags=['STATUS:done'])`
    to record the comment and close the todo.
 
