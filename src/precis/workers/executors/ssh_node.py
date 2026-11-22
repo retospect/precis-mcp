@@ -1587,9 +1587,12 @@ def _settle_job_holds(ctx: DispatchContext, terminal: bool) -> None:
     launched them (gr762788). Whichever worker polls the job now, a
     re-adopter included, releases the holds of children provably gone at
     once; a running job's live ones are renewed. A terminal job's
-    possibly-live holds are not: the heartbeat's
-    :func:`admission.reclaim_settled_job_holds` refunds them once the job
-    has been terminal for the orphan reaper's grace."""
+    possibly-live holds are not: this host's heartbeat
+    (:func:`admission.reap_gone_job_child_holds`) refunds a named child's
+    once its group is gone, the TTL if the host never comes back
+    (td764135); :func:`admission.reclaim_settled_job_holds` only an
+    unnamed one, once the job has been terminal for the orphan reaper's
+    grace."""
     admission.tend_job_holds(ctx.store, ctx.ref_id, renew=not terminal)
 
 

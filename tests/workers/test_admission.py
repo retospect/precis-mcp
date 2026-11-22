@@ -1225,7 +1225,9 @@ def test_claude_subprocess_refusal_maps_to_its_error_cls(
 # A launch made for a job is held by ``job:<id>:<pgid>``, not the launching
 # worker's ``host:pid``: the job's poll tends and releases it, so a worker
 # crash neither leaks it to the TTL nor a clean exit refunds it early. A
-# terminal job's possibly-live holds wait out the orphan reaper's grace.
+# terminal job's possibly-live named hold waits for its host to see the
+# group gone (td764135), the TTL its backstop; an unnamed one waits out the
+# orphan reaper's grace.
 
 
 def _job(store: Store, status: str = "running") -> int:
@@ -1530,12 +1532,13 @@ def test_readopting_poll_renews_a_live_childs_hold(
 
 
 @posix_groups
-def test_terminal_poll_leaves_a_live_childs_hold_to_the_graced_sweep(
+def test_terminal_poll_keeps_a_live_childs_hold_past_the_grace(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The job went terminal while its child may still be exiting: the poll
-    does not refund a group it cannot prove gone. The sweep refunds it only
-    once the job has been terminal past the orphan reaper's grace."""
+    """td764135: the job went terminal while its child still runs. Neither
+    the poll nor the settled sweep refunds a group nobody proved gone, not
+    even past the orphan reaper's grace; the host-local pass refunds it
+    the pass after the group exits."""
     host = "jh8"
     _seed_job_host(store, monkeypatch, host)
     rid = _job(store)
@@ -1547,24 +1550,69 @@ def test_terminal_poll_leaves_a_live_childs_hold_to_the_graced_sweep(
         held = _job_host_free(_slice_fp())
         assert _free(store, host) == held
 
-        _age_status(store, rid, _grace_s() - 30)
-        assert admission.reclaim_settled_job_holds(store) == 0
-        assert _free(store, host) == held
-
         _age_status(store, rid, _grace_s() + 30)
-        assert admission.reclaim_settled_job_holds(store) == 2
-        assert _job_holds(store, host) == []
-        assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
+        assert admission.reclaim_settled_job_holds(store) == 0
+        assert admission.reap_gone_job_child_holds(store) == 0
+        assert _job_holds(store, host) == _slice_job_holds(rid, pid)
+        assert _free(store, host) == held
     finally:
         _kill_group(pid)
+
+    assert admission.reap_gone_job_child_holds(store) == 2
+    assert _job_holds(store, host) == []
+    assert _free(store, host) == _job_host_free()
+
+
+def test_named_hold_is_refunded_only_by_its_own_host_or_the_ttl(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td764135: a terminal job's hold naming a pgid on a host that never
+    comes back. Another host's passes never judge it — not its gone-child
+    pass, not its poll, not the fleet-wide settled sweep — and nothing
+    renews it, so the TTL sweep is the backstop that refunds it."""
+    host, other_host = "jh12", "jh12-other"
+    store.sync_host_resource_slots(host, {"mem_mb": 16384, "cpu_milli": 8000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", other_host)
+    # Gone wherever it is asked: only the host check can keep the hold.
+    monkeypatch.setattr(admission, "_group_alive", lambda pgid: False)
+    rid = _job(store, status="succeeded")
+    _age_status(store, rid, _grace_s() + 30)
+    fp = Footprint(cpu_milli=1000, mem_mb=1024)
+    holder = admission.job_holder(rid, 4801, 600)
+    assert _admit(store, host, fp, holder, ttl_s=600.0) is not None
+    held = {"cpu_milli": 7000, "mem_mb": 15360}
+
+    assert admission.reap_gone_job_child_holds(store) == 0
+    assert admission.tend_job_holds(store, rid) == (0, 0)
+    assert admission.tend_job_holds(store, rid, renew=False) == (0, 0)
+    assert admission.reclaim_settled_job_holds(store) == 0
+    assert _job_holds(store, host) == [
+        ("cpu_milli", 1000, holder),
+        ("mem_mb", 1024, holder),
+    ]
+    assert all(left <= 600 for left in _ttl_left_s(store, host))
+    assert _free(store, host) == held
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE resource_slot_holds "
+            "SET expires_at = now() - interval '1 second' WHERE host = %s",
+            (host,),
+        )
+        conn.commit()
+    assert store.reclaim_expired_slot_holds() == 2
+    assert _job_holds(store, host) == []
+    assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
 
 
 def test_settled_job_sweep_refunds_graced_terminal_and_gone_jobs(
     store: Store,
 ) -> None:
-    """The heartbeat sweep: holds of a job terminal past the grace and of a
-    job that no longer exists are refunded in one statement; a job terminal
-    inside the grace, a running job and a non-job hold are left alone."""
+    """The heartbeat sweep: unnamed holds of a job terminal past the grace
+    and of a job that no longer exists are refunded in one statement; a job
+    terminal inside the grace, a running job, a non-job hold and every hold
+    naming a child pgid (td764135: only its host judges it) are left
+    alone."""
     host = "jh6"
     store.sync_host_resource_slots(host, {"mem_mb": 16384, "cpu_milli": 8000})
     done = _job(store, status="succeeded")
@@ -1574,26 +1622,21 @@ def test_settled_job_sweep_refunds_graced_terminal_and_gone_jobs(
     _age_status(store, running, _grace_s() + 30)
     gone = running + 100_000
     fp = Footprint(cpu_milli=1000, mem_mb=1024)
-    for holder in (
-        admission.job_holder(done, 4321),
-        admission.job_holder(fresh, 4323),
+    kept = [
+        admission.job_holder(done, 4321, 3600),
+        admission.job_holder(fresh),
         admission.job_holder(running, 4322),
-        admission.job_holder(gone),
+        admission.job_holder(gone, 4324, 3600),
         "t:not-a-job",
-    ):
+    ]
+    for holder in (admission.job_holder(done), admission.job_holder(gone), *kept):
         assert _admit(store, host, fp, holder) is not None
+    assert _free(store, host) == {"cpu_milli": 1000, "mem_mb": 9216}
+
+    assert admission.reclaim_settled_job_holds(store) == 4  # 2 holders x 2 dims
+
+    assert sorted({h for _r, _u, h in _job_holds(store, host)}) == sorted(kept)
     assert _free(store, host) == {"cpu_milli": 3000, "mem_mb": 11264}
-
-    assert admission.reclaim_settled_job_holds(store) == 4  # 2 jobs x 2 dims
-
-    assert sorted({h for _r, _u, h in _job_holds(store, host)}) == sorted(
-        [
-            admission.job_holder(fresh, 4323),
-            admission.job_holder(running, 4322),
-            "t:not-a-job",
-        ]
-    )
-    assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 13312}
     assert admission.reclaim_settled_job_holds(store) == 0
 
 

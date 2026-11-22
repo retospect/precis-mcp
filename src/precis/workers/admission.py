@@ -48,16 +48,20 @@ footprint whose child still runs. Whichever worker polls the job on this
 host (the launcher, or the one that re-adopted it after a restart) calls
 :func:`tend_job_holds` each pass: a hold whose child group is gone is
 released at once, a live one renewed to its footprint's own TTL while
-the job runs. A terminal job's remaining holds — a child that may still
-be exiting — wait out the orphan reaper's grace
-(``_common.ORPHAN_REAP_GRACE_S``), then the heartbeat's
-:func:`reclaim_settled_job_holds` refunds them, along with holds of jobs
-terminalized by paths no poll saw or of jobs gone. A job that left
-``running`` without going terminal (reclaimed to ``queued`` after its
-launcher died, then claimed elsewhere) is polled on this host by no one:
-the heartbeat's :func:`reap_gone_job_child_holds` refunds every hold on
-this host whose named child group is gone, whatever the job's status
-(gr763200). The babysit stays the fast path while the launcher lives; every release
+the job runs. A hold naming a child's pgid is refunded only on its own
+host, once that host sees the group gone (td764135): by the poll, or by
+the heartbeat's :func:`reap_gone_job_child_holds`, which refunds every
+hold on this host whose named child group is gone whatever the job's
+status — a terminal job's child the orphan reaper missed, or a job that
+left ``running`` without going terminal (reclaimed to ``queued`` after
+its launcher died, then claimed elsewhere) and is polled here by no one
+(gr763200). A terminal job's poll renews nothing, so a live child whose
+host never comes back is bounded by its last TTL. Only a hold naming no
+pgid (the stamp missed) has no group to judge: it waits out the orphan
+reaper's grace (``_common.ORPHAN_REAP_GRACE_S``), then the heartbeat's
+:func:`reclaim_settled_job_holds` refunds it, along with such holds of
+jobs terminalized by paths no poll saw or of jobs gone. The babysit
+stays the fast path while the launcher lives; every release
 deletes by row, so whichever lands second finds nothing and refunds
 nothing. A :func:`spawn` with a pooled store but no ``job_id`` warns
 once per caller: its holds stay the worker's.
@@ -472,7 +476,7 @@ def _name_child(store: Any, adm: Admission, holder: str) -> Admission:
     renews (to its ``ttl_s`` fallback) while the job runs. Having no pgid
     to judge, no pass can prove its child gone: once the job is terminal
     it is left to :func:`reclaim_settled_job_holds` after the orphan
-    reaper's grace, else to the TTL."""
+    reaper's grace, else to the TTL. A named hold never is (td764135)."""
     try:
         with store.pool.connection() as conn:
             with conn.transaction():
@@ -517,11 +521,14 @@ def tend_job_holds(
     stamped before the TTL rode the holder). A hold with no pgid named
     (the stamp missed) counts as live. A terminal job's poll passes
     ``renew=False``: a gone child's hold is refunded at once, a
-    possibly-live one is left to :func:`reclaim_settled_job_holds` after
-    the orphan reaper's grace. The poll runs on the job's own host, so a
-    worker that re-adopted the job after a restart does what the dead
-    launcher's babysit no longer can. Returns ``(renewed, released)``; a
-    store fault returns ``(0, 0)`` and leaves the TTL as the backstop."""
+    possibly-live one is left to this host's
+    :func:`reap_gone_job_child_holds` once its group exits, its TTL the
+    backstop (an unnamed one to :func:`reclaim_settled_job_holds` after
+    the orphan reaper's grace; td764135). The poll runs on the job's own
+    host, so a worker that re-adopted the job after a restart does what
+    the dead launcher's babysit no longer can. Returns
+    ``(renewed, released)``; a store fault returns ``(0, 0)`` and leaves
+    the TTL as the backstop."""
     if not job_id or getattr(store, "pool", None) is None:
         return 0, 0
     where = host or local_host()
@@ -556,12 +563,15 @@ def tend_job_holds(
 
 
 def reclaim_settled_job_holds(store: Any) -> int:
-    """Refund every ``job:`` hold whose job is gone, or has been terminal
-    longer than the orphan reaper's grace
+    """Refund every ``job:`` hold naming no child pgid whose job is gone,
+    or has been terminal longer than the orphan reaper's grace
     (``_common.ORPHAN_REAP_GRACE_S``): the release of a terminal job's
-    footprint whose child the poll could not prove gone, and the backstop
-    for terminal transitions no poll saw (the sweeper, a direct STATUS
-    tag). The heartbeat's pass; one statement. Returns holds deleted, 0
+    footprint whose child was never named, and the backstop for terminal
+    transitions no poll saw (the sweeper, a direct STATUS tag). A hold
+    naming a pgid is not this fleet-wide pass's to judge (td764135): the
+    child may outlive the grace, so only its host's
+    :func:`reap_gone_job_child_holds` or the TTL refunds it. The
+    heartbeat's pass; one statement. Returns holds deleted, 0
     for a store without a pool. Raises on a store fault (the heartbeat
     logs and moves on)."""
     from precis.workers.executors._common import ORPHAN_REAP_GRACE_S, TERMINAL
@@ -580,8 +590,10 @@ def reap_gone_job_child_holds(store: Any, *, host: str | None = None) -> int:
     one) whose process group is gone, whatever its job's status
     (gr763200). Closes the leak no job-scoped path sees: a launcher
     SIGKILLed with its child, the job reclaimed to ``queued`` and claimed
-    on another host — that host's poll tends only its own holds, and the
-    settled-job sweep skips a job that is not terminal. Liveness is
+    on another host — that host's poll tends only its own holds — and a
+    terminal job's child that outlived the orphan reaper's grace: the
+    settled-job sweep never refunds a named hold (td764135), so this pass
+    is the only refund before the TTL. Liveness is
     :func:`_group_alive`'s (a group this process cannot judge reads as
     alive, so the hold stays); a bare ``job:<id>`` holder names no group
     and is not touched. Deletes by row, so a racing poll, babysit or
