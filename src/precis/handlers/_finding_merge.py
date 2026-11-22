@@ -142,6 +142,18 @@ def merge_door(
     def _refuse_blocked(plan: MergePlan) -> None:
         if plan.already_merged or plan.can_merge:
             return
+        if plan.blocked_by_edges_only:
+            raise BadInput(
+                f"cannot merge {lo} into {wi}: {plan.block_reason}",
+                next=[
+                    *(
+                        f"remove the blocked edge, then retry: {e.remove_call}"
+                        for e in plan.blocked_edges
+                    ),
+                    "the blocked plan, read-only: get(kind='finding', "
+                    f"id='{wi}', view='merge-plan', args={{'loser': '{lo}'}})",
+                ],
+            )
         raise BadInput(
             f"cannot merge {lo} into {wi}: {plan.block_reason} - a hub past "
             "'candidate' is reviewed, signed or published, and merging it "
@@ -243,6 +255,12 @@ def format_merge_plan(plan: MergePlan, *, door: str = "view") -> str:
             f"Apply: {_door_call(lo, wi)} - add dry_run=True to preview; "
             f"or the claim page's merge form, /nanopub/{wi}. This view never "
             "writes."
+        )
+    elif plan.blocked_by_edges_only:
+        lines.append(
+            "Remove the blocked edge(s), then retry: "
+            + "; ".join(e.remove_call for e in plan.blocked_edges)
+            + ". This view never writes."
         )
     else:
         lines.append(

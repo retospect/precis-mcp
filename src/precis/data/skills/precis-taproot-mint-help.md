@@ -269,7 +269,8 @@ id='fi<winner>', view='merge-plan', args={'loser': 'fi<loser>'})` shows
 the dry-run plan for collapsing the loser into the winner: edges
 repointed, edges dropped as redundant (and the winner edge each collides
 with), self-loops dropped, and `can_merge` with the refusal reason (a
-side past `candidate` cannot merge). It never writes. To apply it, see
+side past `candidate` cannot merge, nor can a loser whose `disputes` or
+`explains` link the winner may not hold). It never writes. To apply it, see
 [[precis-taproot-hub-edit-help]] "Merge duplicate hubs".
 
 ## Minting at scale — title lint, same-session dedup, waves

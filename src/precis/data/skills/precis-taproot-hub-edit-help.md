@@ -222,6 +222,11 @@ Refusals:
   --loser fi<dup> --winner fi<survivor> --dry-run`. Put that line in a todo
   for the operator. Do not repoint links and delete by hand: that skips the
   publish-state check and the redundant-edge handling.
+- **A link on the dup that the survivor may not hold** (a `disputes`
+  link when the survivor is a landscape claim, an `explains` link that
+  would close a cycle): both modes refuse, name the link as it stands
+  and give the `link(..., mode='remove')` call that removes it. Run that
+  call, then retry.
 - **A draft chunk cites the dup and cannot be rewritten**: the refusal
   lists the citing chunks; repoint those cites in the draft, then retry.
 - **Either hub is a hypothesis**: a conjecture is never merged. Withdraw

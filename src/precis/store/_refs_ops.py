@@ -174,9 +174,10 @@ def set_skill_probe(probe: Callable[[str], bool] | None) -> None:
 #: reserves negative ``ord`` for those), ``c.retired_at``/``r.retired_at``
 #: keep both the chunk and its owning document live — a cite stranded
 #: under an already-retired document carries no operational risk. The
-#: pattern is a literal ``[fi<id>]`` bracket, matching :mod:`._draft_lint`'s
-#: bare-bracket handle scope; a pinned ``[fi<id>>pc<id>]`` token isn't
-#: matched (same scope gap as that lint). Scoped to ``draft`` documents:
+#: pattern (:func:`fi_cite_pattern`) is a ``[fi<id>]`` bracket or a
+#: bracketed handle list holding it. Pinned cites such as ``[fi12>pc3]``
+#: are not matched: a hub merge does not rewrite them and this guard does
+#: not see them. Scoped to ``draft`` documents:
 #: a cite is a grounding claim only in prose that is being written and
 #: exported — the same token quoted in a gripe, a memory or a conv is a
 #: historical record of a cite, and a retired hub stays resolvable there
@@ -192,6 +193,23 @@ _LIVE_FI_CITERS_SQL = (
     "ORDER BY c.ref_id, c.chunk_id "
     "LIMIT 25"
 )
+
+
+#: One separator of a bracketed handle list (``[fi12, fi34]``, ``[fi12 and
+#: fi34]``): the shorthand the exporters explode
+#: (``precis.export._provenance_strip._HANDLE_LIST``).
+CITE_LIST_SEP = r"(?:\s*[,;]\s*|\s+(?:and|or)\s+)"
+
+
+def fi_cite_pattern(ref_id: int) -> str:
+    """Regex, valid for Python ``re`` and Postgres ``~`` alike, matching a
+    bracket that cites ``fi<ref_id>``: alone (``[fi12]``) or as one element
+    of a handle list (``[fi12, fi34]``; gr754451)."""
+    handle = r"[a-z]{2}\d+"
+    return (
+        rf"\[(?:{handle}{CITE_LIST_SEP})*fi{ref_id}"
+        rf"(?:{CITE_LIST_SEP}{handle})*\]"
+    )
 
 
 def _refuse_if_finding_cited(conn: Connection, ref_id: int) -> None:
@@ -216,7 +234,7 @@ def finding_cited_error(conn: Connection, ref_id: int) -> BadInput | None:
     or ``None`` when no live draft chunk cites ``[fi<ref_id>]``. Lets a
     planner (``taproot merge --dry-run``) report the refusal without
     raising or writing."""
-    rows = conn.execute(_LIVE_FI_CITERS_SQL, (rf"\[fi{ref_id}\]",)).fetchall()
+    rows = conn.execute(_LIVE_FI_CITERS_SQL, (fi_cite_pattern(ref_id),)).fetchall()
     if not rows:
         return None
     citers: list[str] = []

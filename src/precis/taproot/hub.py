@@ -38,7 +38,9 @@ from precis.identity import (
     normalize_text_for_hash,
 )
 from precis.ingest.provenance import check_ref_retraction
+from precis.store._draft_ops import content_sha
 from precis.store._links_ops import claim_link_door
+from precis.store._refs_ops import CITE_LIST_SEP, fi_cite_pattern
 from precis.store.revision_context import trust_door
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
@@ -2270,10 +2272,22 @@ class MergeCiteRewrite:
 
 
 def rewrite_fi_cites(text: str, loser_ref_id: int, winner_ref_id: int) -> str:
-    """``[fi<loser>]`` -> ``[fi<winner>]`` in ``text``, collapsing a run of
-    identical winner cites (``[fiW][fiW]`` or ``[fiW, fiW]``) to one."""
-    w = f"fi{winner_ref_id}"
-    out = re.sub(rf"\[fi{loser_ref_id}\]", f"[{w}]", text)
+    """``[fi<loser>]`` -> ``[fi<winner>]`` in ``text``, also as one element
+    of a handle list (``[fi<loser>, fi9]``), collapsing a run of identical
+    winner cites (``[fiW][fiW]`` or ``[fiW, fiW]``) to one."""
+    lo, w = f"fi{loser_ref_id}", f"fi{winner_ref_id}"
+
+    def _swap(m: re.Match[str]) -> str:
+        parts = re.split(rf"({CITE_LIST_SEP})", m.group(0)[1:-1])
+        kept: list[str] = []
+        for i in range(0, len(parts), 2):
+            handle = w if parts[i] == lo else parts[i]
+            if handle == w and w in kept:
+                continue
+            kept.extend(([parts[i - 1]] if kept else []) + [handle])
+        return f"[{''.join(kept)}]"
+
+    out = re.sub(fi_cite_pattern(loser_ref_id), _swap, text)
     out = re.sub(rf"\[{w}\](?:\s*\[{w}\])+", f"[{w}]", out)
     return re.sub(rf"\[{w}(?:\s*,\s*{w})+\]", f"[{w}]", out)
 
@@ -2290,7 +2304,7 @@ def _plan_cite_rewrites(
         "WHERE c.retired_at IS NULL AND c.ord >= 0 AND r.retired_at IS NULL "
         "AND r.kind = 'draft' AND c.handle IS NOT NULL AND c.text ~ %s "
         "ORDER BY c.ref_id, c.chunk_id",
-        (rf"\[fi{loser_ref_id}\]",),
+        (fi_cite_pattern(loser_ref_id),),
     ).fetchall()
     return [
         MergeCiteRewrite(
@@ -2302,6 +2316,34 @@ def _plan_cite_rewrites(
         )
         for cid, handle, ref_id, text in rows
     ]
+
+
+@dataclass(frozen=True)
+class MergeBlockedEdge:
+    """One loser edge :func:`link_claims` would refuse on the winner, named
+    as it stands today: the repointed edge does not exist, so it is never
+    the one shown (gr754451)."""
+
+    link_id: int
+    src_ref_id: int
+    dst_ref_id: int
+    relation: str
+    reason: str
+
+    @property
+    def remove_call(self) -> str:
+        """The MCP call that removes this edge."""
+        return (
+            f"link(kind='finding', id='fi{self.src_ref_id}', "
+            f"target='fi{self.dst_ref_id}', rel='{self.relation}', "
+            "mode='remove')"
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"link {self.link_id}: fi{self.src_ref_id} --{self.relation}--> "
+            f"fi{self.dst_ref_id} {self.reason}"
+        )
 
 
 @dataclass(frozen=True)
@@ -2319,14 +2361,24 @@ class MergePlan:
     #: is True (nothing left to compute).
     already_merged: bool
     #: False iff either side is past ``candidate`` in ``nanopub_publish``
-    #: (requirement 5) — the merge is refused. Always True when
-    #: ``already_merged`` is True.
+    #: (requirement 5) or ``blocked_edges`` is non-empty — the merge is
+    #: refused. Always True when ``already_merged`` is True.
     can_merge: bool
     block_reason: str | None
     edges: list[MergeEdge]
     #: Live draft chunks whose ``[fi<loser>]`` cites the merge rewrites to
     #: the winner (gr265228) -- reported on a dry run, applied on a real one.
     cite_rewrites: list[MergeCiteRewrite] = field(default_factory=list)
+    #: The loser edges :func:`link_claims` would refuse on the winner
+    #: (gr754451); each is also part of ``block_reason``.
+    blocked_edges: list[MergeBlockedEdge] = field(default_factory=list)
+
+    @property
+    def blocked_by_edges_only(self) -> bool:
+        """Refused, and only because of ``blocked_edges``."""
+        return bool(self.blocked_edges) and self.block_reason == "; ".join(
+            map(str, self.blocked_edges)
+        )
 
 
 def _publish_states_past_candidate(conn: Any, ref_id: int) -> list[str]:
@@ -2358,7 +2410,42 @@ def _collapse_recorded(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> b
     return row is not None
 
 
-def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> MergePlan:
+def _repoint_refusal(
+    store: Store,
+    conn: Any,
+    *,
+    relation: str,
+    outbound: bool,
+    other_ref_id: int,
+    loser_ref_id: int,
+    winner_ref_id: int,
+) -> str | None:
+    """Why :func:`link_claims` would refuse this loser edge once repointed
+    onto the winner, or ``None``. Mirrors its two relation checks: the
+    ``disputes`` source policy, and the ``explains`` cycle guard with loser
+    and winner read as the one node they become (gr754451)."""
+    if relation == "disputes" and outbound:
+        winner_type = _hub_claim_type(winner_ref_id, conn=conn)
+        if not policy_for(winner_type).disputes_counterparty:
+            return f"a {winner_type} hub cannot dispute another claim"
+    if relation == EXPLAINS_RELATION:
+        merged = (loser_ref_id, winner_ref_id)
+        if outbound:
+            cycle = any(
+                other_ref_id in store.ancestors(relation, m, conn=conn) for m in merged
+            )
+        else:
+            cycle = not store.ancestors(relation, other_ref_id, conn=conn).isdisjoint(
+                merged
+            )
+        if cycle:
+            return "it would close an explains cycle"
+    return None
+
+
+def _build_merge_plan(
+    store: Store, conn: Any, *, loser_ref_id: int, winner_ref_id: int
+) -> MergePlan:
     """Read-only: compute the full :class:`MergePlan` for collapsing
     ``loser_ref_id`` into ``winner_ref_id`` on ``conn``. Never writes.
 
@@ -2447,8 +2534,6 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
     cite_rewrites = _plan_cite_rewrites(
         conn, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
     )
-    can_merge = not blocked
-    block_reason = "; ".join(blocked) if blocked else None
 
     # Enumerate EVERY live link touching the loser, in either direction,
     # regardless of relation -- the live vocabulary, not a hardcoded list
@@ -2462,6 +2547,7 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
     ).fetchall()
 
     edges: list[MergeEdge] = []
+    blocked_edges: list[MergeBlockedEdge] = []
     for (
         link_id,
         src_ref_id,
@@ -2527,6 +2613,25 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
                 )
             )
         else:
+            refusal = _repoint_refusal(
+                store,
+                conn,
+                relation=relation,
+                outbound=outbound,
+                other_ref_id=int(other_ref_id),
+                loser_ref_id=loser_ref_id,
+                winner_ref_id=winner_ref_id,
+            )
+            if refusal is not None:
+                blocked_edges.append(
+                    MergeBlockedEdge(
+                        link_id=int(link_id),
+                        src_ref_id=int(src_ref_id),
+                        dst_ref_id=int(dst_ref_id),
+                        relation=relation,
+                        reason=f"cannot move to fi{winner_ref_id}: {refusal}",
+                    )
+                )
             edges.append(
                 MergeEdge(
                     link_id=int(link_id),
@@ -2544,10 +2649,11 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
         loser_ref_id=loser_ref_id,
         winner_ref_id=winner_ref_id,
         already_merged=False,
-        can_merge=can_merge,
-        block_reason=block_reason,
+        can_merge=not blocked and not blocked_edges,
+        block_reason="; ".join(blocked + [str(e) for e in blocked_edges]) or None,
         edges=edges,
         cite_rewrites=cite_rewrites,
+        blocked_edges=blocked_edges,
     )
 
 
@@ -2587,6 +2693,7 @@ def _apply_merge_plan(
             conn,
             rw.handle,
             rw.new_text,
+            base_sha=content_sha(rw.old_text),
             source={
                 "tool": "taproot-merge",
                 "merged": f"fi{plan.loser_ref_id}->fi{plan.winner_ref_id}",
@@ -2650,11 +2757,15 @@ def merge_hubs(
 
     Live draft chunks citing ``[fi<loser>]`` are rewritten to cite the
     winner in the same transaction (:class:`MergeCiteRewrite`, listed in
-    ``plan.cite_rewrites``; gr265228).
+    ``plan.cite_rewrites``; gr265228), list cites included; a chunk edited
+    since the plan read it fails the merge rather than being overwritten.
 
-    **Refusal**: either side past ``'candidate'`` in ``nanopub_publish``
-    blocks the merge (visible in a dry run's ``plan.can_merge``; a real
-    run raises :class:`BadInput`). **Idempotent**: an already-soft-deleted
+    **Refusal**: either side past ``'candidate'`` in ``nanopub_publish``,
+    or a loser edge :func:`link_claims` would refuse on the winner
+    (``plan.blocked_edges``: a ``disputes`` edge the winner's claim type
+    forbids, an ``explains`` edge that would close a cycle), blocks the
+    merge (visible in a dry run's ``plan.can_merge``; a real run raises
+    :class:`BadInput`). **Idempotent**: an already-soft-deleted
     loser with the collapse-record edge already in place short-circuits to
     ``plan.already_merged=True``; one without it is a caller mistake and
     raises. **Known gap**: the loser's own ``'candidate'``-state
@@ -2666,7 +2777,8 @@ def merge_hubs(
         BadInput: same ``ref_id`` on both sides; a nonexistent or non-hub
             ref; a hypothesis hub on either side (dry run too); a soft-deleted
             loser with no recorded merge into this winner; or (real run)
-            either side past ``candidate``.
+            either side past ``candidate``, a blocked edge, or a cited
+            draft chunk that changed since the plan read it.
     """
     if loser_ref_id == winner_ref_id:
         raise BadInput(
@@ -2677,7 +2789,7 @@ def merge_hubs(
     def _do(c: Any) -> MergePlan:
         _require_actor(c, set_by)
         plan = _build_merge_plan(
-            c, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
+            store, c, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
         )
         if dry_run or plan.already_merged:
             return plan
@@ -2686,7 +2798,10 @@ def merge_hubs(
                 f"cannot merge fi{loser_ref_id} into fi{winner_ref_id}: "
                 f"{plan.block_reason}",
                 next=(
-                    "a hub past 'candidate' in nanopub_publish has a frozen "
+                    "remove the blocked edge(s), then retry: "
+                    + "; ".join(e.remove_call for e in plan.blocked_edges)
+                    if plan.blocked_by_edges_only
+                    else "a hub past 'candidate' in nanopub_publish has a frozen "
                     "identity -- merging it would retroactively re-identify "
                     "a reviewed/signed/published artifact"
                 ),
@@ -3211,6 +3326,7 @@ __all__ = [
     "REGROUND_LOG_MAX",
     "EvidenceHandle",
     "ExtractionOutcome",
+    "MergeBlockedEdge",
     "MergeEdge",
     "MergePlan",
     "TitleRoundTripError",

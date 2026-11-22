@@ -22,12 +22,15 @@ from precis.errors import BadInput
 from precis.handlers.finding import FindingHandler
 from precis.runtime import PrecisRuntime
 from precis.store.types import ChunkInsert
+from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import (
     MERGE_COLLAPSE_RELATION,
     attach_evidence,
+    link_claims,
     merge_hubs,
     mint_hub,
+    rewrite_fi_cites,
 )
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -576,17 +579,78 @@ class TestCiteRewriteEdges:
         assert _state(store)["chunk_events"] == events_before + 1
         assert _is_retired(store, loser)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "merge_hubs matches only the exact [fi<loser>] bracket "
-            "(taproot/hub.py::_plan_cite_rewrites, store/_refs_ops.py::"
-            "_LIVE_FI_CITERS_SQL), but the exporters accept a handle list in "
-            "one bracket pair (export/_provenance_strip.py::_HANDLE_LIST): "
-            "[fi<loser>, fi<other>] is neither rewritten nor refused, so the "
-            "merge retires the loser under a live cite"
-        ),
-    )
+    def test_a_concurrent_edit_of_a_cited_chunk_is_not_overwritten(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Another session edits the citing chunk after the plan read it and
+        before the merge writes it: the merge refuses and the newer text
+        stays (gr754451)."""
+        loser, winner = _pair(store)
+        (cited,) = _seed_draft(store, "racecite", f"Claim [fi{loser}] stands.")
+        newer = f"Claim [fi{loser}] stands, as revised."
+        plan_cite_rewrites = taproot_hub._plan_cite_rewrites
+
+        def _plan_then_race(conn: Any, **kw: Any) -> Any:
+            rewrites = plan_cite_rewrites(conn, **kw)
+            store.drafts.edit_text(cited.handle, newer)
+            return rewrites
+
+        monkeypatch.setattr(taproot_hub, "_plan_cite_rewrites", _plan_then_race)
+        with pytest.raises(BadInput, match="changed since"):
+            merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+        monkeypatch.undo()
+
+        assert _chunk_text(store, cited.chunk_id) == newer
+        assert not _is_retired(store, loser)
+
+    def test_a_list_cite_is_rewritten_inside_the_list(self) -> None:
+        assert rewrite_fi_cites("[fi1, fi3]", 1, 2) == "[fi2, fi3]"
+        assert rewrite_fi_cites("[fi3 and fi1]", 1, 2) == "[fi3 and fi2]"
+        assert rewrite_fi_cites("[fi1, fi2; fi3]", 1, 2) == "[fi2; fi3]"
+        assert rewrite_fi_cites("[fi10, fi3]", 1, 2) == "[fi10, fi3]"
+
+    def test_the_retire_guard_sees_a_list_cite(self, store: Any) -> None:
+        loser, _winner = _pair(store)
+        other = mint_hub(store, CanonicalClaim(sentence="Other hub claim.", scope={}))
+        _seed_draft(store, "listguard", f"Two hubs agree [fi{other}; fi{loser}].")
+
+        with pytest.raises(BadInput, match="still cited"):
+            store.retire_ref(loser)
+
+        assert not _is_retired(store, loser)
+
+    def test_the_guard_ignores_a_longer_handle_sharing_the_digits(
+        self, store: Any
+    ) -> None:
+        """``fi<loser>3`` names another hub: retiring ``fi<loser>`` is not
+        refused over it, alone or inside a list."""
+        loser, _winner = _pair(store)
+        _seed_draft(
+            store,
+            "prefixguard",
+            f"One [fi{loser}3], two [fi4, fi{loser}3] and three [fi9{loser}; fi4].",
+        )
+
+        store.retire_ref(loser)
+
+        assert _is_retired(store, loser)
+
+    def test_a_list_already_naming_the_winner_keeps_one_cite(self, store: Any) -> None:
+        loser, winner = _pair(store)
+        other = mint_hub(store, CanonicalClaim(sentence="Other hub claim.", scope={}))
+        (listed,) = _seed_draft(
+            store, "duplist", f"All agree [fi{winner}, fi{other} and fi{loser}]."
+        )
+
+        _handler(store).edit(
+            id=f"fi{loser}", merge_into=f"fi{winner}", reason="same claim"
+        )
+
+        assert _chunk_text(store, listed.chunk_id) == (
+            f"All agree [fi{winner}, fi{other}]."
+        )
+        assert _is_retired(store, loser)
+
     def test_a_list_cite_does_not_dangle_after_the_merge(self, store: Any) -> None:
         loser, winner = _pair(store)
         other = mint_hub(store, CanonicalClaim(sentence="Other hub claim.", scope={}))
@@ -604,6 +668,162 @@ class TestCiteRewriteEdges:
             return
 
         assert f"fi{loser}" not in _chunk_text(store, listed.chunk_id)
+
+
+class TestRepointRelationChecks:
+    """A repointed hub-to-hub edge passes the checks the mint door
+    (``link_claims``) runs, or the merge is blocked and names the edge
+    (gr754451)."""
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_a_disputes_edge_the_winner_may_not_hold_blocks_the_merge(
+        self, store: Any, dry_run: bool
+    ) -> None:
+        winner = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Winner hub claim.", scope={}, claim_type="landscape"
+            ),
+        )
+        loser, other = (
+            mint_hub(
+                store, CanonicalClaim(sentence=s, scope={}, claim_type="measurement")
+            )
+            for s in ("Loser hub claim.", "Other hub claim.")
+        )
+        link_claims(
+            store, from_hub_ref_id=loser, to_hub_ref_id=other, relation="disputes"
+        )
+        edge = f"fi{loser} --disputes--> fi{other}"
+        before = _state(store, loser, winner)
+
+        plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+        assert not plan.can_merge
+        assert edge in str(plan.block_reason)
+
+        with pytest.raises(BadInput) as ei:
+            _handler(store).edit(
+                id=f"fi{loser}",
+                merge_into=f"fi{winner}",
+                reason="same claim",
+                dry_run=dry_run,
+            )
+        assert edge in ei.value.cause
+        assert "past 'candidate'" not in ei.value.cause
+        assert "taproot merge --loser" not in str(ei.value.next)
+        with pytest.raises(BadInput, match=re.escape(edge)):
+            merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+        assert _state(store, loser, winner) == before
+
+    @pytest.mark.parametrize("direction", ["outbound", "inbound"])
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_an_explains_edge_that_would_close_a_cycle_blocks_the_merge(
+        self, store: Any, dry_run: bool, direction: str
+    ) -> None:
+        loser, winner = _pair(store)
+        other = mint_hub(store, CanonicalClaim(sentence="Other hub claim.", scope={}))
+        if direction == "outbound":
+            pairs = [(loser, other), (other, winner)]
+            edge = f"fi{loser} --explains--> fi{other}"
+        else:
+            pairs = [(other, loser), (winner, other)]
+            edge = f"fi{other} --explains--> fi{loser}"
+        for src, dst in pairs:
+            link_claims(
+                store, from_hub_ref_id=src, to_hub_ref_id=dst, relation="explains"
+            )
+        before = _state(store, loser, winner)
+
+        plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+        assert not plan.can_merge
+        assert edge in str(plan.block_reason)
+
+        with pytest.raises(BadInput) as ei:
+            _handler(store).edit(
+                id=f"fi{loser}",
+                merge_into=f"fi{winner}",
+                reason="same claim",
+                dry_run=dry_run,
+            )
+        assert edge in ei.value.cause
+        assert _state(store, loser, winner) == before
+
+    def test_an_edge_the_winner_may_hold_is_still_repointed(self, store: Any) -> None:
+        loser, winner = _pair(store)
+        other = mint_hub(store, CanonicalClaim(sentence="Other hub claim.", scope={}))
+        link_claims(
+            store, from_hub_ref_id=loser, to_hub_ref_id=other, relation="disputes"
+        )
+        link_claims(
+            store, from_hub_ref_id=other, to_hub_ref_id=loser, relation="explains"
+        )
+
+        _handler(store).edit(
+            id=f"fi{loser}", merge_into=f"fi{winner}", reason="same claim"
+        )
+
+        assert _is_retired(store, loser)
+        assert _relation(store, winner, other) == "disputes"
+        assert _relation(store, other, winner) == "explains"
+
+    @pytest.mark.parametrize("relation", ["disputes", "explains"])
+    def test_the_refusal_gives_a_removal_call_that_unblocks_the_merge(
+        self, runtime_with_store: PrecisRuntime, relation: str
+    ) -> None:
+        """The refusal names the edge as it stands on the loser and the
+        ``link`` call that removes it; that call, through the MCP surface,
+        lets the merge through."""
+        store = runtime_with_store.store
+        assert store is not None
+        winner = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Winner hub claim.", scope={}, claim_type="landscape"
+            ),
+        )
+        loser, other = (
+            mint_hub(
+                store, CanonicalClaim(sentence=s, scope={}, claim_type="measurement")
+            )
+            for s in ("Loser hub claim.", "Other hub claim.")
+        )
+        if relation == "disputes":
+            src, dst = loser, other
+        else:
+            src, dst = other, loser
+            link_claims(
+                store, from_hub_ref_id=winner, to_hub_ref_id=other, relation=relation
+            )
+        link_claims(store, from_hub_ref_id=src, to_hub_ref_id=dst, relation=relation)
+
+        with pytest.raises(BadInput) as ei:
+            _handler(store).edit(
+                id=f"fi{loser}", merge_into=f"fi{winner}", reason="same claim"
+            )
+
+        assert f"fi{src} --{relation}--> fi{dst}" in ei.value.cause
+        steps = str(ei.value.next)
+        assert (
+            f"link(kind='finding', id='fi{src}', target='fi{dst}', "
+            f"rel='{relation}', mode='remove')"
+        ) in steps
+        assert "relink" not in steps
+
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "link",
+            {
+                "kind": "finding",
+                "id": f"fi{src}",
+                "target": f"fi{dst}",
+                "rel": relation,
+                "mode": "remove",
+            },
+        )
+        assert not is_error, body
+        _handler(store).edit(
+            id=f"fi{loser}", merge_into=f"fi{winner}", reason="same claim"
+        )
+        assert _is_retired(store, loser)
 
 
 class TestMergePlanViewNamesTheDoor:
