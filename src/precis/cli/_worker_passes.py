@@ -491,10 +491,10 @@ def build_ref_passes(
         def _job_claude_inproc_pass(batch_size: int) -> _BatchResult:
             # ``limit`` is the per-claim batch size, NOT a pass cap —
             # the rolling pool keeps refilling free slots until the
-            # drain flag is set or PRECIS_INPROC_PASS_BUDGET_S is spent
-            # (gr551639). Small claims because each job runs a
-            # multi-minute LLM subprocess and we want the loop to
-            # yield between attempts.
+            # drain flag is set, a rescue pass is due, or
+            # PRECIS_INPROC_PASS_BUDGET_S is spent (gr551639).
+            # Small claims because each job runs a multi-minute LLM
+            # subprocess and we want the loop to yield between attempts.
             r = run_claude_inproc_pass(store, limit=min(batch_size, 4))
             return _BatchResult.from_dict("job_claude_inproc", r)
 

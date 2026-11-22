@@ -102,6 +102,7 @@ from precis.workers.executors._common import (
     set_status as _set_status,
 )
 from precis.workers.job_types import get_job_type, known_job_types
+from precis.workers.runner import rescue_due
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -279,7 +280,7 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
     ``limit`` is the **per-claim batch size** — each claim transaction
     takes at most ``limit`` rows — NOT a per-pass cap: the pass keeps
     refilling free slots until the queue is empty, the process drain
-    flag is set, or the pass wall budget
+    flag is set, a rescue pass is due, or the pass wall budget
     (``PRECIS_INPROC_PASS_BUDGET_S``, :func:`_inproc_pass_budget_s`) is
     spent. The caller's ``min(batch_size, 4)`` keeps each claim tx
     small because every claim stamps leases and a job runs a
@@ -301,10 +302,10 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
     failed = 0
 
     def _stop_claiming() -> bool:
-        """True once the pass must stop claiming new work — the process
-        drain flag (SIGTERM/SIGINT → :func:`drain_requested`) or the
-        wall budget spent."""
-        return drain_requested() or time.monotonic() >= deadline
+        """True once the pass must stop claiming new work when the process
+        drain flag is set (SIGTERM/SIGINT → :func:`drain_requested`), a
+        rescue pass is due, or the wall budget is spent."""
+        return drain_requested() or rescue_due() or time.monotonic() >= deadline
 
     def _claim_slots(want: int) -> list[DispatchContext]:
         """Claim work for ``want`` free pool slots; stamp + ctx per row.
@@ -372,16 +373,16 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
 
     # Stage 2: rolling pool. Top up by claiming only for free slots;
     # every FIRST_COMPLETED wake that frees slots lands here again —
-    # until ``_stop_claiming`` (drain flag or the pass budget) says
-    # stop. ``queue_empty`` is only a skip-hint for the fill loop, not
+    # until ``_stop_claiming`` says stop. ``queue_empty`` is a skip-hint, not
     # a latch: the wait below also returns on the ``_RECLAIM_POLL_S``
     # tick, and EVERY wake clears it so the fill re-tries — a row
     # queued while a long job ran (or one a per-type cap / the reserve
     # held back) is claimed on the next wake instead of idling behind
     # in-flight work. Then the with-block join drains in-flight work
-    # and the pass returns. ``stop_claiming`` latches only AFTER a
-    # claim call, so the first fill always happens — a ``<= 0`` budget
-    # bounds the pass to exactly it.
+    # and the pass returns. Unless draining, the first fill always happens:
+    # checking the wall budget after that claim lets a zero budget do one
+    # fill. Once a stop condition is seen, stop_claiming stays latched
+    # through subsequent wakes while the active jobs finish.
     in_flight: set[Future[bool]] = set()
     queue_empty = False
     stop_claiming = drain_requested()
@@ -408,7 +409,7 @@ def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
                 else:
                     failed += 1
             queue_empty = False
-            stop_claiming = _stop_claiming()
+            stop_claiming = stop_claiming or _stop_claiming()
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 

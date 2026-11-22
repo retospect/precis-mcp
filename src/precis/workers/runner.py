@@ -35,6 +35,7 @@ import random
 import threading
 import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from functools import partial, update_wrapper
 from typing import Any
@@ -105,6 +106,22 @@ RESCUE_BUDGET_ENV = "PRECIS_WORKER_RESCUE_BUDGET_S"
 #: rescue-gap alert (``PRECIS_COND_RESCUE_GAP_BUDGET_S``, 45 min) sits well
 #: above this plus one long pass.
 DEFAULT_RESCUE_BUDGET_S = 300.0
+
+
+# The rotation installs this callback only around inline ref-passes.
+_rescue_due: ContextVar[Callable[[], bool] | None] = ContextVar(
+    "_rescue_due", default=None
+)
+
+
+def rescue_due() -> bool:
+    """Whether the current worker rotation needs an interleaved pass.
+
+    Available on the rotation thread during an inline ref-pass.
+    Deadline-managed passes run on a separate thread and see False.
+    """
+    check = _rescue_due.get()
+    return check is not None and check()
 
 
 #: mtime of the last stale drain file already warned about (per process) —
@@ -464,8 +481,10 @@ def run_loop(
       I/O: the orcid_enrich SSL read that stalled a worker host ~15 min
       held every cadence on that host (materialize, cron_tick) behind it.
       Under ``once=True`` deadlines are ignored — a manual one-shot run
-      must not outlive its own pass. Job executors stay unbounded by
-      choice: abandoning one mid-run strands a claimed job's lease.
+      must not outlive its own pass. Job executors opt out of the
+      deadline because abandoning one mid-run strands a job's lease.
+      The rolling Claude executor checks :func:`rescue_due` between
+      claims and joins its in-flight jobs when a rescue pass is overdue.
 
       ``call_with_deadline`` publishes the bound as the ambient deadline
       (:func:`precis.utils.deadline.deadline_at`) on the pass's thread, so
@@ -528,7 +547,8 @@ def run_loop(
     # aged to the front: it runs before the next handler or ref-pass instead
     # of waiting for its slot. Its wait is then bounded by the budget plus
     # one in-flight pass (ref-passes are themselves bounded by
-    # ``deadline_s``; job executors are not). It still runs in its rotation
+    # ``deadline_s``; the rolling Claude executor stops refilling
+    # and joins active jobs). It still runs in its rotation
     # slot as before, so an idle-fast rotation is unchanged. ``once`` is a
     # single rotation and skips the interleave.
     budget_s = (
@@ -547,6 +567,12 @@ def run_loop(
     rescue_last: dict[str, float] = {
         str(_service_name(p)): loop_start for p in rescue_passes
     }
+
+    def _overdue(name: str) -> bool:
+        return time.monotonic() - rescue_last[name] >= budget_s
+
+    def _any_rescue_due() -> bool:
+        return any(_overdue(name) for name in rescue_last)
 
     def _run_ref_pass(ref_pass: RefPass) -> bool:
         """Run one ref-pass (gate, deadline, crash and log handling);
@@ -610,7 +636,11 @@ def run_loop(
                     label=emit_name,
                 )
             else:
-                result = ref_pass(batch_size)
+                token = _rescue_due.set(_any_rescue_due)
+                try:
+                    result = ref_pass(batch_size)
+                finally:
+                    _rescue_due.reset(token)
         except DeadlineExceeded as exc:
             pending[handler_name] = exc.thread
             log.error(
@@ -683,7 +713,7 @@ def run_loop(
         worked = False
         for rescue in rescue_passes:
             name = str(_service_name(rescue))
-            if time.monotonic() - rescue_last[name] < budget_s:
+            if not _overdue(name):
                 continue
             if should_stop is not None and should_stop():
                 return None

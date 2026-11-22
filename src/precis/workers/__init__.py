@@ -36,11 +36,11 @@ failures and gives task-design failures one repair attempt. :mod:`.halt_recovery
 keeps the infra breaker and cohort probe. :mod:`.halt_heal` locks
 cadence halt state when applying a supervisor verdict.
 
-``run_loop`` rotates serially. Scheduler leases, the separate GPU lane
-(``deploy/README.md``), and a heartbeat thread isolate slow handlers.
-The in-rotation heartbeat is an idempotent backstop. :mod:`.activity`
-stamps each ref pass in ``host_heartbeat.meta.activity`` (Status **Now**)
-so silent work is distinguishable from a dead worker.
+``run_loop`` rotates serially. Scheduler leases, the GPU lane
+(``deploy/README.md``), and threaded heartbeats isolate slow handlers.
+The rotation heartbeat is an idempotent backstop. :mod:`.activity`
+stamps ref passes in ``host_heartbeat.meta.activity`` (Status **Now**)
+to distinguish silent work from worker death. Overdue rescue pauses Claude claims.
 
 Job digests
 -------------

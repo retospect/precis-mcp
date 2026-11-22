@@ -17,10 +17,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from itertools import pairwise
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from precis.workers import runner
+from precis.workers.executors import claude_inproc
 from precis.workers.runner import BatchResult, RefPass, run_loop
 
 _MIN = 60.0
@@ -274,3 +276,63 @@ def test_minter_is_interleaved_but_not_a_rescue_service() -> None:
     set (``conditions._RESCUE_HANDLERS``)."""
     assert "minter" in runner.INTERLEAVED_SERVICES
     assert "minter" not in runner.RESCUE_SERVICES
+
+
+@pytest.mark.parametrize("budget_s", [5.0, 0.0])
+def test_claude_executor_yields_before_claiming_again(
+    monkeypatch: pytest.MonkeyPatch, budget_s: float
+) -> None:
+    sim = _SimTime()
+    monkeypatch.setattr(runner, "time", sim)
+    monkeypatch.setattr(claude_inproc, "time", sim)
+    monkeypatch.setenv("PRECIS_INPROC_CONCURRENCY", "1")
+    monkeypatch.setenv("PRECIS_INPROC_PASS_BUDGET_S", "120")
+    monkeypatch.setattr(claude_inproc, "drain_requested", lambda: False)
+    store = MagicMock()
+    queued = [1, 2, 3]
+    completed: list[int] = []
+    rescue_runs: list[float] = []
+
+    def claim(conn: Any, *, limit: int) -> list[tuple[int, str, dict[str, Any]]]:
+        assert limit == 1
+        return [(queued.pop(0), "job", {})] if queued else []
+
+    def finish(job_id: int) -> bool:
+        sim.now += 6
+        completed.append(job_id)
+        return True
+
+    monkeypatch.setattr(claude_inproc, "_claim_jobs", claim)
+    monkeypatch.setattr(claude_inproc, "_poison_guard", lambda *_: False)
+    monkeypatch.setattr(claude_inproc, "_set_status", MagicMock())
+    monkeypatch.setattr(
+        claude_inproc, "_build_dispatch_context", lambda _, job_id, *_args: job_id
+    )
+    monkeypatch.setattr(claude_inproc, "_run_job_safe", finish)
+
+    def _job_claude_inproc_pass(batch_size: int) -> BatchResult:
+        result = claude_inproc.run_claude_inproc_pass(store, limit=min(batch_size, 4))
+        return BatchResult.from_dict("job_claude_inproc", result)
+
+    def _probe_pass(batch_size: int) -> BatchResult:
+        stop.append(True)
+        return BatchResult(handler="probe", claimed=0, ok=0, failed=0)
+
+    stop: list[bool] = []
+    run_loop(
+        [],
+        store,
+        batch_size=4,
+        ref_passes=[
+            _job_claude_inproc_pass,
+            _probe_pass,
+            _rescue("sweeper", sim, rescue_runs),
+        ],
+        rescue_budget_s=budget_s,
+        should_stop=lambda: bool(stop),
+    )
+
+    assert completed == ([1] if budget_s else [1, 2, 3])
+    assert queued == ([2, 3] if budget_s else [])
+    assert rescue_runs == ([6.0] if budget_s else [])
+    assert not runner.rescue_due()
