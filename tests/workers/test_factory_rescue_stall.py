@@ -20,13 +20,13 @@ from typing import Any
 
 import pytest
 
-from precis.plans.lanes import Lane
+from precis.plans.lanes import LANE_PARK_WHY, Lane
 from precis.plans.templates import PENDING_SHA
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers import factory_rescue as fr
 from precis.workers._mint import mint_background_job
-from precis.workers.executors._common import claim_executor_jobs
+from precis.workers.executors._common import claim_executor_jobs, park_job_until
 from precis.workers.job_types import get_job_type, known_job_types
 from tests._lane_rows import use_lanes
 
@@ -867,6 +867,46 @@ def test_running_build_with_a_stale_persisted_stamp_is_rescued(
     assert res.rescued == [(task, "stalled", "build")]
     (comment,) = _comments(store, task)
     assert "log mtime" in comment
+
+
+def test_breaker_reparks_keep_the_first_park_deadline(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lane = "claude-sub"
+    held = {lane}
+    monkeypatch.setattr("precis.plans.lane_breaker.tripped_lanes", lambda store: held)
+    task = _node(store, _root(store))
+    job = _job(store, task, status="running", meta_extra={"params": {"lane": lane}})
+    note = (
+        f"{LANE_PARK_WHY}run_slice: lane {lane!r} pinned by params.lane is "
+        "held out by an open lane-breaker ask; re-checked at "
+    )
+
+    for minutes in range(0, 301, 30):
+        at = NOW + timedelta(minutes=minutes)
+        wake = at + timedelta(minutes=30)
+        park_note = note + wake.strftime("%Y-%m-%dT%H:%M:%SZ")
+        with store.pool.connection() as conn:
+            assert park_job_until(store, conn, job, wake, park_note)
+            conn.execute(
+                "UPDATE chunks SET created_at = %s WHERE ref_id = %s AND text = %s",
+                (at, job, park_note),
+            )
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'pause_parks' WHERE ref_id = %s", (job,)
+            )
+        _stamp_tags(store, job, at)
+
+    assert fr.run_stall_pass(store, NOW + timedelta(minutes=300)).rescued == []
+    overdue = NOW + timedelta(minutes=301)
+    held.clear()
+    assert fr.run_stall_pass(store, overdue).rescued == []
+    held.add(lane)
+    assert fr.run_stall_pass(store, overdue).rescued == [(task, "stalled", "build")]
+    assert fr.run_stall_pass(store, overdue).rescued == []
+    (comment,) = _comments(store, task)
+    assert "first lane-breaker park" in comment
+    assert "open lane-breaker ask" in comment
 
 
 def test_running_build_parked_on_an_outage_is_not_rescued(store: Store) -> None:

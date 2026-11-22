@@ -7167,6 +7167,14 @@ def _free_lane_wait_min(store: Any) -> int:
     return max(0, wait)
 
 
+def breaker_park_note(lane: str) -> str:
+    """Stable prefix shared by the park event and the rescue clock."""
+    return (
+        f"run_slice: lane {lane!r} pinned by params.lane is "
+        "held out by an open lane-breaker ask;"
+    )
+
+
 def _park_lane_full(
     ctx: Any,
     note: str,
@@ -7530,8 +7538,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 # closed the same day: re-check on the refusal cadence.
                 _park_lane_full(
                     ctx,
-                    f"run_slice: lane {lane.name!r} pinned by params.lane is "
-                    "held out by an open lane-breaker ask; re-checked at "
+                    f"{breaker_park_note(lane.name)} re-checked at "
                     f"{recheck.strftime('%Y-%m-%dT%H:%M:%SZ')}",
                     until=recheck + jitter,
                 )

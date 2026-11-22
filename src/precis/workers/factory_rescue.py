@@ -1569,6 +1569,36 @@ def _clear_dead_root_job(
     res.notes.append(f"jo{j.id}: cleared ({cls}, stage idle, gripe gr{gripe_id})")
 
 
+def _breaker_wait_started(store: Store, j: Any) -> datetime | None:
+    """Clock a pinned breaker's wait from the first recorded park."""
+    from precis.plans.lane_breaker import tripped_lanes
+    from precis.plans.lanes import LANE_PARK_WHY
+    from precis.workers.job_types.run_slice import breaker_park_note
+
+    if j.status != "waiting_time" or j.meta.get("job_type") != "run_slice":
+        return None
+    lane = (j.meta.get("params") or {}).get("lane")
+    if not isinstance(lane, str) or not lane:
+        return None
+    prefix = LANE_PARK_WHY + breaker_park_note(lane)
+    wake = j.meta.get("wake_when") or {}
+    why = (wake.get("payload") or {}).get("why")
+    if not isinstance(why, str) or not why.startswith(prefix):
+        return None
+    if lane not in tripped_lanes(store):
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT min(created_at) FROM chunks
+             WHERE ref_id = %s AND chunk_kind = 'job_event' AND retired_at IS NULL
+               AND starts_with(text, %s)
+            """,
+            (j.id, prefix),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def _judge_node(
     store: Store, now: datetime, plan: Any, n: Any, is_gate: bool, res: StallResult
 ) -> None:
@@ -1604,6 +1634,11 @@ def _judge_node(
     newest, label, lines = _node_signals(
         n, jobs, _signal_rows(store, ids), _unblocked_at(store, plan, n)
     )
+    breaker_since = _breaker_wait_started(store, j) if j is not None else None
+    if breaker_since is not None:
+        newest, label = breaker_since, "first lane-breaker park"
+        error_line = "pinned lane held by an open lane-breaker ask past its deadline"
+        lines.append(f"lane check: {error_line}")
     deadline = STAGE_DEADLINES[stage]
     if now - newest <= deadline:
         return
@@ -2160,7 +2195,7 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 
 #: Lane the diagnose task is pinned to (migration 0280's ``claude-sub``
 #: account: task_classes ``*``, adapter ``claude_p``, the session MCP on).
-#: A dead pin — disabled or parked — falls back to ``pick_lane`` at mint
+#: A disabled, parked or backed-off pin falls back to ``pick_lane`` at mint
 #: (:func:`_resolve_lane_pin`, gr604579): the hard pin died at submit in
 #: 0 s while ``claude-sub`` sat parked, and every retry-cap ask landed on
 #: a human for a mechanical cause. The mint always stamps
@@ -2766,9 +2801,8 @@ def _resolve_lane_pin(
     fallback).
 
     ``({"lane": pin, "lane_capability": "mcp"}, "")`` while the pin
-    names an enabled, unparked lane. A dead pin — unknown, disabled or
-    parked — is a 0-second ``run_slice`` failure whose retry cap then
-    asks a human about a mechanical cause, so the mint falls back to
+    names an enabled, unparked lane outside backoff. A dead or held pin
+    can strand the job in a failure or wait, so the mint falls back to
     :func:`lanes.pick_lane` over the write-MCP lanes (the capability the
     pin was for: a diagnose reads through the precis MCP, an audit files
     gripes through it — a free code-fit lane without it is no fallback).
@@ -2785,7 +2819,8 @@ def _resolve_lane_pin(
 
     table = _lanes.load_lanes(store)
     lane = next((ln for ln in table if ln.name == pin), None)
-    if lane is not None and lane.enabled and not lane.parked:
+    backoffs = _lanes.lane_backoffs(store)
+    if lane is not None and lane.enabled and not lane.parked and pin not in backoffs:
         return {"lane": pin, "lane_capability": "mcp"}, ""
     why = (
         "unknown"
@@ -2793,11 +2828,13 @@ def _resolve_lane_pin(
         else "disabled"
         if not lane.enabled
         else f"parked ({lane.parked_reason or '?'})"
+        if lane.parked
+        else "backed off (host refusal or lane-breaker ask)"
     )
     mcp = tuple(
         ln for ln in table if (a := ADAPTERS.get(ln.adapter)) is not None and a.mcp
     )
-    picked = _lanes.pick_lane(store, task_class, lanes=mcp)
+    picked = _lanes.pick_lane(store, task_class, lanes=mcp, backoff=backoffs)
     params: dict[str, str] = {"lane_capability": "mcp"}
     if picked is None:
         note = (

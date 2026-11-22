@@ -24,12 +24,12 @@ Pass taxonomy
   ``dispatch`` mints jobs for open todos with ``meta.executor``, passing
   parent ``prio`` down the DAG. See ``docs/runbooks/minter-ops.md``.
 
-Factory queues doable nodes; claims own capacity and overlaps.
-Gripe intake bounds frozen reports (``precis-work-help``).
-Todo sweeps recheck under lock to preserve concurrent owner edits.
-Dispatch passes log structured results so operators can inspect each
-decision. The outer cadence accounts for the elapsed time.
-Mirror fetches avoid receive hooks (:mod:`.factory_git_mirror`).
+Factory claims enforce capacity and overlaps. Rescue clocks breaker waits
+from the first park because rechecks refresh status without progress
+(:mod:`.factory_rescue`). Mirror fetches avoid receive hooks
+(:mod:`.factory_git_mirror`).
+Gripe intake bounds frozen reports (``precis-work-help``). Todo sweeps
+recheck under lock. Dispatch logs decisions and cadence accounts for elapsed time.
 
 Runner halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra
 failures and gives task-design failures one repair attempt. :mod:`.halt_recovery`

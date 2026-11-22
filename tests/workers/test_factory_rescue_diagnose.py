@@ -428,6 +428,28 @@ def test_dead_lane_pin_with_no_enabled_mcp_lane_mints_capability_bound(
     assert any("no enabled MCP lane" in c for c in _comments(store, diag))
 
 
+@pytest.mark.parametrize("alternate", [False, True])
+def test_breaker_held_pin_re_picks_or_mints_unpinned(
+    store: Store, monkeypatch: pytest.MonkeyPatch, alternate: bool
+) -> None:
+    pin = seed_lane("claude-sub")
+    table = [seed_lane("devin"), pin]
+    if alternate:
+        table.append(replace(pin, name="claude-sub-2"))
+    use_lanes(monkeypatch, *table)
+    monkeypatch.setattr(
+        "precis.plans.lane_breaker.tripped_lanes", lambda store: {pin.name}
+    )
+
+    params, note = fr._resolve_lane_pin(store, pin.name, "diagnose")
+
+    expected = {"lane_capability": "mcp"}
+    if alternate:
+        expected["lane"] = "claude-sub-2"
+    assert params == expected
+    assert "lane-breaker ask" in note
+
+
 # ── REARM ──────────────────────────────────────────────────────────
 
 
