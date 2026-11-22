@@ -376,8 +376,9 @@ exports cite an SI record as its parent with an SI postnote
 search(kind="paper", q="photocatalytic NOx reduction selectivity", page_size=20)
 ```
 
-Search returns a bounded top-N set, not continuation pages. Add distinctive
-terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
+Search returns a bounded top-N set, not continuation pages. Navigate it with
+`view='toc'` (keyword facets, above), add distinctive terms, narrow `scope=`,
+or reduce `page_size=`: `precis-search-help`.
 
 ## How many papers? Is ingestion landing full text?
 
