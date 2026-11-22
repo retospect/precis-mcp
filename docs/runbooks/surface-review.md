@@ -100,7 +100,10 @@ disagrees with the alert.
    place this pass systematically under-reads.
 2. **Read the scoreboard** on the main loop. One screen. Note what moved
    since the last pass — `out/scoreboard.json` carries a `schema_version` so
-   the numbers are comparable.
+   the numbers are comparable. Read the `navigation_usage` scoreboard row
+   for fisheye and links-view adoption, escalations and visible hint follow-through.
+   This observational census is separate from friction detectors and `exec_class`
+   triage; coverage limits are in `scripts/mine-sessions/README.md`.
 3. **Fan out.** One `forensics` agent per detector directory, each reading
    only its own cards plus the owning handler/skill file — **plus one agent
    on `out/cards/random/`** asked the open question "what confused this

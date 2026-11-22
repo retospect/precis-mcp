@@ -42,7 +42,9 @@ from schema import Event
 #: JSON digests by view instead of all under ``-``, and a silent exit 1
 #: from pgrep/grep/rg/diff/test is not a Bash error — v3 precis call
 #: counts read up to 2× high and Bash error counts about a tenth high.
-SCHEMA_VERSION = 4
+#: v5 (gr702994): navigation usage splits preserve ledger outcome/client;
+#: older event files remain readable but have unknown client identity.
+SCHEMA_VERSION = 5
 
 
 def _date_range(events: Sequence[Event]) -> tuple[str | None, str | None]:
@@ -243,6 +245,13 @@ def build_scoreboard(events: Sequence[Event]) -> dict[str, Any]:
         "tokens": _tokens(events),
         "detour_census": _detour_census(events),
         "exec_class_mix": _exec_class_mix(events),
+        "navigation_usage": [
+            dict(
+                zip(("signal", "corpus", "kind", "outcome", "client"), key),
+                calls=len(evs),
+            )
+            for key, evs in sorted(detect.navigation_groups(events).items())
+        ],
     }
 
 
@@ -323,6 +332,23 @@ def render_markdown(sb: dict[str, Any]) -> str:
     )
     lines.append("")
 
+    lines.extend(
+        [
+            "## navigation usage",
+            "signal | corpus | kind | outcome | client | calls",
+            "---|---|---|---|---|---",
+        ]
+    )
+    for row in sb["navigation_usage"]:
+        lines.append(
+            " | ".join(
+                str(row[k])
+                for k in ("signal", "corpus", "kind", "outcome", "client", "calls")
+            )
+        )
+    lines.append(
+        "Hints: captured response heads only; ledger hint coverage is unknown."
+    )
     return "\n".join(lines)
 
 

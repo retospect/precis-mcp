@@ -666,6 +666,7 @@ _LEDGER_COLUMNS = (
     "error_head",
     "arg_sample",
     "agentlog_id",
+    "client",
 )
 
 _LLMLOG_COLUMNS = (
@@ -785,6 +786,7 @@ def fetch_ledger_rows(since: datetime | None) -> list[dict[str, Any]]:
                 "error_head": r["error_head"] or None,
                 "arg_sample": r["arg_sample"] or None,
                 "agentlog_id": _to_int(r["agentlog_id"]),
+                "client": r["client"] or None,
             }
         )
     return rows
@@ -834,6 +836,8 @@ def ledger_row_to_event(row: dict[str, Any], *, session: str, seq: int) -> Event
         err_head=err_head,
         result_bytes=row.get("result_bytes") or 0,
         latency_ms=_to_int(row.get("latency_ms")),
+        client=redact.scrub(row["client"]) if row.get("client") else None,
+        outcome=row.get("outcome"),
         source=row.get("source"),
         profile=row.get("profile"),
     )

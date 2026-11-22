@@ -113,14 +113,32 @@ def _arg_value(ev: Event, name: str) -> str | None:
     corpus, so a single-dialect reader is silently blind there (it is
     why ``skill_taught_wrong`` reported ``skill:?`` for an id that was
     right in front of it).
+
+    Complete JSON preserves scalar strings and integers exactly. If extraction
+    truncated the JSON at HEAD_CHARS, fall back to the token regex used for
+    key=value digests: earlier values remain useful to existing detectors,
+    but may themselves be partial. Callers needing complete evidence must
+    reject malformed JSON before calling this helper.
     """
     if name not in ev.arg_keys or not ev.arg_digest:
         return None
+    if ev.arg_digest.lstrip().startswith("{"):
+        try:
+            args = json.loads(ev.arg_digest)
+        except json.JSONDecodeError:
+            pass  # recover earlier tokens from truncated local digests below
+        else:
+            value = args.get(name) if isinstance(args, dict) else None
+            return (
+                str(value)
+                if isinstance(value, (str, int)) and not isinstance(value, bool)
+                else None
+            )
     pat = _ARG_VALUE_RE_CACHE.get(name)
     if pat is None:
         pat = re.compile(
-            rf"\b{re.escape(name)}\s*=\s*['\"]?([\w./:-]+)"
-            rf"|\"{re.escape(name)}\"\s*:\s*\"?([\w./:-]+)"
+            rf"\b{re.escape(name)}\s*=\s*['\"]?([\w./:+-]+)"
+            rf"|\"{re.escape(name)}\"\s*:\s*\"?([\w./:+-]+)"
         )
         _ARG_VALUE_RE_CACHE[name] = pat
     m = pat.search(ev.arg_digest)
@@ -338,6 +356,124 @@ def detector(
         return fn
 
     return deco
+
+
+def navigation_groups(events: Sequence[Event]) -> dict[tuple[str, ...], list[Event]]:
+    """Observed navigation use, split by corpus, kind, outcome and client.
+
+    Sequencing requires a real session and the same kind/id. A higher rung
+    after an error is a retry, not successful escalation. Hint matching is
+    restricted to explicit get examples visible in captured response heads;
+    ledger rows cannot establish whether a hint was offered.
+    """
+    groups: dict[tuple[str, ...], list[Event]] = defaultdict(list)
+
+    def navigation_arg(ev: Event, name: str) -> str | None:
+        # Ledger samples describe dispatched args, while arg_keys can describe
+        # the wire call (just `call` for the command profile).
+        if ev.arg_digest.lstrip().startswith("{"):
+            try:
+                args = json.loads(ev.arg_digest)
+            except json.JSONDecodeError:
+                # Partial tokens cannot prove a rung or target equality.
+                return None
+            value = args.get(name)
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                return str(value)
+            return None
+        return _arg_value(ev, name)
+
+    def record(signal: str, ev: Event) -> None:
+        groups[
+            (
+                signal,
+                ev.corpus,
+                ev.kind or "?",
+                ev.outcome or ("error" if ev.is_error else "ok"),
+                ev.client or "unknown",
+            )
+        ].append(ev)
+
+    for ev in events:
+        if ev.verb != "get":
+            continue
+        extent = navigation_arg(ev, "extent") or navigation_arg(ev, "view") or ""
+        if extent.startswith("fisheye"):
+            record(extent, ev)
+        if navigation_arg(ev, "view") == "links":
+            record("links", ev)
+        if ev.is_error and "no eye on kind" in ev.err_head:
+            record("no-eye", ev)
+
+    rungs = {"fisheye": 0, "fisheye+1hop": 1, "fisheye+2hop": 2}
+    sessions: dict[tuple[str, str], list[Event]] = defaultdict(list)
+    for ev in events:
+        if has_real_session(ev):
+            sessions[(ev.corpus, ev.session)].append(ev)
+    for session in sessions.values():
+        previous: dict[tuple[str, str], str] = {}
+        pending: set[tuple[str, str, str, str]] = set()
+        for ev in sorted(session, key=lambda e: e.seq):
+            if ev.verb == "get":
+                ident = navigation_arg(ev, "id")
+                extent = (
+                    navigation_arg(ev, "extent") or navigation_arg(ev, "view") or ""
+                )
+                key = (ev.kind or "?", ident or "")
+                extent = extent.removesuffix("+recall")
+                if ident and extent in rungs:
+                    old = previous.get(key)
+                    if ev.is_error:
+                        previous.pop(key, None)
+                    elif old in rungs and rungs[extent] > rungs[old]:
+                        record(f"escalation:{old}->{extent}", ev)
+                    if not ev.is_error:
+                        previous[key] = extent
+                for hint in list(pending):
+                    kind, target, arg, value = hint
+                    if (ev.kind, ident, navigation_arg(ev, arg)) == (
+                        kind,
+                        target,
+                        value,
+                    ):
+                        record("hint-followed", ev)
+                        pending.remove(hint)
+            if has_payload(ev):
+                head = ev.err_head if ev.is_error else ev.result_head
+                for example in re.findall(r"\bget\(([^()]+)\)", head):
+                    hint_ev = Event(
+                        corpus=ev.corpus,
+                        session=ev.session,
+                        seq=ev.seq,
+                        arg_keys=("kind", "id", "extent", "view"),
+                        arg_digest=example,
+                    )
+                    hint_kind = navigation_arg(hint_ev, "kind")
+                    hint_target = navigation_arg(hint_ev, "id")
+                    for arg in ("extent", "view"):
+                        value = navigation_arg(hint_ev, arg) or ""
+                        if (
+                            hint_kind
+                            and hint_target
+                            and (value.startswith("fisheye") or value == "links")
+                        ):
+                            record("hint-visible", ev)
+                            pending.add((hint_kind, hint_target, arg, value))
+    return dict(groups)
+
+
+@detector("navigation_usage")
+def detect_navigation_usage(events: Sequence[Event]) -> list[Candidate]:
+    """Observational census, not a friction verdict or inferred hint rate."""
+    return [
+        _candidate(
+            "navigation_usage",
+            "|".join(key),
+            evs,
+            caveat="Hints are observable only in captured response heads; unknown client is not source.",
+        )
+        for key, evs in sorted(navigation_groups(events).items())
+    ]
 
 
 @detector("exec_class")
