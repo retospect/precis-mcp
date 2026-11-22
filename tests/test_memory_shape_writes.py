@@ -464,6 +464,18 @@ def test_notation_warning_on_edit_and_title(
     assert "AUDIT:notation" in _tags(store, ref_id)
 
 
+def test_notation_tag_clears_with_only_verbatim_quoted_range_remaining(
+    handler: MemoryHandler, store: Store
+) -> None:
+    ref_id = id_of(handler.put(title=_CLEAN_TITLE, text="The floor is 800-900°C.").body)
+    assert "AUDIT:notation" in _tags(store, ref_id)
+    body = 'The source names the "800-900°C\ngraphenic floor" pattern.'
+    ack = handler.edit(id=ref_id, mode="replace", text=body)
+    assert "AUDIT:notation" not in ack.body
+    assert "AUDIT:notation" not in _tags(store, ref_id)
+    assert handler._body_text(handler._resolve_live_ref(ref_id)) == body
+
+
 @pytest.mark.parametrize(
     "body",
     [

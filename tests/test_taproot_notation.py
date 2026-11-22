@@ -1281,6 +1281,31 @@ def test_authored_lint_flags_multiline_free_text_but_not_multiline_math() -> Non
     assert lint_authored_notation("") == []
 
 
+@pytest.mark.parametrize("opening,closing", [('"', '"'), ("“", "”")])
+@pytest.mark.parametrize("wrap", [" ", "\n"])
+def test_authored_lint_exempts_wrapped_quoted_pattern_names(
+    opening: str, closing: str, wrap: str
+) -> None:
+    from precis.taproot.notation import lint_authored_notation, mask_unauthored
+
+    # gr688622: a verbatim pattern name must not retain AUDIT:notation.
+    text = f"The pattern is {opening}800-900°C{wrap}graphenic floor{closing}."
+    masked = mask_unauthored(text)
+    assert len(masked) == len(text)
+    assert masked.count("\n") == text.count("\n")
+    assert lint_authored_notation(text) == []
+    hits = lint_authored_notation(text + " Authored range: 600-700°C.")
+    assert any(code == "hyphen-numeric-range" for code, _, _ in hits)
+    assert not any("800" in (token or "") for _, token, _ in hits)
+
+
+def test_authored_lint_does_not_exempt_unclosed_quote() -> None:
+    from precis.taproot.notation import lint_authored_notation
+
+    hits = lint_authored_notation('The pattern is "800-900°C\ngraphenic floor.')
+    assert any(code == "hyphen-numeric-range" for code, _, _ in hits)
+
+
 def test_authored_lint_never_reports_formula_ascii_subscript() -> None:
     from precis.taproot.notation import lint_authored_notation
 
