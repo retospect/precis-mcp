@@ -42,7 +42,8 @@ for code you just changed and non-Python files (shell scripts aren't indexed).
 ## What to return
 - Tests added, as `file — what each asserts`.
 - The run result and what it means (green = contract holds / red = repro captured,
-  ready for `coder`).
+  ready for `coder`). That result covers your slice only: after a fan-out the
+  caller owns the integrated run (`AGENTS.md` §Agent sizing).
 - Any spec ambiguity you had to guess on or that blocked you — phrased as a
   specific question for the caller.
 

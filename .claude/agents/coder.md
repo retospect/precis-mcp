@@ -60,7 +60,9 @@ for code you just changed and non-Python files (shell scripts aren't indexed).
 ## What to return
 - What you changed, as a short list of `file — what/why`.
 - The verification you ran and its result (`scripts/test --impacted` → pass, or
-  the failing test ids if you couldn't get it green).
+  the failing test ids if you couldn't get it green). That green covers your
+  slice only: after a fan-out the caller owns the integrated run
+  (`AGENTS.md` §Agent sizing).
 - **Numbers, with the command that produced them — never a bare verdict.**
   "0 degenerate triangles" is unreported unless you show the measurement and
   the threshold it used; a claim of zero is the one most likely to be an

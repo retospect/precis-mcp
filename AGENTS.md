@@ -212,6 +212,15 @@ runs with `isolation: "worktree"` and ends in `scripts/take-agent <tree>`
 Never copy its diff: ship reaps only agent branches take-agent recorded
 (`docs/conventions/shipping.md` §Sync, and agent branches).
 
+Slice greens do not replace one integrated run. After a fan-out the caller
+owns one `scripts/test` run, in the tree that holds every slice's edits,
+over the union of the areas the slices touched: every test file a slice ran
+or edited. One agent changes what another agent's test asserts, and no
+slice run covers both (gr692288). Pass the files: `--impacted` reads that
+tree's testmon map, not the combined diff. The run is the last step before
+landing: one started before a later fix describes a tree that no longer
+exists.
+
 ## Long form — orientation, conventions and traps (moved from CLAUDE.md, 2026-11-01)
 
 The resident brief (`CLAUDE.md`) keeps only the hard rules and pointers
