@@ -768,12 +768,13 @@ def drain_then_exit(
             f"{stuck} of {pending} call(s) still running"
         ),
     )
-    # The hard exit below skips atexit: drop this instance's served-sha stamp
-    # here so the release confirm stops counting it now (gr762430) — the backstop
-    # for the drain signal's own forget at drain start, and the only one on
-    # the checkout watchdog's bounce (its pending_sha attests until here).
-    # Idempotent, bounded, never raises; a no-op in a process that does
-    # not stamp.
+    # The hard exit below skips atexit: drop this instance's served-sha
+    # stamp only here, at the very end — the quiet deferral above and the
+    # drain itself still serve sessions, so an earlier delete would hide a
+    # server still serving stale code from the release confirm, and a
+    # SIGKILL during the wait leaves the key to age out, the safe
+    # direction (gr762430). Idempotent, bounded, never raises; a no-op in
+    # a process that does not stamp.
     try:
         from precis.mcp_served_stamp import forget_own_stamp
 
@@ -820,19 +821,11 @@ def install_drain_signal(
         if draining.is_set():
             return
         draining.set()
-        # Drop the served-sha stamp at drain START, before the quiet
-        # deferral (up to the cap) and the drain: ``docker stop -t`` may
-        # SIGKILL a busy server long before drain_then_exit's own forget
-        # runs, leaving its key live (gr762430). Its own thread — the
-        # handler runs on the event loop and must not wait on the store.
-        try:
-            from precis.mcp_served_stamp import forget_own_stamp
-
-            threading.Thread(
-                target=forget_own_stamp, name="drain-forget-stamp", daemon=True
-            ).start()
-        except Exception:
-            log.warning("drain signal: served stamp not dropped", exc_info=True)
+        # The served-sha stamp stays: the quiet deferral and the drain
+        # still serve sessions, so the release confirm must keep counting
+        # this instance — drain_then_exit drops the key itself just before
+        # os._exit, and a SIGKILL before then leaves it to age out, the
+        # safe direction (gr762430).
         threading.Thread(
             target=drain_then_exit,
             kwargs={

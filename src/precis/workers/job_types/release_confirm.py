@@ -51,8 +51,12 @@ never re-minted (:func:`_mcp_ask_guard`): while their records predate the
 answer — a stack stopped before answering — the probe parks until they
 age out; a record written after the answer reopens that ask with one
 comment naming the instance, and the probe parks on it the same way, so
-no retry-cap ask follows either. Once the confirm attests, every MCP ask
-of the release still open is closed as moot (:func:`_close_moot_mcp_asks`).
+no retry-cap ask follows either. Only a ``done`` close counts as the
+retry answer: an ask closed ``won't-do`` (or ``auto-timeout``) is a
+decline, and the probe's problems then stand as a plain failure — the
+release stays unconfirmed until a hand confirm lands, as the ask itself
+says. Once the confirm attests, every MCP ask of the release still open
+is closed as moot (:func:`_close_moot_mcp_asks`).
 
 **The restart race.** Right after the rollout a worker's heartbeat can
 still carry the old sha. The probe re-reads the store until a deadline —
@@ -953,12 +957,14 @@ def _mint_mcp_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
 
 def _prior_mcp_ask(
     store: Store, todo_id: int, rn: str, instances: set[str]
-) -> tuple[int, datetime | None] | None:
-    """``(ask id, answered at)`` of the newest MCP ask on ``todo_id`` for
-    release ``rn`` and exactly the lagging ``instances`` (its
-    ``meta.mcp_stale``), else ``None``. ``answered at`` is when its
+) -> tuple[int, str, datetime | None] | None:
+    """``(ask id, status, answered at)`` of the newest MCP ask on
+    ``todo_id`` for release ``rn`` and exactly the lagging ``instances``
+    (its ``meta.mcp_stale``), else ``None``. ``answered at`` is when its
     terminal STATUS was set, ``None`` while the ask is open (never
-    answered, or reopened by :func:`_mcp_ask_guard`)."""
+    answered, or reopened by :func:`_mcp_ask_guard`). Only ``done`` is
+    the retry answer the ask offers; ``won't-do``/``auto-timeout`` are a
+    decline — :func:`_mcp_ask_guard` treats them differently."""
     from precis.todo import TERMINAL_TODO_STATUSES
 
     with store.pool.connection() as conn:
@@ -979,9 +985,10 @@ def _prior_mcp_ask(
         ).fetchall()
     for ask_id, asked, status, status_at in rows:
         if isinstance(asked, list) and set(map(str, asked)) == instances:
-            if str(status or "open") not in TERMINAL_TODO_STATUSES:
-                return int(ask_id), None
-            return int(ask_id), _parse_ts(status_at)
+            st = str(status or "open")
+            if st not in TERMINAL_TODO_STATUSES:
+                return int(ask_id), "open", None
+            return int(ask_id), st, _parse_ts(status_at)
     return None
 
 
@@ -1106,14 +1113,32 @@ def _mcp_ask_guard(
     it (:func:`_reopen_mcp_ask`) and the probe parks on the open ask; a
     still-open ask (the reopened one) parks without another comment. The
     park's deadline is where the newest lagging record stops being live,
-    re-set on every re-probe while the instance keeps stamping. Anything
-    else is returned unchanged."""
+    re-set on every re-probe while the instance keeps stamping.
+
+    Only a ``done`` close is the retry answer the ask offers. A decline
+    — ``won't-do``, or ``auto-timeout`` expiring unanswered — is not:
+    the ask's own outcome leaves the release unconfirmed until a hand
+    ``scripts/round deploy --confirm-runtime`` lands, so the problems
+    stand (``mcp_only`` cleared: no re-mint, no reopen, and no park whose
+    end would confirm anyway), and :func:`_probe_failed` records a plain
+    failure for the tick's retry-cap ask. Anything else is returned
+    unchanged."""
     if not ev.mcp_only or not ev.mcp_stale or not isinstance(todo_id, int):
         return ev
     prior = _prior_mcp_ask(store, todo_id, rn, _stale_instances(ev))
     if prior is None:
         return ev
-    ask_id, answered_at = prior
+    ask_id, status, answered_at = prior
+    if status not in ("open", "done"):
+        return replace(
+            ev,
+            mcp_only=False,
+            problems=[
+                *ev.problems,
+                f"session MCP ask td{ask_id} was closed {status} — the "
+                "release stays unconfirmed until a hand confirm lands",
+            ],
+        )
     state = "open"
     if answered_at is not None:
         since = [s for s in ev.mcp_stale if s.at > answered_at]

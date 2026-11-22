@@ -17,20 +17,26 @@ dev stack holding the prod DSN — used to overwrite the shared MCP's
 record every refresh, and the confirm read whichever wrote last. A reader
 sees every instance; one whose ``at`` is older than :data:`FRESH`
 (three refreshes) is ignored, so a killed stack ages out on its own. A
-graceful stop deletes the instance's own key at once
-(:func:`forget_own_stamp`, at the start of the drain ``docker stop``
-triggers, before any deferral; again at the drain exit and from
-``atexit``): a blue/green colour swap gives the new
-container a new hostname, so the old colour's record would otherwise
-keep the old sha live — the single key used to be overwritten instead.
-``at`` is the store's ``now()``, never the writer's clock, so freshness
-and the confirm's answer-time comparison read one clock. A
+graceful stop deletes the instance's own key at the exit itself
+(:func:`forget_own_stamp` — from
+:func:`precis.install_watchdog.drain_then_exit` just before ``os._exit``,
+and from ``atexit`` on a normal shutdown): a blue/green colour swap gives
+the new container a new hostname, so the old colour's record would
+otherwise keep the old sha live for :data:`FRESH` — the single key used
+to be overwritten instead. The delete is deliberately *late*: the drain's
+quiet deferral and in-flight drain still serve sessions, so the stamp
+must stay while they run, and a SIGKILL before the exit leaves it to age
+out — the safe direction, since a confirm parked on a leftover record
+waits, while a stamp dropped early would skip a server still serving
+stale code. ``at`` is the store's ``now()``, never the writer's clock, so
+freshness and the confirm's answer-time comparison read one clock. A
 restart on the same host supersedes the record its predecessor left
-(:func:`live_stamps`), and the stamper prunes records a day old at start
-(:func:`prune_stamps`). The supersede rule assumes one stamping server per
-hostname: the shared MCP colours run as separate containers with distinct
-hostnames, so it hides nothing today; two watched-checkout servers sharing
-one hostname would hide the older-started one.
+(:func:`live_stamps`) — but only once that record has demonstrably
+stopped being written (``at`` older than :data:`SUPERSEDE_AFTER`): a
+record still being refreshed belongs to a live server and always counts,
+so two stamping servers sharing one hostname are both held to the
+release. The stamper prunes records a day old at start
+(:func:`prune_stamps`).
 
 **The legacy key, one release only** (gr762430 — remove after the release
 that ships it). A server still on the pre-gr762430 code writes the single
@@ -100,6 +106,14 @@ REFRESH_S = 300.0
 #: three missed refreshes — a killed stack ages out in ~15 minutes, not
 #: the worker heartbeat window's 60.
 FRESH = timedelta(seconds=3 * REFRESH_S)
+
+#: How old a same-host record's ``at`` must be before a newer-started
+#: instance stands for that host (:func:`live_stamps`): a live stamper
+#: writes every :data:`REFRESH_S`, so a record this old has missed a full
+#: refresh and then some — the leftover a restart leaves, hidden a little
+#: before :data:`FRESH` drops it anyway. A record still being refreshed
+#: is a live peer and is never superseded.
+SUPERSEDE_AFTER = timedelta(seconds=2 * REFRESH_S)
 
 #: How long :func:`forget_own_stamp` may hold a process exit.
 _FORGET_TIMEOUT_S = 3.0
@@ -242,18 +256,22 @@ def forget_own_stamp(timeout_s: float = _FORGET_TIMEOUT_S) -> bool:
     """A graceful stop: delete this instance's own key so a reader stops
     counting it at once, instead of after :data:`FRESH` (gr762430 — a
     colour swap's new container has a new hostname, nothing overwrites
-    the old record). ``docker stop`` reaches the server as the drain
-    signal, whose handler calls this at drain START, before the quiet
-    deferral and the drain (:func:`precis.install_watchdog.install_drain_signal`)
-    — a busy server may be SIGKILLed before the drain ends;
+    the old record). Called *at the exit*, never at drain start:
     :func:`precis.install_watchdog.drain_then_exit` (also the checkout
-    watchdog's bounce, whose ``pending_sha`` attests until then) and
-    ``atexit`` call it again as a backstop — it is idempotent. No later
-    write lands (``_stopped``, re-checked by :func:`write_stamp` right
-    before its store write). Best effort and
-    bounded: waits at most about ``timeout_s`` for an in-flight write,
-    then as long again for the delete; ``True`` when the key is gone,
-    never raises, a no-op (``False``) in a process that does not stamp."""
+    watchdog's bounce, whose ``pending_sha`` attests until then) calls it
+    just before ``os._exit``, and ``atexit`` on a normal shutdown —
+    idempotent. The quiet deferral and the in-flight drain still serve
+    sessions, so the stamp must stay live while they run; a SIGKILL
+    before the exit leaves the key to age out over :data:`FRESH`, the
+    safe direction — a leftover parks the confirm, a stamp dropped early
+    would skip a server still serving stale code. No later write lands
+    (``_stopped``, re-checked by :func:`write_stamp` right before its
+    store write). Best effort and bounded: waits at most about
+    ``timeout_s`` for an in-flight write, then as long again for the
+    delete — inline instead when the interpreter is already shutting
+    down, where Python 3.12+ refuses a new thread. ``True`` when the key
+    is gone, never raises, a no-op (``False``) in a process that does not
+    stamp."""
     global _stopped
     try:
         state = _state
@@ -279,7 +297,15 @@ def forget_own_stamp(timeout_s: float = _FORGET_TIMEOUT_S) -> bool:
             t = threading.Thread(
                 target=_clear, name="mcp-served-stamp-forget", daemon=True
             )
-            t.start()
+            try:
+                t.start()
+            except RuntimeError:
+                # Python 3.12+ refuses a new thread during interpreter
+                # shutdown — exactly where the ``atexit`` call runs. The
+                # delete must still happen, so it runs inline here; the
+                # bound matters less than leaving the key behind.
+                _clear()
+                return done.is_set()
             t.join(timeout_s)
             return done.is_set()
         finally:
@@ -430,9 +456,11 @@ def live_stamps(store: Store, *, fresh: timedelta = FRESH) -> list[dict[str, Any
     ``instance`` field (``legacy`` when it has none) and dropped when a
     per-instance record already carries that instance. Then a record whose
     ``at`` is older than ``fresh`` is ignored (a stopped stack ages out),
-    and of the live records sharing one host the one with the newest
-    ``started_at`` stands for it: a restart supersedes the record its
-    predecessor left, which would otherwise stay live for ``fresh``."""
+    and of the live records sharing one host an older-started record is
+    superseded by the newest-started one only once it has demonstrably
+    stopped being refreshed (``at`` older than :data:`SUPERSEDE_AFTER`) —
+    the leftover a restart leaves; a second still-stamping server on the
+    same hostname is a live peer and always counts."""
     try:
         now = _db_now(store)
     except Exception:
@@ -445,19 +473,20 @@ def live_stamps(store: Store, *, fresh: timedelta = FRESH) -> list[dict[str, Any
         if all(r["instance"] != legacy["instance"] for r in recs):
             recs.append(legacy)
     live = [r for r in recs if now - r["at"] <= fresh]
-    newest: dict[str, tuple[str, datetime]] = {}
+    newest: dict[str, str] = {}
     for r in live:
         host = _host(str(r["instance"]))
         if host is None:
             continue
-        mark = (str(r.get("started_at") or ""), r["at"])
-        if host not in newest or mark > newest[host]:
-            newest[host] = mark
+        started = str(r.get("started_at") or "")
+        if host not in newest or started > newest[host]:
+            newest[host] = started
     kept = [
         r
         for r in live
         if (host := _host(str(r["instance"]))) is None
-        or (str(r.get("started_at") or ""), r["at"]) == newest[host]
+        or str(r.get("started_at") or "") == newest[host]
+        or now - r["at"] <= SUPERSEDE_AFTER
     ]
     return sorted(kept, key=lambda r: str(r["instance"]))
 
@@ -489,6 +518,7 @@ __all__ = [
     "PRUNE_AFTER",
     "REFRESH_S",
     "STAMP_PREFIX",
+    "SUPERSEDE_AFTER",
     "build_record",
     "forget_own_stamp",
     "live_stamps",

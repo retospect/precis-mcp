@@ -160,7 +160,9 @@ The gateway's `20d-precis-worker-drain.yml` provisions a release-only
 `release.mcp_served.<host:pid>` stamps each session MCP writes itself
 (`mcp_served_stamp.py`; store only, no token), the sha every live instance
 serves: no live stamp is a note, a lagging instance parks the probe and then
-files an ask naming it; an answered ask for the same instances is not re-minted.
+files an ask naming it; an answered ask for the same instances is not re-minted
+(a `won't-do`/`auto-timeout` close is a decline — the failure stands, never
+a park that would auto-confirm).
 A pre-land review job's and every `land_slice` job's score floors at
 `FINISH_FIRST_SCORE`, so the review and the land of a finished build are
 claimed ahead of fresh builds; at the host claim an already-queued land

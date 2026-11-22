@@ -130,13 +130,15 @@ def test_forget_is_bounded_and_a_noop_without_a_stamper(
     release.set()
 
 
-def test_the_drain_signal_drops_the_stamp_before_the_quiet_deferral(
+def test_the_drain_signal_keeps_the_stamp_until_the_exit(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``docker stop`` → the supervisor's SIGHUP → the drain handler. A
-    call just ended, so the real quiet window defers the exit; the key is
-    already gone while the drain still waits (a busy server is SIGKILLed
-    by ``docker stop -t`` long before its drain ends)."""
+    call just ended, so the real quiet window defers the exit — and the
+    server still serves while it waits, so the key must stay: dropped at
+    drain start it would hide a live stale instance from the release
+    confirm (td765317). The drain exit drops it; a SIGKILL before then
+    leaves it to age out — the safe direction."""
     import signal
 
     from precis import inflight
@@ -174,15 +176,40 @@ def test_the_drain_signal_drops_the_stamp_before_the_quiet_deferral(
         handlers[iw.DRAIN_SIGNAL](iw.DRAIN_SIGNAL, None)
         drain = [t for t in threading.enumerate() if t.name == "drain-restart"]
         assert len(drain) == 1
-        until = time.monotonic() + 2.0
-        while mss.read_stamps(store) and time.monotonic() < until:
+        # Still deferring (~2 s cap): the stamp stays while it serves.
+        seen_live = False
+        while drain[0].is_alive():
+            if any(r["instance"] == "drain-host:4" for r in mss.read_stamps(store)):
+                seen_live = True
+            assert exits == []
             time.sleep(0.05)
-        assert mss.read_stamps(store) == []
-        assert drain[0].is_alive() and exits == []  # still deferring
         drain[0].join(15)
-        assert not drain[0].is_alive() and exits == [0]
+        assert seen_live  # it stayed until the drain exit dropped it
+        assert exits == [0]
+        assert mss.read_stamps(store) == []
     finally:
         inflight._reset_for_tests()
+
+
+def test_forget_deletes_inline_when_no_thread_can_start(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python 3.12+ refuses ``Thread.start`` during interpreter shutdown —
+    exactly where ``atexit`` calls forget. It deletes inline instead of
+    leaving the stamp behind (td765317)."""
+    _lane(monkeypatch, "watched-checkout")
+    monkeypatch.setattr(mss, "_stopped", False)
+    monkeypatch.setattr(mss, "_pending", None)
+    monkeypatch.setattr(mss, "_state", (store, T0))
+    monkeypatch.setattr(mss, "_instance", lambda: "atexit-host:6")
+    assert mss.write_stamp(store, T0)
+
+    def no_threads(self: Any) -> None:
+        raise RuntimeError("can't create new thread at interpreter shutdown")
+
+    monkeypatch.setattr(threading.Thread, "start", no_threads)
+    assert mss.forget_own_stamp() is True
+    assert mss.read_stamps(store) == []
 
 
 def test_a_late_write_after_forget_does_not_restore_the_key(

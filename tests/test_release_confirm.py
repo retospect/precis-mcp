@@ -1107,15 +1107,31 @@ def test_mcp_every_instance_at_or_pending_the_release_confirms(store: Store) -> 
 
 def test_mcp_a_restart_on_one_host_supersedes_its_predecessor(store: Store) -> None:
     """A restarted server is a new pid on the same host; the record its
-    predecessor left stays live for the freshness window but no longer
-    speaks for that host."""
+    predecessor left is superseded once it has stopped being refreshed
+    (``at`` past SUPERSEDE_AFTER — td765317: still inside FRESH but no
+    longer written, so no live server is hidden)."""
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA)
-    _mcp_stamp(store, SHA2, instance="gw-mcp:7", started_min=50, age_min=10)
+    _mcp_stamp(store, SHA2, instance="gw-mcp:7", started_min=50, age_min=11)
     _mcp_stamp(store, SHA, instance="gw-mcp:8", started_min=5)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert ev.ok and ev.problems == [] and ev.mcp_stale == ()
     assert f"mcp: at {SHA[:12]}" in ev.text
+
+
+def test_mcp_a_still_stamping_same_host_instance_is_not_superseded(
+    store: Store,
+) -> None:
+    """td765317: a second stamping server sharing the hostname is a live
+    peer, not a predecessor — a newer pid alone must not hide its fresh
+    stamp, or the confirm would skip a still-serving stale instance."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance="dev:8", started_min=5)
+    _mcp_stamp(store, SHA2, instance="dev:7", started_min=50, age_min=2)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.mcp_only and [s.instance for s in ev.mcp_stale] == ["dev:7"]
+    assert "dev:7" in ev.problems[0] and "live instances" in ev.text
 
 
 def _mcp_asks(store: Store, root_id: int) -> list[int]:
@@ -1128,12 +1144,14 @@ def _mcp_asks(store: Store, root_id: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _answer(store: Store, ask_id: int, *, minutes_ago: float) -> datetime:
+def _answer(
+    store: Store, ask_id: int, *, minutes_ago: float, status: str = "done"
+) -> datetime:
     """Close the ask as an answer does; its STATUS tag set ``minutes_ago``."""
     from precis.store.types import Tag
 
     store.add_tag(
-        ask_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        ask_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
     )
     at = datetime.now(UTC) - timedelta(minutes=minutes_ago)
     with store.pool.connection() as conn:
@@ -1253,6 +1271,50 @@ def test_an_instance_stamping_after_the_answer_reopens_the_ask(
     assert len(_comments(store, asks[0])) == 1
     assert _mcp_asks(store, mint.root_id) == asks
     assert len(failures) == 1
+
+
+@pytest.mark.parametrize("status", ["won't-do", "auto-timeout"])
+def test_a_declined_mcp_ask_neither_parks_nor_reopens(
+    store: Store, status: str
+) -> None:
+    """td765317: a ``won't-do`` close (or an ``auto-timeout``) is the
+    decline the ask itself describes — the release stays unconfirmed.
+    The guard must not park until the stamps age out (the park's end
+    would auto-confirm) nor reopen the ask; the problems stand as a
+    plain failure and no second ask is minted."""
+    mint = _cut(store)
+    confirm = mint.ids["confirm"]
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA, instance=GW)
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=5)
+    now = _past_window()
+    failures: list[str] = []
+    ctx = SimpleNamespace(store=store, record_failure=failures.append)
+    rcf._probe_failed(ctx, rcf.gather_evidence(store, REL, now=now), "r7", confirm)
+    asks = _mcp_asks(store, mint.root_id)
+    assert len(asks) == 1
+    _answer(store, asks[0], minutes_ago=2, status=status)
+
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert not ev.ok and ev.problems and not ev.mcp_only and ev.mcp_held is None
+    assert f"td{asks[0]}" in ev.problems[-1] and status in ev.problems[-1]
+    rcf._probe_failed(ctx, ev, "r7", confirm)
+    assert len(_mcp_asks(store, mint.root_id)) == 1
+    assert failures[-1].startswith("release_confirm: probe failed")
+    assert "asked in td" not in failures[-1]
+
+    # A stamp written after the decline is not a retry answer either:
+    # the ask stays closed, the failure still stands.
+    _mcp_stamp(store, SHA2, instance=STRAY, age_min=0)
+    ev = rcf._mcp_ask_guard(
+        store, rcf.gather_evidence(store, REL, now=now), "r7", confirm, now
+    )
+    assert ev.problems and not ev.mcp_only
+    assert _status(store, asks[0]) == status
+    assert _comments(store, asks[0]) == []
 
 
 def _as_instance(
@@ -1419,8 +1481,11 @@ def test_the_legacy_single_key_counts_as_one_more_instance(store: Store) -> None
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert ev.ok and f"mcp: at {SHA[:12]}" in ev.text
     # The old server restarted onto the new code on the same host: its
-    # per-instance record supersedes the legacy one it left behind.
-    _mcp_stamp(store, SHA2, instance="laptop-dev:1", legacy=True, started_min=50)
+    # per-instance record supersedes the legacy one it left behind —
+    # the legacy record stopped being refreshed when the old process died.
+    _mcp_stamp(
+        store, SHA2, instance="laptop-dev:1", legacy=True, started_min=50, age_min=11
+    )
     _mcp_stamp(store, SHA, instance="laptop-dev:2", started_min=5)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert ev.ok and ev.mcp_stale == ()
