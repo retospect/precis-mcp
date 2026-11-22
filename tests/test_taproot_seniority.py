@@ -33,6 +33,7 @@ from precis.taproot.seniority import (
     derive_refines,
 )
 from precis.utils import handle_registry
+from tests.conftest import unframe
 from tests.test_taproot_hub import _seed_pathway
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -701,15 +702,15 @@ def test_fisheye_posture_header_token_only_when_withheld_or_removed(
     paper = _paper(store, title="Judged paper", year=2001)
     attach_evidence(store, hub_ref_id=hub, paper_ref_id=paper, role="corroborates")
 
-    untouched = handler.get(id=hub, view="fisheye").body
+    untouched = unframe(handler.get(id=hub, view="fisheye").body)
     assert "withheld" not in untouched.split("\n")[0]
 
     # judged alone never shows in fisheye
     store.update_ref(hub, meta_patch={"reground_seen": {f"{paper}:1": {}}})
-    assert handler.get(id=hub, view="fisheye").body == untouched
+    assert unframe(handler.get(id=hub, view="fisheye").body) == untouched
 
     _touch(store, hub, paper)
-    touched = handler.get(id=hub, view="fisheye").body
+    touched = unframe(handler.get(id=hub, view="fisheye").body)
     first = touched.split("\n")[0]
     assert first.startswith("◆ claim hub —")
     assert first.endswith(" · withheld 2 · removed 1")
@@ -721,8 +722,8 @@ def test_fisheye_posture_header_token_only_when_withheld_or_removed(
         hub, meta_patch={"reground_log": [_log_entry(1, action="withheld (x)")]}
     )
     assert (
-        handler.get(id=hub, view="fisheye")
-        .body.split("\n")[0]
+        unframe(handler.get(id=hub, view="fisheye").body)
+        .split("\n")[0]
         .endswith(" · withheld 1")
     )
 

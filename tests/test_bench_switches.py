@@ -26,6 +26,7 @@ from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
 from precis.utils import handle_registry
 from precis.utils.eye_render import render_eye
+from tests.conftest import denonce
 
 # ── fixtures ─────────────────────────────────────────────────────────
 
@@ -505,7 +506,9 @@ def test_all_on_is_byte_identical_to_no_switches(
         # the head's age/read chip ticks (and the first dispatched read adds
         # its read count) and so does a linked neighbour's relative-age chip
         # ("· -0s" -> "· -1s" when a second boundary falls between the two
-        # renders, which is what flaked in CI); none is a switch effect
+        # renders, which is what flaked in CI); none is a switch effect,
+        # and neither is the record frame's per-response b= nonce
+        text = denonce(text)
         text = re.sub(r"\[created [^\]]*\]", "[created]", text)
         return re.sub(r" · -\d+(?:s|m|h|d|mo|y)\b", " · -AGE", text)
 

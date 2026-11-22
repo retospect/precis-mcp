@@ -78,6 +78,11 @@ _NONCE: ContextVar[str | None] = ContextVar("precis_record_nonce", default=None)
 #: purpose — it is the sanctioned write-side tag bodies may keep.
 _FAKE_MARKER_RE = re.compile(r"</?(record|body|run)\b")
 
+#: The :func:`open_tag` line, capturing handle and nonce (for :func:`unframe`).
+_OPEN_TAG_RE = re.compile(
+    r"^<record (\S+) kind=\S+ status=\S+(?: closed=\S+)? b=([^\s>]+)>$"
+)
+
 #: Terminal ``STATUS:`` values per kind — the union of each kind's
 #: browse-terminal set and (todo) its hard terminal constant, so a
 #: legacy ``STATUS:abandoned`` todo row still announces itself closed.
@@ -122,6 +127,32 @@ def neutralize(text: str) -> str:
     if "<" not in text:
         return text
     return _FAKE_MARKER_RE.sub(lambda m: "\\" + m.group(0), text)
+
+
+def unframe(text: str, *, fences: bool = False) -> str:
+    """Lift the outer record frame off a framed read (a person's view).
+
+    Drops the ``<record …>`` open line and its matching close line (same
+    handle and nonce) — the frame is agent chrome; a page shows status as
+    chips. ``fences=True`` also drops the ``<body>``/``</body>`` fence
+    lines: stored text spelling a fence is neutralised on the way out, so
+    an exact fence line is always the server's. The CLOSED notices stay —
+    a person needs them too. Unframed text is returned unchanged.
+    """
+    lines = text.split("\n")
+    m = _OPEN_TAG_RE.match(lines[0])
+    if m is None:
+        return text
+    close_head = f"</record {m.group(1)} status="
+    close_tail = f" b={m.group(2)}>"
+    out = lines[1:]
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].startswith(close_head) and out[i].endswith(close_tail):
+            del out[i]
+            break
+    if fences:
+        out = [ln for ln in out if ln not in ("<body>", "</body>")]
+    return "\n".join(out)
 
 
 def fence_body(text: str) -> str:

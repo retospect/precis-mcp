@@ -17,6 +17,7 @@ from precis.runtime.handle_deref import MEMORY_GRIPE_HINT, reset_read_receipts
 from precis.runtime.trust_verb import trust_line
 from precis.store import ChunkInsert, Store
 from precis.tools import core
+from tests.conftest import denonce
 
 
 @pytest.fixture(autouse=True)
@@ -208,7 +209,8 @@ def test_fitted_read_is_identical_without_hint(
         monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "0")
         second = runtime_with_store.dispatch("get", {"id": f"me{ref.id}"}, fold=fold)
     assert "truncated" in first
-    assert first.encode("utf-8") == expected.encode("utf-8")
+    # byte-identical apart from the per-response record nonce (gr739333)
+    assert denonce(first).encode("utf-8") == denonce(expected).encode("utf-8")
     assert MEMORY_GRIPE_HINT not in first
     assert len(first.encode("utf-8")) <= cap
     assert "truncated" not in second
@@ -241,7 +243,7 @@ def test_stamped_memory_first_read_fits_without_hint_at_400_bytes(
     assert not failed, result
     assert len(result.encode("utf-8")) <= 400
     assert "truncated" in result
-    assert result.encode("utf-8") == expected.encode("utf-8")
+    assert denonce(result).encode("utf-8") == denonce(expected).encode("utf-8")
     assert MEMORY_GRIPE_HINT not in result
     assert record.call_args.args[2] == result
     assert record.call_args.kwargs["budget_fitted"] is True

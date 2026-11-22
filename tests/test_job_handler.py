@@ -26,6 +26,7 @@ from precis.handlers.job import JobHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 from precis.workers.executors._common import append_chunk
+from tests.conftest import unframe
 
 
 @pytest.fixture
@@ -973,7 +974,7 @@ def test_job_card_leads_with_describe_sentence(jobs: JobHandler, store: Store) -
         "0 graduated, 1 search(es) (+4 papers); frontier moved",
     )
 
-    body = jobs.get(id=job_id).body
+    body = unframe(jobs.get(id=job_id).body)
     lines = body.split("\n")
     assert lines[0] == f"# job {job_id}"
     assert lines[1].startswith("summary: Hunt catalysts")

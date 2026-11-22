@@ -12,6 +12,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.gripe import GripeHandler
 from precis.response import Response
+from tests.conftest import denonce
 
 
 def _gripe(h: GripeHandler, text: str) -> int:
@@ -97,7 +98,7 @@ def test_view_default_reads_as_the_default_view(hub: Hub) -> None:
     h, a, _ = _two(hub)
     resp = h.get(id=a, view="default")
     assert _first(resp) == "interpreted: view='default' read as the default view"
-    assert _rest(resp) == h.get(id=a).body
+    assert denonce(_rest(resp)) == denonce(h.get(id=a).body)
 
 
 def test_view_with_two_readings_still_refuses(hub: Hub) -> None:

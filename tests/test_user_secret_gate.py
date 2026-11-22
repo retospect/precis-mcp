@@ -15,6 +15,7 @@ from precis.store._secret_scope import ADMIN_ENV, viewer_handle
 from precis.store.revision_context import revision_context
 from precis.store.types import ChunkInsert
 from precis.todo import work_gripes, work_quest
+from tests._refs import insert_gripe
 
 
 @pytest.fixture
@@ -282,7 +283,7 @@ def test_board_walks_and_edges_require_visible_refs(store: Store) -> None:
     leaf = store.insert_ref(
         kind="todo", slug=None, title="Public descendant", parent_id=hidden.id
     )
-    gripe = store.insert_ref(kind="gripe", slug=None, title="Public gripe")
+    gripe = insert_gripe(store, "Public gripe")
     old_job = store.insert_ref(
         kind="job",
         slug=None,

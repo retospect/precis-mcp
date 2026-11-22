@@ -333,7 +333,10 @@ class ProfileHandler(NumericRefHandler):
             return self._render_index()
         ref = self._resolve_ref(id)
         if view in (None, "raw"):
-            return self._render_profile(ref, raw=view == "raw")
+            # The base get frames every other view; these two bypass it.
+            return self._frame_response(
+                ref, self._render_profile(ref, raw=view == "raw")
+            )
         return super().get(id=ref.id, view=view, **_kw)
 
     def _render_default_get(self, ref: Ref) -> Response:

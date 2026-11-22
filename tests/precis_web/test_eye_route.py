@@ -20,6 +20,7 @@ from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from precis_web.routes.eye import linkify_handles
+from tests.conftest import unframe
 
 pytestmark = pytest.mark.db
 
@@ -62,7 +63,7 @@ def test_focus_page_renders_the_mcp_eye_with_linked_handles(
     assert re.fullmatch(
         rf"td{todo.id} \[todo\] Ship the ring  "
         rf"\[created -\d+s · read 1× · last -\d+s\]",
-        mcp_body.splitlines()[0],
+        unframe(mcp_body).splitlines()[0],
     )
     assert f">td{todo.id}</a>" in page.text and "[todo] Ship the ring" in page.text
     # the ladder row names every rung, the current one marked

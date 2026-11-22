@@ -251,6 +251,8 @@ TOKEN_ESTIMATOR = (
 _CREATED_RE = re.compile(r"\[created [^\]\n]*\]")
 _AGE_RE = re.compile(r"-\d+(?:mo|[smhdwy])\b")
 _READ_RE = re.compile(r"read \d+×")
+#: The gr739333 record/run marker nonce (``b=A486>``), minted per response.
+_NONCE_RE = re.compile(r"(<(?:/?record|/?run)\b[^>\n]* b=)[A-Z2-9]{4}>")
 _MEMORY_HIT_RE = re.compile(r"^## memory (\d+):", re.MULTILINE)
 _ROW_RE = re.compile(r"^([a-z]{2}\d+)\t(.*)$")
 
@@ -265,8 +267,10 @@ class BenchRunError(RuntimeError):
 
 
 def normalise_volatile(text: str) -> str:
-    """``text`` with the per-call relative ages and read counters fixed, so
-    byte counts and transcript hashes are stable across re-runs."""
+    """``text`` with the per-call relative ages, read counters and record
+    marker nonces fixed, so byte counts and transcript hashes are stable
+    across re-runs (the nonce keeps its width: token counts are unchanged)."""
+    text = _NONCE_RE.sub(r"\1XXXX>", text)
     text = _CREATED_RE.sub("[created]", text)
     text = _READ_RE.sub("read N×", text)
     return _AGE_RE.sub("-Xs", text)

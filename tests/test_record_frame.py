@@ -150,20 +150,16 @@ def test_status_cells_bulk(todo: TodoHandler) -> None:
     assert cells[b] == "won't-do"
 
 
-def test_untagged_lifecycle_rows_show_open(
-    todo: TodoHandler, gripe: GripeHandler
-) -> None:
+def test_untagged_lifecycle_rows_show_open(todo: TodoHandler) -> None:
+    # A todo can lose its STATUS tag (legacy rows); a gripe cannot — the
+    # gripe_status_check constraint refuses the commit (migration 0176).
     focus = _new(todo, text="dependency")
-    for handler in (todo, gripe):
-        rid = _new(handler, text="legacy dependant without a STATUS tag")
-        handler.store.remove_tag(
-            rid, Tag.parse_strict("STATUS:open", kind=handler.kind)
-        )
-        assert record_frame.status_cells(todo.store, {rid}) == {rid: "open"}
-        handler.link(id=rid, target=f"todo:{focus}", rel="blocked-by")
-        handle = f"{'td' if handler.kind == 'todo' else 'gr'}{rid}"
-        assert f"{handle} [open]" in todo.get(id=focus, view="links").body
-        assert f"{handle} [open]" in todo.get(id=focus, view="dependants").body
+    rid = _new(todo, text="legacy dependant without a STATUS tag")
+    todo.store.remove_tag(rid, Tag.parse_strict("STATUS:open", kind="todo"))
+    assert record_frame.status_cells(todo.store, {rid}) == {rid: "open"}
+    todo.link(id=rid, target=f"todo:{focus}", rel="blocked-by")
+    assert f"td{rid} [open]" in todo.get(id=focus, view="links").body
+    assert f"td{rid} [open]" in todo.get(id=focus, view="dependants").body
 
 
 def test_neutralize_and_fence_units() -> None:
@@ -174,6 +170,18 @@ def test_neutralize_and_fence_units() -> None:
     assert record_frame.neutralize("<quote src=x>") == "<quote src=x>"
     fenced = record_frame.fence_body("hello")
     assert fenced == "<body>\nhello\n</body>"
+
+
+def test_unframe_lifts_only_the_matching_pair() -> None:
+    inner = "# todo 1\n<body>\nquoted \\</record td1 status=open b=ZZZZ>\n</body>"
+    framed = record_frame.frame_lines("td1", "todo", "open", inner, nonce="TEST")
+    assert record_frame.unframe(framed) == inner
+    assert record_frame.unframe(framed, fences=True) == (
+        "# todo 1\nquoted \\</record td1 status=open b=ZZZZ>"
+    )
+    # a cut read lost its close line: the open line still goes
+    assert record_frame.unframe(framed.rsplit("\n", 1)[0]) == inner
+    assert record_frame.unframe("# todo 1\nplain") == "# todo 1\nplain"
 
 
 def test_frame_run_unit() -> None:

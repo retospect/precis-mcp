@@ -19,6 +19,7 @@ import pytest
 from precis.store.revision_context import revision_context
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
+from tests.conftest import unframe
 
 pytestmark = pytest.mark.db
 
@@ -152,9 +153,9 @@ class TestAgeReadChip:
         ref_id = _paper(store, "rct10")
         first = _get(runtime_with_store, kind="paper", id=ref_id, extent="fisheye")
         assert re.search(r"\[created -\d+s\]", first)
-        assert "read" not in first.splitlines()[0]
+        assert "read" not in unframe(first).splitlines()[0]
         second = _get(runtime_with_store, kind="paper", id=ref_id, extent="fisheye")
-        head = second.splitlines()[0]
+        head = unframe(second).splitlines()[0]
         assert "read 1×" in head
         assert re.search(r"last -\d+s", head)
 
@@ -164,7 +165,7 @@ class TestAgeReadChip:
             _get(runtime_with_store, kind="paper", id=ref_id)
         _get(runtime_with_store, kind="paper", id=ref_id)
         body = _get(runtime_with_store, kind="paper", id=ref_id, extent="fisheye")
-        assert "read 2× (1 human)" in body.splitlines()[0]
+        assert "read 2× (1 human)" in unframe(body).splitlines()[0]
 
     def test_ring_row_shows_age_only(self, runtime_with_store: Any, store: Any) -> None:
         focus = _paper(store, "rct12")

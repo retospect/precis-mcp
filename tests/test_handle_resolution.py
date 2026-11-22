@@ -21,6 +21,7 @@ from precis.runtime.dispatch import _KIND_GATE
 from precis.store import Store
 from precis.utils import handle_registry
 from tests._refs import insert_gripe
+from tests.conftest import denonce
 
 # The full-hub fixture (runtime_with_store) boots every handler, which needs
 # the [paper] extra (pysbd). Absent on host; present in the container gate.
@@ -121,7 +122,7 @@ def test_surface_get_by_handle_routes_like_explicit_kind(
     via_explicit = runtime_with_store.dispatch(
         "get", {"kind": "memory", "id": str(ref.id)}
     )
-    assert via_handle == via_explicit
+    assert denonce(via_handle) == denonce(via_explicit)
 
 
 @_NEEDS_PAPER_EXTRA
@@ -134,7 +135,7 @@ def test_surface_get_handle_list_infers_shared_kind(
     via_explicit = runtime_with_store.dispatch(
         "get", {"kind": "memory", "id": [str(r.id) for r in refs]}
     )
-    assert via_handles == via_explicit
+    assert denonce(via_handles) == denonce(via_explicit)
 
 
 def test_plan_node_handle_reads_back_through_dispatch(
@@ -516,8 +517,8 @@ def test_surface_record_handle_carries_chunk_selector(
     pa = handle_registry.format_handle("paper", ref.id)  # 'pa<id>'
     # A record handle with a trailing chunk selector resolves like the slug
     # form: pa<id>~0..2 == slug~0..2.
-    assert runtime_with_store.dispatch("get", {"id": f"{pa}~0..2"}) == (
-        runtime_with_store.dispatch("get", {"id": "uh36-pa-sel~0..2"})
+    assert denonce(runtime_with_store.dispatch("get", {"id": f"{pa}~0..2"})) == (
+        denonce(runtime_with_store.dispatch("get", {"id": "uh36-pa-sel~0..2"}))
     )
 
 
@@ -532,7 +533,7 @@ def test_surface_get_relative_routes_to_sibling(
     # slug~1 selector.
     via_relative = runtime_with_store.dispatch("get", {"id": f"{h0}+1"})
     via_selector = runtime_with_store.dispatch("get", {"id": "uh36-rel-surface~1"})
-    assert via_relative == via_selector
+    assert denonce(via_relative) == denonce(via_selector)
 
 
 @_NEEDS_PAPER_EXTRA
@@ -546,7 +547,7 @@ def test_surface_get_chunk_handle_routes_to_selector(
     # returning the chunk identically to the explicit selector.
     via_handle = runtime_with_store.dispatch("get", {"id": h})
     via_selector = runtime_with_store.dispatch("get", {"id": "uh36-chunk-surface~0"})
-    assert via_handle == via_selector
+    assert denonce(via_handle) == denonce(via_selector)
 
 
 @_NEEDS_PAPER_EXTRA
@@ -564,7 +565,7 @@ def test_surface_get_card_chunk_handle_routes_to_selector(
     via_selector = runtime_with_store.dispatch(
         "get", {"id": "uh334152-card-surface~-1"}
     )
-    assert via_handle == via_selector
+    assert denonce(via_handle) == denonce(via_selector)
 
 
 # --- gr311336: a CacheBackedHandler chunk handle (news) must render the
@@ -730,7 +731,7 @@ def test_surface_get_live_handle_routing_unchanged(
     via_explicit = runtime_with_store.dispatch(
         "get", {"kind": "gripe", "id": str(ref.id)}
     )
-    assert via_handle == via_explicit
+    assert denonce(via_handle) == denonce(via_explicit)
 
 
 @_NEEDS_PAPER_EXTRA
@@ -766,7 +767,7 @@ def test_surface_get_zero_step_routes_to_the_chunk(
     via_zero = runtime_with_store.dispatch("get", {"kind": "paper", "id": f"{h}-0"})
     via_handle = runtime_with_store.dispatch("get", {"kind": "paper", "id": h})
     via_selector = runtime_with_store.dispatch("get", {"id": "uh36-zero-surface~0"})
-    assert via_zero == via_handle == via_selector
+    assert denonce(via_zero) == denonce(via_handle) == denonce(via_selector)
 
 
 @_NEEDS_PAPER_EXTRA

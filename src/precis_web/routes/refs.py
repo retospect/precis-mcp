@@ -46,7 +46,7 @@ from precis.store import scan_geometry
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
 from precis.structure.importers.extxyz import extxyz_to_scene
 from precis.taproot.seniority import is_claim_hub
-from precis.utils import handle_registry, mentions, pathway_conditions
+from precis.utils import handle_registry, mentions, pathway_conditions, record_frame
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
 from precis.utils.title_views import title_md, title_plain
@@ -3398,6 +3398,9 @@ async def detail(
     trust_ctx: dict[str, Any] | None = None
     if not is_error:
         body, trust_ctx = strip_trust_footer(store, kind, ref.id, body)
+        # The gr739333 record markers and body fences bound a read for an
+        # agent; the page shows status as chips and the body as the body.
+        body = record_frame.unframe(body, fences=True)
     # Same for the memory render's own frame — header, tags line, gripe
     # hint — which the page shows as h1, chips and nothing (gr574952).
     if kind == "memory" and not is_error:

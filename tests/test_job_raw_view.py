@@ -13,6 +13,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.job import JobHandler
 from precis.store import Store, Tag
+from tests.conftest import unframe
 
 
 @pytest.fixture
@@ -51,7 +52,7 @@ def test_raw_failed_job_leads_with_failure(jobs: JobHandler, store: Store) -> No
     reason = "plan_tick verdict: failed (hit split-cap 3 times)"
     jid = _job(store, meta={"error": reason})
 
-    body = jobs.get(id=jid, view="raw").body
+    body = unframe(jobs.get(id=jid, view="raw").body)
 
     lines = body.split("\n")
     assert lines[0].startswith("# raw job")
@@ -76,7 +77,7 @@ def test_raw_failed_job_failure_line_shows_traceback_tail(
     )
     jid = _job(store, meta={"error": error})
 
-    body = jobs.get(id=jid, view="raw").body
+    body = unframe(jobs.get(id=jid, view="raw").body)
 
     lines = body.split("\n")
     assert lines[1].startswith("failure:")
@@ -87,7 +88,7 @@ def test_raw_failed_job_failure_line_shows_traceback_tail(
 def test_raw_succeeded_job_has_no_failure_line(jobs: JobHandler, store: Store) -> None:
     jid = _job(store, meta={"error": "stale crumb"}, status="succeeded")
 
-    body = jobs.get(id=jid, view="raw").body
+    body = unframe(jobs.get(id=jid, view="raw").body)
 
     lines = body.split("\n")
     assert lines[0].startswith("# raw job")

@@ -1140,3 +1140,42 @@
       what: "logging.Formatter pinned to gmtime"
     - path: tests/precis_web/test_timefmt.py
       what: "abs_ts labelling"
+
+# ------------------------------------------------------------- user-secret-tag
+- id: user-secret-tag/user-tag-gates-nothing
+  file: docs/conventions/user-secret-tag.md
+  section: null
+  title: "user:<handle> is display and preamble routing only; it is not secret and gates no read."
+  body: >-
+    Any caller with ordinary search/get access reads a user:-tagged ref.
+    Only user_secret:<handle> restricts visibility.
+  enforcers:
+    - path: tests/test_user_secret_gate.py
+      what: "a stranger still reads, searches and links a user:-tagged ref"
+- id: user-secret-tag/secret-visible-to-owner-or-admin
+  file: docs/conventions/user-secret-tag.md
+  section: null
+  title: "A user_secret:<handle> ref is visible only to the matching viewer or an admin, on every read path."
+  body: >-
+    Server queries apply the store visibility predicate before selecting,
+    counting or paginating refs, chunks, links and tag attachments; a link
+    needs both endpoints visible; a private cache entry keeps its key; board
+    views show dependency details only when both endpoints are visible. An
+    admin read past the gate logs a WARNING on precis.secret_scope.
+  enforcers:
+    - path: tests/test_user_secret_gate.py
+      what: "owner/stranger/admin reads, secondary read paths, board walks and edges, cache fills, tag discovery counts"
+- id: user-secret-tag/viewer-from-auth-not-wire
+  file: docs/conventions/user-secret-tag.md
+  section: null
+  title: "The viewer is the authenticated account or process actor; no wire argument names a viewer."
+  body: >-
+    The authenticated browser account, the revision actor user:<abbrev>, or
+    the stdio process actor. Admins are the abbrevs in PRECIS_SECRET_ADMINS.
+    Direct SQL bypasses the check, so agents do not read user_secret rows by
+    SQL.
+  enforcers:
+    - path: tests/precis_web/test_auth.py
+      what: "the authenticated browser account binds the secret viewer"
+    - path: tests/test_user_secret_gate.py
+      what: "a hostile handle is not a viewer"

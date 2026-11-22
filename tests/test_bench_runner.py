@@ -145,6 +145,15 @@ def test_normalise_volatile_makes_reruns_comparable():
     assert "abc-def" in runner.normalise_volatile("abc-def")  # words untouched
 
 
+def test_normalise_volatile_fixes_the_record_nonce_at_its_width():
+    a = "<record me1 kind=memory status=live b=A486>\nx\n</record me1 status=live b=A486>"
+    b = "<record me1 kind=memory status=live b=QZ7K>\nx\n</record me1 status=live b=QZ7K>"
+    assert runner.normalise_volatile(a) == runner.normalise_volatile(b)
+    assert len(runner.normalise_volatile(a)) == len(a)  # token counts unchanged
+    # a stored body's b= outside a marker is the author's text
+    assert runner.normalise_volatile("see b=A486>") == "see b=A486>"
+
+
 def test_token_estimator_is_chars_over_four():
     assert runner.tokens_of("x" * 400) == 100.0
     assert "chars/4" in runner.TOKEN_ESTIMATOR

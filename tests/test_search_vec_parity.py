@@ -16,7 +16,7 @@ import pytest
 from pgvector import Vector
 
 from precis.embedder import MockEmbedder
-from precis.store import ChunkInsert, Store
+from precis.store import ChunkInsert, Store, Tag
 
 TOL = 1e-6
 _EMB = MockEmbedder(dim=1024)
@@ -162,8 +162,12 @@ _TAGS = ["topic:nitrate", "topic:ammonia", "topic:perovskite", "topic:enzymes"]
 
 def _tags_semantic(store: Store) -> list[Any]:
     """Tag rows keyed as ``(namespace:value, 0, distance)`` to reuse ``_hits``'
-    shape; seeds ``tag_embeddings`` (upsert, so idempotent)."""
+    shape; seeds ``tag_embeddings`` (upsert, so idempotent). Tag search
+    returns only tags attached to a ref the viewer can see, so each tag
+    rides a chunkless carrier ref (no chunk-search case sees it)."""
+    carrier = store.insert_ref(kind="memory", slug=None, title="tag carrier")
     for t in _TAGS:
+        store.add_tag(carrier.id, Tag.open(t))
         store.write_tag_embedding(
             namespace="OPEN",
             value=t,

@@ -20,7 +20,7 @@ from precis.handlers.conversation import ConversationHandler
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
 from precis.runtime import PrecisRuntime
-from tests.conftest import id_of
+from tests.conftest import denonce, id_of
 
 
 def test_put_body_aliased_to_text_on_gripe_create(
@@ -91,7 +91,7 @@ def test_memory_update_rejects_text_body_collision(
     )
     assert "[error:BadInput]" in result
     assert "pass one, not both" in result
-    assert handler.get(id=ref_id).body == before
+    assert denonce(handler.get(id=ref_id).body) == denonce(before)
 
 
 def test_conversation_append_rejects_text_body_collision(

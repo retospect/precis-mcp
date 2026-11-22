@@ -20,6 +20,7 @@ from precis.taxonomy.nodes import (
     slugify,
     validate_taxon_meta,
 )
+from tests.conftest import denonce, unframe
 
 TOF = (
     "turnover frequency — the number of catalytic cycles per active site per unit time"
@@ -174,7 +175,9 @@ class TestTaxonRead:
             },
         )
         body = h.get(id=_created_id(resp)).body
-        assert body.startswith(f"# taxon {_created_id(resp)}: turnover frequency")
+        assert unframe(body).startswith(
+            f"# taxon {_created_id(resp)}: turnover frequency"
+        )
         assert "catalytic cycles" in body
         assert "aka: TOF" in body
         assert "status: proposed" in body
@@ -1277,8 +1280,10 @@ class TestDedup:
         parent = _mk(store, "sps gnn")
         cpp = _mk(store, "sps C++", under=parent)
         body = h.get(id="sps-c").body  # the slug alone resolves it
-        assert body.startswith(f"# taxon {cpp}:")
-        assert h.get(id="sps-gnn/sps-c").body == body  # via the parent's path
+        assert unframe(body).startswith(f"# taxon {cpp}:")
+        assert denonce(h.get(id="sps-gnn/sps-c").body) == denonce(
+            body
+        )  # via the parent's path
         # and a shared slug reports ambiguity rather than picking a node
         other = _created_id(
             h.put(
@@ -1301,7 +1306,7 @@ class TestDedup:
         removed = store.clear_ref_meta_keys(rid, ["norm_name"], source="test")
         assert removed == ["norm_name"]
         # slug-only addressing still reaches the legacy row
-        assert h.get(id="leg-dimenet").body.startswith(f"# taxon {rid}:")
+        assert unframe(h.get(id="leg-dimenet").body).startswith(f"# taxon {rid}:")
         # name equality survives on name + slug alone -> still a duplicate
         with pytest.raises(BadInput, match=f"tn{rid}"):
             h.put(text="leg DimeNet++ — again")
@@ -1738,12 +1743,18 @@ class TestPathIds:
         flow = _mk(store, "pathx flowrate")
         _link(store, temp, meas)
         body = h.get(id="pathx-measurand/pathx-temperature").body
-        assert body.startswith(f"# taxon {temp}:")
-        assert h.get(id="pathx measurand/pathx temperature").body == body  # names
-        assert h.get(id="pathx-temperature").body == body  # single segment
-        assert h.get(id=f"tn{temp}").body == body  # handle still works
-        assert h.get(id=str(temp)).body == body  # numeric string
-        assert h.get(id=temp).body == body
+        assert unframe(body).startswith(f"# taxon {temp}:")
+        assert denonce(h.get(id="pathx measurand/pathx temperature").body) == denonce(
+            body
+        )  # names
+        assert denonce(h.get(id="pathx-temperature").body) == denonce(
+            body
+        )  # single segment
+        assert denonce(h.get(id=f"tn{temp}").body) == denonce(
+            body
+        )  # handle still works
+        assert denonce(h.get(id=str(temp)).body) == denonce(body)  # numeric string
+        assert denonce(h.get(id=temp).body) == denonce(body)
         assert _names(h.search(under="pathx-measurand").body) == ["pathx temperature"]
         h.link(id=flow, target="taxon:pathx-measurand", rel="specialises")
         assert (meas, None) in store.taxon_parents(flow)
@@ -1763,7 +1774,9 @@ class TestPathIds:
         assert "pathy-root-a/pathy-shared" in str(ei.value)
         assert "longer path" in (ei.value.next or "")
         # a longer path disambiguates
-        assert h.get(id="pathy-root-b/pathy-shared").body.startswith(f"# taxon {t2}:")
+        assert unframe(h.get(id="pathy-root-b/pathy-shared").body).startswith(
+            f"# taxon {t2}:"
+        )
 
     def test_same_path_siblings_listed_by_definition(self, store: Any) -> None:
         # prod: two seeded "Bore diameter" nodes under measurand share a path
@@ -2709,8 +2722,10 @@ class TestAncestorPaths:
         leaf = _mk(store, "apx leaf")
         _link(store, group, root)
         _link(store, leaf, group)
-        assert h.get(id="apx-root/apx-leaf").body.startswith(f"# taxon {leaf}:")
-        assert h.get(id="apx-root/apx-group/apx-leaf").body.startswith(
+        assert unframe(h.get(id="apx-root/apx-leaf").body).startswith(
+            f"# taxon {leaf}:"
+        )
+        assert unframe(h.get(id="apx-root/apx-group/apx-leaf").body).startswith(
             f"# taxon {leaf}:"
         )
 
@@ -2719,7 +2734,9 @@ class TestAncestorPaths:
         root = _mk(store, "apy root")
         leaf = _mk(store, "apy leaf")
         _link(store, leaf, root)
-        assert h.get(id="apy-root/apy-leaf").body.startswith(f"# taxon {leaf}:")
+        assert unframe(h.get(id="apy-root/apy-leaf").body).startswith(
+            f"# taxon {leaf}:"
+        )
 
     def test_non_ancestor_first_segment_still_misses(self, store: Any) -> None:
         h = _handler(store)
@@ -2742,7 +2759,9 @@ class TestAncestorPaths:
         with pytest.raises(BadInput, match="ambiguous") as ei:
             h.get(id="apw-shared")
         assert "longer path" in (ei.value.next or "")
-        assert h.get(id="apw-group-a/apw-shared").body.startswith(f"# taxon {l1}:")
+        assert unframe(h.get(id="apw-group-a/apw-shared").body).startswith(
+            f"# taxon {l1}:"
+        )
 
     def test_ancestor_walk_is_depth_bounded(self, store: Any) -> None:
         from precis.store._taxon_ops import TAXON_ANCESTOR_MAX_DEPTH
@@ -2779,9 +2798,9 @@ class TestTaxonGetIdList:
             assert body.index(f"tn{leaf}") < body.index(f"tn{root}")
             assert body.index(f"tn{root}") < body.index(f"tn{other}")
         else:
-            assert h.get(id=leaf, view=view).body in body
-            assert h.get(id=root, view=view).body in body
-            assert h.get(id=other, view=view).body in body
+            assert denonce(h.get(id=leaf, view=view).body) in denonce(body)
+            assert denonce(h.get(id=root, view=view).body) in denonce(body)
+            assert denonce(h.get(id=other, view=view).body) in denonce(body)
 
     def test_batch_facets_preserves_selectors(
         self, store: Any, monkeypatch: pytest.MonkeyPatch

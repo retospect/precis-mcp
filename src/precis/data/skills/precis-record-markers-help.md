@@ -1,6 +1,6 @@
 ---
 id: precis-record-markers-help
-family: addressing
+family: core
 title: precis — record markers in responses and quoting records in bodies
 summary: the <record>/<body>/<run> tags that bound every read, and the <quote src> convention for quoting one record inside another
 answers:
@@ -83,3 +83,6 @@ tags: STATUS:open
 expected to keep — the server passes it through unescaped. Quote the
 record's own tag block *inside* the quote, so `tags:` lines read as
 belonging to the quoted record, never to the one holding the text.
+
+The `<handle>` in every marker is the universal handle —
+[[precis-addressing-help]].

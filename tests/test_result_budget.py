@@ -12,6 +12,7 @@ from precis.errors import BadInput
 from precis.runtime import PrecisRuntime
 from precis.store.store import Store
 from precis.store.types import ChunkInsert
+from tests.conftest import unframe
 
 
 def test_small_result_passes() -> None:
@@ -253,7 +254,7 @@ def test_big_memory_get_truncates_with_working_section_read(
     assert "… truncated: showing" in body
     assert f"me{ref.id}~background" in body
     assert f"me{ref.id}~details" in body
-    assert body.startswith("# memory")
+    assert unframe(body).startswith("# memory")
 
     # The advertised section read returns that part in full (explicit).
     sec, sec_err = runtime_with_store.dispatch_with_status(

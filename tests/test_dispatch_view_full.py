@@ -33,6 +33,7 @@ from precis.handlers.profile import ProfileHandler
 from precis.handlers.quest import QuestHandler
 from precis.handlers.taxon import TaxonHandler
 from precis.store import Store
+from tests.conftest import denonce
 
 
 def _seed(
@@ -84,7 +85,8 @@ def test_full_accepted_on_every_numeric_ref_kind(
     handler = handler_cls(hub=hub)
     bare = handler.get(id=ref_id).body
     full = handler.get(id=ref_id, view="full").body
-    assert full == bare
+    # the record frame's b= nonce is per response (gr739333)
+    assert denonce(full) == denonce(bare)
 
 
 def test_memory_keeps_its_alias_fold(hub: Hub) -> None:
@@ -124,7 +126,7 @@ def test_alias_handle_full_renders_pair(hub: Hub, store: Store) -> None:
     bare = alias.get(id=handle).body
     assert "a: short name" in bare
     assert "b: long name" in bare
-    assert alias.get(id=handle, view="full").body == bare
+    assert denonce(alias.get(id=handle, view="full").body) == denonce(bare)
 
 
 @pytest.mark.parametrize(

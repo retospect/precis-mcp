@@ -1746,6 +1746,21 @@ def denonce(body: str) -> str:
     return _FRAME_NONCE.sub("b=NONCE", body)
 
 
+def unframe(body: str) -> str:
+    """A single-record read's text inside its record frame (gr739333).
+
+    Asserts ``body`` opens with the ``<record …>`` line, then drops it and
+    its matching close line, so a test pins the record's own first line
+    (``# todo 3``, the fisheye head) where it now sits.
+    """
+    from precis.utils import record_frame
+
+    assert body.startswith("<record "), body[:200]
+    inner = record_frame.unframe(body)
+    assert inner != body, body[:200]
+    return inner
+
+
 def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:
     """The universal record handle (e.g. ``pa123``) for a
     slug-addressed ref — the form output now emits for the record itself."""
