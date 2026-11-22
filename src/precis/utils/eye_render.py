@@ -346,7 +346,7 @@ def render_eye(
                     handle=handle,
                 )
                 return "\n\n".join([head, notice, *sections])
-    if kind in _DOC_KINDS:
+    if kind in _DOC_KINDS or (kind == "quest" and is_chunk):
         body = _render_doc_eye(
             store,
             handle,
@@ -1001,6 +1001,8 @@ def _fisheye_split(
     ext: Extent,
     *,
     body_cap: int = _VERBATIM_CAP,
+    inline: dict[int | None, str] | None = None,
+    shown: set[int] | None = None,
 ) -> str:
     """A chunk eye: the fisheye *within* its cluster. Other clusters collapse to
     labels; the home cluster splits into before-chunks (summary) / the eye chunk
@@ -1011,7 +1013,10 @@ def _fisheye_split(
     (gr659493, :mod:`precis.utils.eye_batch`): every cluster holding one
     opens, showing the union of the foci's windows, so five chunks of one
     paper render as one split rather than five. ``body_cap`` bounds each
-    verbatim center (a batch passes a short excerpt cap)."""
+    verbatim center (a batch passes a short excerpt cap). ``inline`` maps
+    attachment chunk ids to rendered links (whole-record links ride the
+    head, not here); ``shown`` records the chunks actually displayed so
+    the remaining ring can exclude exactly those attachments."""
     eyes = [eye_ord] if isinstance(eye_ord, int) else list(eye_ord)
     homes = {
         i
@@ -1029,7 +1034,16 @@ def _fisheye_split(
             continue
         lines.append("— cluster —")
         lines.extend(
-            _home_window(kind, home_bucket, eyes, eye_set, ext, body_cap=body_cap)
+            _home_window(
+                kind,
+                home_bucket,
+                eyes,
+                eye_set,
+                ext,
+                body_cap=body_cap,
+                inline=inline,
+                shown=shown,
+            )
         )
     return "\n".join(lines)
 
@@ -1042,12 +1056,15 @@ def _home_window(
     ext: Extent,
     *,
     body_cap: int = _VERBATIM_CAP,
+    inline: dict[int | None, str] | None = None,
+    shown: set[int] | None = None,
 ) -> list[str]:
     """The opened rows of one home cluster: a forward-biased window around
     each eye in it (their union), the far tail of a big keyword-homogeneous
-    section collapsed to ``⋯ N more ⋯`` rather than dumping every line."""
+    section collapsed to ``⋯ N more ⋯``. With inline links, the focus
+    leads, followed by its neighbours in reading order."""
     lines: list[str] = []
-    shown: set[int] = set()
+    shown_orgs: set[int] = set()
     lo_ord, hi_ord = home_bucket[0].ord, home_bucket[-1].ord
     for e in eyes:
         if not lo_ord <= e <= hi_ord:
@@ -1055,10 +1072,24 @@ def _home_window(
         eye_i = next((i for i, b in enumerate(home_bucket) if b.ord == e), 0)
         lo = max(0, eye_i - _HOME_BACK)
         hi = min(len(home_bucket), eye_i + _HOME_FWD + 1)
-        shown.update(range(lo, hi))
-    prev = -1
-    for j in sorted(shown):
-        if j - prev > 1:
+        shown_orgs.update(range(lo, hi))
+    if inline is not None:
+        # Attachment-placed links come only from single-focus doc eyes, so
+        # the window is contiguous: the focus leads the cluster, followed
+        # by its reading-order neighbours, hidden counts at both ends.
+        window = sorted(
+            shown_orgs, key=lambda j: (home_bucket[j].ord not in eye_set, j)
+        )
+        first_i = min(shown_orgs) if shown_orgs else 0
+        last_i = max(shown_orgs) if shown_orgs else -1
+        if first_i > 0:
+            lines.append(f"  ⋯ {first_i} more ⋯")
+    else:
+        window = sorted(shown_orgs)
+        first_i, last_i = 0, len(home_bucket) - 1
+    prev = first_i - 1
+    for j in window:
+        if inline is None and j - prev > 1:
             lines.append(f"  ⋯ {j - prev - 1} more ⋯")
         prev = j
         b = home_bucket[j]
@@ -1068,6 +1099,10 @@ def _home_window(
         h = _chunk_handle(kind, b)
         if not h.endswith(f"~{b.ord}"):
             h += f" ~{b.ord}"
+        if shown is not None:
+            shown.add(int(b.id))
+        if inline is not None and lines:
+            lines.append("")
         if b.ord in eye_set:
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
@@ -1087,9 +1122,46 @@ def _home_window(
             sz = size_cell(len((b.text or "").encode("utf-8")))
             row = f"  · {h}  {_chunk_summary(b)}"
             lines.append(f"{row} · {sz}" if sz else row)
-    if prev < len(home_bucket) - 1:
+        if inline and inline.get(int(b.id)):
+            lines.append(inline[int(b.id)])
+    if inline is None and prev < len(home_bucket) - 1:
         lines.append(f"  ⋯ {len(home_bucket) - 1 - prev} more ⋯")
+    elif inline is not None and last_i < len(home_bucket) - 1:
+        lines.append(f"  ⋯ {len(home_bucket) - 1 - last_i} more ⋯")
     return lines
+
+
+def _inline_links(
+    store: Store, ref_id: int, *, ring: RingFilter | None = None
+) -> dict[int | None, str]:
+    """Stored links grouped by their focus-side attachment (None = whole ref).
+
+    Partition before collapsing neighbours: two chunks citing the same ref
+    must each retain their own row. Rendering metadata is fetched once for
+    the whole eye rather than running a full ring renderer per attachment.
+    """
+    hops: dict[int | None, dict[tuple[str, str], list[_RingNeighbour]]] = {}
+    _all, refs = _first_hop(store, ref_id, ring=ring, attachments=hops)
+    if not hops:
+        return {}
+    chips = _row_chips(store, refs, ring=ring)
+    _entity_row_chips(store, refs, chips, None)
+    sizes = {
+        rid: size_cell(n)
+        for rid, n in store.chunks.stored_body_byte_counts(list(refs)).items()
+    }
+    kind = _focus_kind(store, ref_id)
+    return {
+        own: _render_first_hop(
+            hop,
+            refs,
+            chips=chips,
+            sizes=sizes,
+            more_hint=_more_hint_factory(store, ref_id, hop),
+            via_kind=kind,
+        )
+        for own, hop in hops.items()
+    }
 
 
 def _render_doc_eye(
@@ -1105,8 +1177,9 @@ def _render_doc_eye(
 ) -> str:
     """A doc-kind eye (paper / patent / web / …): the dynamic keyword-cluster TOC
     around the eyeball. A whole-doc handle renders the cluster map; a ``pc``
-    chunk handle renders the fisheye split within its cluster. ``fisheye+1hop``
-    appends the ref's symmetric link ring."""
+    chunk handle renders the fisheye split within its cluster. At
+    ``fisheye+1hop`` stored links sit under their record/chunk attachment;
+    only links on undisplayed chunks remain in the separate ring."""
     rh = store.resolve_handle(handle)
     if rh is None:
         raise ValueError(f"eye: no live {kind} for {handle!r}")
@@ -1116,12 +1189,35 @@ def _render_doc_eye(
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
     if ext <= Extent.TOC:
         return _doc_block(store, ref, kind, ext, chunk_ords=[], whole=True)
+    inline = (
+        _inline_links(store, ref_id, ring=ring)
+        if ext >= Extent.HOP1 and expand is None
+        else {}
+    )
+    shown: set[int] = set()
     ords = [int(rh.chunk_ord)] if is_chunk and rh.chunk_ord is not None else []
-    block = _doc_block(store, ref, kind, ext, chunk_ords=ords, whole=not ords)
+    block = _doc_block(
+        store,
+        ref,
+        kind,
+        ext,
+        chunk_ords=ords,
+        whole=not ords,
+        inline=inline,
+        shown=shown,
+    )
     # The reference ring is a property of the ref, not its body — an empty
     # paper linked to a note still surfaces that note at fisheye+1hop.
     sections = _rings(
-        store, ref_id, kind, ext, recall=recall, expand=expand, ring=ring, handle=handle
+        store,
+        ref_id,
+        kind,
+        ext,
+        recall=recall,
+        expand=expand,
+        ring=ring,
+        handle=handle,
+        inline_chunks=set(inline) & (shown | {None}),
     )
     return "\n\n".join([block, *sections])
 
@@ -1135,17 +1231,24 @@ def _doc_block(
     chunk_ords: Sequence[int],
     whole: bool,
     body_cap: int = _VERBATIM_CAP,
+    inline: dict[int | None, str] | None = None,
+    shown: set[int] | None = None,
 ) -> str:
     """A doc eye's focus block, rings excluded: the head, then the fisheye
     split around ``chunk_ords`` or (no ords) the cluster map. ``whole``
     leads with the abstract — a whole-doc focus; a batch eye
     (:mod:`precis.utils.eye_batch`) passes every chunk focus on one doc
     at once, plus ``whole`` when the record itself was asked for too, and
-    a short ``body_cap`` for each verbatim center."""
+    a short ``body_cap`` for each verbatim center. ``inline``/``shown``
+    position stored links under their attachment (see
+    :func:`_render_doc_eye`)."""
     ref_id = int(ref.id)
     head = _head(ref, kind, _head_chips(store, ref, kind))
     if ext <= Extent.TOC:
         return f"· {head}"
+    whole_links = inline.get(None) if inline else None
+    if whole_links:
+        head += "\n\n" + whole_links
     blocks = store.chunks.list_chunks_for_ref(ref_id)
     if not blocks:
         return head  # no body chunks yet — head alone, but the ring still shows
@@ -1153,14 +1256,23 @@ def _doc_block(
 
     clusters = cluster_blocks(blocks)
     if chunk_ords:
-        body = _fisheye_split(kind, clusters, chunk_ords, ext, body_cap=body_cap)
+        body = _fisheye_split(
+            kind,
+            clusters,
+            chunk_ords,
+            ext,
+            body_cap=body_cap,
+            inline=inline,
+            shown=shown,
+        )
     else:
         body = _cluster_map(kind, clusters)
     if whole:
         lead = _abstract_lead(store, ref, ref_id)
         if lead:
             body = f"{lead}\n\n{body}"
-    return f"{head}\n{body}"
+    separator = "\n\n" if whole_links else "\n"
+    return f"{head}{separator}{body}"
 
 
 def _abstract_lead(store: Store, ref: Any, ref_id: int) -> str:
@@ -1315,8 +1427,7 @@ def _render_note_eye(
     body *is* the note and the links are its point. A todo's focal card also
     carries its workflow state line (:func:`_todo_state`) — STATUS and prio
     are the fields a task handoff reads first, and neither rides the chip
-    row. A quest log chunk focuses its entry text, not the quest's gist;
-    its rings still belong to the owning quest."""
+    row. Quest log chunk handles use the document eye instead."""
     ref = _live_note_ref(store, handle, kind)
     block, body = _note_block(store, ref, kind, ext, handles=[handle], recall=recall)
     if ext <= Extent.TOC and not recall:
@@ -1954,7 +2065,13 @@ def _collapse_pairs(
 
 
 def _first_hop(
-    store: Store, ref_id: int, *, ring: RingFilter | None = None
+    store: Store,
+    ref_id: int,
+    *,
+    ring: RingFilter | None = None,
+    edges: list[tuple[int, int, Any, int | None, int | None, Any]] | None = None,
+    attachments: dict[int | None, dict[tuple[str, str], list[_RingNeighbour]]]
+    | None = None,
 ) -> tuple[dict[tuple[str, str], list[_RingNeighbour]], dict[int, Any]]:
     """``(live neighbours by (ring group, label), the neighbour refs)`` —
     the collected form of :func:`_link_neighbors`, shared with the second
@@ -1968,8 +2085,13 @@ def _first_hop(
     ``relations.inverse_slug`` map. The ring keeps its own per-label cap,
     so the read is uncapped here; it is walked oldest link first. Edges
     sharing a far ref collapse to one :class:`_RingNeighbour` carrying the
-    count and the far-end chunk ids they ground at."""
-    by_label = _bucket_edges(store, ref_id, _neighbourhood_edges(store, ref_id))
+    count and the far-end chunk ids they ground at. ``edges`` supplies an
+    attachment-scoped subset without re-reading the neighbourhood.
+    ``attachments`` receives independently collapsed attachment groups, sharing
+    the same batched metadata reads as the full hop."""
+    by_label = _bucket_edges(
+        store, ref_id, _neighbourhood_edges(store, ref_id) if edges is None else edges
+    )
     if not by_label:
         return {}, {}
     refs = store.fetch_refs_by_ids(
@@ -1999,6 +2121,31 @@ def _first_hop(
     )
     suspect = _suspect_edge_keys(store, ref_id) if live else set()
     entries = _quest_log_entries(store, ref_id, live, refs)
+    if attachments is not None:
+        partitioned: dict[
+            int | None,
+            dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]],
+        ] = {}
+        for key, pairs in live.items():
+            for pair in pairs:
+                partitioned.setdefault(pair[3], {}).setdefault(key, []).append(pair)
+        attachments.update(
+            {
+                own: _collapse_hop(pairs, refs, ords, suspect, entries)
+                for own, pairs in partitioned.items()
+            }
+        )
+    return _collapse_hop(live, refs, ords, suspect, entries), refs
+
+
+def _collapse_hop(
+    live: dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]],
+    refs: dict[int, Any],
+    ords: dict[int, int],
+    suspect: set[tuple[int, int | None]],
+    entries: dict[int, tuple[int, str, str]],
+) -> dict[tuple[str, str], list[_RingNeighbour]]:
+    """Collapse one attachment's rows using metadata shared by the whole eye."""
     out: dict[tuple[str, str], list[_RingNeighbour]] = {}
     for key, pairs in live.items():
         ordinary = []
@@ -2036,7 +2183,7 @@ def _first_hop(
                     str(getattr(refs[n.ref_id], "kind", "")), len(rank)
                 )
             )
-    return out, refs
+    return out
 
 
 def _quest_log_entries(
@@ -2941,6 +3088,7 @@ def _rings(
     ring: RingFilter | None,
     body: str = "",
     handle: str | None = None,
+    inline_chunks: set[int | None] | None = None,
 ) -> list[str]:
     """Every neighbourhood section a non-tree eye appends at ``ext``:
     the first hop at ``fisheye+1hop`` and up, the second hop at
@@ -2949,7 +3097,8 @@ def _rings(
     extra search without the caller's ``+recall`` opt-in. Todo trees use
     ``refs.parent_id`` rather than links, but still fill the first hop —
     and the ``— tree —`` ring renders even when empty, as an explicit
-    lone-leaf line (gr568413).
+    lone-leaf line (gr568413). ``inline_chunks`` contains only attachments
+    whose links were rendered inline; omit those edges from the first hop.
     """
     sections: list[str] = []
     tree = ""
@@ -2958,7 +3107,20 @@ def _rings(
 
         tree = render_tree_ring(store, ref_id)
     hop1, refs = (
-        _first_hop(store, ref_id, ring=ring) if ext >= Extent.HOP1 else ({}, {})
+        _first_hop(
+            store,
+            ref_id,
+            ring=ring,
+            edges=[
+                e
+                for e in _neighbourhood_edges(store, ref_id)
+                if (e[3] if e[0] == ref_id else e[4]) not in inline_chunks
+            ]
+            if inline_chunks
+            else None,
+        )
+        if ext >= Extent.HOP1
+        else ({}, {})
     )
     handles = entity_handles(body)
     neighbour_handles = _entity_handles_for_refs(refs).values()
@@ -2989,14 +3151,27 @@ def _rings(
                 _second_hop(
                     store,
                     ref_id,
-                    hop1,
+                    # ``hop1`` above excludes the edges whose links rendered
+                    # inline; the second hop must still expand from every
+                    # first-hop neighbour, including those, so the full
+                    # hop is fetched again here — intentional (gr703057).
+                    _first_hop(store, ref_id, ring=ring)[0] if inline_chunks else hop1,
                     expand=expand,
                     ring=ring,
                     body_handles=handles,
                     states=states,
                 )
             )
-        if expand is None and not sections[-1] and (ext >= Extent.HOP2 or not tree):
+        if (
+            expand is None
+            and not sections[-1]
+            # Inline links are not missing first-hop neighbours — they
+            # already sit under their chunk in the focus block, so an
+            # empty remaining 1-hop ring stays silent (gr703057). At
+            # ``fisheye+2hop`` the line names the *second* hop, which
+            # inline placement says nothing about — keep it.
+            and (ext >= Extent.HOP2 or (not inline_chunks and not tree))
+        ):
             hops = 2 if ext >= Extent.HOP2 else 1
             message = (
                 f"no structural neighbours at {hops} hop{'s' if hops == 2 else ''}"

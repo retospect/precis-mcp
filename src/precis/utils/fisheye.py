@@ -131,13 +131,41 @@ def render_fisheye(
         raise ValueError(f"fisheye: no live {kind} node {handle!r}")
     chunks = store.drafts.reading_order(target.ref_id, kind=kind)
     views = store.drafts.block_views(target.ref_id)
+    ext = Extent.parse(extent)
+    from precis.utils.eye_render import _head, _head_chips, _inline_links, _rings
+
+    inline = _inline_links(store, target.ref_id) if ext >= Extent.HOP1 else {}
+    shown: set[int] = set()
 
     def _ring() -> str:
-        from precis.utils.refeye import render_reference_ring
+        from precis.utils.refeye import collect_ring, render_ring_groups
 
-        return render_reference_ring(store, target, chunks)
+        sections = _rings(
+            store,
+            target.ref_id,
+            kind,
+            ext,
+            recall=False,
+            expand=None,
+            ring=None,
+            handle=handle,
+            inline_chunks=set(inline) & (shown | {None}),
+        )
+        mined = collect_ring(store, target, chunks, include_inbound=False)
+        sections.append(render_ring_groups(mined))
+        return "\n\n".join(sections)
 
-    return render_fisheye_span(chunks, target, views, extent, ring=_ring)
+    body = render_fisheye_span(
+        chunks, target, views, ext, ring=_ring, inline=inline, shown=shown
+    )
+    if ext >= Extent.HOP1:
+        ref = store.fetch_refs_by_ids([target.ref_id]).get(target.ref_id)
+        if ref is not None:
+            head = _head(ref, kind, _head_chips(store, ref, kind))
+            if inline.get(None):
+                head += "\n\n" + inline[None]
+            body = head + "\n\n" + body
+    return body
 
 
 def render_fisheye_span(
@@ -147,6 +175,8 @@ def render_fisheye_span(
     extent: Extent | str | int = Extent.FULL,
     *,
     ring: Callable[[], str] | None = None,
+    inline: dict[int | None, str] | None = None,
+    shown: set[int] | None = None,
 ) -> str:
     """The shared tree-kind eye core — render ``target`` over its
     reading-order ``chunks`` at ``extent``.
@@ -159,7 +189,9 @@ def render_fisheye_span(
     degrade to the chunk's first text line. ``ring`` renders the
     ``fisheye+1hop`` neighbourhood (a draft's reference ring, a skill's
     wikilink ring) and is appended whenever the rung asks for it and it
-    returns text.
+    returns text. ``inline`` maps attachment chunk ids to rendered links;
+    ``shown`` records displayed chunks before the ring callback runs, so
+    it can omit links already printed under those chunks.
 
     - ``kwd`` — the ancestor branch + a one-line bookmark of the node.
     - ``summary`` / ``verbatim`` — the node **alone** (short summary vs full
@@ -193,7 +225,9 @@ def render_fisheye_span(
 
     # fisheye — verbatim center over a graduated spatial neighborhood; the
     # hop rungs append the ring (draft: reference ring; skill: wikilinks).
-    lines.extend(_render_fidelity_span(chunks, target, views))
+    lines.extend(
+        _render_fidelity_span(chunks, target, views, inline=inline, shown=shown)
+    )
     if ext >= Extent.HOP1 and ring is not None:
         ring_text = ring()
         if ring_text:
@@ -203,18 +237,32 @@ def render_fisheye_span(
 
 
 def _render_fidelity_span(
-    chunks: Sequence[_Chunk], target: _Chunk, views: dict[str, dict[str, str]]
+    chunks: Sequence[_Chunk],
+    target: _Chunk,
+    views: dict[str, dict[str, str]],
+    *,
+    inline: dict[int | None, str] | None = None,
+    shown: set[int] | None = None,
 ) -> list[str]:
     """A graduated, forward-biased window over reading-order neighbours: the
     center full, fanning out to summary then keyword lines, reaching further
-    forward than back."""
+    forward than back. ``inline`` supplies links below each attachment;
+    ``shown`` records the displayed chunk ids for ring exclusion. With
+    inline links the focus leads, followed by reading-order neighbours."""
     pos = next((i for i, c in enumerate(chunks) if c.chunk_id == target.chunk_id), 0)
     out: list[str] = []
     # Backward reach is half the forward reach (forward-biased).
     lo = max(0, pos - _FIDELITY_KWD // 2)
     hi = min(len(chunks), pos + _FIDELITY_KWD + 1)
-    for i in range(lo, hi):
+    indices = list(range(lo, hi))
+    if inline is not None:
+        indices.sort(key=lambda i: i != pos)
+    for i in indices:
         c = chunks[i]
+        if shown is not None:
+            shown.add(c.chunk_id)
+        if inline is not None and out:
+            out.append("")
         dist = abs(i - pos)
         indent = "  " * c.depth
         if dist == 0:
@@ -229,6 +277,8 @@ def _render_fidelity_span(
             out.append(
                 f"{indent}· {c.dc}  {_summary_line(c, views)}{_chunk_size_cell(c)}"
             )
+        if inline and inline.get(c.chunk_id):
+            out.append(inline[c.chunk_id])
     return out
 
 

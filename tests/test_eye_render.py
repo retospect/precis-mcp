@@ -29,6 +29,76 @@ def _pe(body: str) -> str:
     return m.group(0)
 
 
+@pytest.mark.parametrize("kind", ["paper", "patent", "datasheet", "quest"])
+def test_chunk_eye_positions_links_at_attachments(
+    hub: Hub, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr703057: inbound and outbound links stay with their own attachment."""
+    store = hub.live_store
+    # quest went numeric (migration 0065) — only the named kinds take a slug.
+    ref = store.insert_ref(
+        kind=kind,
+        slug=None if kind == "quest" else f"attached-{kind}",
+        title="Attachment owner",
+    )
+    blocks = store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=i, text=f"Passage {i}") for i in range(3)]
+    )
+    monkeypatch.setattr(
+        "precis.utils.toc_db.cluster_blocks", lambda blocks: [(blocks, [])]
+    )
+    whole = store.insert_ref(kind="memory", slug=None, title="Whole record link")
+    focus = store.insert_ref(kind="memory", slug=None, title="Focused link")
+    other = store.insert_ref(kind="memory", slug=None, title="Neighbour link")
+    store.add_link(src_ref_id=whole.id, dst_ref_id=ref.id, relation="related-to")
+    # A quest is a container, not evidence — 'supports' is refused there.
+    store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=focus.id,
+        relation="related-to" if kind == "quest" else "supports",
+        src_pos=1,
+    )
+    store.add_link(
+        src_ref_id=other.id, dst_ref_id=ref.id, relation="related-to", dst_pos=0
+    )
+    out = render_eye(
+        store,
+        handle_registry.format_handle(kind, blocks[1].id, chunk=True),
+        "fisheye+1hop",
+    )
+    focus_h = handle_registry.format_handle(kind, blocks[1].id, chunk=True)
+    other_h = handle_registry.format_handle(kind, blocks[0].id, chunk=True)
+    assert out.index("Whole record link") < out.index(f"▸ {focus_h}")
+    assert (
+        out.index(f"▸ {focus_h}")
+        < out.index("Focused link")
+        < out.index(f"· {other_h}")
+    )
+    assert out.index(f"· {other_h}") < out.index("Neighbour link")
+    assert out.count("Focused link") == out.count("Neighbour link") == 1
+    assert re.search(r"Whole record link[^\n]*\n\n— cluster —", out)
+    assert re.search(
+        r"Passage 1\n— linked \(1 hop\) —\n[^\n]+\n[^\n]*Focused link", out
+    )
+    assert re.search(
+        rf"Focused link[^\n]*\n\n  · {other_h}[^\n]*\n"
+        r"— linked \(1 hop\) —\n[^\n]+\n[^\n]*Neighbour link",
+        out,
+    )
+
+
+def test_paper_eye_includes_incoming_authorship(hub: Hub) -> None:
+    store = hub.live_store
+    paper = store.insert_ref(kind="paper", slug="authored-eye", title="Authored paper")
+    author = store.insert_ref(
+        kind="orcid", slug="0000-0002-1825-0097", title="Eye author"
+    )
+    store.add_link(src_ref_id=author.id, dst_ref_id=paper.id, relation="authored")
+    out = render_eye(store, f"pa{paper.id}", "fisheye+1hop")
+    assert "Authorship" in out
+    assert "Eye author" in out
+
+
 @dataclass
 class _B:
     """A minimal ChunkRow stand-in for the pure cluster-render helpers — they read

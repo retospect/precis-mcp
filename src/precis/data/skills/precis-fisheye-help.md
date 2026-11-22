@@ -93,15 +93,16 @@ only at `fisheye` and up.
 
 | Family | Kinds | `fisheye` shows | `fisheye+1hop` adds |
 |---|---|---|---|
-| Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | the reference ring (Cited / Cross-refs / Notes / Claims) |
-| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar`, `web`, `youtube` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
+| Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | stored links under their section (Cited / Cross-refs / Notes / Claims), the focused section first and in full; the 1-hop ring keeps body-mined refs and links on sections outside the span |
+| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar`, `web`, `youtube` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | links under their attachment — whole-record links under the header, chunk links under their chunk row (focused chunk first and in full); the 1-hop ring holds only links on chunks the eye didn't display |
 | Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, `websearch`, `perplexity-*`, … | the card (title → gist → body) | the link neighborhood by ring |
 | Skill | `skill` (`sk:<slug>` or a section `sk:<slug>~N`) | whole: the **section map** — one `~N` row per H2, never the body; section: the reading-order span | the wikilink ring — `see-also` out, `see-also-by` in |
 
 A **chunk eye** (the split within a cluster) exists only where chunks
 mint a handle — `paper`/`patent`/`datasheet`/`cfp`/`edgar` chunks do;
 `web`/`youtube` chunks don't (gr702962: their cluster-map rows print
-`<ref>~<ord>` selectors instead). Read one with a plain `get` —
+`<ref>~<ord>` selectors instead). Quest-log `ql<id>` chunk handles take
+the document eye, not the quest card eye. Read one with a plain `get` —
 `get(kind='web', id='wb<N>~3')`; under `extent=` that selector is
 refused, because an eye focuses the *whole* ref.
 
@@ -143,7 +144,13 @@ never floats free of its heading.
 ## The reference ring (`fisheye+1hop` on a section)
 
 Where the spatial fisheye walks *reading order*, `fisheye+1hop` adds
-what the section *points at*, one edge out:
+what the section *points at*, one edge out. Placement (gr703057): a
+stored link renders with what it attaches to — whole-record links sit
+under the header, a section link under its own row in the span (the
+focused section first and in full); only links on sections the span
+didn't display stay in the 1-hop ring. Incoming `authored` (orcid)
+links show under **Authorship** (`authored-by:`) on `paper`, `patent`,
+quest log, `datasheet`, `draft` and `plan` eyes.
 
 - **Cited** — papers / datasheets / patents the section cites
 - **Cross-refs** — other draft/plan chunks it links (`[dc<id>]`)
@@ -178,7 +185,12 @@ group, `q='<kind>:see-also'` (`<kind>` = skill) a second-hop one.
 
 On a link or document kind, `fisheye+1hop` lists every ref linked to the
 focus, either direction, under one heading per ring group, each
-`(group, label)` block capped at 8 with a `… +N more` line. Each line
+`(group, label)` block capped at 8 with a `… +N more` line. On a
+chunked document the same links render with their attachment first —
+whole-record links under the header, chunk links under their chunk row,
+the focused chunk first and in full — and the ring then holds only what
+isn't shown inline: links on undisplayed chunks, and ref-level groups
+such as **Authorship** for an incoming `authored` (orcid) edge. Each line
 reads from the focus's side: an edge it is the source of keeps its name
 (`serves: qu12`), an edge pointing at it reads as the inverse
 (`served-by: qu7`, `contradicted-by: pa3`), and an inbound edge with no
@@ -241,19 +253,9 @@ order, not link edges) has no ring to narrow, and a skill eye's ring
 narrows on `kinds` only — a file carries no `SPACE:` or open tags, so
 either filter empties it.
 
-```python
-get(kind="memory", id="me474312", extent="fisheye+1hop",
-    args={"ring": {"kinds": "memory", "space": "repo-dev"}})  # repo-dev memories only
-
-# Task-scoped scratch (gr605669): one task's probes, not every task's —
-# fisheye or +recall on a scratch node narrowed to its owner tag.
-get(kind="memory", id="me88", extent="fisheye+1hop+recall",
-    args={"ring": {"space": "scratch", "tags": ["scratch-for:td575121"]}})
-```
-
 A **quest** eye opens with its gist — the striving statement +
-`rubric:`/`demand:`/`supply:` lines from meta — not its logbook; the
-lab notebook stays at `view='logbook'`.
+`rubric:`/`demand:`/`supply:` lines from meta — not its logbook
+(`view='logbook'`).
 
 A **todo** eye adds `status: <STATUS> · prio: <N>` to the focal card
 (prio is the effective sort value — unset rides as the default 5, and
@@ -265,22 +267,21 @@ its `Dependencies:` and other link groups (`precis-todo-help`).
 ## Memory rings
 
 Memory eyes accept `id=[...]` (up to 50) at every fisheye rung, including
-`fisheye+1hop+recall`. Focuses render in caller order with duplicate IDs
-collapsed; each uses the same extent, ring, and `q=` with its own context.
-Missing or deleted IDs get per-ID blocks; malformed IDs refuse the batch.
-Results keep whole focus blocks and name unread IDs for continuation.
+`fisheye+1hop+recall`. Focuses render in caller order, duplicates
+collapsed, sharing one extent, ring and `q=`; missing or deleted IDs
+get per-ID blocks, malformed IDs refuse the batch, and results keep
+whole focus blocks naming unread IDs for continuation.
 
 On a **memory** focus the same rings read: `part-of` to its hub (or
 summary node) under `Parts:` on both ends — and on the `section:index`
 hub itself every member lists under `contains:`, one line each,
 exempt from the 8-cap (a `… +N more` line past 300 expands with
 `q='contains'`); a `qualifies` edge (gotcha → thread) under `Argument:`
-on both ends; a `[handle]` mention written in the body materialises
+on both ends; a `[handle]` mention in the body materialises
 `related-to` under `Notes & links` on the target's eye; `cites` lands
 under `Notes & links`, `derived-from` under `Argument`. Every label
 block caps at 8 — `related-to` is the default write and the most
-numerous, so on a well-linked memory it is the first group to fold
-behind `… +N more`.
+numerous, so it is the first group to fold behind `… +N more`.
 
 ## The second hop (`fisheye+2hop`)
 
@@ -297,7 +298,7 @@ get(kind="finding", id="fi42", extent="fisheye+2hop", q="paper:cites")  # that g
 
 `more()` is gone with the pages — a `+N more` fold is a render cap,
 not a page; expand a folded group by narrowing (`q=` here,
-`args={'ring': …}` on the ring), not by asking for a next page.
+`args={'ring': …}` on the ring).
 
 For an **exploratory** memory/hub/index read — orienting a task or
 discovering useful connections — `fisheye+2hop` is the preferred
