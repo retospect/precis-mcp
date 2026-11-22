@@ -13,6 +13,7 @@ no link. A failing child of a coordinator bubbles nowhere (no
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
@@ -251,6 +252,26 @@ class TestSpawnChild:
             "plan_tick", {"model": "haiku"}, idem_key="triage-batch-0"
         )
         assert first == second
+
+    def test_spawn_child_reads_ref_id_not_ack_wording(
+        self,
+        store: Store,
+        campaign: tuple[int, int],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """gr690594: the child id is ``Response.ref_id``; a reworded put
+        ack (no ``job id=N``) must not break the fan-out."""
+        _todo_id, coord_id = campaign
+        real_put = JobHandler.put
+
+        def _reworded_put(self: JobHandler, **kw: Any) -> Any:
+            return dataclasses.replace(real_put(self, **kw), body="child queued")
+
+        monkeypatch.setattr(JobHandler, "put", _reworded_put)
+        child_id = self._ctx(store, coord_id).spawn_child(
+            "plan_tick", {"model": "haiku"}
+        )
+        assert _row(store, child_id)[0] == coord_id
 
 
 # ── failure-bubble is a no-op for coordinator-parented children ────

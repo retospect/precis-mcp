@@ -22,8 +22,8 @@ Ships live: no per-plugin dark switch. An operator who needs it off uses
 
 from __future__ import annotations
 
+import logging
 import os
-import re
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -33,6 +33,8 @@ from precis.response import Response
 from precis_bio.engine import DEFAULT_SEEDS, resolve_engine
 from precis_bio.ir import ProteinFold, fold_cache_key, validate_sequence
 from precis_bio.persist import apply_fold_result
+
+log = logging.getLogger(__name__)
 
 #: Env naming the compute node a ``fold`` job pins to. Unset ⇒ the handler runs
 #: the (in-process) stub engine inline — the slice-0 fallback that keeps the
@@ -220,7 +222,14 @@ class ProteinHandler(Handler):
         )
         note = ""
         if requester_id is not None:
-            self._wire_requester(requester_id, job_resp.body)
+            if job_resp.ref_id is None:  # defensive — put always reports the id
+                log.warning(
+                    "protein._dispatch: job put() returned no ref_id for requester "
+                    "#%s; skipping requester wiring",
+                    requester_id,
+                )
+            else:
+                self._wire_requester(requester_id, job_resp.ref_id)
             note = f" (todo #{requester_id} will block on it)"
         return Response(
             body=(
@@ -231,17 +240,13 @@ class ProteinHandler(Handler):
             )
         )
 
-    def _wire_requester(self, requester_id: int, job_resp_body: str) -> None:
+    def _wire_requester(self, requester_id: int, job_id: int) -> None:
         """Link the requesting todo to the job + arm its wait.
 
         ``requester --requested--> job`` + inject a ``derived_job_succeeded``
         auto_check when the todo has none. Idempotent. Copied from
         ``RouteHandler._wire_requester``.
         """
-        m = re.search(r"id=(\d+)", job_resp_body)
-        if m is None:
-            return
-        job_id = int(m.group(1))
         with self.store.tx() as conn:
             self.store.add_link(
                 src_ref_id=requester_id,

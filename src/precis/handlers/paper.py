@@ -2546,7 +2546,7 @@ class PaperHandler(Handler):
                 line += f"\n  get(id='{_pa(existing)}') to read it"
                 body += line
 
-        return Response(body=body)
+        return Response(body=body, ref_id=ref_id)
 
     # -- get -----------------------------------------------------------------
 

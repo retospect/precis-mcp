@@ -33,8 +33,8 @@ Ships live: no per-plugin dark switch. An operator who needs it off uses
 
 from __future__ import annotations
 
+import logging
 import os
-import re
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -47,6 +47,8 @@ from precis_chem.constraints import resolve_constraints, screen_route
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph, cache_key, normalize_smiles
 from precis_chem.persist import apply_route_result
+
+log = logging.getLogger(__name__)
 
 #: Env naming the compute node a ``retrosynth`` job pins to. Unset ⇒ the
 #: handler runs the (in-process) engine inline — the slice-0 fallback that
@@ -333,7 +335,14 @@ class RouteHandler(Handler):
         )
         note = ""
         if requester_id is not None:
-            self._wire_requester(requester_id, job_resp.body)
+            if job_resp.ref_id is None:  # defensive — put always reports the id
+                log.warning(
+                    "route._dispatch: job put() returned no ref_id for requester "
+                    "#%s; skipping requester wiring",
+                    requester_id,
+                )
+            else:
+                self._wire_requester(requester_id, job_resp.ref_id)
             note = f" (todo #{requester_id} will block on it)"
         # A cache-hit put (plan already landed) mints a steer-only job.
         planned = (ref.meta or {}).get("route") and (ref.meta or {}).get(
@@ -361,7 +370,7 @@ class RouteHandler(Handler):
             )
         )
 
-    def _wire_requester(self, requester_id: int, job_resp_body: str) -> None:
+    def _wire_requester(self, requester_id: int, job_id: int) -> None:
         """Link the requesting todo to the job + arm its wait.
 
         ``requester --requested--> job`` (the edge ``derived_job_succeeded`` +
@@ -369,10 +378,6 @@ class RouteHandler(Handler):
         ``auto_check`` when it has none. Idempotent. Copied from
         ``StructureHandler._wire_requester``.
         """
-        m = re.search(r"id=(\d+)", job_resp_body)
-        if m is None:
-            return
-        job_id = int(m.group(1))
         with self.store.tx() as conn:
             self.store.add_link(
                 src_ref_id=requester_id,

@@ -166,10 +166,6 @@ def relevance_floor() -> float:
 #: run_search_step`'s floor never drops a ``None``-scored hit, only logs it.
 SearchFn = Callable[["Store", str, list[int]], list[tuple[int, float | None]]]
 
-#: Parses ``id=N`` out of the ``PaperHandler.acquire`` ack (mirrors
-#: ``_good_search._ID_IN_ACK``).
-_ID_IN_ACK = re.compile(r"\bid=(?:pa)?(\d+)\b")
-
 
 @dataclass
 class QueryReport:
@@ -338,9 +334,8 @@ class AcquiringSearch:
                     query[:80],
                 )
                 continue
-            m = _ID_IN_ACK.search(resp.body or "")
-            if m is not None:
-                acquired.append(int(m.group(1)))
+            if resp.ref_id is not None:
+                acquired.append(resp.ref_id)
         return acquired, error
 
 

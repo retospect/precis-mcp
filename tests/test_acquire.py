@@ -222,6 +222,15 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     assert "get(id=" in second.body
 
 
+def test_acquire_reports_ref_id(handler: PaperHandler) -> None:
+    """gr690594: in-process callers read ``Response.ref_id`` (mint and
+    collapse hit alike) instead of scraping ``id=paN`` out of the ack."""
+    first = handler.acquire(identifier="doi:10.1/x")
+    assert first.ref_id == _ref_id(first.body)
+    second = handler.acquire(identifier="doi:10.1/X")
+    assert second.ref_id == first.ref_id
+
+
 def test_acquire_wiley_twin_doi_collapses(handler: PaperHandler, store: Store) -> None:
     # The twin collapse must also hold when the anie twin is an
     # already-HELD paper (pdf present): the ange acquire collapses onto

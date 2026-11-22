@@ -127,8 +127,9 @@ class FakeStore(_FakeStoreBase):
 
 
 class _FakeResponse:
-    def __init__(self, body: str) -> None:
+    def __init__(self, body: str, ref_id: int | None = None) -> None:
         self.body = body
+        self.ref_id = ref_id
 
 
 def _fake_hub() -> Any:
@@ -160,7 +161,9 @@ class TestMakeAcquiringSearch:
         def _fake_acquire(self: Any, **kw: Any) -> _FakeResponse:
             calls.append(kw)
             n = 901 if kw["identifier"] == "doi:10.1/aaa" else 902
-            return _FakeResponse(body=f"acquire: minted stub paper id=pa{n} (…)")
+            return _FakeResponse(
+                body=f"acquire: minted stub paper id=pa{n} (…)", ref_id=n
+            )
 
         monkeypatch.setattr("precis.handlers.paper.PaperHandler.acquire", _fake_acquire)
 
@@ -190,7 +193,9 @@ class TestMakeAcquiringSearch:
         )
         monkeypatch.setattr(
             "precis.handlers.paper.PaperHandler.acquire",
-            lambda self, **kw: _FakeResponse(body="acquire: minted stub paper id=901"),
+            lambda self, **kw: _FakeResponse(
+                body="acquire: minted stub paper id=901", ref_id=901
+            ),
         )
 
         fn = qsearch.make_acquiring_search(1, _fake_hub())
@@ -198,6 +203,27 @@ class TestMakeAcquiringSearch:
         out = fn(store, "q", [11, 901])
 
         assert out == [(10, 1.0)]
+
+    def test_acquired_id_is_ref_id_not_ack_wording(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr690594: the acquired paper id is ``Response.ref_id``; an ack
+        whose prose carries no ``id=N`` still counts as acquired."""
+        monkeypatch.setattr(
+            s2mod,
+            "search_s2_papers",
+            lambda query, limit: [{"doi": "10.1/aaa", "title": "paper a"}],
+        )
+        monkeypatch.setattr(
+            "precis.handlers.paper.PaperHandler.acquire",
+            lambda self, **kw: _FakeResponse(
+                body="acquire: minted stub paper pa901", ref_id=901
+            ),
+        )
+
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10])
+        assert fn(store, "q", []) == [(10, 1.0), (901, None)]
 
     def test_acquire_exception_is_swallowed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -214,7 +240,7 @@ class TestMakeAcquiringSearch:
         def _fake_acquire(self: Any, **kw: Any) -> _FakeResponse:
             if kw["identifier"] == "doi:10.1/bad":
                 raise RuntimeError("resolver timed out")
-            return _FakeResponse(body="acquire: minted stub paper id=902")
+            return _FakeResponse(body="acquire: minted stub paper id=902", ref_id=902)
 
         monkeypatch.setattr("precis.handlers.paper.PaperHandler.acquire", _fake_acquire)
 
@@ -250,7 +276,7 @@ class TestMakeAcquiringSearch:
 
         def _rec_acquire(self: Any, **kw: Any) -> _FakeResponse:
             calls.append(kw)
-            return _FakeResponse(body="id=999")
+            return _FakeResponse(body="id=999", ref_id=999)
 
         monkeypatch.setattr("precis.handlers.paper.PaperHandler.acquire", _rec_acquire)
 
@@ -409,7 +435,7 @@ def _stub_acquire(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     def _acq(self: Any, **kw: Any) -> _FakeResponse:
         calls.append(kw)
-        return _FakeResponse(body="acquire: minted stub paper id=901")
+        return _FakeResponse(body="acquire: minted stub paper id=901", ref_id=901)
 
     monkeypatch.setattr("precis.handlers.paper.PaperHandler.acquire", _acq)
     return calls
@@ -740,7 +766,9 @@ class TestForceExternal:
         monkeypatch.setattr(s2mod, "search_s2_papers", s2)
         monkeypatch.setattr(
             "precis.handlers.paper.PaperHandler.acquire",
-            lambda self, **kw: _FakeResponse(body="acquire: minted stub paper id=901"),
+            lambda self, **kw: _FakeResponse(
+                body="acquire: minted stub paper id=901", ref_id=901
+            ),
         )
         return s2
 

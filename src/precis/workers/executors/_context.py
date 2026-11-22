@@ -23,7 +23,6 @@ on this dataclass interface, not on ``claude_inproc`` internals.
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,11 +32,6 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from precis.store.store import Store
-
-#: Parses the job id out of ``JobHandler.put``'s ack body. Both ack
-#: shapes carry it: ``created job id=N (STATUS:queued, …)`` and the
-#: idem-dedupe ``existing job id=N for idem_key=…``.
-_JOB_ID_IN_ACK = re.compile(r"\bjob id=(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -171,12 +165,11 @@ class DispatchContext:
             parent_id=self.ref_id,
             idem_key=idem_key,
         )
-        m = _JOB_ID_IN_ACK.search(resp.body)
-        if m is None:  # pragma: no cover — put()'s ack shape changed
+        if resp.ref_id is None:  # pragma: no cover — put always reports the id
             raise RuntimeError(
-                f"spawn_child: could not parse job id from put ack: {resp.body!r}"
+                f"spawn_child: job put() returned no ref_id: {resp.body!r}"
             )
-        return int(m.group(1))
+        return resp.ref_id
 
     def budget_exhausted(self) -> bool:
         """True once the claiming pass's wall deadline has passed.

@@ -13,6 +13,7 @@ The `fold` job_type is injected into the registry (no entry point at test time).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -393,6 +394,40 @@ def test_requested_by_wires_blocking_todo(
             "SELECT relation FROM links WHERE src_ref_id = %s", (todo.id,)
         ).fetchone()
     assert rel is not None and rel[0] == "requested"
+
+
+def test_requested_by_edge_follows_ref_id_not_ack_wording(
+    protein_store: Store,
+    register_fold: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr690594: the requester edge targets ``Response.ref_id``. The job
+    ack body is prose; reworded to carry no ``id=N`` it must still wire."""
+    from precis.handlers.job import JobHandler
+
+    real_put = JobHandler.put
+    minted: list[int] = []
+
+    def _reworded_put(self: JobHandler, **kw: Any) -> Any:
+        resp = real_put(self, **kw)
+        assert resp.ref_id is not None
+        minted.append(resp.ref_id)
+        return dataclasses.replace(resp, body="fold job queued")
+
+    monkeypatch.setattr(JobHandler, "put", _reworded_put)
+    monkeypatch.setenv("PRECIS_FOLD_NODE", "spruce")
+    todo = protein_store.insert_ref(kind="todo", slug=None, title="fold the target")
+
+    h = _try(ProteinHandler, hub=Hub(store=protein_store))
+    assert h is not None
+    h.put(id="tgt", sequence="ACDE", engine="alphafold3", requested_by=todo.id)
+
+    with protein_store.pool.connection() as c:
+        rows = c.execute(
+            "SELECT relation, dst_ref_id FROM links WHERE src_ref_id = %s",
+            (todo.id,),
+        ).fetchall()
+    assert [tuple(r) for r in rows] == [("requested", minted[0])]
 
 
 def test_worker_dispatch_writes_fold_back(protein_store: Store) -> None:
