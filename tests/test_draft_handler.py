@@ -1674,7 +1674,9 @@ def test_retired_wrapper_restores_mixed_content_in_cascade_order(
         ref_id=ref.id, chunk_kind="paragraph", text="", at={"into": sec}
     )[0]
     draft.put(
-        id="nt", text="1. Previously removed\n2. Kept item", at={"into": holder.dc}
+        id="nt",
+        text="1. Previously removed\n2. Kept item\n3. Kept too",
+        at={"into": holder.dc},
     )
     old_item = next(c for c in _order(hub, "nt") if c.text == "Previously removed")
     drafts.retire_chunk(old_item.handle)
@@ -1697,7 +1699,54 @@ def test_retired_wrapper_restores_mixed_content_in_cascade_order(
     assert [c.chunk_kind for c in children] == ["olist", "code", "paragraph"]
     assert children[1].text == source and children[2].text == "Final prose"
     assert [c.text for c in order if c.parent_chunk_id == children[0].chunk_id] == [
-        "Kept item"
+        "Kept item",
+        "Kept too",
+    ]
+
+
+def test_retired_list_recipe_nests_and_degrades_to_puts_that_run(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The recovery recipe must be runnable: a list container's items travel
+    in one markdown put (nested lists indented), and a list left with a
+    single item — which no put can mint as a list — comes back as a
+    paragraph, flagged, rather than as a put the guard refuses."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    drafts = hub.live_store.drafts
+    sec = _dc(
+        draft.put(id="nt", chunk_kind="heading", text="Section", at={"last": True}).body
+    )
+    draft.put(
+        id="nt", text="- top\n  - nested a\n  - nested b\n- second", at={"into": sec}
+    )
+    lone = draft.put(id="nt", text="- gone\n- stays alone", at={"last": True})
+    lone_h = _dc(lone.body)
+    drafts.retire_chunk(next(c for c in _order(hub, "nt") if c.text == "gone").handle)
+    heading = drafts.get_draft_chunk(sec)
+    assert heading is not None
+    drafts.retire_chunk(heading.handle, mode="cascade")
+    list_out = draft.get(id=sec).body
+    assert "text='- top\\n  - nested a\\n  - nested b\\n- second'" in list_out
+
+    handles = _execute_restore(draft, list_out)
+    order = _order(hub, "nt")
+    new_heading = next(c for c in order if c.dc == handles[f"restored_{sec}"])
+    (restored,) = [c for c in order if c.parent_chunk_id == new_heading.chunk_id]
+    assert restored.chunk_kind == "ulist"
+    texts = [c.text for c in order if c.chunk_kind == "item"]
+    assert sorted(texts) == sorted(
+        ["top", "nested a", "nested b", "second", "stays alone"]
+    )
+
+    lone_chunk = drafts.get_draft_chunk(lone_h)
+    assert lone_chunk is not None
+    drafts.retire_chunk(lone_chunk.handle, mode="cascade")
+    out = draft.get(id=lone_h).body
+    assert "a list of one item cannot be put as a list" in out
+    assert "chunk_kind='ulist'" not in out
+    _execute_restore(draft, out)
+    assert [c.text for c in _order(hub, "nt") if c.chunk_kind == "paragraph"] == [
+        "stays alone"
     ]
 
 
@@ -4565,7 +4614,24 @@ def test_put_chunks_batch_is_atomic(
     assert body.startswith("added 4 chunks to nt:")
     assert len(calls) == 1
     order = _order(hub, "nt")[before:]
-    assert [c.text for c in order] == [entry["text"] for entry in good] + ["last para"]
+    # an explicit ulist entry parses its bullets: a textless container plus
+    # its two item children (gr684738), in place of the one raw-text chunk
+    assert [c.text for c in order] == [
+        "first para\n\nsecond block of the same entry",
+        "A heading",
+        "",
+        "one",
+        "two",
+        "last para",
+    ]
+    assert [c.chunk_kind for c in order] == [
+        "paragraph",
+        "heading",
+        "ulist",
+        "item",
+        "item",
+        "paragraph",
+    ]
     assert calls == [
         ((order[0].ref_id,), {"restamp_chunk_ids": {c.chunk_id for c in order}})
     ]
