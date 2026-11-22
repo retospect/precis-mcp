@@ -49,7 +49,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.corrected_call import retry_call
 from precis.errors import (
@@ -60,6 +60,7 @@ from precis.errors import (
 )
 from precis.format.table_lens import (
     DEFAULT_LIMIT,
+    _matches,
     lens_response,
     literal,
     parse_lens_args,
@@ -108,6 +109,9 @@ from precis.utils.idem import idem_lock_key, normalize_key
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+
+if TYPE_CHECKING:
+    from precis.quest.frontier import FrontierResult
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
 #: never completes (``quest-layer`` (git-only)). STATUS is a shared union
@@ -1037,7 +1041,85 @@ def _iso_z(dt: datetime) -> str:
 _TRUSTED_NAMES_CAP = 10
 
 
-def _frontier_empty_lines(fr: Any) -> list[str]:
+def _axis_handles(fr: FrontierResult, axis: str) -> tuple[list[str], list[str]]:
+    """Return the trusted and untrusted measurements across all bands."""
+    from precis.quest.frontier import _merge_provisional_measures
+
+    trusted: list[str] = []
+    untrusted: list[str] = []
+    for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+        measures, untrusted_keys = _merge_provisional_measures(c)
+        if axis in measures:
+            (untrusted if axis in untrusted_keys else trusted).append(c.handle)
+    for pc in fr.provisional:
+        if axis in pc.measures:
+            (untrusted if axis in pc.untrusted_keys else trusted).append(
+                pc.candidate.handle
+            )
+    return trusted, untrusted
+
+
+def _axis_handle_response(
+    quest_id: int, fr: FrontierResult, axis: str, args: dict[str, Any]
+) -> Response:
+    mode = args.get("class", "untrusted")
+    if mode not in ("trusted", "untrusted"):
+        raise BadInput(
+            "frontier axis class must be trusted or untrusted",
+            next="use args={'axis': 'barrier', 'class': 'trusted'}",
+        )
+    trusted, untrusted = _axis_handles(fr, axis)
+    handles = trusted if mode == "trusted" else untrusted
+    rows = [{"handle": handle} for handle in handles]
+    spec = parse_lens_args(args, columns=["handle"], default_limit=len(rows) or 1)
+    call = _lens_call(quest_id, "frontier", trusted=False, sort=None)
+
+    def render(page: list[dict[str, Any]], _cols: list[str]) -> str:
+        return ", ".join(row["handle"] for row in page) or "none"
+
+    return lens_response(
+        rows,
+        spec,
+        columns=["handle"],
+        render=render,
+        call=lambda page: call({"axis": axis, "class": mode, **page}),
+        header=f"── {mode} on {axis} ({len(handles)}) ──\n",
+        row_unit="candidates",
+    )
+
+
+def _results_where_alias(
+    args: dict[str, Any] | None, *, trusted: bool
+) -> dict[str, str]:
+    alias = {"trusted": "yes"} if trusted else {}
+    raw = (args or {}).get("class")
+    if raw is None:
+        return alias
+    key, _, value = raw.partition("=") if isinstance(raw, str) else ("", "", "")
+    choices = {
+        "trusted": ("yes", "no"),
+        "engine": (),
+        "gate": ("pass", "blocked"),
+        "tier": ("screening", "neb", "verify"),
+        "band": ("frontier", "beaten", "provisional", "awaiting"),
+    }
+    options = choices.get(key)
+    if not value or options is None or (options and value not in options):
+        raise BadInput(
+            f"invalid results class {raw!r}",
+            options=list(choices),
+            next="use args={'class': 'trusted=yes'} or combine columns with args={'where': {...}}",
+        )
+    if key in alias and alias[key] != value:
+        raise BadInput(
+            "results class contradicts the trusted shortcut",
+            next="drop args={'trusted': true} to select trusted=no",
+        )
+    alias[key] = value
+    return alias
+
+
+def _frontier_empty_lines(fr: FrontierResult) -> list[str]:
     """Why the confirmed frontier is empty — the headline under the band.
 
     An empty frontier means NO candidate is *evaluated* (converged + every
@@ -1058,11 +1140,10 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
     provisional = [pc for pc in fr.provisional if pc.candidate.converged]
     if not converged and not provisional:
         return ["  (none converged yet)"]
-    optional: frozenset[str] = getattr(fr, "optional", frozenset())
+    optional = fr.optional
     required = [k for k, _ in fr.objectives if k not in optional]
     missing: Counter[str] = Counter()
     untrusted: Counter[str] = Counter()
-    trusted: dict[str, list[str]] = {}
     for c in converged:
         for k in required:
             if c.measures.get(k) is None:
@@ -1073,8 +1154,6 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
                 untrusted[k] += 1
             elif pc.measures.get(k) is None:
                 missing[k] += 1
-            else:
-                trusted.setdefault(k, []).append(pc.candidate.handle)
     n = len(converged) + len(provisional)
     why: list[str] = []
     if missing:
@@ -1084,15 +1163,15 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
         )
     if untrusted:
         bits = []
-        for k, c in untrusted.most_common():
-            handles = trusted.get(k, [])
+        for k, count in untrusted.most_common():
+            handles, _ = _axis_handles(fr, k)
             if not handles:
                 suffix = " (trusted: none)"
             elif len(handles) <= _TRUSTED_NAMES_CAP:
                 suffix = f" (trusted: {', '.join(handles)})"
             else:
                 suffix = f" (trusted: {len(handles)} candidates)"
-            bits.append(f"{k} ×{c}{suffix}")
+            bits.append(f"{k} ×{count}{suffix}")
         why.append("carry it untrusted: " + " · ".join(bits))
     # split invariant: converged + every required key present ⇒ evaluated
     if not why:  # pragma: no cover
@@ -1124,6 +1203,7 @@ class QuestHandler(NumericRefHandler):
                 "since",
                 "until",
                 "axis",
+                "class",
                 "page_size",
                 "offset",
                 "format",
@@ -2146,6 +2226,14 @@ class QuestHandler(NumericRefHandler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if (args or {}).get("class") is not None and view not in {
+            "results",
+            "frontier",
+        }:
+            raise BadInput(
+                "quest class is supported on results and frontier",
+                next="use view='results' with args={'class': 'trusted=yes'}",
+            )
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         # `view='tree'` on a concrete id rolls up the servers + deed ledger +
@@ -2728,6 +2816,19 @@ class QuestHandler(NumericRefHandler):
         from precis.quest import protocol as protocol_mod
 
         raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
+        axis = (args or {}).get("axis")
+        if axis is not None:
+            if not isinstance(axis, str) or not axis.strip():
+                raise BadInput(
+                    "frontier axis must be a non-empty measure name",
+                    next="use args={'axis': 'barrier'}",
+                )
+            return _axis_handle_response(ref.id, raw_fr, axis, args or {})
+        if (args or {}).get("class") is not None:
+            raise BadInput(
+                "frontier class requires an axis",
+                next="use args={'axis': 'barrier', 'class': 'trusted'}",
+            )
         sort_spec, lens_sort = _split_sort(raw_fr, sort)
         fr = _shape_fr(raw_fr, trusted=trusted, sort=sort_spec)
         lines = [
@@ -3032,6 +3133,7 @@ class QuestHandler(NumericRefHandler):
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
+            RESULTS_TRUST_NOTE,
             build_results_rows,
             display_cell,
             fit_rows_to_budget,
@@ -3039,30 +3141,10 @@ class QuestHandler(NumericRefHandler):
             results_columns,
         )
 
-        raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
-        sort_spec, lens_sort = _split_sort(raw_fr, sort)
-        had_candidates = bool(
-            raw_fr.frontier
-            or raw_fr.dominated
-            or raw_fr.provisional
-            or raw_fr.unevaluated
-        )
-        # text copy keeps the candidate-level trusted filter; the TOON lens
-        # expresses it as where={'trusted': 'yes'} (same rows).
-        fr = _shape_fr(raw_fr, trusted=trusted and fmt == "text", sort=None)
+        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        sort_spec, lens_sort = _split_sort(fr, sort)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         rows = build_results_rows(self.store, ref.id, fr=fr, sort=sort_spec)
-        if not rows and fmt == "text":
-            return Response(
-                body=f"# results — quest {ref.id}: {head}\n\n"
-                + (
-                    "no candidates pass the trusted filter — none carries an "
-                    "affirmative trust verdict (drop args={'trusted': true} "
-                    "for the full set)."
-                    if had_candidates
-                    else "no candidate structures serve this quest yet."
-                )
-            )
         # The declared objectives (energy by default) extend the fixed base
         # columns — a completed relax result must be visible here, not only
         # in the logbook (gr567692). An environment-space quest also keeps
@@ -3082,12 +3164,12 @@ class QuestHandler(NumericRefHandler):
         )
         args_note = _view_args_line(trusted=trusted and fmt == "text", sort=sort_spec)
         args_block = args_note + "\n" if args_note else ""
+        spec = parse_lens_args(
+            _lens_args(args, lens_sort),
+            columns=schema,
+            where_alias=_results_where_alias(args, trusted=trusted),
+        )
         if fmt != "text":
-            spec = parse_lens_args(
-                _lens_args(args, lens_sort),
-                columns=schema,
-                where_alias={"trusted": "yes"} if trusted else None,
-            )
 
             def render(page: list[dict[str, Any]], cols: list[str]) -> str:
                 if page:
@@ -3120,10 +3202,23 @@ class QuestHandler(NumericRefHandler):
                         if spec.where.get("trusted") == "yes"
                         else ""
                     )
-                    + "\n"
+                    + f"{RESULTS_TRUST_NOTE}\n\n"
                 ),
                 row_unit="candidates",
             )
+        if not rows:
+            return Response(
+                body=f"# results — quest {ref.id}: {head}\n\n"
+                "no candidate structures serve this quest yet."
+            )
+        rows = [row for row in rows if _matches(row, spec.where)]
+        if not rows:
+            message = (
+                "no candidates pass the trusted filter."
+                if spec.where == {"trusted": "yes"}
+                else "no rows match."
+            )
+            return Response(body=f"# results — quest {ref.id}: {head}\n\n{message}")
         # The text copy is measured against the plain fixed-width table —
         # ``fit_rows_to_budget``'s default render — not
         # ``render_results_table`` itself, which trims internally and would
@@ -3139,6 +3234,7 @@ class QuestHandler(NumericRefHandler):
             body=(
                 f"# results — quest {ref.id}: {head}\n{args_block}\n"
                 "## text table (as embedded in the tick prompt)\n"
+                f"{RESULTS_TRUST_NOTE}\n"
                 f"{render_results_table(kept, token_budget=budget, columns=schema)}"
                 f"{note}"
             )

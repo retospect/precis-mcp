@@ -296,6 +296,15 @@ what varies) rather than band. It renders the compact agent table
 prompt embeds. That text copy uses a 2500-token budget, adjustable with
 `args={'format': 'text', 'budget': 8000}`.
 
+The `trusted` column reports structure-level trust. `gate` reports the
+newest linked NEB pathway's stored barrier verdict (`pass`, `blocked`,
+`none` without a NEB pathway, or `-` without a verdict). `anchor` names
+that pathway when the harvested credit anchor matches it, or reports
+`no credit` for a recorded refusal. `tier` comes from the newest linked
+pathway across all tiers. `engine`, `template` and `stale` describe the
+barrier basis. For other declared objectives use the objective suffix,
+as in `engine_energy`, `template_energy` and `stale_energy`.
+
 ## Page candidate tables
 
 The default results and frontier tables accept
@@ -307,6 +316,13 @@ Use `sort=[['energy', 'asc']]` for explicit order or `sort='-energy'` for
 descending order. Copy the footer's `next:` call to continue with its cursor.
 The footer reports total rows and aggregates for hidden rows. If the
 underlying results change, start again without the cursor.
+On results, `class` is shorthand for one equality filter, such as
+`args={'class': 'engine=0.50.0', 'where': {'gate': 'blocked'}}`.
+It accepts `trusted=yes|no`, `engine=<version>`, `gate=pass|blocked`,
+`tier=screening|neb|verify` and `band=<band>`.
+On frontier, `args={'axis': 'barrier'}` expands untrusted measurements
+into handles. Add `'class': 'trusted'` to list the trusted measurements
+on that axis across all bands.
 
 The measure
 columns are the pathway axes plus the quest's declared **objective**

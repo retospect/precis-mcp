@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import Unsupported
+from precis.errors import BadInput, Unsupported
 from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
 from precis.quest.frontier import quest_frontier
@@ -818,11 +818,20 @@ class TestObjectiveColumns:
         # barrier and energy are fixed columns — dedup'd in place, not
         # re-appended after the fixed block.
         assert results_columns([("barrier", "min"), ("energy", "min")]) == (
-            RESULTS_COLUMNS
+            *RESULTS_COLUMNS,
+            "engine_energy",
+            "template_energy",
+            "stale_energy",
         )
         # an objective outside the fixed block appends after it.
         cols = results_columns([("log_tof", "max")])
-        assert cols == (*RESULTS_COLUMNS, "log_tof")
+        assert cols == (
+            *RESULTS_COLUMNS,
+            "log_tof",
+            "engine_log_tof",
+            "template_log_tof",
+            "stale_log_tof",
+        )
 
     def test_default_energy_objective_shows_the_converged_relax(
         self, store: Any
@@ -1417,9 +1426,9 @@ class TestResultsTableLens:
         assert h_hi not in body
         assert "min=0.1234" in body  # the excluded row's raw aggregate
 
-    def test_class_arg_refused(self) -> None:
+    def test_class_arg_registered(self) -> None:
         keys = QuestHandler.ARGS_KEYS["get"]
-        assert "class" not in keys
+        assert "class" in keys
         assert {"where", "columns", "cursor", "sort", "limit"} <= set(keys)
 
 
@@ -1717,3 +1726,175 @@ class TestEnvResultsColumns:
         assert leaderboard_display(by_name["Au"], "env_best_J") == "—"
         assert by_name["Au"]["env_footing"] == "run-point"
         assert leaderboard_display(by_name["Ag"], "env_best_J") == "1"
+
+
+class TestEngineGateColumns:
+    """gr592638: engine/gate/stale columns, lens filters, axis handles."""
+
+    def _quest(self, store: Any) -> tuple[int, int]:
+        qid = _mk_quest(store)
+        sid = _mk_candidate(store, qid, "Ag n=1", _dopant_ops("Ag", 1))
+        _converge(store, sid)
+        return qid, sid
+
+    def _pathway(self, store: Any, sid: int, tier: str, *, available: bool) -> int:
+        pathway = store.insert_ref(
+            kind="pathway",
+            slug=f"test-pathway-{sid}-{len(store.links_for(sid, direction='both'))}",
+            title="Pathway",
+            meta={
+                "tier": tier,
+                "results": {"trust_summary": {"barrier": {"available": available}}},
+            },
+        )
+        compute_mod._link_pathway(store, sid, pathway.id)
+        return int(pathway.id)
+
+    def test_engine_gate_columns(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            compute_mod, "_autocatpath_current_version", lambda: "0.51.0"
+        )
+        qid, sid = self._quest(store)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "barrier", "sense": "min"},
+                    {"key": "energy", "sense": "min"},
+                ]
+            },
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_trusted": True,
+                "tier": "screening",
+                "network_basis_by_key": {
+                    "energy": {"version": "0.51.0", "template": "parked"}
+                },
+            },
+        )
+        row = build_results_rows(store, qid)[0]
+        assert (row["gate"], row["tier"], row["engine"]) == ("none", "-", "-")
+        self._pathway(store, sid, "neb", available=True)
+        neb = self._pathway(store, sid, "neb", available=False)
+        self._pathway(store, sid, "verify", available=True)
+        from precis.utils import handle_registry
+
+        anchor = handle_registry.try_format("pathway", neb) or f"pw{neb}"
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier_anchor": {"pathway": anchor, "seeds": [1, 2]},
+                "barrier_pathway_ref_id": neb,
+                "network_basis_by_key": {
+                    "barrier": {"version": "0.50.0", "template": "coadsorbed"},
+                    "energy": {"version": "0.51.0", "template": "parked"},
+                },
+            },
+        )
+        row = build_results_rows(store, qid)[0]
+        assert (row["gate"], row["anchor"], row["tier"]) == (
+            "blocked",
+            anchor,
+            "verify",
+        )
+        assert (row["engine"], row["template"], row["stale"]) == (
+            "0.50.0",
+            "coadsorbed",
+            "yes",
+        )
+        assert (row["engine_energy"], row["template_energy"], row["stale_energy"]) == (
+            "0.51.0",
+            "parked",
+            "no",
+        )
+        store.stamp_ref_meta(sid, {"barrier_anchor": None})
+        assert build_results_rows(store, qid)[0]["anchor"] == "no credit"
+
+    def test_where_engine_gate_tier(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            compute_mod, "_autocatpath_current_version", lambda: "0.50.0"
+        )
+        qid, sid = self._quest(store)
+        other = _mk_candidate(store, qid, "Cu", _dopant_ops("Cu", 1))
+        _converge(store, other)
+        for ref_id, available in ((sid, False), (other, True)):
+            self._pathway(store, ref_id, "neb", available=available)
+            store.stamp_ref_meta(
+                ref_id,
+                {
+                    "barrier": 0.4,
+                    "barrier_trusted": available,
+                    "network_basis_by_key": {"barrier": {"version": "0.50.0"}},
+                },
+            )
+        h = QuestHandler(hub=Hub(store=store))
+        expected = TestTrustedSortViews._handle(sid)
+        excluded = TestTrustedSortViews._handle(other)
+        where = {"engine": "0.50.0", "gate": "blocked", "tier": "neb"}
+        for args in (
+            {"where": where},
+            {"class": "engine=0.50.0", "where": {"gate": "blocked", "tier": "neb"}},
+            {"class": "gate=blocked", "where": {"engine": "0.50.0", "tier": "neb"}},
+            {"class": "tier=neb", "where": {"engine": "0.50.0", "gate": "blocked"}},
+            {"class": "trusted=no"},
+            {"class": "band=provisional"},
+        ):
+            body = h.get(
+                id=qid, view="results", args={**args, "columns": ["handle"]}
+            ).body
+            assert expected in body
+            assert excluded not in body
+            assert "1–1 of 1 candidates matching where (2 total)" in body
+        with pytest.raises(BadInput, match=r"unknown column.*columns:.*gate"):
+            h.get(id=qid, view="results", args={"where": {"unknown": "blocked"}})
+        with pytest.raises(BadInput, match="contradicts"):
+            h.get(
+                id=qid,
+                view="results",
+                args={"class": "gate=blocked", "where": {"gate": "pass"}},
+            )
+
+    def test_axis_lists_handles(self, store: Any) -> None:
+        qid, sids = TestResultsTableLens()._many(store, n=24)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "energy", "sense": "min"}]}
+        )
+        for index, sid in enumerate(sids):
+            # The untrusted barrier is outside the ranking objective, so
+            # these candidates can be frontier/beaten despite the failed gate.
+            _converge(store, sid, energy=-1.0 - index)
+            store.stamp_ref_meta(sid, {"barrier": 0.4, "barrier_trusted": index >= 12})
+        h = QuestHandler(hub=Hub(store=store))
+        for mode, selected, excluded in (
+            ("untrusted", sids[:12], sids[12:]),
+            ("trusted", sids[12:], sids[:12]),
+        ):
+            args = {"axis": "barrier"}
+            if mode == "trusted":
+                args["class"] = mode
+            body = h.get(id=qid, view="frontier", args=args).body
+            assert f"{mode} on barrier (12)" in body
+            found = set(re.findall(r"\bst\d+\b", body))
+            assert found == {TestTrustedSortViews._handle(sid) for sid in selected}
+            assert found.isdisjoint(
+                TestTrustedSortViews._handle(sid) for sid in excluded
+            )
+
+    def test_results_trusted_scope_note(self, store: Any) -> None:
+        from precis.quest.tick import _results_table_section
+
+        qid, _sid = self._quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        for body in (
+            h.get(id=qid, view="results").body,
+            h.get(id=qid, view="results", args={"format": "text"}).body,
+            _results_table_section(store, qid),
+        ):
+            assert "structure-level trust (see gate" in body

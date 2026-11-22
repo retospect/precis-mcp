@@ -1598,6 +1598,7 @@ def _results_table_section(
     an empty table would just be noise ahead of the axis notes.
     """
     from precis.quest.results_table import (
+        RESULTS_TRUST_NOTE,
         build_results_rows,
         render_results_table,
         results_columns,
@@ -1625,8 +1626,8 @@ def _results_table_section(
     return (
         "\n## Results so far (one row per evaluated candidate — read this "
         "BEFORE proposing)\n"
-        "band: frontier|beaten|provisional|awaiting · trusted: barrier trust "
-        "gate · blocker: first fatal on-route trust id\n"
+        f"{RESULTS_TRUST_NOTE}\n"
+        "The blocker column names the first fatal on-route trust check.\n"
         f"{table}\n"
     )
 

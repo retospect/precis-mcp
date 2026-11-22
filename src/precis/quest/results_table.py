@@ -28,6 +28,11 @@ objective precision; :func:`display_cell` applies both at render time,
 so every renderer (text table, TOON page, series blocks) formats
 identically.
 
+Structure trust, the newest linked NEB pathway's stored verdict, and
+the harvested credit anchor have separate scopes. An anchor is shown only
+for the pathway it names. Engine, template and staleness are keyed by
+objective so one measure never lends its basis to another.
+
 Dopant/site/co-adsorbate columns are derived at READ time from the
 candidate's own ``meta.params`` when the proposer stamped one, else from the
 candidate structure's atoms (:meth:`Store.structure_load`) compared against
@@ -53,11 +58,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from precis.quest.compute import _pathway_tier
+from precis.utils import handle_registry
 from precis.utils import reaction_graph as analysis
 
 if TYPE_CHECKING:
     from precis.quest.frontier import Candidate, FrontierResult
-    from precis.store import Store
+    from precis.store import Ref, Store
 
 #: Token budget for the rendered text table (chars/4, same convention as
 #: :data:`precis.quest.tick._LITERATURE_TOKEN_BUDGET`).
@@ -66,6 +73,8 @@ _RESULTS_TABLE_TOKEN_BUDGET = 2500
 #: budget (``args={'budget': N}`` overrides), so the standalone views and
 #: the tick's embedded copy can't drift apart (gr345353).
 RESULTS_TABLE_TOKEN_BUDGET = _RESULTS_TABLE_TOKEN_BUDGET
+
+RESULTS_TRUST_NOTE = "The trusted column reports structure-level trust (see gate for the pathway verdict)."
 
 _CHARS_PER_TOKEN = 4
 
@@ -101,6 +110,11 @@ _COLUMNS: tuple[str, ...] = (
     "U_L",
     "P_side",
     "trusted",
+    "gate",
+    "anchor",
+    "engine",
+    "template",
+    "stale",
     "assurance",
     "rls",
     "blocker",
@@ -248,26 +262,26 @@ def _coads(
     return (" ".join(parts) or "-"), h, o
 
 
-def _linked_pathway_meta(store: Store, ref_id: int) -> dict[str, Any] | None:
-    """The most-recent linked `pathway`'s meta (``related-to``, the relation
-    :func:`precis.quest.compute._link_pathway` wires), or ``None``."""
+def _linked_pathways(store: Store, ref_id: int) -> list[Ref]:
+    """Linked pathways in newest-first order, across all fidelity tiers."""
     try:
         links = store.links_for(ref_id, direction="both", relation="related-to")
     except Exception:
-        return None
+        return []
     other_ids = {
         ln.dst_ref_id if ln.src_ref_id == ref_id else ln.src_ref_id for ln in links
     }
     if not other_ids:
-        return None
+        return []
     try:
-        refs = store.fetch_refs_by_ids(other_ids)
+        refs = store.fetch_refs_by_ids(other_ids, include_deleted=False)
     except Exception:
-        return None
-    pathways = [r for r in refs.values() if r.kind == "pathway"]
-    if not pathways:
-        return None
-    return max(pathways, key=lambda r: r.id).meta or {}
+        return []
+    return sorted(
+        (r for r in refs.values() if r.kind == "pathway"),
+        key=lambda r: r.id,
+        reverse=True,
+    )
 
 
 def _seeds_display(pw_meta: dict[str, Any] | None) -> str:
@@ -320,6 +334,55 @@ def _trusted_str(candidate: Candidate) -> str:
     from precis.quest.frontier import candidate_trusted
 
     return {True: "yes", False: "no", None: "-"}[candidate_trusted(candidate)]
+
+
+def _gate_str(pathway: Ref | None) -> str:
+    """Read the barrier verdict stored on the pathway at evaluation time."""
+    if pathway is None:
+        return "none"
+    summary: Any = (pathway.meta or {}).get("results")
+    for key in ("trust_summary", "barrier", "available"):
+        summary = summary.get(key) if isinstance(summary, dict) else None
+    if summary is True:
+        return "pass"
+    if summary is False:
+        return "blocked"
+    return "-"
+
+
+def _anchor_str(candidate: Candidate, pathway: Ref | None) -> str:
+    """Show credit only when the harvested anchor names the displayed run."""
+    if pathway is None:
+        return "-"
+    handle = handle_registry.try_format("pathway", pathway.id) or f"pw{pathway.id}"
+    anchor = candidate.flags.get("barrier_anchor")
+    if isinstance(anchor, dict) and anchor.get("pathway") == handle:
+        return handle
+    if (
+        "barrier_anchor" in candidate.flags
+        and anchor is None
+        and candidate.flags.get("barrier_pathway_ref_id") == pathway.id
+    ):
+        return "no credit"
+    return "-"
+
+
+def _basis_columns(key: str) -> tuple[str, str, str]:
+    suffix = "" if key == "barrier" else f"_{key}"
+    return f"engine{suffix}", f"template{suffix}", f"stale{suffix}"
+
+
+def _basis_cells(candidate: Candidate, key: str) -> dict[str, str]:
+    engine, template, stale = _basis_columns(key)
+    by_key = candidate.flags.get("network_basis_by_key") or {}
+    basis = by_key.get(key, {})
+    return {
+        engine: str(basis.get("version") or "-"),
+        template: str(basis.get("template") or "-"),
+        stale: "yes"
+        if key in (candidate.flags.get("network_stale_keys") or ())
+        else "no",
+    }
 
 
 def _assurance_str(candidate: Candidate) -> str:
@@ -406,7 +469,7 @@ def results_columns(
 ) -> tuple[str, ...]:
     """The render column order for a quest's results table: the fixed
     :data:`_COLUMNS` plus the quest's declared objective keys not already
-    among them, in declared order (gr567692 — the default ``energy``
+    among them, followed by each objective's basis columns (gr567692 — the default ``energy``
     objective must be visible or a completed relax result reads as an
     empty row).
 
@@ -419,6 +482,8 @@ def results_columns(
     """
     keys = [k for k, _ in objectives] + [k for k, _ in run_point_objectives]
     cols = [*_COLUMNS, *keys]
+    for key in keys:
+        cols.extend(_basis_columns(key))
     if env or run_point_objectives:
         cols += list(ENV_RESULT_COLUMNS)
     return tuple(dict.fromkeys(cols))
@@ -492,7 +557,12 @@ def build_results_rows(
         atoms = _structure_atoms(store, candidate.ref_id)
         dopant, n_dopant, site = _dopant_and_site(candidate, slab_element, atoms)
         coads, h_count, o_count = _coads(candidate, atoms)
-        pw_meta = _linked_pathway_meta(store, candidate.ref_id)
+        pathways = _linked_pathways(store, candidate.ref_id)
+        pw_meta = (pathways[0].meta or {}) if pathways else None
+        neb_pathway = next(
+            (pathway for pathway in pathways if _pathway_tier(pathway.meta) == "neb"),
+            None,
+        )
         row: dict[str, Any] = {
             "ref_id": candidate.ref_id,
             "handle": candidate.handle,
@@ -502,7 +572,7 @@ def build_results_rows(
             "n_dopant": n_dopant,
             "site": site,
             "coads": coads,
-            "tier": str(candidate.flags.get("tier") or "-"),
+            "tier": _pathway_tier(pw_meta) if pw_meta is not None else "-",
             "seeds": _seeds_display(pw_meta),
             # STORED numbers, not display strings — the table lens filters,
             # sorts and aggregates these cells, so a 0.1234 barrier must not
@@ -515,6 +585,9 @@ def build_results_rows(
             "U_L": _raw(measures, "U_L"),
             "P_side": _raw(measures, "P_side"),
             "trusted": _trusted_str(candidate),
+            "gate": _gate_str(neb_pathway),
+            "anchor": _anchor_str(candidate, neb_pathway),
+            **_basis_cells(candidate, "barrier"),
             "assurance": _assurance_str(candidate),
             "rls": _rls_display(pw_meta),
             "blocker": _blocker_display(candidate),
@@ -533,6 +606,7 @@ def build_results_rows(
             if key not in _COLUMNS:
                 row[key] = _raw(measures, key)
                 row["_objectives"].append(key)
+            row.update(_basis_cells(candidate, key))
         if fr.run_point_objectives or candidate.flags.get("rank_basis"):
             row["env_limiting"] = _env_limiting_text(candidate) or "-"
             row["env_footing"] = _env_footing_text(candidate) or "-"

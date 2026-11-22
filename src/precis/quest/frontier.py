@@ -2284,6 +2284,10 @@ def _candidate_from_structure(
     # independent seeds its own gate requires — a sub-floor anchor set is
     # a borrowed one.
     anchor = meta.get("barrier_anchor")
+    if "barrier_anchor" in meta:
+        flags["barrier_anchor"] = anchor
+    if "barrier_pathway_ref_id" in meta:
+        flags["barrier_pathway_ref_id"] = meta["barrier_pathway_ref_id"]
     if flags.get("barrier_trusted") is not False:
         anchor_seeds = anchor.get("seeds") if isinstance(anchor, dict) else None
         rung = flags.get("barrier_fidelity") or flags.get("tier")

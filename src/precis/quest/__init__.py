@@ -1,12 +1,12 @@
 """Quest layer runtime — the striving's autonomous research loop.
 
-Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
-:mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
+Surface in :mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `synthesis` (writer's graph
 linearisation with live frontier figures), `dossier` (deprecated living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
-``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
+``structure`` sims), `frontier` (Pareto rank),
+`results_table` (objective basis and pathway credit), `protocol` (per-quest
 measurement protocols, deduped dispatch/harvest drift entries,
 frontier/status histograms; gr593142), `environment_basis` and
 `correction_policy` (engine-free hashes/tuples), `atomcost` (element-price
