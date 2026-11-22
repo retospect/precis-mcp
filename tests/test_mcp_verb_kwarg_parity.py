@@ -121,6 +121,8 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("memory", "put", "auto_refresh_days"),
         ("taxon", "put", "auto_refresh_days"),
         ("todo", "put", "auto_refresh_days"),
+        # Anki portraits use args.image as documented in precis-anki-help.
+        ("anki", "put", "image"),
         # -- put: draft chunk creation (figure/table/narration fields) ---
         ("draft", "put", "copy_of"),
         ("draft", "put", "image"),
