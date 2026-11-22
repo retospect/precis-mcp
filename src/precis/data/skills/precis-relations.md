@@ -104,8 +104,8 @@ edge renders: `precis-fisheye-help`.
 ## Which endpoints does a relation accept?
 ## Why did link() refuse my rel= — wrong kind, second draft, or a cycle?
 
-A few relations carry a constraint the `link()` verb enforces on every
-write. Every other relation accepts any two refs.
+A few relations carry a constraint `link()` and a creating `put(link=)`
+enforce. Every other relation accepts any two refs.
 
 | `rel=` | domain (source kind) | range (target kind) | functional | acyclic |
 |---|---|---|---|---|

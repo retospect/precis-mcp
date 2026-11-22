@@ -1981,25 +1981,24 @@ class TodoHandler(NumericRefHandler):
         # through. We can't just call super() because the base class
         # doesn't accept ``parent_id``; rewriting the body keeps the
         # tx boundary intact.
-        from precis.utils.link_tag_ops import (
-            guard_taxon_hierarchy,
-            validate_relation,
-        )
-        from precis.utils.link_target import parse_link_target
+        from precis.utils.link_tag_ops import resolve_add_link, validate_relation
 
         if text is None or not text.strip():
             raise BadInput(
                 f"creating a {self._sense()} requires text=",
                 next=f"put(kind={self.kind!r}, text='your content')",
             )
-        target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel, store=self.store)
-        if target is not None:
-            # Taxon hierarchy rules (me693578): this
-            # create path writes its own link, so it calls the shared guard.
-            guard_taxon_hierarchy(
-                self.store, None, target, relation, src_kind=self.kind
+        # Taxon hierarchy rules (me693578) and the relation's constraint
+        # row: this create path writes its own link, so it calls the
+        # shared resolver (gr753894).
+        target = (
+            resolve_add_link(
+                self.store, None, link, relation, src_kind=self.kind, hub=self.hub
             )
+            if link is not None
+            else None
+        )
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:

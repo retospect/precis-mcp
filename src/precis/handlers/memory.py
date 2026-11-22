@@ -2285,11 +2285,11 @@ class MemoryHandler(AuditedRetirementHandler):
         # `memory_body` chunk (not `refs.title`) and the header gets a short
         # title. The body chunk picks up embeddings + keywords from the
         # standard workers automatically — no `card_combined` card.
-        from precis.utils.link_tag_ops import (
-            guard_taxon_hierarchy,
-            validate_relation,
+        from precis.utils.link_tag_ops import guard_add_link, validate_relation
+        from precis.utils.link_target import (
+            mint_lazy_link_target,
+            parse_link_target,
         )
-        from precis.utils.link_target import parse_link_target
 
         if text is None or not text.strip():
             raise BadInput(
@@ -2301,14 +2301,15 @@ class MemoryHandler(AuditedRetirementHandler):
         body = text
         create_meta = put_meta or {}
         title = create_meta.get("title") or _derive_title(body)
-        target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
+        if link is not None:
+            mint_lazy_link_target(link, store=self.store, hub=self.hub)
+        target = parse_link_target(link, store=self.store) if link is not None else None
         if target is not None:
-            # Taxon hierarchy rules (me693578): this
-            # create path writes its own link, so it calls the shared guard.
-            guard_taxon_hierarchy(
-                self.store, None, target, relation, src_kind=self.kind
-            )
+            # Taxon hierarchy rules (me693578) and the relation's constraint
+            # row (gr753894): this create path writes its own link, so it
+            # calls the shared guard.
+            guard_add_link(self.store, None, target, relation, src_kind=self.kind)
 
         # meta.rule / meta.warrant — stamped at create time
         # when the D3-shortcut kwargs were passed; omitted keys entirely
@@ -2437,7 +2438,8 @@ class MemoryHandler(AuditedRetirementHandler):
         validation and its ack's ``Next:`` rows, computed from the draft;
         nothing is written."""
         from precis.handlers import _put_preview
-        from precis.utils.link_tag_ops import guard_taxon_hierarchy, validate_relation
+        from precis.utils.link_tag_ops import guard_add_link, validate_relation
+        from precis.utils.link_target import pending_lazy_link_target
 
         if text is None or not text.strip():
             raise BadInput(
@@ -2468,13 +2470,22 @@ class MemoryHandler(AuditedRetirementHandler):
             [t for t in all_tags if not _redirected(t)], kind=self.kind
         )
         parents: tuple[int, ...] = ()
+        notes: list[str] = []
         if link is not None:
-            target = parse_link_target(link, store=self.store)
             relation = validate_relation(rel)
-            guard_taxon_hierarchy(
-                self.store, None, target, relation, src_kind=self.kind
-            )
-            if relation == "part-of" and target.ref_id is not None:
+            # The real put mints a lazy target (a skill, python, file or
+            # part anchor) before it parses; a dry run never mints, so it
+            # takes the anchor the mint would create as the target.
+            target = pending_lazy_link_target(link, store=self.store, hub=self.hub)
+            if target is not None:
+                notes.append(
+                    f"link target {link!r}: no {target.kind} ref yet — the "
+                    "real put creates its anchor"
+                )
+            else:
+                target = parse_link_target(link, store=self.store)
+            guard_add_link(self.store, None, target, relation, src_kind=self.kind)
+            if relation == "part-of" and not target.pending:
                 parents = (int(target.ref_id),)
         draft = MemoryDraft(
             title=title,
@@ -2502,6 +2513,7 @@ class MemoryHandler(AuditedRetirementHandler):
             space=space,
             next_rows=rows,
             rule=_put_preview.kind_rule(text),
+            notes=notes,
         )
         shape = self._shape_audit(
             title=title,

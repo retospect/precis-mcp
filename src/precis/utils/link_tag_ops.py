@@ -29,7 +29,7 @@ from typing import Any
 
 from precis.errors import BadInput, NotFound
 from precis.store import Store, Tag
-from precis.store.types import Relation
+from precis.store.types import Relation, RelationConstraint
 from precis.utils.link_target import (
     LinkTarget,
     check_python_alias,
@@ -207,14 +207,25 @@ def link_why_suffix(meta: Any) -> str:
     return link_reason_suffix(why.text) if why is not None else ""
 
 
-def _endpoint_kinds(store: Store, a_ref_id: int, b_ref_id: int) -> dict[int, str]:
-    """``refs.kind`` for two ref ids, in one round trip."""
+def _endpoint_kinds(
+    store: Store,
+    a_ref_id: int | None,
+    b_ref_id: int | None,
+    *,
+    new_kind: str | None = None,
+) -> dict[int | None, str]:
+    """``refs.kind`` for two ref ids, in one round trip. A ``None`` id is
+    the node a create-time put has not inserted yet: it reads as
+    ``new_kind`` under the ``None`` key."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, kind FROM refs WHERE ref_id = ANY(%s)",
-            ([a_ref_id, b_ref_id],),
+            ([i for i in (a_ref_id, b_ref_id) if i is not None],),
         ).fetchall()
-    return {int(r[0]): str(r[1]) for r in rows}
+    kinds: dict[int | None, str] = {int(r[0]): str(r[1]) for r in rows}
+    if new_kind is not None and None in (a_ref_id, b_ref_id):
+        kinds[None] = new_kind
+    return kinds
 
 
 def _both_live_claim_hubs(store: Store, a_ref_id: int, b_ref_id: int) -> bool:
@@ -330,7 +341,15 @@ def guard_taxon_hierarchy(
     s_handle, s_name, s_kind, s_meta = _taxon_endpoint(
         store, src_ref_id, src_kind, src_meta
     )
-    d_handle, d_name, d_kind, d_meta = _taxon_endpoint(store, target.ref_id, None, None)
+    d_meta: dict[str, Any]
+    if target.pending:
+        # A dry run's not-yet-minted anchor: no row to read, and a lazy
+        # anchor is never a taxon, so only the both-ends rule can bite.
+        d_handle, d_name, d_kind, d_meta = target.raw, "?", target.kind, {}
+    else:
+        d_handle, d_name, d_kind, d_meta = _taxon_endpoint(
+            store, target.ref_id, None, None
+        )
     if s_kind != "taxon" and d_kind != "taxon":
         return
     for handle, name, kind in ((s_handle, s_name, s_kind), (d_handle, d_name, d_kind)):
@@ -401,24 +420,98 @@ def guard_taxon_hierarchy(
                 )
 
 
-def _ref_label(ref_id: int, kind: str) -> str:
+def _ref_label(ref_id: int | None, kind: str) -> str:
     """``kind:id`` handle for an error message (the registry's short handle
-    when the kind has one)."""
+    when the kind has one); ``the new <kind>`` for a node not inserted yet."""
     from precis.utils import handle_registry
 
+    if ref_id is None:
+        return f"the new {kind}"
     return handle_registry.try_format(kind, ref_id) or f"{kind}:{ref_id}"
+
+
+def _constrained_edge(
+    store: Store, rel: str, src_ref_id: int | None, dst_ref_id: int | None
+) -> tuple[RelationConstraint, int | None, int | None] | None:
+    """The constraint row an ``rel`` edge is checked against, with the edge's
+    ends as that row reads them, or ``None`` when the relation is
+    unconstrained. An inverse slug of a constrained relation resolves to
+    the constrained row with the ends swapped."""
+    constraints = store.relation_constraints()
+    rc = constraints.get(rel)
+    if rc is not None and rc.constrained:
+        return rc, src_ref_id, dst_ref_id
+    inv = constraints.get(rc.inverse_slug) if rc and rc.inverse_slug else None
+    if inv is None or not inv.constrained:
+        return None
+    return inv, dst_ref_id, src_ref_id
+
+
+def _check_functional(
+    store: Store,
+    rc: RelationConstraint,
+    s_id: int | None,
+    d_id: int | None,
+    *,
+    deferred_kind: str | None = None,
+    conn: Any = None,
+) -> None:
+    """The ``functional`` rule of :func:`check_relation_constraints`: the
+    owner end ``d_id`` may hold at most one live source. ``deferred_kind``
+    lets a holder of that kind through (``src_may_exist``)."""
+    if not rc.functional or d_id is None:
+        return
+    held = store.functional_conflict(rc.slug, d_id, exclude_src_ref_id=s_id, conn=conn)
+    if held is None:
+        return
+    kinds = _endpoint_kinds(store, held, d_id)
+    if deferred_kind is not None and kinds.get(held) == deferred_kind:
+        return
+    raise BadInput(
+        f"{rc.slug!r} is functional: {_ref_label(d_id, kinds.get(d_id, '?'))} "
+        f"already has {_ref_label(held, kinds.get(held, '?'))}",
+        next=(
+            f"unlink the existing one first (link(..., rel={rc.slug!r}, "
+            "mode='remove')), or work on the existing one"
+        ),
+    )
+
+
+def check_functional_slot(
+    store: Store,
+    rel: str,
+    src_ref_id: int,
+    target: LinkTarget,
+    *,
+    conn: Any = None,
+) -> None:
+    """The ``functional`` rule alone, for a create door that checked its
+    link with ``src_may_exist`` and now knows the ref its put resolved to:
+    refuses unless the slot is free or ``src_ref_id`` itself holds it — the
+    link verb's idempotent re-add (gr753894). ``conn`` reads on the
+    caller's open transaction."""
+    edge = _constrained_edge(store, rel, src_ref_id, target.ref_id)
+    if edge is None:
+        return
+    rc, s_id, d_id = edge
+    if s_id != d_id:
+        _check_functional(store, rc, s_id, d_id, conn=conn)
 
 
 def check_relation_constraints(
     store: Store,
     rel: str,
-    src_ref_id: int,
+    src_ref_id: int | None,
     target: LinkTarget,
+    *,
+    src_kind: str | None = None,
+    src_may_exist: bool = False,
 ) -> None:
     """Refuse an add-mode link that breaks the relation's constraint row
     (migration 0180: ``domain_kinds`` / ``range_kinds`` / ``functional`` /
     ``acyclic``). The one validator at both generic link doors
-    (:func:`apply_link_ops`, ``NumericRefHandler.link``), mirroring how
+    (:func:`apply_link_ops`, ``NumericRefHandler.link``) and at every
+    create door, all through :func:`guard_add_link`, mirroring how
     ``Tag.parse_strict`` is the one choke point for tags. A relation with no
     constraint row is a no-op.
 
@@ -437,17 +530,31 @@ def check_relation_constraints(
       depth-capped).
 
     ``transitive`` is stored for readers; it checks nothing here.
+
+    ``src_ref_id=None`` is a create-time link whose source node does not
+    exist yet (gr753894): pass its would-be ``src_kind`` — the row is
+    uncommitted at put time, so the kind cannot be read back — and the
+    check runs before any insert. A new node holds no edge, so it can
+    neither own a taken ``functional`` slot nor close a cycle.
+
+    ``src_may_exist`` is for a create door whose put can resolve onto an
+    existing ref of ``src_kind`` (a finding-hub put that converges): a
+    ``functional`` slot held by a live ref of that kind is not refused
+    here, because the holder may be the very ref the put lands on and the
+    link verb lets a ref re-add an edge it holds. Such a door calls
+    :func:`check_functional_slot` once it knows its ref.
+
+    A ``pending`` target (a dry run's not-yet-minted anchor) has no row:
+    its ``kind`` is checked, and it holds no slot and closes no cycle.
     """
-    constraints = store.relation_constraints()
-    rc = constraints.get(rel)
-    s_id, d_id = src_ref_id, target.ref_id
-    if rc is None or not rc.constrained:
-        inv = constraints.get(rc.inverse_slug) if rc and rc.inverse_slug else None
-        if inv is None or not inv.constrained:
-            return
-        rc, s_id, d_id = inv, d_id, s_id
+    edge = _constrained_edge(store, rel, src_ref_id, target.ref_id)
+    if edge is None:
+        return
+    rc, s_id, d_id = edge
     if rc.domain_kinds is not None or rc.range_kinds is not None:
-        kinds = _endpoint_kinds(store, s_id, d_id)
+        kinds = _endpoint_kinds(store, s_id, d_id, new_kind=src_kind)
+        if target.pending:
+            kinds[target.ref_id] = target.kind
         for end, ref_id, allowed, column in (
             ("source", s_id, rc.domain_kinds, "domain_kinds"),
             ("target", d_id, rc.range_kinds, "range_kinds"),
@@ -457,9 +564,11 @@ def check_relation_constraints(
                 continue
             allowed_s = ", ".join(sorted(allowed))
             why = f" — {rc.description}" if rc.description else ""
+            pending = target.pending and ref_id == target.ref_id
+            label = target.raw if pending else _ref_label(ref_id, kind)
             raise BadInput(
                 f"{rc.slug!r} {column} = {allowed_s}: {end} "
-                f"{_ref_label(ref_id, kind)} is kind {kind!r}{why}",
+                f"{label} is kind {kind!r}{why}",
                 next=(
                     f"link a {allowed_s} ref as the {end} of {rc.slug!r}, "
                     f"or pick another rel= (get(kind='skill', "
@@ -468,18 +577,17 @@ def check_relation_constraints(
             )
     if s_id == d_id:
         return  # add_link refuses the self-loop with its own message
-    if rc.functional:
-        held = store.functional_conflict(rc.slug, d_id, exclude_src_ref_id=s_id)
-        if held is not None:
-            kinds = _endpoint_kinds(store, held, d_id)
-            raise BadInput(
-                f"{rc.slug!r} is functional: {_ref_label(d_id, kinds.get(d_id, '?'))} "
-                f"already has {_ref_label(held, kinds.get(held, '?'))}",
-                next=(
-                    f"unlink the existing one first (link(..., rel={rc.slug!r}, "
-                    "mode='remove')), or work on the existing one"
-                ),
-            )
+    if target.pending:
+        return
+    _check_functional(
+        store,
+        rc,
+        s_id,
+        d_id,
+        deferred_kind=src_kind if src_may_exist and src_ref_id is None else None,
+    )
+    if s_id is None or d_id is None:
+        return
     if rc.acyclic and d_id in store.ancestors(rc.slug, s_id):
         kinds = _endpoint_kinds(store, s_id, d_id)
         raise BadInput(
@@ -488,6 +596,75 @@ def check_relation_constraints(
             f"{_ref_label(s_id, kinds.get(s_id, '?'))} along {rc.slug!r}",
             next=f"{rc.slug!r} is acyclic - pick a target that is not above the source",
         )
+
+
+def guard_add_link(
+    store: Store,
+    src_ref_id: int | None,
+    target: LinkTarget,
+    relation: str,
+    *,
+    src_kind: str | None = None,
+    src_meta: dict[str, Any] | None = None,
+    src_may_exist: bool = False,
+) -> None:
+    """Every refusal an add-mode edge can earn before it is written: the
+    taxon hierarchy rules (:func:`guard_taxon_hierarchy`), then the
+    relation's constraint row (:func:`check_relation_constraints`).
+
+    The one call for every door that writes an edge — the link verb
+    (:func:`apply_link_ops`, ``NumericRefHandler.link``) and each create
+    door's ``put(link=, rel=)`` — so a put cannot write an edge ``link()``
+    refuses (gr753894). ``src_ref_id=None`` with ``src_kind``/``src_meta``
+    is the create-time form: it runs before the insert, so a refused put
+    writes nothing.
+    """
+    guard_taxon_hierarchy(
+        store, src_ref_id, target, relation, src_kind=src_kind, src_meta=src_meta
+    )
+    check_relation_constraints(
+        store,
+        relation,
+        src_ref_id,
+        target,
+        src_kind=src_kind,
+        src_may_exist=src_may_exist,
+    )
+
+
+def resolve_add_link(
+    store: Store,
+    src_ref_id: int | None,
+    link: str,
+    relation: str,
+    *,
+    src_kind: str | None = None,
+    src_meta: dict[str, Any] | None = None,
+    src_may_exist: bool = False,
+    hub: Any = None,
+) -> LinkTarget:
+    """Resolve an add-mode ``link=`` spec to the target its edge may be
+    written to: mint a lazy target (:func:`mint_lazy_link_target`), parse
+    it, then run :func:`guard_add_link`. Shared by :func:`apply_link_ops`
+    and the create doors (``src_ref_id=None`` + ``src_kind``), which call
+    it before their insert (gr753894).
+
+    The mint comes first, as at the link verb, so a refusal after it leaves
+    the lazy anchor (a chunkless ``skill``/``python``/``part`` row or an
+    ingested file ref) behind. That row is the target's, not the put's: a
+    refused put still writes no ref of its own kind and no edge."""
+    mint_lazy_link_target(link, store=store, hub=hub)
+    target = parse_link_target(link, store=store)
+    guard_add_link(
+        store,
+        src_ref_id,
+        target,
+        relation,
+        src_kind=src_kind,
+        src_meta=src_meta,
+        src_may_exist=src_may_exist,
+    )
+    return target
 
 
 def guard_and_route_contradicts_disputes(
@@ -590,10 +767,7 @@ def apply_link_ops(
     n_removed = 0
 
     if link is not None:
-        mint_lazy_link_target(link, store=store, hub=hub)
-        target = parse_link_target(link, store=store)
-        guard_taxon_hierarchy(store, src_ref_id, target, relation)
-        check_relation_constraints(store, relation, src_ref_id, target)
+        target = resolve_add_link(store, src_ref_id, link, relation, hub=hub)
         routed = guard_and_route_contradicts_disputes(
             store, src_ref_id, target, relation
         )
@@ -775,8 +949,10 @@ def format_link_tag_ack(
 __all__ = [
     "apply_link_ops",
     "apply_tag_ops",
+    "check_functional_slot",
     "check_relation_constraints",
     "format_link_tag_ack",
+    "guard_add_link",
     "guard_and_route_contradicts_disputes",
     "guard_taxon_hierarchy",
     "require_link_target",

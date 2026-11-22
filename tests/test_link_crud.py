@@ -798,12 +798,15 @@ class TestMemoryHandlerLink:
         self, memory_handler: MemoryHandler, store: Store
     ) -> None:
         _seed_paper(store)
+        # memory→paper `contradicts` is refused at the link door (migration
+        # 0151) and, since gr753894, at create too — `disputes` is the
+        # fileable disagreement edge here.
         out = memory_handler.put(
-            text="rebuts", link="paper:wang2020state", rel="contradicts"
+            text="rebuts", link="paper:wang2020state", rel="disputes"
         )
         new_id = id_of(out.body)
         links = store.links_for(new_id, direction="out")
-        assert links[0].relation == "contradicts"
+        assert links[0].relation == "disputes"
 
     def test_link_to_block(self, memory_handler: MemoryHandler, store: Store) -> None:
         target = _seed_paper_with_blocks(store, n_blocks=5)

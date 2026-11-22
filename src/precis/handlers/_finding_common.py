@@ -17,8 +17,13 @@ from precis.store.types import ActorSlug, Ref, Relation, Tag
 from precis.taproot import hub as hublib
 from precis.taproot.canon import TAPROOT_NAMESPACE
 from precis.utils import handle_registry
-from precis.utils.link_tag_ops import apply_tag_ops, validate_relation
-from precis.utils.link_target import LinkTarget, parse_link_target
+from precis.utils.link_tag_ops import (
+    apply_tag_ops,
+    check_functional_slot,
+    resolve_add_link,
+    validate_relation,
+)
+from precis.utils.link_target import LinkTarget
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -101,6 +106,7 @@ def check_put_extras(
     tags: list[str] | None,
     link: str | None,
     rel: str | None,
+    hub: Any = None,
 ) -> PutExtras | None:
     """Check a claim-hub put's ``tags=``/``link=``/``rel=`` before any write;
     ``None`` when the call carries none (gr676914).
@@ -117,7 +123,14 @@ def check_put_extras(
       through ``supporters=``; a raw hub -> paper row would bypass
       :func:`~precis.taproot.hub.attach_evidence`;
     * a claim-link relation whose target is not a finding;
-    * a ``link=`` target that is malformed or resolves to no live ref.
+    * a ``link=`` target that is malformed or resolves to no live ref;
+    * an edge the ``link`` verb refuses — the taxon hierarchy rules and the
+      relation's constraint row, through the shared
+      :func:`~precis.utils.link_tag_ops.resolve_add_link` (gr753894). The
+      hub is not known yet, so the source is checked as a new finding; a
+      ``functional`` slot held by another finding is left to
+      :func:`apply_put_extras`, because a converging put may land on the
+      very hub that holds it.
 
     A bare ``link=`` defaults to ``cites``, as on the chase and acquisition
     doors.
@@ -148,7 +161,15 @@ def check_put_extras(
                 "'source_handle': 'pc<id>'}] carries evidence; a conflict "
                 "with another claim hub is link='fi<id>', rel='disputes'",
             )
-        target = parse_link_target(link, store=store)
+        target = resolve_add_link(
+            store,
+            None,
+            link,
+            relation,
+            src_kind="finding",
+            src_may_exist=True,
+            hub=hub,
+        )
         if relation in hublib.CLAIM_LINK_RELATIONS and (
             target.kind != "finding" or target.pos is not None
         ):
@@ -198,6 +219,9 @@ def apply_put_extras(
                 "to — a hub cannot link to itself",
                 next="drop link= and put again — nothing was written",
             )
+        # The functional slot, now that the hub is known: free, or held by
+        # this very hub (a converging put re-adding its own edge).
+        check_functional_slot(store, extras.relation, hub_ref_id, target, conn=conn)
         if extras.relation in hublib.CLAIM_LINK_RELATIONS:
             hublib.link_claims(
                 store,

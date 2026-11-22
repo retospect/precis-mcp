@@ -108,12 +108,12 @@ from precis.utils.idem import (
 )
 from precis.utils.link_tag_ops import (
     _DEFAULT_RELATION,
-    check_relation_constraints,
+    guard_add_link,
     guard_and_route_contradicts_disputes,
-    guard_taxon_hierarchy,
     link_why_suffix,
     require_link_target,
     require_tag_ops,
+    resolve_add_link,
     validate_link_mode,
     validate_relation,
 )
@@ -4583,8 +4583,7 @@ class NumericRefHandler(Handler):
             # generic-link doors never drift (docs/backlog/disputes-edge-
             # nonblocking-disagreement.md). ``routed`` is non-None only for
             # the claim-pair ``disputes`` delegation, which already wrote.
-            guard_taxon_hierarchy(self.store, ref_id, link_target, relation)
-            check_relation_constraints(self.store, relation, ref_id, link_target)
+            guard_add_link(self.store, ref_id, link_target, relation)
             routed = guard_and_route_contradicts_disputes(
                 self.store, ref_id, link_target, relation
             )
@@ -4644,11 +4643,6 @@ class NumericRefHandler(Handler):
                 f"creating a {self._sense()} requires text=",
                 next=f"put(kind={self.kind!r}, text='your content')",
             )
-        # Resolve the link target *before* the insert, so a bad
-        # ``link='paper:doesnotexist'`` doesn't leave a half-created
-        # ref in the corpus. The parser hits the DB but doesn't
-        # mutate; the insert + link both happen below.
-        target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel, store=self.store)
 
         # Pre-validate every tag *before* we touch the DB. The MCP
@@ -4680,18 +4674,25 @@ class NumericRefHandler(Handler):
         # slice-token call stamps ``meta.slice`` the same way (gr543694).
         initial_meta = worktree_server.stamp_meta(initial_meta) or initial_meta
         initial_meta = slice_tokens.stamp_meta(initial_meta) or initial_meta
-        if target is not None:
-            # Taxon hierarchy rules (endpoint kinds, cycle, contract) run
-            # before the insert: the new node has no ref row yet, so a
-            # refusal writes nothing.
-            guard_taxon_hierarchy(
+        # Resolve the link target *before* the insert, so a bad
+        # ``link='paper:doesnotexist'`` doesn't leave a half-created
+        # ref in the corpus; the insert + link both happen below. The
+        # link verb's checks (lazy target mint, taxon hierarchy rules,
+        # the relation's constraint row) run here too: the new node has
+        # no ref row yet, so a refusal writes nothing (gr753894).
+        target = (
+            resolve_add_link(
                 self.store,
                 None,
-                target,
+                link,
                 relation,
                 src_kind=self.kind,
                 src_meta=initial_meta,
+                hub=self.hub,
             )
+            if link is not None
+            else None
+        )
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
                 kind=self.kind,

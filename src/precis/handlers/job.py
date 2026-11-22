@@ -64,10 +64,7 @@ from precis.store._salience import current_background_actor
 from precis.store.types import Ref
 from precis.todo import guards as todo_guards
 from precis.utils import handle_registry
-from precis.utils.link_tag_ops import (
-    guard_taxon_hierarchy,
-    validate_relation,
-)
+from precis.utils.link_tag_ops import resolve_add_link, validate_relation
 from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
@@ -4128,13 +4125,18 @@ class JobHandler(NumericRefHandler):
         # one from the link target so re-submits for the same parent
         # collapse onto the in-flight job.
         if link is not None:
-            target = parse_link_target(link, store=self.store)
             relation = validate_relation(rel)
             if rel is None and spec.name == "fix_gripe":
                 # fix_gripe wants rel='fixes'; supply it implicitly
                 # so a caller who omits rel= still gets the right
                 # graph edge.
                 relation = validate_relation("fixes")
+            # Taxon hierarchy rules (me693578) and the relation's
+            # constraint row: this create path writes its own link, so it
+            # calls the shared resolver (gr753894).
+            target = resolve_add_link(
+                self.store, None, link, relation, src_kind=self.kind, hub=self.hub
+            )
         else:
             target = None
             relation = validate_relation(rel) if rel is not None else "related-to"
@@ -4146,13 +4148,6 @@ class JobHandler(NumericRefHandler):
                         "link='gripe:42', rel='fixes')"
                     ),
                 )
-
-        if target is not None:
-            # Taxon hierarchy rules (me693578): this
-            # create path writes its own link, so it calls the shared guard.
-            guard_taxon_hierarchy(
-                self.store, None, target, relation, src_kind=self.kind
-            )
 
         resolved_idem = idem_key or (link if link is not None else None)
 

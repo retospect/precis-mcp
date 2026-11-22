@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from precis.response import Response
@@ -115,9 +116,11 @@ def render_preview(
     space: str | None,
     next_rows: list[tuple[str, str]],
     rule: tuple[str, str] | None = None,
+    notes: Sequence[str] = (),
 ) -> Response:
-    """The dry-run ack: header, proposed kind (memory only), the
-    near-duplicate retain line, the duplicate list, then ``Next:``."""
+    """The dry-run ack: header, proposed kind (memory only), ``notes``
+    (what the real put would do besides the create), the near-duplicate
+    retain line, the duplicate list, then ``Next:``."""
 
     def h(rid: int) -> str:
         return handle_registry.try_format(kind, rid) or f"{kind}:{rid}"
@@ -125,6 +128,7 @@ def render_preview(
     lines = [DRY_RUN_HEADER]
     if rule is not None:
         lines.append(f"kind: {rule[0]} (rule: {rule[1]})")
+    lines.extend(notes)
     where = f" in {space}" if space else ""
     if dups is None:
         lines.append("nearest duplicates: not checked (no embedder)")

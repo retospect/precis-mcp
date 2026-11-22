@@ -164,6 +164,7 @@ def put_hypothesis(
     tags: list[str] | None = None,
     link: str | None = None,
     rel: str | None = None,
+    hub: Any = None,
 ) -> Response:
     """Mint a hypothesis claim hub and park its prepared mint payload.
     ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874).
@@ -171,7 +172,7 @@ def put_hypothesis(
     ``tags=``/``link=``/``rel=`` are the put schema's create-time extras:
     checked first, written on the hypothesis hub in the proposal's one
     transaction, and named in the response (module docstring)."""
-    extras = check_put_extras(store, tags=tags, link=link, rel=rel)
+    extras = check_put_extras(store, tags=tags, link=link, rel=rel, hub=hub)
     with store.atomic() as conn:
         resp, hub_ref_id = _propose(
             store,

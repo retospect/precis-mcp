@@ -193,6 +193,7 @@ def put_hub(
     tags: list[str] | None = None,
     link: str | None = None,
     rel: str | None = None,
+    hub: Any = None,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = merge_confirm,
@@ -213,7 +214,7 @@ def put_hub(
     ``tags=``/``link=``/``rel=`` are the put schema's create-time extras:
     checked here before anything runs, then written on the hub the outcome
     names, in that outcome's transaction (module docstring)."""
-    extras = check_put_extras(store, tags=tags, link=link, rel=rel)
+    extras = check_put_extras(store, tags=tags, link=link, rel=rel, hub=hub)
     resp = _put_hub(
         store,
         sentence=sentence,

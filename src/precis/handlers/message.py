@@ -39,11 +39,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ChunkInsert
-from precis.utils.link_tag_ops import (
-    guard_taxon_hierarchy,
-    validate_relation,
-)
-from precis.utils.link_target import parse_link_target
+from precis.utils.link_tag_ops import resolve_add_link, validate_relation
 from precis.utils.next_block import render_next_section
 
 # Transports we accept on a target=. v1: discord only. The validator
@@ -221,9 +217,6 @@ class MessageHandler(NumericRefHandler):
         if tags:
             all_tag_strs.extend(tags)
         parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in all_tag_strs]
-        link_target = (
-            parse_link_target(link, store=self.store) if link is not None else None
-        )
         if rel is not None and link is None:
             raise BadInput(
                 "rel= requires link= on create",
@@ -233,12 +226,16 @@ class MessageHandler(NumericRefHandler):
                 ),
             )
         relation = validate_relation(rel, store=self.store)
-        if link_target is not None:
-            # Taxon hierarchy rules (me693578): this
-            # create path writes its own link, so it calls the shared guard.
-            guard_taxon_hierarchy(
-                self.store, None, link_target, relation, src_kind=self.kind
+        # Taxon hierarchy rules (me693578) and the relation's constraint
+        # row: this create path writes its own link, so it calls the
+        # shared resolver (gr753894).
+        link_target = (
+            resolve_add_link(
+                self.store, None, link, relation, src_kind=self.kind, hub=self.hub
             )
+            if link is not None
+            else None
+        )
 
         text_str = str(text)
         with self.store.tx() as conn:

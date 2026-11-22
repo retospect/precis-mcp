@@ -285,9 +285,16 @@ class CitationHandler(NumericRefHandler):
         target = None
         relation_slug = rel or "cites"
         if link is not None:
-            from precis.utils.link_target import parse_link_target
+            from precis.utils.link_tag_ops import resolve_add_link
 
-            target = parse_link_target(link, store=self.store)
+            target = resolve_add_link(
+                self.store,
+                None,
+                link,
+                relation_slug,
+                src_kind=self.kind,
+                hub=self.hub,
+            )
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(

@@ -133,7 +133,11 @@ from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.glyph_health import glyph_caveat
-from precis.utils.link_tag_ops import apply_tag_ops, merge_link_reason
+from precis.utils.link_tag_ops import (
+    apply_tag_ops,
+    merge_link_reason,
+    resolve_add_link,
+)
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.ref_hybrid import fused_ref_hits
@@ -496,6 +500,7 @@ class FindingHandler(AuditedRetirementHandler):
                 tags=tags,
                 link=link,
                 rel=rel,
+                hub=self.hub,
             )
 
         # --- Taproot hub-mint mode ---
@@ -552,6 +557,7 @@ class FindingHandler(AuditedRetirementHandler):
                 tags=tags,
                 link=link,
                 rel=rel,
+                hub=self.hub,
             )
 
         # --- Acquisition mode (claim-first mint) ---
@@ -592,6 +598,7 @@ class FindingHandler(AuditedRetirementHandler):
                 tags=tags,
                 link=link,
                 rel=rel,
+                hub=self.hub,
                 collision_response=self._collision_response,
                 meta=meta,
             )
@@ -754,7 +761,14 @@ class FindingHandler(AuditedRetirementHandler):
         extra_target: LinkTarget | None = None
         extra_relation: str = rel or "cites"
         if link is not None:
-            extra_target = parse_link_target(link, store=self.store)
+            extra_target = resolve_add_link(
+                self.store,
+                None,
+                link,
+                extra_relation,
+                src_kind=self.kind,
+                hub=self.hub,
+            )
 
         body_clean = body_text.strip()
         title_clean = title.strip()

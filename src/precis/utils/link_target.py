@@ -62,6 +62,10 @@ class LinkTarget:
     #: Original handle/target when the requested ref was merged/superseded
     #: and we transparently redirected to the live survivor (see B redirect).
     redirected_from: str | None = None
+    #: True for the anchor a real add would mint on first link
+    #: (:func:`pending_lazy_link_target`, a dry run's stand-in): no row
+    #: exists yet, so ``ref_id`` is 0 and only ``kind`` can be checked.
+    pending: bool = False
 
 
 def parse_link_target(
@@ -483,9 +487,10 @@ def _resolve_part_pin(
 def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None:
     """Mint the lazy ref a link target names, if none.
 
-    Add-mode link doors only (``apply_link_ops``, ``NumericRefHandler.link``),
-    called before :func:`parse_link_target`, which never mints: it also
-    serves unlink and ``like=``. A C-number absent from the catalog raises
+    Add-mode link doors only (``apply_link_ops``, ``NumericRefHandler.link``,
+    and a create door's ``put(link=)`` — gr753894), called before
+    :func:`parse_link_target`, which never mints: it also serves unlink and
+    ``like=``. A C-number absent from the catalog raises
     ``NotFound`` and mints nothing (``precis.handlers.part`` docstring).
 
     ``hub=`` additionally lets the store-backed file kinds
@@ -501,12 +506,39 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
     linkable sibling named — otherwise :func:`parse_link_target` reports
     a misleading "no live md ref".
     """
+    _lazy_link_target(target, store=store, hub=hub, mint=True)
+
+
+def pending_lazy_link_target(
+    target: str, *, store: Store, hub: Any = None
+) -> LinkTarget | None:
+    """The dry-run twin of :func:`mint_lazy_link_target`: the anchor a real
+    add would mint for ``target``, as a ``pending`` :class:`LinkTarget`, or
+    ``None`` when nothing would be minted (the ref exists, or the kind is
+    not lazy — :func:`parse_link_target` then decides).
+
+    Never writes and makes no outward call. Same validation as the mint, so
+    an unknown skill, symbol or root refuses here exactly as there. One
+    difference: a C-number outside the local catalog is refused without the
+    live listing lookup the real add makes; the refusal says so.
+    """
+    kind = _lazy_link_target(target, store=store, hub=hub, mint=False)
+    if kind is None:
+        return None
+    return LinkTarget(ref_id=0, pos=None, kind=kind, raw=target, pending=True)
+
+
+def _lazy_link_target(target: str, *, store: Store, hub: Any, mint: bool) -> str | None:
+    """Body of :func:`mint_lazy_link_target` (``mint=True``, returns
+    ``None``) and :func:`pending_lazy_link_target` (``mint=False``: writes
+    nothing, returns the kind whose anchor a mint would create, else
+    ``None``). One body, so the probe cannot drift from the mint."""
     if not isinstance(target, str):
-        return
+        return None
     kind, sep, rest = target.strip().partition(":")
     kind = kind.strip()
     if not sep:
-        return
+        return None
     if kind == "md":
         raise BadInput(
             f"link target {target!r}: 'md' is a read/search index "
@@ -527,7 +559,7 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
         # silently anchoring the symbol under another root.
         alias, identifier = _split_python_identifier(rest.partition("~")[0])
         if not identifier:
-            return
+            return None
         handler = hub.handler_for(kind) if hub is not None else None
         if handler is None:
             raise NotFound(
@@ -547,13 +579,15 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
                     "view='toc'), or search(kind='python', q='<name>')"
                 ),
             )
+        if not mint:
+            return kind if store.python_symbol_ref_id(identifier) is None else None
         store.ensure_python_ref(identifier, alias=anchor[0], file=anchor[1])
-        return
+        return None
     identifier = rest.partition("~")[0].strip()
     if kind in ("markdown", "plaintext", "tex"):
         handler = hub.handler_for(kind) if hub is not None else None
         if handler is None:
-            return
+            return None
         from precis.handlers.plaintext import _parse_file_id
 
         slug, _sel, _view = _parse_file_id(
@@ -565,24 +599,32 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
         # ``missing_ok=True``: resolving a link target is a read —
         # a live ref whose file isn't under this root must not be
         # retired by the probe (gr659000).
+        if not mint:
+            unminted = (
+                store.get_ref(kind=kind, id=slug) is None
+                and handler._path_for_slug(slug).exists()
+            )
+            return kind if unminted else None
         handler.ensure_ingested(slug, missing_ok=True)
-        return
+        return None
     if kind not in ("part", "skill"):
-        return
+        return None
     if kind == "skill":
         # Skills are package-data files; the row is only an anchor, minted
         # on first link. An id absent from the skill index never mints.
         from precis.handlers.skill import skill_exists
 
         if not identifier:
-            return
+            return None
         if not skill_exists(identifier):
             raise NotFound(
                 f"link target {target!r}: no skill {identifier!r}",
                 next="get(kind='skill', id='toc') lists the skill ids",
             )
+        if not mint:
+            return kind if store.get_ref(kind=kind, id=identifier) is None else None
         store.ensure_skill_ref(identifier)
-        return
+        return None
     if identifier and handle_registry.parse(identifier) is None:
         # Accept the C-number however it arrives — lowercase, or a pasted
         # lcsc.com/jlcpcb.com product URL (the C-number is extracted, never
@@ -592,9 +634,21 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
         from precis.pcb import catalog, jlc_api
 
         key = catalog.lcsc_id(identifier) or identifier
+        if not mint:
+            if store.part_ref_id(key) is not None:
+                return None
+            if store.part_row(key.strip().upper()) is None:
+                raise NotFound(
+                    f"part {key} is not in the local catalog and has no ref",
+                    next=(
+                        "a dry run does not query the live jlcpcb.com listing; "
+                        "the real put does, and mints the part if it is listed"
+                    ),
+                )
+            return kind
         try:
             store.ensure_part_ref(key)
-            return
+            return None
         except NotFound as exc:
             if catalog.lcsc_id(key) is None:
                 raise
@@ -614,6 +668,7 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
                 ]
                 raise
         store.ensure_part_ref(key)
+    return None
 
 
 def _split_python_identifier(identifier: str) -> tuple[str | None, str]:
@@ -712,4 +767,5 @@ __all__ = [
     "check_python_alias",
     "mint_lazy_link_target",
     "parse_link_target",
+    "pending_lazy_link_target",
 ]

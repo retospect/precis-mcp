@@ -63,9 +63,8 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.utils import handle_registry
 from precis.utils.link_tag_ops import (
-    check_relation_constraints,
+    guard_add_link,
     guard_and_route_contradicts_disputes,
-    guard_taxon_hierarchy,
     require_link_target,
     validate_link_mode,
     validate_relation,
@@ -1174,8 +1173,7 @@ class RxnHandler(Handler):
         assert link_target is not None and relation is not None
         sense = ref.slug or ref.id
         if mode == "add":
-            guard_taxon_hierarchy(self.store, int(ref.id), link_target, relation)
-            check_relation_constraints(self.store, relation, int(ref.id), link_target)
+            guard_add_link(self.store, int(ref.id), link_target, relation)
             routed = guard_and_route_contradicts_disputes(
                 self.store, int(ref.id), link_target, relation
             )

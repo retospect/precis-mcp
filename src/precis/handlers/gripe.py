@@ -2345,14 +2345,7 @@ class GripeHandler(NumericRefHandler):
         import psycopg.errors
 
         from precis.handlers._gripe_title import first_line
-        from precis.utils.link_tag_ops import (
-            guard_taxon_hierarchy,
-            validate_relation,
-        )
-        from precis.utils.link_target import (
-            mint_lazy_link_target,
-            parse_link_target,
-        )
+        from precis.utils.link_tag_ops import resolve_add_link, validate_relation
 
         if text is None or not text.strip():
             raise BadInput(
@@ -2382,16 +2375,17 @@ class GripeHandler(NumericRefHandler):
         # td659660 review of gr658432). ``_run_idempotent`` then skips
         # its post-hoc ``update_ref``.
         idem = _PUT_IDEM_KEY.get()
-        if link is not None:
-            mint_lazy_link_target(link, store=self.store, hub=self.hub)
-        target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
-        if target is not None:
-            # Taxon hierarchy rules (me693578): this
-            # create path writes its own link, so it calls the shared guard.
-            guard_taxon_hierarchy(
-                self.store, None, target, relation, src_kind=self.kind
+        # Taxon hierarchy rules (me693578) and the relation's constraint
+        # row: this create path writes its own link, so it calls the
+        # shared resolver (gr753894).
+        target = (
+            resolve_add_link(
+                self.store, None, link, relation, src_kind=self.kind, hub=self.hub
             )
+            if link is not None
+            else None
+        )
         # A create-time ``PRIO:`` alias syncs to the canonical prio column
         # (which the backlog groomer inherits onto the fix todo), not a
         # decorative tag row. Strip it before strict tag parsing. An

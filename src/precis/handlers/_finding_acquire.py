@@ -22,7 +22,7 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.response import Response
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
-from precis.utils.link_tag_ops import apply_tag_ops
+from precis.utils.link_tag_ops import apply_tag_ops, resolve_add_link
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.workers.embed import nudge_fresh_embed
 
@@ -110,6 +110,7 @@ def put_acquiring(
     rel: str | None,
     collision_response: Callable[[str], Response],
     meta: dict[str, Any] | None = None,
+    hub: Any = None,
 ) -> Response:
     """Mint an acquisition-mode finding: a claim whose supporting
     paper(s) aren't in the corpus yet.
@@ -204,7 +205,9 @@ def put_acquiring(
     extra_target: LinkTarget | None = None
     extra_relation: str = rel or "cites"
     if link is not None:
-        extra_target = parse_link_target(link, store=store)
+        extra_target = resolve_add_link(
+            store, None, link, extra_relation, src_kind=kind, hub=hub
+        )
 
     # Same silent title cap as the ordinary path (gr538410) — applied
     # before the deterministic key so pub_id covers the stored body.
