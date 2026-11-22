@@ -34,6 +34,20 @@ numbers rather than by writing a parser.
 The prod three hop the cluster read-only through `scripts/prod-psql`. Without
 `--prod` the run is local-only and needs no network.
 
+**One event per call.** The session MCP writes to prod, so every local
+precis call also has a `tool_calls` row. When `--local` and `--ledger` run
+together, `extract.py` drops the ledger row and keeps the local event (it
+has the payload): same verb, kind and `id`/`q` values, call start
+(`ts - latency_ms`) within 5 s of the local timestamp, at most one row per
+local call. The summary line reports `ledger_twins=N`. Codex, Devin and
+command-profile calls are not matched and still count twice.
+
+**Bash exit 1 that is an answer.** A `Bash` result that is nothing but
+`Exit code 1` is not an error when every command whose status the line can
+report is `pgrep`, `grep`, `rg`, `diff` or `test` ("no match", "differs",
+"false"). Output next to the exit line, any other exit code, or another
+command in the chain (`scripts/test … && grep …`) keeps it an error.
+
 `--jobs` exports with `SELECT to_jsonb(t) FROM (…) t;` — one JSON object
 per line, the transcript riding inside a JSON string so its newlines never
 reach the row stream. Plain SQL only: prod reads go through

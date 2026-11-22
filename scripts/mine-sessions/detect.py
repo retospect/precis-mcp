@@ -802,12 +802,23 @@ def detect_detour_census(events: Sequence[Event]) -> list[Candidate]:
     return cands
 
 
-_VIEW_RE = re.compile(r"view=['\"]?([\w-]+)")
+_VIEW_RE = re.compile(r"""\bview["']?\s*[:=]\s*\\?["']?([\w-]+)""")
 
 
 def _extract_view(digest: str) -> str | None:
+    """The ``view`` a call asked for, or ``None``. Reads both digest
+    dialects (see ``_arg_value``): the JSON dump the local extractor and
+    the ledger's ``arg_sample`` produce (``"view": "toc"``) and the
+    ``view='toc'`` rendering, including a command-profile call string
+    inside a JSON digest (``view=\\"toc\\"``). The ``view=``-only reader
+    was blind to the whole local corpus, so every local ``render_obesity``
+    row landed in the ``-`` bucket with all its views mixed (gr677015).
+    ``view`` must be the whole key: ``review=``/``"preview":`` name no view,
+    and neither does a JSON ``null``."""
     m = _VIEW_RE.search(digest or "")
-    return m.group(1) if m else None
+    if m is None or m.group(1) in ("null", "None"):
+        return None
+    return m.group(1)
 
 
 @detector("render_obesity")

@@ -37,7 +37,12 @@ from schema import Event
 #: v3 (td580721): ``detour_census`` reuses the detector's ``detour_hits``,
 #: so the same call extracted under two session paths no longer
 #: double-counts — v2 detour counts can read high.
-SCHEMA_VERSION = 3
+#: v4 (gr677015): a ``--local --ledger`` pass counts a local MCP call once
+#: (its ledger row is dropped at extraction), ``render_obesity`` buckets
+#: JSON digests by view instead of all under ``-``, and a silent exit 1
+#: from pgrep/grep/rg/diff/test is not a Bash error — v3 precis call
+#: counts read up to 2× high and Bash error counts about a tenth high.
+SCHEMA_VERSION = 4
 
 
 def _date_range(events: Sequence[Event]) -> tuple[str | None, str | None]:

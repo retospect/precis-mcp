@@ -904,3 +904,335 @@ def test_duplicate_transcript_files_deduped(tmp_path: Path) -> None:
     # Which file wins is mtime order — the survivor's session root is the
     # same underlying sessionId either way.
     assert tool_rows[0]["session"].split("/", 1)[0] == sid
+
+
+# ---------------------------------------------------------------------------
+# 14. a local MCP call and its ledger row are one call (gr677015)
+# ---------------------------------------------------------------------------
+
+
+def _ledger_row(
+    verb: str,
+    kind: str,
+    ts: str,
+    arg_sample: str,
+    *,
+    latency_ms: int = 200,
+) -> dict[str, object]:
+    """One row in the shape ``extract.fetch_ledger_rows`` returns. ``ts`` is
+    the psql rendering (``2026-09-20 10:00:01.2+00``) — the row is written
+    when the call returns, so it trails the call by ``latency_ms``."""
+    return {
+        "ts": ts,
+        "source": "sonnet",
+        "profile": "typed",
+        "verb": verb,
+        "kind": kind,
+        "input_keys": sorted(json.loads(arg_sample)),
+        "outcome": "ok",
+        "error_type": None,
+        "latency_ms": latency_ms,
+        "session_id": "mcp-session-1",
+        "seq": None,
+        "result_bytes": 512,
+        "error_head": None,
+        "arg_sample": arg_sample,
+        "agentlog_id": None,
+    }
+
+
+def _mine_local_and_ledger(
+    tmp_path: Path,
+    monkeypatch,
+    local_calls: list[tuple[str, dict[str, object], str]],
+    ledger_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Run ``extract.main --local --ledger`` over one synthetic local
+    transcript (``(tool, args, ts)`` per call) and a stubbed ledger fetch;
+    return the emitted precis-call rows (turn-level events dropped)."""
+    sid = "44444444-4444-4444-4444-444444444444"
+    root = tmp_path / "projects"
+    lines: list[dict[str, object]] = []
+    for i, (tool, args, ts) in enumerate(local_calls):
+        lines.append(_tool_use_event(sid, f"toolu_{i}", tool, args, ts=ts))
+        lines.append(_tool_result_event(sid, f"toolu_{i}", "a result", ts=ts))
+    _write_jsonl(root / "-Users-x-proj" / f"{sid}.jsonl", lines)
+    monkeypatch.setattr(extract, "fetch_ledger_rows", lambda since: ledger_rows)
+
+    out = tmp_path / "events.jsonl"
+    argv = ["--local", "--ledger", "--projects-glob", str(root), "--out", str(out)]
+    assert extract.main(argv) == 0
+    rows = [
+        json.loads(item)
+        for item in out.read_text(encoding="utf-8").split("\n")
+        if item.strip()
+    ]
+    return [r for r in rows if r["verb"]]
+
+
+def test_ledger_row_matching_local_call_is_dropped(tmp_path: Path, monkeypatch) -> None:
+    """Every local MCP call also lands in the prod ``tool_calls`` ledger, so
+    a ``--local --ledger`` pass counted it twice — 99.6 % of local MCP rows
+    had a ledger twin on the 2026-11-10..14 pass (gr677015). The ledger row
+    goes; the local event stays, because it carries the payload. A ledger
+    row with the same verb and kind inside the window but another ``id`` or
+    ``q`` is somebody else's call and must survive."""
+    calls = _mine_local_and_ledger(
+        tmp_path,
+        monkeypatch,
+        local_calls=[
+            (
+                "mcp__precis__get",
+                {"kind": "gripe", "id": 484070},
+                "2026-09-20T10:00:00.000Z",
+            ),
+            (
+                "mcp__precis__search",
+                {"kind": "skill", "q": "session miner dedupe"},
+                "2026-09-20T10:00:10.000Z",
+            ),
+        ],
+        # In ``ts`` order, as the fetch's ORDER BY returns them.
+        ledger_rows=[
+            # The get's twin.
+            _ledger_row(
+                "get",
+                "gripe",
+                "2026-09-20 10:00:00.4+00",
+                '{"id":484070,"kind":"gripe"}',
+            ),
+            # Near-miss: same verb and kind inside 5 s, another id.
+            _ledger_row(
+                "get",
+                "gripe",
+                "2026-09-20 10:00:02+00",
+                '{"id":484071,"kind":"gripe"}',
+            ),
+            # Nothing local resembles this one at all.
+            _ledger_row(
+                "search",
+                "todo",
+                "2026-09-20 10:00:03+00",
+                '{"kind":"todo","view":"toc"}',
+            ),
+            # The search's twin.
+            _ledger_row(
+                "search",
+                "skill",
+                "2026-09-20 10:00:10.9+00",
+                '{"kind":"skill","q":"session miner dedupe"}',
+            ),
+            # Near-miss: same verb and kind inside 5 s, another q.
+            _ledger_row(
+                "search",
+                "skill",
+                "2026-09-20 10:00:11.5+00",
+                '{"kind":"skill","q":"render diet"}',
+            ),
+            # The same id a minute later: a second call, not the twin.
+            _ledger_row(
+                "get",
+                "gripe",
+                "2026-09-20 10:01:00+00",
+                '{"id":484070,"kind":"gripe"}',
+            ),
+        ],
+    )
+
+    local = [r for r in calls if r["corpus"] == "local"]
+    assert [(r["verb"], r["kind"]) for r in local] == [
+        ("get", "gripe"),
+        ("search", "skill"),
+    ]
+    # The survivor of each pair is the payload-bearing local event.
+    assert [r["result_head"] for r in local] == ["a result", "a result"]
+    ledger = [r for r in calls if r["corpus"] == "ledger"]
+    assert [(r["ts"], r["arg_digest"]) for r in ledger] == [
+        ("2026-09-20 10:00:02+00", '{"id":484071,"kind":"gripe"}'),
+        ("2026-09-20 10:00:03+00", '{"kind":"todo","view":"toc"}'),
+        ("2026-09-20 10:00:11.5+00", '{"kind":"skill","q":"render diet"}'),
+        ("2026-09-20 10:01:00+00", '{"id":484070,"kind":"gripe"}'),
+    ]
+
+
+def test_ledger_twin_match_is_one_to_one(tmp_path: Path, monkeypatch) -> None:
+    """One local call drops at most one ledger row. Two rows with the same
+    verb, kind and id inside the window are two calls (the local session's
+    and, say, a worker's), so one of them must still be counted."""
+    sample = '{"id":"precis-overview","kind":"skill"}'
+    calls = _mine_local_and_ledger(
+        tmp_path,
+        monkeypatch,
+        local_calls=[
+            (
+                "mcp__precis__get",
+                {"kind": "skill", "id": "precis-overview"},
+                "2026-09-20T10:00:00.000Z",
+            ),
+        ],
+        ledger_rows=[
+            _ledger_row("get", "skill", "2026-09-20 10:00:00.3+00", sample),
+            _ledger_row("get", "skill", "2026-09-20 10:00:01.3+00", sample),
+        ],
+    )
+    assert sorted(str(r["corpus"]) for r in calls) == ["ledger", "local"]
+
+
+def test_ledger_twin_window_is_measured_from_the_call_start(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The ledger row is written when the call RETURNS, the local timestamp
+    is the tool_use — so a slow call's row trails it by the call's own
+    latency. The window is measured from ``ts - latency_ms``: an 8 s call is
+    still its twin, a quick call logged 8 s later is not."""
+    calls = _mine_local_and_ledger(
+        tmp_path,
+        monkeypatch,
+        local_calls=[
+            (
+                "mcp__precis__search",
+                {"kind": "paper", "q": "slow hybrid search"},
+                "2026-09-20T10:00:00.000Z",
+            ),
+            (
+                "mcp__precis__get",
+                {"kind": "paper", "id": "pa5"},
+                "2026-09-20T11:00:00.000Z",
+            ),
+        ],
+        ledger_rows=[
+            _ledger_row(
+                "search",
+                "paper",
+                "2026-09-20 10:00:08.2+00",
+                '{"kind":"paper","q":"slow hybrid search"}',
+                latency_ms=8000,
+            ),
+            _ledger_row(
+                "get",
+                "paper",
+                "2026-09-20 11:00:08.2+00",
+                '{"id":"pa5","kind":"paper"}',
+                latency_ms=100,
+            ),
+        ],
+    )
+    assert [(r["corpus"], r["verb"]) for r in calls] == [
+        ("local", "search"),
+        ("local", "get"),
+        ("ledger", "get"),
+    ]
+
+
+def test_ledger_only_pass_keeps_every_row(tmp_path: Path, monkeypatch) -> None:
+    """No local corpus loaded, nothing to dedupe against: a ``--ledger``
+    pass emits the rows it fetched."""
+    rows = [
+        _ledger_row(
+            "get", "gripe", "2026-09-20 10:00:00.4+00", '{"id":484070,"kind":"gripe"}'
+        )
+    ]
+    monkeypatch.setattr(extract, "fetch_ledger_rows", lambda since: rows)
+    out = tmp_path / "events.jsonl"
+    assert extract.main(["--ledger", "--out", str(out)]) == 0
+    assert len([x for x in out.read_text(encoding="utf-8").split("\n") if x]) == 1
+
+
+# ---------------------------------------------------------------------------
+# 15. Bash exit 1 from a search/compare tool is an answer, not an error
+# ---------------------------------------------------------------------------
+
+
+def _bash_outcome(command: str, result: str) -> extract.Event:
+    session = "s-bash-exit"
+    lines = [
+        json.dumps(_tool_use_event(session, "toolu_b", "Bash", {"command": command})),
+        json.dumps(_tool_result_event(session, "toolu_b", result, is_error=True)),
+    ]
+    events = extract._extract_from_lines(
+        lines,
+        corpus="local",
+        session_fallback=session,
+        is_sidechain_default=False,
+        stats=extract.Stats(),
+    )
+    return next(e for e in events if e.tool == "Bash")
+
+
+def test_pgrep_exit_1_is_not_an_error() -> None:
+    """``pgrep`` exits 1 when no process matched — the answer to the
+    question, which the harness still flags ``is_error``. 270 of 823 Bash
+    "errors" on the 2026-11-10..14 pass were exactly this (gr677015). Only
+    the bare ``Exit code 1`` with no output is benign: stderr text or exit
+    2 is pgrep itself failing."""
+    quiet = _bash_outcome("pgrep -f 'precis worker'", "Exit code 1")
+    assert quiet.is_error is False
+    assert quiet.err_head == ""
+    # What happened stays readable on the event.
+    assert quiet.result_head == "Exit code 1"
+
+    noisy = _bash_outcome(
+        "pgrep --bogus", "Exit code 1\npgrep: unrecognized option `--bogus'"
+    )
+    assert noisy.is_error is True
+    assert "unrecognized option" in noisy.err_head
+
+    usage = _bash_outcome("pgrep", "Exit code 2")
+    assert usage.is_error is True
+
+
+def test_benign_exit_1_covers_the_search_and_compare_tools() -> None:
+    for command in (
+        "grep -rn needle src",
+        "rg -n needle src",
+        "diff -q a.txt b.txt > /dev/null",
+        "test -f missing.txt",
+        # Env assignments and the rtk output wrapper sit before the word.
+        "LC_ALL=C grep -c needle haystack.txt",
+        "rtk grep -n needle src",
+        "rtk proxy grep -rn needle src",
+        # A pipeline reports its LAST stage's status.
+        "ps aux | grep -v grep | grep 'precis worker'",
+        # ...and a quoted separator is not a separator.
+        "pgrep -f 'worker|scheduler; exit'",
+        "# is it up?\npgrep -f precis-web",
+    ):
+        assert _bash_outcome(command, "Exit code 1").is_error is False, command
+
+
+def test_exit_1_from_any_other_status_bearing_command_stays_an_error() -> None:
+    """The near-misses. A silent exit 1 is only benign when every command
+    whose status the line can report is one of the five tools — a mention,
+    a path that merely ends in the word, or a chain that could equally have
+    failed somewhere else all stay errors."""
+    for command in (
+        "false",
+        # scripts/test is the repo's test runner, not test(1).
+        "scripts/test tests/test_x.py > scratch/t.log 2>&1",
+        "scripts/test tests/test_x.py > scratch/t.log 2>&1 && grep -c passed scratch/t.log",
+        "pgrep -f precis-web && echo running",
+        "kill $(pgrep -f precis-web)",
+        "grep -c needle haystack.txt | sort",
+        "ssh maple pgrep -f precis-web",
+        "echo 'pgrep -f precis-web'",
+        "pgrep -f 'unterminated",
+    ):
+        assert _bash_outcome(command, "Exit code 1").is_error is True, command
+    # Not a Bash call at all: the flag is the tool's own.
+    session = "s-not-bash"
+    lines = [
+        json.dumps(
+            _tool_use_event(session, "toolu_r", "Read", {"command": "pgrep -f x"})
+        ),
+        json.dumps(
+            _tool_result_event(session, "toolu_r", "Exit code 1", is_error=True)
+        ),
+    ]
+    events = extract._extract_from_lines(
+        lines,
+        corpus="local",
+        session_fallback=session,
+        is_sidechain_default=False,
+        stats=extract.Stats(),
+    )
+    assert next(e for e in events if e.tool == "Read").is_error is True

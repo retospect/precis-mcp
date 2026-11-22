@@ -610,6 +610,70 @@ def test_d6_get_then_unrelated_search_is_not_narrowing() -> None:
     assert not any(c.signature.startswith("narrow-after-fat") for c in cands)
 
 
+def test_extract_view_reads_json_digest() -> None:
+    """The local extractor and the ledger's ``arg_sample`` both render
+    ``arg_digest`` as JSON (``"view": "toc"``); the old ``view=``-only
+    regex read neither, so every local ``render_obesity`` row sat in the
+    ``-`` bucket with all the views mixed (gr677015)."""
+    assert detect._extract_view('{"id": 1, "view": "toc"}') == "toc"
+    assert detect._extract_view('{"kind":"job","view":"tree"}') == "tree"
+    assert detect._extract_view("kind='paper', id=5, view='full'") == "full"
+    # The command profile's call string, JSON-dumped by the local extractor.
+    assert (
+        detect._extract_view(json.dumps({"command": "get(kind='paper', view='toc')"}))
+        == "toc"
+    )
+    assert (
+        detect._extract_view(json.dumps({"command": 'get(kind="paper", view="toc")'}))
+        == "toc"
+    )
+    assert detect._extract_view('{"id": 1, "kind": "paper"}') is None
+    assert detect._extract_view("") is None
+
+
+def test_extract_view_near_miss_longer_key_is_not_view() -> None:
+    """``view`` must be the whole key: a value or a longer key that merely
+    ends in the word names no view."""
+    assert detect._extract_view('{"id": "precis-overview", "kind": "skill"}') is None
+    assert detect._extract_view('{"kind": "paper", "preview": "abstract"}') is None
+    assert detect._extract_view('{"id": 1, "kind": "paper", "view": null}') is None
+    assert detect._extract_view("kind='paper', review='full'") is None
+
+
+def test_d6_render_obesity_buckets_json_digest_by_view() -> None:
+    events = [
+        mk(
+            seq=1,
+            verb="get",
+            kind="paper",
+            arg_digest='{"id": 5, "kind": "paper", "view": "toc"}',
+            arg_keys=("id", "kind", "view"),
+            result_bytes=300,
+        ),
+        mk(
+            seq=2,
+            verb="get",
+            kind="paper",
+            arg_digest='{"id": 6, "kind": "paper", "view": "full"}',
+            arg_keys=("id", "kind", "view"),
+            result_bytes=9000,
+        ),
+        mk(
+            seq=3,
+            verb="get",
+            kind="paper",
+            arg_digest='{"id": 7, "kind": "paper"}',
+            arg_keys=("id", "kind"),
+            result_bytes=1200,
+        ),
+    ]
+    cands = detect.detect_render_obesity(events)
+    by_sig = {c.signature: c for c in cands}
+    assert set(by_sig) == {"get|paper|toc", "get|paper|full", "get|paper|-"}
+    assert by_sig["get|paper|full"].metrics["max_bytes"] == 9000
+    assert by_sig["get|paper|-"].n == 1
+
+
 def test_by_session_drops_payload_free_corpora() -> None:
     """Adjacency rules are meaningless on the ledger: `extract._day_bucket`
     gives the whole fleet's calls for a calendar day one synthetic session

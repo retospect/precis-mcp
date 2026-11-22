@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -131,6 +132,7 @@ class Stats:
     job_transcripts: int = 0
     parse_failures: int = 0
     deduped_events: int = 0
+    ledger_twins: int = 0
     events_by_corpus: dict[str, int] = field(default_factory=dict)
 
     def bump(self, corpus: str, n: int) -> None:
@@ -308,6 +310,100 @@ class _PendingCall:
     cwd: str | None
     branch: str | None
     ts: str | None
+    command: str = ""
+    """The raw shell line of a ``Bash`` call — ``arg_digest`` is a scrubbed
+    400-char head, too lossy to read a command word from."""
+
+
+#: Tools whose exit status 1 is an answer rather than a failure: no process
+#: matched (``pgrep``), no line matched (``grep``/``rg``), the inputs differ
+#: (``diff``), the condition is false (``test``).
+_EXIT_1_IS_AN_ANSWER = frozenset({"pgrep", "grep", "rg", "diff", "test"})
+_SHELL_PUNCTUATION = frozenset("();<>|&")
+_ENV_ASSIGN_RE = re.compile(r"[A-Za-z_]\w*=")
+
+
+def _status_command_words(command: str) -> list[str]:
+    """The command word of every command whose exit status the shell can
+    report for *command*; empty when the line does not tokenize.
+
+    A line's status is that of its last ``;``/newline-separated item; inside
+    that item any ``&&``/``||`` member may be the one that decided it; and a
+    pipeline reports its last stage. So ``ps aux | grep x`` yields
+    ``["grep"]`` and ``scripts/test a > log && grep -c passed log`` yields
+    ``["scripts/test", "grep"]``.
+
+    Words come back as written, never reduced to a basename: ``scripts/test``
+    is this repo's test runner, not ``test(1)``, and its silent exit 1 is a
+    red run. Leading env assignments and the ``rtk [proxy]`` output wrapper
+    are skipped, since the wrapper passes the wrapped command's status
+    through. A quoted token made only of operator characters reads as an
+    operator (posix ``shlex`` strips the quotes); that splits a command the
+    wrong way and so keeps it an error, the safe direction.
+    """
+    lex = shlex.shlex(
+        command.replace("\\\n", " ").replace("\n", ";"),
+        posix=True,
+        punctuation_chars=True,
+    )
+    lex.whitespace_split = True
+    lex.commenters = ""
+    try:
+        tokens = list(lex)
+    except ValueError:  # unbalanced quote — a heredoc body, a cut line
+        return []
+    # items -> and/or members -> pipeline stages -> words
+    items: list[list[list[list[str]]]] = [[[[]]]]
+    for tok in tokens:
+        if tok and set(tok) <= _SHELL_PUNCTUATION:
+            if ";" in tok or tok == "&":
+                items.append([[[]]])
+                continue
+            if tok in ("&&", "||"):
+                items[-1].append([[]])
+                continue
+            if tok in ("|", "|&"):
+                items[-1][-1].append([])
+                continue
+        items[-1][-1][-1].append(tok)
+    last = next(
+        (
+            item
+            for item in reversed(items)
+            if any(stage for member in item for stage in member)
+        ),
+        None,
+    )
+    if last is None:
+        return []
+    words: list[str] = []
+    for member in last:
+        stage = [w for w in member[-1] if not _ENV_ASSIGN_RE.match(w)]
+        if stage[:1] == ["rtk"]:
+            stage = stage[2:] if stage[1:2] == ["proxy"] else stage[1:]
+        words.append(stage[0] if stage else "")
+    return words
+
+
+def _exit_1_is_an_answer(call: _PendingCall, result_text: str) -> bool:
+    """Whether a ``Bash`` result the harness flagged ``is_error`` is a
+    search/compare tool saying "no": nothing but ``Exit code 1`` came back,
+    and every command whose status the line can report is one of
+    :data:`_EXIT_1_IS_AN_ANSWER`.
+
+    The harness flags any non-zero exit, so ``pgrep`` finding no process
+    counted as a failure — 453 of 4,357 local Bash "errors" in the
+    2026-11-01..22 corpus, 419 of them a bare ``pgrep`` (gr677015). Output
+    next to the exit line (stderr text) or any other exit code is the tool
+    itself failing and stays an error. *Every* status-bearing command must
+    qualify: in ``scripts/test … > log 2>&1 && grep -c passed log`` the
+    silent 1 may be the test run's, and calling that benign would hide a red
+    run behind a grep.
+    """
+    if call.tool != "Bash" or result_text.strip() != "Exit code 1":
+        return False
+    words = _status_command_words(call.command)
+    return bool(words) and all(w in _EXIT_1_IS_AN_ANSWER for w in words)
 
 
 def _extract_from_lines(
@@ -439,6 +535,7 @@ def _extract_from_lines(
                         args, sort_keys=True, ensure_ascii=False, default=str
                     )
                     arg_digest = redact.scrub(digest_raw)[: schema.HEAD_CHARS]
+                    command = args.get("command") if tool_name == "Bash" else None
                     pending[tool_use_id] = _PendingCall(
                         session=session,
                         tool=tool_name,
@@ -452,6 +549,7 @@ def _extract_from_lines(
                         cwd=cwd,
                         branch=branch,
                         ts=ts,
+                        command=command if isinstance(command, str) else "",
                     )
 
         elif etype == "user":
@@ -468,8 +566,10 @@ def _extract_from_lines(
                 )
                 if call is None:
                     continue
-                is_error = bool(block.get("is_error"))
                 result_text = _render_result_content(block.get("content"))
+                is_error = bool(block.get("is_error")) and not _exit_1_is_an_answer(
+                    call, result_text
+                )
                 result_head = redact.scrub(result_text)[: schema.HEAD_CHARS]
                 events.append(
                     Event(
@@ -753,6 +853,124 @@ def _emit_ledger_events(rows: list[dict[str, Any]]) -> list[Event]:
     return events
 
 
+# --- cross-corpus dedupe: a local MCP call and its ledger row are one call ---
+
+#: How far a ledger row's call start may sit from the local call's timestamp
+#: and still be that call's server-side record.
+_TWIN_WINDOW_S = 5.0
+#: The ledger's per-string bound (``precis.tool_ledger._SAMPLE_STR_CHARS``),
+#: restated here because the miner runs with no precis install.
+_TWIN_STR_CHARS = 80
+_TWIN_LIST_ITEMS = 5
+_TWIN_ARG_RES = {name: re.compile(rf'"{name}"\s*:\s*') for name in ("id", "q")}
+_JSON_DECODER = json.JSONDecoder()
+
+_TwinKey = tuple[str | None, str | None, str | None, str | None]
+
+
+def _twin_value(value: Any) -> str | None:
+    """One argument value in the form BOTH corpora can produce. The ledger's
+    ``arg_sample`` is the lossy side (``precis.tool_ledger._sample_value``):
+    strings are whitespace-folded and cut to 80 chars plus ``…``, lists keep
+    five items, a dict is only ``<dict, N keys>`` — so the local value is
+    folded down the same way rather than the ledger's guessed back up."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = " ".join(value.split()).removesuffix("…")
+        return text[:_TWIN_STR_CHARS] if text else "<0 chars>"
+    if isinstance(value, list):
+        items = [v for v in value if v != "…"][:_TWIN_LIST_ITEMS]
+        return ",".join(str(_twin_value(v)) for v in items)
+    if isinstance(value, dict):
+        return f"<dict, {len(value)} keys>"
+    return str(value)
+
+
+def _twin_args(digest: str) -> tuple[str | None, str | None]:
+    """A call's ``id`` and ``q`` values, read off its JSON ``arg_digest``.
+    A local digest is a 400-char head, so a long ``text=`` leaves the JSON
+    cut short (15 % of local MCP calls); ``id`` and ``q`` sort before
+    ``text`` and are read off the intact front instead."""
+    try:
+        obj = json.loads(digest)
+    except ValueError:
+        obj = None
+    if isinstance(obj, dict):
+        return _twin_value(obj.get("id")), _twin_value(obj.get("q"))
+    values: list[str | None] = []
+    for name in ("id", "q"):
+        m = _TWIN_ARG_RES[name].search(digest or "")
+        if m is None:
+            values.append(None)
+            continue
+        value: Any
+        try:
+            value, _ = _JSON_DECODER.raw_decode(digest, m.end())
+        except ValueError:  # the cut fell inside this value
+            value = digest[m.end() :].lstrip('"')
+        values.append(_twin_value(value))
+    return values[0], values[1]
+
+
+def _twin_key(ev: Event) -> _TwinKey:
+    arg_id, arg_q = _twin_args(ev.arg_digest)
+    return (ev.verb, ev.kind, arg_id, arg_q)
+
+
+def _note_local_call(local_calls: dict[_TwinKey, list[float]], ev: Event) -> None:
+    """Remember one emitted local MCP call for :func:`_drop_local_twins`."""
+    ts = _parse_ts(ev.ts)
+    if ev.verb and ts is not None:
+        local_calls.setdefault(_twin_key(ev), []).append(ts.timestamp())
+
+
+def _drop_local_twins(
+    ledger: list[Event], local_calls: dict[_TwinKey, list[float]]
+) -> list[Event]:
+    """Drop every ledger event that is the server-side record of a local MCP
+    call already emitted; the local event stays because it has the payload.
+
+    The session MCP writes to prod, so each local precis call also lands in
+    ``tool_calls`` and a ``--local --ledger`` pass counted it twice (2,212
+    of 2,237 local MCP calls on the 2026-11-21..22 pass, gr677015). A ledger row is
+    the twin when verb, kind and the ``id``/``q`` values agree and its call
+    START is within :data:`_TWIN_WINDOW_S` of the local timestamp. The row's
+    ``ts`` is stamped when the call returns, so the start is ``ts -
+    latency_ms``; against the raw ``ts`` a slow call falls out of the window
+    (97.2 % of nearest rows inside 5 s, 99.7 % from the start).
+
+    The match is one to one: a local call consumes at most one row, the
+    nearest. Two rows with the same key inside the window are two calls,
+    and one stays counted. That also covers a call with neither ``id`` nor
+    ``q`` (a ``put`` minting a ref, a tag-only ``search``; 11 % of local
+    calls), which matches on verb and kind alone: if the row consumed was a
+    stranger's and not the true twin, the true twin survives in its place,
+    so the per-signature count is still one event per call. ``arg_keys`` is
+    deliberately not part of the key: the two corpora disagree on it for a
+    third of real twins (the ledger records the dispatched keys: a defaulted
+    ``page``/``mode``, ``args`` unfolded).
+
+    A command-profile call (``mcp__precis__precis``) keeps its twin: its
+    digest holds the call string, not the arguments, and the 2026-11 corpus
+    has none to check a reader against. *local_calls* is consumed.
+    """
+    kept: list[Event] = []
+    for ev in ledger:
+        starts = local_calls.get(_twin_key(ev))
+        ts = _parse_ts(ev.ts)
+        if not starts or ts is None:
+            kept.append(ev)
+            continue
+        start = ts.timestamp() - (ev.latency_ms or 0) / 1000
+        nearest = min(range(len(starts)), key=lambda i: abs(starts[i] - start))
+        if abs(starts[nearest] - start) <= _TWIN_WINDOW_S:
+            del starts[nearest]
+        else:
+            kept.append(ev)
+    return kept
+
+
 def _llmlog_sql(since: datetime | None) -> str:
     where = f" WHERE ts >= '{_sql_ts_literal(since)}'" if since else ""
     return f"SELECT {', '.join(_LLMLOG_COLUMNS)} FROM llm_call_log{where} ORDER BY ts;"
@@ -977,6 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     stats = Stats()
+    local_calls: dict[_TwinKey, list[float]] = {}
 
     with out_path.open("w", encoding="utf-8") as out_fh:
         if args.codex:
@@ -1101,6 +1320,8 @@ def main(argv: list[str] | None = None) -> int:
                     seen_events.add(key)
                     out_fh.write(ev.to_json() + "\n")
                     kept += 1
+                    if use_ledger:
+                        _note_local_call(local_calls, ev)
                 stats.bump("local", kept)
 
         # Each prod corpus is isolated. The local corpus is the expensive one
@@ -1111,7 +1332,9 @@ def main(argv: list[str] | None = None) -> int:
         # the reader's field limit, which is how this guard was earned.)
         if use_ledger:
             try:
-                events = _emit_ledger_events(fetch_ledger_rows(since))
+                fetched = _emit_ledger_events(fetch_ledger_rows(since))
+                events = _drop_local_twins(fetched, local_calls)
+                stats.ledger_twins = len(fetched) - len(events)
             except Exception as exc:
                 print(f"warning: ledger corpus skipped: {exc}", file=sys.stderr)
             else:
@@ -1148,6 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
         "mine-sessions/extract: "
         f"local_files={stats.local_files} job_transcripts={stats.job_transcripts} "
         f"parse_failures={stats.parse_failures} deduped={stats.deduped_events} "
+        f"ledger_twins={stats.ledger_twins} "
         f"events={dict(stats.events_by_corpus)} "
         f"elapsed={elapsed:.1f}s -> {out_path}",
         file=sys.stderr,

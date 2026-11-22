@@ -152,7 +152,10 @@ Miner caveats, to discount before trusting a card:
   `usage` is stamped once per `message.id` and the share's denominator is
   payload-corpus tool results only — v1 scoreboards read 2–3× high on
   tokens and a few points low on the share. v3 dedupes `detour_census`
-  the way the detector does.
+  the way the detector does. v4 (gr677015) counts a local MCP call once
+  on a `--local --ledger` pass, buckets `render_obesity` by view for JSON
+  digests, and stops counting a silent `pgrep`/`grep` exit 1 as a Bash
+  error — v3 precis call counts read up to 2× high.
 - Ledger-sourced cards (`hard_error`, `spin`) render the row itself
   (`arg_sample` / `error_head`) when the session bucket has no context
   turns — a "(no surrounding turns)" line is expected there, not a miss.
