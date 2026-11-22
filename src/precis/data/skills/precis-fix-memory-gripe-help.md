@@ -21,6 +21,10 @@ status: active
 
 1. Read the `project:memory` gripe: Goal, Route and the claims each route
    returned. Read `meta.route` for the recorded calls and their arguments.
+   The memories to fix are the ones a `fix: me<N> (<what is wrong>)` line
+   names, in the body or any comment; the reason in parentheses is the
+   reader's ask. A memory the story only mentions is context: no marker,
+   no review. To have one reviewed, add a comment with its marker line.
 2. Open every named memory with `view='fisheye+1hop'`, every named entity
    ref, and the evidence they cite. Capture the hub's recall set before
    changing anything.

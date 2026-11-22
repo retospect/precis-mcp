@@ -56,7 +56,9 @@ carry.
   holding a pending retire proposal — owes a keep/move/drop plan
   before retirement), `grab_bag` (one memory carrying many
   independent claims — a split candidate), `griped` (open
-  `project:memory` complaints, newest first).
+  `project:memory` complaints, newest first: one candidate per memory
+  a `fix: me<N> (<what is wrong>)` line names; a handle mentioned in
+  prose mints nothing).
 - `memory-review` — proposal-only; nothing applies these:
   `entity_claim_stale` (a state sentence's entity handle or repo anchor
   changed on record since the memory's last touch — use the change

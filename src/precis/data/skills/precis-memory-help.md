@@ -1158,9 +1158,11 @@ and `view='index'`). `q=`/`page=`/`mode=`/`scope=` are refused on the view.
 ## A recalled memory misled me
 ## Fix or escalate a stale memory
 
-**One line is enough.** `put(kind='gripe', text='me123: <what is wrong>')`
+**One line is enough.** `put(kind='gripe', text='fix: me123 (<what is wrong>)')`
 files a memory complaint; see [[precis-gripe-help]] §A memory complaint is
-a plain gripe. Triage routes it to the gardener.
+a plain gripe. Triage routes it to the gardener, which reviews only the
+memories a `fix: me<N> (<what is wrong>)` line names; a handle mentioned
+in prose is context.
 
 **Complain first.** A wonky, inconsistent or unclear memory is enough to
 file a `project:memory` gripe; you do not need to know which claim wins.
@@ -1175,7 +1177,9 @@ put(kind='gripe', args={'project': 'memory'},
          'Goal: choose the current export format.\n'
          'Route: search export -> me123 said CSV; '
          'export hub -> me456 said JSON.\n'
-         'Which is right: unknown; I have not checked the source yet.')
+         'Which is right: unknown; I have not checked the source yet.\n'
+         'fix: me123 (says CSV; me456 says JSON)\n'
+         'fix: me456 (says JSON; me123 says CSV)')
 link(kind='gripe', id=G, target='me456', rel='raises-concern-about')
 ```
 

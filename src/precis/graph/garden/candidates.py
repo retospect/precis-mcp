@@ -89,7 +89,9 @@ that the claim around it stays current. ``compact`` owes a per-sentence
 keep/move/drop plan before retirement
 (:func:`precis.graph.garden.apply.apply_compact`); ``griped`` (gr657257)
 drains the reader-complaint queue newest first, one ``rewrite`` candidate
-per named memory, exempt from the freshly-considered skip. Memory detectors
+per memory the complaint marks ``fix: me<N> (<reason>)`` — a bare handle in
+prose is evidence, never a mint (gr682861) — exempt from the
+freshly-considered skip. Memory detectors
 carry their own action sets and prompt version so their rules cannot reopen
 v2 rejections, and apply of rewrite/supersede/retire/split sits behind the
 default-off ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate.
@@ -3356,6 +3358,7 @@ GRIPED_MENTION_CAP = 16
 GRIPED_ENTITY_CAP = 16
 GRIPED_OP_CAP = 40
 GRIPED_STORY_CHARS = 1500
+GRIPED_TITLE_CHARS = 160
 
 #: Upper bound on open ``project:memory`` gripes read per windowed or
 #: targeted pass — far above any realistic backlog; the dispatcher deadline
@@ -3431,17 +3434,52 @@ def _live_ref_rows(store: Store, ids: list[int]) -> dict[int, tuple[str, str]]:
     return {int(r[0]): (str(r[1]), str(r[2] or "")) for r in rows}
 
 
+#: The explicit fix marker (gr682861): ``fix: me<N> (<what is wrong>)`` on a
+#: line of its own (a list bullet may lead it), in the gripe's body or any
+#: comment. The parenthesised reason is required and may nest one level of
+#: parentheses; a second marker on the line voids it. ``gr``/``td`` targets
+#: parse too — the ``griped`` detector mints for ``me`` only.
+_FIX_MARKER = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?fix:[ \t]*(me|gr|td)([0-9]{1,18})[ \t]*"
+    r"\(((?:[^()\n]|\([^()\n]*\))*)\)[ \t\r]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def fix_markers(story: str) -> list[tuple[str, int, str]]:
+    """``(kind prefix, id, reason)`` per fix-marker line, in story order."""
+    return [
+        (m.group(1).lower(), int(m.group(2)), reason)
+        for m in _FIX_MARKER.finditer(story)
+        if (reason := " ".join(m.group(3).split()))
+    ]
+
+
+def _marked_memories(story: str) -> dict[int, str]:
+    """``{memory ref_id: reason}`` from the story's ``fix: me<N> (…)``
+    lines — one entry per memory, repeated markers joining their distinct
+    reasons in story order."""
+    reasons: dict[int, list[str]] = {}
+    for prefix, pk, reason in fix_markers(story):
+        if prefix == "me" and reason not in reasons.setdefault(pk, []):
+            reasons[pk].append(reason)
+    return {pk: "; ".join(found) for pk, found in reasons.items()}
+
+
 def _story_refs(
     store: Store, story: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """``(memories, entities)`` — live refs the story's handles resolve to,
     memory kind first, everything else second (a machine/skill/python/md
-    ref the claims name). Chunk handles resolve through their owning ref."""
+    ref the claims name). Chunk handles resolve through their owning ref.
+    Marked memories (:func:`_marked_memories`) survive the mention cap."""
     parsed = {
         (p[0], p[1], p[2])
         for m in _MEMORY_HANDLE.finditer(story)
         if (p := parse_handle(m.group())) is not None and p[2] <= 9223372036854775807
     }
+    marked = _marked_memories(story)
+    parsed |= {("memory", False, pk) for pk in marked}
     record_ids = [pk for _k, chunk, pk in parsed if not chunk]
     rows = _live_ref_rows(store, record_ids)
     owners: dict[int, tuple[int, str]] = {}
@@ -3479,7 +3517,13 @@ def _story_refs(
             },
         )
     refs = sorted(seen.values(), key=lambda r: int(r["ref_id"]))
-    memories = [r for r in refs if r["kind"] == "memory"][:GRIPED_MENTION_CAP]
+    memories = sorted(
+        sorted(
+            (r for r in refs if r["kind"] == "memory"),
+            key=lambda r: int(r["ref_id"]) not in marked,
+        )[:GRIPED_MENTION_CAP],
+        key=lambda r: int(r["ref_id"]),
+    )
     entities = [r for r in refs if r["kind"] != "memory"][:GRIPED_ENTITY_CAP]
     return memories, entities
 
@@ -3617,9 +3661,13 @@ def _griped_for_gripe(
     only_memory: int | None = None,
 ) -> list[GardenCandidate]:
     """One ``rewrite`` candidate per live memory an open ``project:memory``
-    gripe names (``only_memory`` restricts which target a candidate lands
-    on — evidence always lists every named memory, so an apply re-check
-    re-derives the identical pin).
+    gripe marks with a ``fix: me<N> (<reason>)`` line (gr682861;
+    :data:`_FIX_MARKER`). A bare handle in prose is context, never an ask:
+    it rides along as evidence and mints nothing. ``only_memory``
+    restricts which target a candidate lands on — evidence always lists
+    every named memory, so an apply re-check re-derives the identical pin.
+    A complaint naming live memories with no marker is logged, so a human
+    can add one: mentions that minted before the marker get no backfill.
 
     The candidate is the whole complaint pinned at once: story, named
     memories and entity refs, ``meta.route``, the deterministic replay and
@@ -3628,7 +3676,15 @@ def _griped_for_gripe(
     rewrites, models supply replacement text only.
     """
     memories, entities = _story_refs(store, story)
-    if not memories:
+    marked = _marked_memories(story)
+    if not any(int(m["ref_id"]) in marked for m in memories):
+        if memories and only_memory is None:
+            log.info(
+                "garden: griped gr%s names %s with no 'fix: me<N> (<reason>)' "
+                "line — no candidate",
+                gid,
+                ", ".join(str(m["handle"]) for m in memories),
+            )
         return []
     route = meta.get("route")
     route = route if isinstance(route, list) else []
@@ -3643,6 +3699,7 @@ def _griped_for_gripe(
             "title": m["title"],
             "sha": shas.get(m["ref_id"]),
         }
+        | ({"reason": marked[m["ref_id"]]} if m["ref_id"] in marked else {})
         for m in memories
     ]
     for entry in replay:
@@ -3671,7 +3728,10 @@ def _griped_for_gripe(
         json.dumps(common, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
     targets = [
-        m for m in memories if only_memory is None or int(m["ref_id"]) == only_memory
+        m
+        for m in memories
+        if int(m["ref_id"]) in marked
+        and (only_memory is None or int(m["ref_id"]) == only_memory)
     ]
     out: list[GardenCandidate] = []
     for m in targets:
@@ -3693,8 +3753,14 @@ def _griped_for_gripe(
                 action="rewrite",
                 target_kind="ref",
                 target_id=rid,
-                title=f"gr{gid} names me{rid} in a memory complaint",
-                evidence={**common, "content_sha": shas.get(rid)},
+                title=f"gr{gid} marks me{rid} for a fix: {marked[rid]}"[
+                    :GRIPED_TITLE_CHARS
+                ],
+                evidence={
+                    **common,
+                    "content_sha": shas.get(rid),
+                    "reason": marked[rid],
+                },
                 payload={
                     "base_sha": shas.get(rid),
                     "ops": ops,
@@ -3750,9 +3816,10 @@ def griped_candidates(
     cursors: dict[str, int] | None = None,
     next_cursors: dict[str, int] | None = None,
 ) -> list[GardenCandidate]:
-    """Open ``project:memory`` gripes naming live memories → one candidate
-    per (gripe, memory). Read-only: the route replay runs the recorded
-    searches lexically and pins every named memory's sha.
+    """Open ``project:memory`` gripes marking live memories with a
+    ``fix: me<N> (<reason>)`` line → one candidate per (gripe, memory).
+    Read-only: the route replay runs the recorded searches lexically and
+    pins every named memory's sha.
 
     Newest complaint first (gr657257). The unseen set is two bands —
     complaints filed since the sweep's newest (ids above the
@@ -5209,6 +5276,7 @@ __all__ = [
     "dup_window_size",
     "duplicate_candidates",
     "entity_claim_stale_candidates",
+    "fix_markers",
     "freshly_considered",
     "grab_bag_candidates",
     "griped_candidates",

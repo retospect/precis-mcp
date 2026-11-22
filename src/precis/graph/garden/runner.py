@@ -177,6 +177,9 @@ def _review_todo_body(cand: GardenCandidate, verdict: Verdict, sha: str | None) 
     gripe = cand.payload.get("gripe")
     if isinstance(gripe, int):
         lines.append(f"Filing gripe: gr{gripe}")
+    reason = cand.evidence.get("reason")
+    if cand.detector == "griped" and isinstance(reason, str) and reason:
+        lines.append(f"Fix asked: {reason}")
     lines += [
         "",
         f"Detector evidence (bounded): {evidence}",

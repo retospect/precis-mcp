@@ -42,6 +42,11 @@ def _gripe(
     return int(ref.id)
 
 
+def _fix(*memories: int) -> str:
+    """The marker lines that make each memory a fix target (gr682861)."""
+    return "".join(f"\nfix: me{m} (the reader says it is wrong)" for m in memories)
+
+
 def _route(*calls: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"seq": i, "kind": "memory", **c} for i, c in enumerate(calls, 1)]
 
@@ -56,7 +61,7 @@ def test_candidates_per_named_memory_pinned_and_replayed(store: Store) -> None:
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
     gid = _gripe(
         store,
-        f"Goal: the pour policy. Route: me{keeper} and me{loser} disagree.",
+        f"Goal: the pour policy. Route: me{keeper} and me{loser} disagree.{_fix(keeper, loser)}",
         route=_route(
             {"verb": "search", "arg_sample": {"q": "pour"}},
             {"verb": "get", "arg_sample": {"id": f"me{loser}"}},
@@ -121,7 +126,11 @@ def test_route_replay_records_hits_gets_and_skips(store: Store) -> None:
 def test_rewrite_applies_through_the_reviewed_door(store: Store) -> None:
     keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
-    _gripe(store, f"me{keeper} and me{loser} disagree on pours.", route=[])
+    _gripe(
+        store,
+        f"me{keeper} and me{loser} disagree on pours.{_fix(keeper, loser)}",
+        route=[],
+    )
     candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
     op = dict(candidate.payload["ops"][0])
     op["text"] = (
@@ -145,7 +154,7 @@ def test_replay_after_apply_closes_the_gripe(store: Store, monkeypatch: Any) -> 
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
     gid = _gripe(
         store,
-        f"me{keeper} and me{loser} disagree on pours.",
+        f"me{keeper} and me{loser} disagree on pours.{_fix(keeper, loser)}",
         route=_route({"verb": "search", "arg_sample": {"q": "interim"}}),
     )
     candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
@@ -176,7 +185,9 @@ def test_replay_after_apply_closes_the_gripe(store: Store, monkeypatch: Any) -> 
 def test_pending_sibling_proposals_hold_the_close(store: Store) -> None:
     keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
-    gid = _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    gid = _gripe(
+        store, f"me{keeper} and me{loser} disagree.{_fix(keeper, loser)}", route=[]
+    )
     for rid in (keeper, loser):
         candidate = next(c for c in cand.griped_candidates(store) if c.target_id == rid)
         assert emit_proposal(store, candidate, rationale="pending") is not None
@@ -191,7 +202,9 @@ def test_ask_verdict_files_a_gripe_linked_review_todo(store: Store) -> None:
     griped candidate it links the filing gripe as well as the memory."""
     keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
-    gid = _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    gid = _gripe(
+        store, f"me{keeper} and me{loser} disagree.{_fix(keeper, loser)}", route=[]
+    )
     candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
     runner._file_review_todo(
         store, candidate, Verdict(accept=False, ask="undecidable, needs a human")
@@ -250,7 +263,7 @@ def test_closed_review_todo_blocks_a_repeat_mint(store: Store) -> None:
     runner must not mint another opus review (gr652974)."""
     keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
-    _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    _gripe(store, f"me{keeper} and me{loser} disagree.{_fix(keeper, loser)}", route=[])
     candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
     verdict = Verdict(accept=False, ask="needs a human")
     runner._file_review_todo(store, candidate, verdict)
@@ -267,7 +280,7 @@ def test_no_change_rejection_blocks_re_ask_while_evidence_holds(
 ) -> None:
     keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
-    _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    _gripe(store, f"me{keeper} and me{loser} disagree.{_fix(keeper, loser)}", route=[])
     candidate = cand.griped_candidates(store)[0]
     record_rejection(
         store,
@@ -300,7 +313,7 @@ def test_no_change_rejection_blocks_re_ask_while_evidence_holds(
 
 def test_run_detectors_dispatches_griped(store: Store) -> None:
     mem = _memory(store, "A live claim a reader complained about.")
-    _gripe(store, f"me{mem} is wrong.", route=[])
+    _gripe(store, f"fix: me{mem} (is wrong)", route=[])
     run = cand.run_detectors(store, passes=("memory",), detector_deadline_s=0)
     assert any(c.detector == "griped" for c in run.candidates)
     assert "griped" not in run.skipped
@@ -369,7 +382,7 @@ def test_no_change_verdict_closes_the_gripe_after_the_rejection(
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
     gid = _gripe(
         store,
-        f"me{keeper} and me{loser} disagree on pours.",
+        f"me{keeper} and me{loser} disagree on pours.{_fix(keeper, loser)}",
         route=_route({"verb": "search", "arg_sample": {"q": "interim"}}),
     )
     runner.run_garden_tick(
@@ -397,7 +410,7 @@ def test_no_change_close_waits_on_queued_sibling_candidates(store: Store) -> Non
     loser = _memory(store, "No board may ever carry a pour on any layer, period.")
     gid = _gripe(
         store,
-        f"me{keeper} and me{loser} disagree on pours.",
+        f"me{keeper} and me{loser} disagree on pours.{_fix(keeper, loser)}",
         route=_route({"verb": "search", "arg_sample": {"q": "interim"}}),
     )
 
@@ -421,7 +434,7 @@ def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
 
     assert "qualify" not in MEMORY_ACTIONS["griped"]
     mem = _memory(store, "A scoped claim needing a caveat.")
-    _gripe(store, f"me{mem} needs its scope named.", route=[])
+    _gripe(store, f"fix: me{mem} (needs its scope named)", route=[])
     candidate = cand.griped_candidates(store)[0]
     verdict = _one_action_verdict(
         {"action": "qualify", "reason": "true only in scope", "caveat": "x"},
@@ -434,8 +447,8 @@ def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
 def test_griped_candidates_come_newest_gripe_first(store: Store) -> None:
     """gr657257: the gardener works the freshest complaint first."""
     mem = _memory(store, "A claim two readers complained about.")
-    older = _gripe(store, f"me{mem}: stale since the rename.", route=[])
-    newer = _gripe(store, f"me{mem}: contradicts its hub.", route=[])
+    older = _gripe(store, f"fix: me{mem} (stale since the rename)", route=[])
+    newer = _gripe(store, f"fix: me{mem} (contradicts its hub)", route=[])
     found = cand.griped_candidates(store)
     assert [c.payload["gripe"] for c in found] == [newer, older]
     nxt: dict[str, int] = {}
@@ -450,12 +463,12 @@ def test_new_complaint_heads_the_next_window_mid_sweep(store: Store) -> None:
     low-water cursor — the high-water mark must let it head the next pass
     instead of waiting for the wraparound."""
     mem = _memory(store, "A claim readers keep complaining about.")
-    oldest = _gripe(store, f"me{mem}: first complaint.", route=[])
-    middle = _gripe(store, f"me{mem}: second complaint.", route=[])
+    oldest = _gripe(store, f"fix: me{mem} (first complaint)", route=[])
+    middle = _gripe(store, f"fix: me{mem} (second complaint)", route=[])
     nxt: dict[str, int] = {}
     page = cand.griped_candidates(store, scan_cap=1, next_cursors=nxt)
     assert [c.payload["gripe"] for c in page] == [middle]
-    newest = _gripe(store, f"me{mem}: just filed.", route=[])
+    newest = _gripe(store, f"fix: me{mem} (just filed)", route=[])
     nxt2: dict[str, int] = {}
     rest = cand.griped_candidates(store, scan_cap=1, cursors=nxt, next_cursors=nxt2)
     assert [c.payload["gripe"] for c in rest] == [newest]
@@ -468,12 +481,12 @@ def test_full_new_band_keeps_the_unprocessed_gripes_unseen(store: Store) -> None
     the limit, the gripe between the old mark and the band's oldest id
     must stay ahead of the low-water cursor, not be skipped."""
     mem = _memory(store, "A claim readers keep complaining about.")
-    oldest = _gripe(store, f"me{mem}: first complaint.", route=[])
+    oldest = _gripe(store, f"fix: me{mem} (first complaint)", route=[])
     nxt: dict[str, int] = {}
     page = cand.griped_candidates(store, scan_cap=1, next_cursors=nxt)
     assert [c.payload["gripe"] for c in page] == [oldest]
-    skipped = _gripe(store, f"me{mem}: second complaint.", route=[])
-    newest = _gripe(store, f"me{mem}: just filed.", route=[])
+    skipped = _gripe(store, f"fix: me{mem} (second complaint)", route=[])
+    newest = _gripe(store, f"fix: me{mem} (just filed)", route=[])
     nxt2: dict[str, int] = {}
     rest = cand.griped_candidates(store, scan_cap=1, cursors=nxt, next_cursors=nxt2)
     assert [c.payload["gripe"] for c in rest] == [newest]
@@ -522,7 +535,157 @@ def test_griped_survives_the_freshly_considered_skip(
 ) -> None:
     """A reader's open complaint is not silenced by an earlier review."""
     mem = _memory(store, "A reviewed claim a reader still complains about.")
-    _gripe(store, f"me{mem}: wrong after the review.", route=[])
+    _gripe(store, f"fix: me{mem} (wrong after the review)", route=[])
     monkeypatch.setattr(cand, "freshly_considered", lambda *_a, **_k: {("ref", mem)})
     run = cand.run_detectors(store, passes=("memory",), detector_deadline_s=0)
     assert any(c.detector == "griped" and c.target_id == mem for c in run.candidates)
+
+
+def _comment(store: Store, gid: int, text: str) -> None:
+    ords = [b.ord for b in store.chunks.list_chunks_for_ref(gid)]
+    store.chunks.insert_chunks(
+        gid,
+        [
+            ChunkInsert(
+                ord=max(ords, default=-1) + 1,
+                text=text,
+                meta={"chunk_kind": "gripe_comment"},
+            )
+        ],
+    )
+
+
+def _bookkeeping_comment(kept: int, other: int) -> str:
+    """gr664319 comment 4's shape: two handles named in passing."""
+    return (
+        "Trimmed the node to its runbook pointer. Its old body named "
+        f"me{kept} and me{other} by inline mention only; both keep an "
+        "explicit related-to link so they survive the body resync."
+    )
+
+
+def test_fix_marker_parser_takes_kind_handle_and_reason() -> None:
+    """gr682861: one marker per line, case-insensitive, reason required."""
+    story = "\n".join(
+        [
+            "fix: me12 (duplicates runbook step 3)",
+            "  FIX: gr34 (same defect, filed twice)",
+            "- fix: td56 (waits on a closed todo)",
+            "fix: me78",
+            "fix: me90 ()",
+            "the old body said fix: me11 (inline, not its own line)",
+            "fix: me21 (first) and fix: me22 (second)",
+            "fix: pa33 (not a kind the sweep handles)",
+        ]
+    )
+    assert cand.fix_markers(story) == [
+        ("me", 12, "duplicates runbook step 3"),
+        ("gr", 34, "same defect, filed twice"),
+        ("td", 56, "waits on a closed todo"),
+    ]
+
+
+def test_prose_handles_in_a_comment_mint_nothing(store: Store) -> None:
+    """gr682861: gr664319's comment 4 named two memories as bookkeeping —
+    a bare inline handle is no ask, wherever it sits."""
+    kept = _memory(store, "Bring-up step three installs the runtime packages.")
+    other = _memory(store, "System users pin their uid and gid at creation.")
+    gid = _gripe(store, "Bring-up memory nodes restate the runbook.", route=[])
+    _comment(store, gid, _bookkeeping_comment(kept, other))
+    assert cand.griped_candidates(store) == []
+
+
+def test_marker_line_mints_exactly_one_with_its_reason(store: Store) -> None:
+    kept = _memory(store, "Bring-up step three installs the runtime packages.")
+    other = _memory(store, "System users pin their uid and gid at creation.")
+    gid = _gripe(store, "Bring-up memory nodes restate the runbook.", route=[])
+    _comment(
+        store,
+        gid,
+        f"{_bookkeeping_comment(kept, other)}\n"
+        f"fix: me{kept} (duplicates runbook step 3)",
+    )
+    (candidate,) = cand.griped_candidates(store)
+    assert candidate.target_id == kept
+    assert candidate.payload["gripe"] == gid
+    assert candidate.evidence["reason"] == "duplicates runbook step 3"
+    assert "duplicates runbook step 3" in candidate.title
+    runner._file_review_todo(
+        store, candidate, Verdict(accept=False, ask="needs a human")
+    )
+    (todo,) = store.list_refs(kind="todo", tags=["memory-review"], limit=10)
+    assert todo.title.startswith(f"review memory me{kept}: ")
+    assert "duplicates runbook step 3" in todo.title
+    (body,) = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(todo.id)
+        if b.chunk_kind == "todo_body"
+    ]
+    assert "Fix asked: duplicates runbook step 3" in body
+    dsts = {int(l.dst_ref_id) for l in store.links_for(todo.id, direction="out")}
+    assert dsts >= {kept, gid} and other not in dsts
+
+
+def test_three_markers_in_one_comment_mint_three_with_reasons(
+    store: Store,
+) -> None:
+    first = _memory(store, "Bring-up step one partitions the system disk.")
+    second = _memory(store, "Bring-up step two joins the node to the mesh.")
+    third = _memory(store, "Bring-up step three installs the runtime packages.")
+    gid = _gripe(store, "Bring-up memory nodes restate the runbook.", route=[])
+    _comment(
+        store,
+        gid,
+        f"fix: me{first} (restates runbook step 1)\n"
+        f"fix: me{second} (names a retired mesh flag)\n"
+        f"fix: me{third} (duplicates runbook step 3)\n"
+        f"fix: gr{gid} (a gripe target parses but mints no memory rewrite)",
+    )
+    found = cand.griped_candidates(store)
+    assert {c.target_id: c.evidence["reason"] for c in found} == {
+        first: "restates runbook step 1",
+        second: "names a retired mesh flag",
+        third: "duplicates runbook step 3",
+    }
+    assert len(found) == 3
+
+
+def test_marker_in_a_later_comment_mints_after_the_fact(store: Store) -> None:
+    kept = _memory(store, "Bring-up step three installs the runtime packages.")
+    other = _memory(store, "System users pin their uid and gid at creation.")
+    gid = _gripe(
+        store, f"Bring-up nodes me{kept} and me{other} came up in review.", route=[]
+    )
+    assert cand.griped_candidates(store) == []
+    _comment(store, gid, f"Fix: ME{kept} (duplicates runbook step 3)")
+    (candidate,) = cand.griped_candidates(store)
+    assert candidate.target_id == kept
+    # Every memory the story names still rides along as evidence.
+    assert [m["ref_id"] for m in candidate.evidence["memories"]] == [kept, other]
+
+
+def test_repeated_marker_dedupes_per_gripe_and_memory(store: Store) -> None:
+    mem = _memory(store, "Bring-up step three installs the runtime packages.")
+    gid = _gripe(
+        store,
+        f"Runbook restated.\nfix: me{mem} (duplicates runbook step 3)",
+        route=[],
+    )
+    _comment(store, gid, f"fix: me{mem} (still names the old package set)")
+    (candidate,) = cand.griped_candidates(store)
+    assert candidate.evidence["reason"] == (
+        "duplicates runbook step 3; still names the old package set"
+    )
+
+
+def test_unmarked_complaint_is_reported_not_minted(store: Store, caplog: Any) -> None:
+    """gr682861: no backfill — the sweep names the open complaints whose
+    prose mentions lost their mint, for a human to add markers."""
+    mem = _memory(store, "A claim a reader complained about before markers.")
+    gid = _gripe(store, f"me{mem}: stale since the rename.", route=[])
+    with caplog.at_level("INFO", logger=cand.__name__):
+        assert cand.griped_candidates(store) == []
+    assert any(
+        f"gr{gid}" in r.getMessage() and f"me{mem}" in r.getMessage()
+        for r in caplog.records
+    )

@@ -74,7 +74,9 @@ trust acts retain the original model string.
    half-history or retire-pending, plus cold alone on decaying shapes
    — owes a per-sentence keep/move/drop plan;
    :func:`precis.graph.garden.apply.apply_compact`) and ``griped``
-   (open ``project:memory`` complaints, newest first). The opt-in
+   (open ``project:memory`` complaints, newest first; it mints only for
+   memories a ``fix: me<N> (<reason>)`` line names, never for a handle in
+   prose — gr682861). The opt-in
    ``memory-review`` pass is proposal-only — no apply door — and adds
    ``review_due`` (expired, unreviewed, sha- or version-moved, or aged:
    30 days for reference/gotchas, 60 for runbooks, ``meta.review_by``

@@ -49,7 +49,8 @@ _Identity = tuple[str, int, int | None]
 MEMORY_GRIPE_HINT = (
     "Wonky, contradicted or unclear? put(kind='gripe', args={'project': 'memory'}, "
     "text='memory: <symptom>\\nGoal: <what you were after>\\nRoute: "
-    "<query or link> -> meN said <claim>; <query or link> -> meM said <claim>'). "
+    "<query or link> -> meN said <claim>; <query or link> -> meM said <claim>"
+    "\\nfix: meN (<what is wrong>)'). "
     'Learned the truth with evidence? precis-memory-help "A recalled memory misled me".'
 )
 

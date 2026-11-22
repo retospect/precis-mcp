@@ -15,6 +15,7 @@ from precis.store.types import Tag
 from precis.utils.llm.router import LlmResult
 from precis.workers import gripe_triage
 from tests.workers.test_gripe_triage import (
+    _comment_on,
     _comments,
     _gripe,
     _index,
@@ -69,6 +70,65 @@ def test_one_line_memory_gripe_is_tagged_linked_and_routed(store: Store) -> None
     comments = _comments(store, gid)
     assert any(c.startswith(f"triage: memory gripe on me{mem}") for c in comments)
     assert any(c.startswith("project: precis -> memory") for c in comments)
+
+
+def test_fix_marker_lead_is_a_memory_gripe(store: Store) -> None:
+    """gr682861: the ``fix: me<N> (<reason>)`` marker leads the one-line
+    memory complaint the gardener mints from."""
+    _light(store)
+    mem = _memory(store)
+    gid = _gripe(store, f"fix: me{mem} (still says CSV export; the code writes JSON)")
+    _run(store, _llm({"verdicts": [_verdict(gid, project="precis")]}))
+    tags = _open_tag_values(store, gid)
+    assert "project:memory" in tags and "project:precis" not in tags
+    assert _concerns(store, gid) == {mem}
+
+
+_MARKER_ASK = "triage: no memory review yet"
+
+
+def _reopen(store: Store, gid: int) -> None:
+    store.add_tag(
+        gid, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+    )
+
+
+def test_memory_gripe_without_a_marker_is_asked_for_one_once(store: Store) -> None:
+    """gr682861: routed to the gardener with no ``fix: me<N> (…)`` line,
+    the gripe would wait unseen — triage says so, once across ticks."""
+    from precis.graph.garden.candidates import fix_markers
+
+    _light(store)
+    mem = _memory(store)
+    gid = _gripe(store, f"me{mem}: still says CSV export; the code writes JSON")
+    _run(store, _llm({"verdicts": [_verdict(gid, project="precis")]}))
+    assert "project:memory" in _open_tag_values(store, gid)
+    (ask,) = [c for c in _comments(store, gid) if c.startswith(_MARKER_ASK)]
+    assert f"fix: me{mem} (<what is wrong>)" in ask
+    assert fix_markers(ask) == [], "the ask must not read as a marker itself"
+    _reopen(store, gid)
+    _run(store, _llm({"verdicts": [_verdict(gid, project="precis", severity=4)]}))
+    comments = _comments(store, gid)
+    assert [c for c in comments if c.startswith(_MARKER_ASK)] == [ask]
+
+
+def test_memory_gripe_with_a_marker_gets_no_ask(store: Store) -> None:
+    _light(store)
+    mem = _memory(store)
+    body_gid = _gripe(
+        store,
+        f"me{mem}: export format is stale",
+        body=f"The export note is wrong.\nfix: me{mem} (says CSV; the code writes JSON)",
+    )
+    comment_gid = _gripe(store, f"me{mem}: export format is stale, again")
+    _comment_on(store, comment_gid, f"Fix: me{mem} (says CSV; the code writes JSON)")
+    _run(
+        store,
+        _llm({"verdicts": [_verdict(body_gid), _verdict(comment_gid)]}),
+    )
+    for gid in (body_gid, comment_gid):
+        assert "project:memory" in _open_tag_values(store, gid)
+        assert not any(c.startswith(_MARKER_ASK) for c in _comments(store, gid))
 
 
 def test_context_citation_stays_an_ordinary_gripe(store: Store) -> None:

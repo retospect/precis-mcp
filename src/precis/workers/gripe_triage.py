@@ -129,13 +129,18 @@ rung):
   (:func:`_note_resumed`).
 
 A memory complaint is a plain gripe (gr657257): the filer writes
-``me123: <what is wrong>`` and needs no tag or relation. The tick
-classifies it — a first line led by a ``me<id>:`` handle, or the
+``fix: me123 (<what is wrong>)`` and needs no tag or relation. The tick
+classifies it — a first line led by that marker or by a bare ``me<id>:``
+handle (the older lead still routes, but the gardener mints only from
+the marker line, gr682861), or the
 verdict's ``memory`` field naming a handle the gripe's text carries
 (:func:`_memory_concern`) — and, when that memory is live, tags the
 gripe ``project:memory`` and links it ``raises-concern-about`` the
 memory. ``project:memory`` keeps it out of the coder wave; the
-gardener's ``griped`` detector takes it first, newest first. The
+gardener's ``griped`` detector takes it first, newest first. When the
+gripe's body and comments carry no marker line for that memory, the
+tick comments once (:func:`_marker_ask`) that no review is minted
+until one is added. The
 field path keys on the ask, not on the handle's presence (gr666194):
 a ``fix:<artifact>`` verdict (``docs``/``code``/…) means the change
 lands in the repo, so a ``me<id>`` the text carries is the fix's
@@ -280,8 +285,11 @@ _PROJECT_TAG_PREFIX = "project:"
 #: model's ``memory`` field naming a handle the gripe's own text carries
 #: under a non-artifact fix (gr666194).
 _MEMORY_PROJECT = "memory"
-#: ``me123: …`` — the one-line memory complaint's lead.
-_MEMORY_LEAD_RE = re.compile(r"^\s*me([0-9]{1,18})\s*:")
+#: ``me123: …`` — the one-line memory complaint's lead — or the fix
+#: marker ``fix: me123 (…)`` the gardener mints from (gr682861).
+_MEMORY_LEAD_RE = re.compile(
+    r"^\s*(?:fix:\s*me([0-9]{1,18})\s*\(|me([0-9]{1,18})\s*:)", re.IGNORECASE
+)
 _MEMORY_HANDLE_RE = re.compile(r"\bme([0-9]{1,18})\b")
 #: The ``fix`` classes whose verdict names a repo artifact to change
 #: (gr666194): a ``me<id>`` handle in a ``fix:docs``/``fix:code`` gripe
@@ -1782,7 +1790,7 @@ def _memory_concern(g: ClaimedGripe, raw: Any, fix: str) -> int | None:
         (ln for ln in g.body.splitlines() if ln.strip()), ""
     )
     if (lead := _MEMORY_LEAD_RE.match(first)) is not None:
-        return int(lead.group(1))
+        return int(lead.group(1) or lead.group(2))
     if fix in _ARTIFACT_FIXES:
         return None
     named = _MEMORY_HANDLE_RE.search(str(raw or "").strip())
@@ -2106,6 +2114,44 @@ def _live_memory(conn: Any, ref_id: int) -> int | None:
     return ref_id if row is not None else None
 
 
+#: Lead of the one comment that asks a memory gripe for its fix marker
+#: (gr682861). Fixed, so the ask is written once however often the gripe
+#: is re-triaged or whichever memory a later tick names.
+_MARKER_ASK_PREFIX = f"{_TRIAGE_PREFIX}no memory review yet — "
+
+
+def _marker_ask(conn: Any, ref_id: int, memory: int) -> str | None:
+    """The comment asking for ``memory``'s fix marker, or ``None``.
+
+    The gardener's ``griped`` detector mints a review only from a
+    ``fix: me<N> (<reason>)`` line in the gripe's body or comments
+    (:func:`precis.graph.garden.candidates.fix_markers`), so a gripe
+    routed to ``project:memory`` without one would wait unseen: the
+    coder wave skips it and the gardener mints nothing. ``None`` when
+    the marker is there or the ask is already on the gripe. The marker
+    sits mid-line in the comment so the comment itself is no marker."""
+    from precis.graph.garden.candidates import fix_markers
+
+    texts = [
+        str(r[0])
+        for r in conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind IN ('gripe_body', 'gripe_comment') "
+            "AND retired_at IS NULL ORDER BY ord, chunk_id",
+            (ref_id,),
+        ).fetchall()
+    ]
+    if any(t.startswith(_MARKER_ASK_PREFIX) for t in texts):
+        return None
+    if ("me", memory) in {(k, pk) for k, pk, _why in fix_markers("\n".join(texts))}:
+        return None
+    return (
+        f"{_MARKER_ASK_PREFIX}the gardener mints a review todo for "
+        f"me{memory} only from a marker line. Add a comment whose line "
+        f"reads: fix: me{memory} (<what is wrong>)"
+    )
+
+
 def _write_verdict(
     store: Store,
     g: ClaimedGripe,
@@ -2353,6 +2399,8 @@ def _write_verdict(
                 f"{_TRIAGE_PREFIX}memory gripe on me{memory} — routed to the "
                 "gardener, which takes memory gripes first"
             )
+            if not close and (ask := _marker_ask(conn, g.ref_id, memory)):
+                comments.append(ask)
         if reto:
             store.add_tag(g.ref_id, Tag.open("reto:ask"), set_by="system", conn=conn)
             # gr595189: one payload, one comment — when the needs-spec

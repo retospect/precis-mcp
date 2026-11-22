@@ -120,7 +120,9 @@ each route returned; name every involved memory and entity handle in the
 text, and pass `link=` to create an edge. Link additional refs with `link()`;
 handles in gripe text alone do not create links. Say "Which is right: unknown"
 when you only have a suspicion. The example is in [[precis-memory-help]],
-"A recalled memory misled me".
+"A recalled memory misled me". Add one `fix: me<N> (<what is wrong>)` line
+per memory the gardener should review: handles named in the story alone
+start no review (see "A memory complaint is a plain gripe").
 
 The server adds `meta.route` from the session's last ten memory get/search
 calls, with masked arguments. This is best-effort: unavailable call history
@@ -871,10 +873,11 @@ and want it findable, use `memory`.
 
 Noticed a memory that is stale, thin, ungrounded, in the wrong hub, too
 big or contradicted? Do not fix it on the spot and do not drop it. File
-one string and move on, memory handle first:
+one string and move on, as a fix marker: the memory handle, then what is
+wrong with it in parentheses:
 
 ```python
-put(kind='gripe', text='me123: still says CSV export; the code writes JSON')
+put(kind='gripe', text='fix: me123 (still says CSV export; the code writes JSON)')
 ```
 
 No tag, relation or Goal/Route block is needed for this quick form. The
@@ -882,6 +885,19 @@ triage tick classifies it, tags `project:memory`, links the memory with
 `raises-concern-about`, and the gardener fixes or declines it first on its
 next pass, closing it with a `resolved:` comment. Until then the
 memory's fisheye carries an `under review: gr<N> …` line. Use the full form below for route disagreements.
+
+The gardener reviews only the memories a marker line names:
+`fix: me<N> (<what is wrong>)` on a line of its own, in the gripe body or
+in any later comment. The parenthesised reason is required and becomes
+the review's title. One gripe may carry several markers, one per line,
+and each memory gets its own review; a marker added in a later comment
+is picked up on the gardener's next pass. A memory handle that only
+appears in prose is context and starts no review, in the body or in a
+comment. When triage routes a gripe to the gardener and finds no marker
+line for the memory, it comments once on the gripe with the line to add.
+`fix: gr<N> (…)` and `fix: td<N> (…)` are read the same way but
+start no memory review. This text marker is separate from the
+`fix:<class>` tags and from the `fix:` line of a builder-wave `get`.
 
 A gripe that asks to change the repo and merely names a memory as the
 source — "skill X lacks the fact me123 holds" — is a repo fix
