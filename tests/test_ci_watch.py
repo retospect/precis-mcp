@@ -272,6 +272,90 @@ def test_open_gripe_gets_seen_again_comment(
     ]
 
 
+def test_rejudged_run_does_not_repost_seen_again(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr759153: when the ``ci_watch.seen`` ledger forgets a judged run
+    (a pass that died before the save, a cap eviction), the gripe's own
+    chunks are the durable dedupe — the same run is not re-posted."""
+    gid = _seed_gripe(store, NIGHTLY_ONE, tags=("origin:ci-watch", "ci:nightly"))
+    _fake_gh(monkeypatch, "red_nightly.json")
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert res.seen_again == [gid]
+    assert _comments(store, gid) == [
+        "seen again: run https://github.com/o/r/actions/runs/201 on ddddddddd"
+    ]
+    # The ledger loses the run: the next pass re-judges it but the
+    # gripe already names it — no second comment.
+    psettings.set_setting(ci_watch.SEEN_SETTING, "{}", store=store)
+    res2 = ci_watch.run_pass(store, repo=REPO)
+    assert res2.seen_again == []
+    assert _comments(store, gid) == [
+        "seen again: run https://github.com/o/r/actions/runs/201 on ddddddddd"
+    ]
+
+
+def test_replayed_filing_run_stays_closed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_gh(monkeypatch, "red_nightly.json")
+    first = ci_watch.run_pass(store, repo=REPO)
+    assert len(first.filed) == 4
+    gid = _gripes(store)[NIGHTLY_ONE]
+    store.add_tag(
+        gid, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+    psettings.set_setting(ci_watch.SEEN_SETTING, "{}", store=store)
+    replay = ci_watch.run_pass(store, repo=REPO)
+    assert replay.filed == replay.seen_again == []
+    assert _status(store, gid) == "done"
+
+
+@pytest.mark.parametrize("has_open_match", [False, True])
+def test_replayed_run_on_terminal_gripe_is_skipped(
+    store: Store, monkeypatch: pytest.MonkeyPatch, has_open_match: bool
+) -> None:
+    open_gid = _seed_gripe(store, NIGHTLY_ONE) if has_open_match else None
+    old = _seed_gripe(store, NIGHTLY_ONE, status="done")
+    _comment(
+        store,
+        old,
+        "seen again: run https://github.com/o/r/actions/runs/201 on ddddddddd",
+    )
+    _fake_gh(monkeypatch, "red_nightly.json")
+
+    preview = ci_watch.run_pass(store, repo=REPO, dry_run=True)
+    assert any(f"gr{old} already notes run 201" in note for note in preview.notes)
+    assert all(NIGHTLY_ONE not in line for line in preview.would)
+    assert f"comment seen again on gr{open_gid}" not in preview.would
+
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert len(res.filed) == 3
+    assert res.seen_again == []
+    if open_gid is not None:
+        assert _comments(store, open_gid) == []
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "run: https://github.com/o/r/actions/runs/2010",
+        "digest: scripts/ci-failed 2010",
+        "seen again: run https://github.com/o/r/actions/runs/2010 on ddddddddd",
+    ],
+)
+def test_run_id_prefix_does_not_suppress_new_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    gid = _seed_gripe(store, NIGHTLY_ONE)
+    _comment(store, gid, record)
+    _fake_gh(monkeypatch, "red_nightly.json")
+
+    res = ci_watch.run_pass(store, repo=REPO)
+    assert res.seen_again == [gid]
+
+
 def test_ci_mute_silences_the_open_gripe(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

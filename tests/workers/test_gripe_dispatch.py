@@ -616,6 +616,27 @@ def test_every_hold_tag_excludes(store: Store, two_lanes: Any, tag: str) -> None
     assert (res.claimed, res.ok) == (0, 0)
 
 
+def test_dispatch_cooldown_meta_holds_the_gripe(store: Store, two_lanes: Any) -> None:
+    """gr759153: a gripe carrying a future
+    ``meta.dispatch_cooldown_until`` (stamped by plan_dispatch's moot
+    close when a ``moot:`` drop could not resolve it) is out of
+    candidates until the stamp lapses; a past or malformed stamp fails
+    open toward dispatch."""
+    from datetime import UTC, datetime, timedelta
+
+    _light(store)
+    a = _gripe(store, "cooled")
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    store.stamp_ref_meta(a, {gd.DISPATCH_COOLDOWN_META: future})
+    assert a not in {c.gripe_id for c in gd.candidates(store, 10)}
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    store.stamp_ref_meta(a, {gd.DISPATCH_COOLDOWN_META: past})
+    assert a in {c.gripe_id for c in gd.candidates(store, 10)}
+    for malformed in ("not-a-timestamp", "2026-99-99T00:00Z"):
+        store.stamp_ref_meta(a, {gd.DISPATCH_COOLDOWN_META: malformed})
+        assert a in {c.gripe_id for c in gd.candidates(store, 10)}
+
+
 def test_closed_chain_frees_its_slot_and_its_gripe_reenters(
     store: Store, two_lanes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

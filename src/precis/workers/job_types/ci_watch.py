@@ -17,12 +17,13 @@ files, the rest are named in its body. Soak runs are judged on the
 
 Dedupe is by the exact gripe title ``nightly red: <sig>`` /
 ``soak red: <sig>``: an open gripe gets a ``seen again: run <url> on
-<sha>`` comment; a terminal one refiles — inside
+<sha>`` comment for a new run. Filing and recurrence records on open
+and terminal matching gripes deduplicate replay by run ID (gr759153).
+A new run with only terminal matches refiles — inside
 :data:`REGRESSION_WINDOW` the new gripe names the old handle
 (``regressed after gr<N>``). An open ``ci:mute`` tag on the gripe
-silences it entirely (also under ``dry_run``). A red run that filed
-nothing is NOT recorded in ``ci_watch.seen`` — the next tick re-judges
-it rather than losing it.
+silences it entirely (also under ``dry_run``). A red run whose
+signatures could not be read stays out of ``ci_watch.seen`` for retry.
 
 The gripe body is what a builder without the MCP acts on: a ``Goal:``
 line, the signature, run URL, head sha, job/step name, the
@@ -43,7 +44,9 @@ when the newest green run's head contains the sha (the compare API).
 
 ``ci_watch.seen`` — a ``{run_id: {at, verdict, wf}}`` map capped at
 :data:`SEEN_CAP` — is the idempotency ledger: a processed run is never
-re-judged, so a re-tick converges, and a judged run's ledger verdict is
+re-judged, so a re-tick converges (saved even when the pass dies
+partway — the comments a judged run already wrote must not re-post,
+gr759153), and a judged run's ledger verdict is
 what the green streak and newest-green read (a run already judged
 still counts). A probed ``release/**`` candidate with no soak artifact
 at all is recorded ``verdict "no-soak"`` so it is not probed again; a
@@ -809,6 +812,26 @@ def _insert_gripe(store: Any, conn: Any, title: str, sig: str, wf: str) -> int:
     return int(ref.id)
 
 
+def _recorded_run(conn: Any, matches: list[int], rid: str) -> int | None:
+    """Find a filing or recurrence that names this complete run ID."""
+    token = re.escape(rid)
+    pattern = re.compile(
+        rf"^(?:run: \S+/runs/{token}"
+        rf"|digest: scripts/ci-failed {token}"
+        rf"|seen again: run (?:\S+/runs/)?{token} on \S+)$",
+        re.MULTILINE,
+    )
+    for gid in matches:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind IN ('gripe_body', 'gripe_comment') AND text IS NOT NULL",
+            (gid,),
+        ).fetchall()
+        if any(pattern.search(row[0]) for row in rows):
+            return gid
+    return None
+
+
 def _note_run(
     store: Any,
     sigs: dict[str, dict[str, Any]],
@@ -819,20 +842,28 @@ def _note_run(
     dry_run: bool,
     res: WatchResult,
 ) -> None:
-    """The dedupe rule for one run's signatures — comment an open gripe,
-    refile a terminal one, else file; new gripes get the sibling set of
+    """Skip recorded runs across open and terminal matches. For a new
+    run, comment an open gripe or file a fresh one; new gripes get the sibling set of
     the run in their body and pairwise ``related-to`` links. One
     transaction under the advisory lock."""
     url = str(run.get("html_url") or "")
     sha9 = str(run.get("head_sha") or "")[:9]
+    rid = str(run.get("id") or "")
     if dry_run:
         with store.pool.connection() as conn:
             for sig in sorted(sigs):
                 title = _title(wf, sig)
+                matches = _title_matches(conn, title)
+                recorded = _recorded_run(conn, matches, rid)
+                if recorded is not None:
+                    res.notes.append(
+                        f"gr{recorded} already notes run {rid} — {sig} skipped"
+                    )
+                    continue
                 open_gid = next(
                     (
                         gid
-                        for gid in _title_matches(conn, title)
+                        for gid in matches
                         if _status_of(store, conn, gid) not in _TERMINAL
                     ),
                     None,
@@ -850,10 +881,23 @@ def _note_run(
         touched: list[int] = []
         for sig in sorted(sigs):
             title = _title(wf, sig)
+            matches = _title_matches(conn, title)
+            recorded = _recorded_run(conn, matches, rid)
+            if recorded is not None:
+                res.notes.append(
+                    f"gr{recorded} already notes run {rid} — {sig} skipped"
+                )
+                if _status_of(
+                    store, conn, recorded
+                ) not in _TERMINAL and "ci:mute" not in _open_tags(
+                    store, conn, recorded
+                ):
+                    touched.append(recorded)
+                continue
             regression: int | None = None
             regression_at: datetime | None = None
             handled = False
-            for gid in _title_matches(conn, title):
+            for gid in matches:
                 if _status_of(store, conn, gid) in _TERMINAL:
                     closed_at = _status_tagged_at(conn, gid)
                     if closed_at is not None and (
@@ -864,7 +908,9 @@ def _note_run(
                 if "ci:mute" in _open_tags(store, conn, gid):
                     res.notes.append(f"gr{gid} carries ci:mute — {sig} skipped")
                 else:
-                    _comment(store, conn, gid, f"seen again: run {url} on {sha9}")
+                    _comment(
+                        store, conn, gid, f"seen again: run {url or rid} on {sha9}"
+                    )
                     res.seen_again.append(gid)
                     touched.append(gid)
                 handled = True
@@ -1145,8 +1191,16 @@ def run_pass(
         )
     except GhUnavailable as exc:
         res.gh_error = str(exc)
-    if changed and not dry_run:
-        _save_seen(store, seen)
+    finally:
+        # The ledger saves even when the pass dies partway (gr759153):
+        # a ``seen again`` comment commits inside ``_note_run``, so a
+        # crash before this point re-judged the same run next tick and
+        # re-posted it on the gripe every pass.
+        if changed and not dry_run:
+            try:
+                _save_seen(store, seen)
+            except Exception:  # the pass's own error must still surface
+                log.warning("%s: seen save failed", NAME, exc_info=True)
     return res
 
 

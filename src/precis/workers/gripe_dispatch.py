@@ -69,7 +69,11 @@ Each fire:
   returns once the blocker closes (gr656970) —, with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists — a
   linked todo carrying a terminal STATUS is closed work and no longer
-  holds the gripe out, gr609044), none
+  holds the gripe out, gr609044), no live
+  ``meta.dispatch_cooldown_until`` stamp (``plan_dispatch``'s moot close
+  writes it when a ``moot:`` drop could not resolve the gripe, so an
+  unproven claim pauses the re-mint loop instead of feeding it,
+  gr759153), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
   ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
   ``rescue:intake``), and the **filer-trust rule** below.
@@ -285,6 +289,16 @@ STALL_TAG_PREFIX = "chain-stalls:"
 #: ``start over`` drops the branch and rebuilds from the base, drop is
 #: closing the root ``won't-do``.
 _STALL_OPTIONS = ["resume", "start over", "drop"]
+#: Gripe ``meta`` key ``plan_dispatch``'s moot close stamps when an
+#: unverified ``moot:`` drops a gripe's plan without resolving it
+#: (gr759153): an ISO-8601 UTC timestamp the candidate read honours —
+#: a claim the tick could not prove pauses the re-mint loop instead of
+#: feeding it. Written by :func:`plan_dispatch._cool_moot_gripe`.
+DISPATCH_COOLDOWN_META = "dispatch_cooldown_until"
+#: Registry key and default of the moot-drop dispatch cooldown
+#: (:func:`moot_cooldown_hours`).
+MOOT_COOLDOWN_KEY = "factory.gripe_dispatch.moot_cooldown_hours"
+DEFAULT_MOOT_COOLDOWN_HOURS = 6
 
 
 def gripe_trust(store: Store) -> str:
@@ -568,6 +582,15 @@ def stall_hours(store: Store) -> int:
     :data:`DEFAULT_STALL_HOURS`."""
     raw = psettings.get_int(STALL_HOURS_KEY, store=store)
     return raw if raw is not None and raw >= 1 else DEFAULT_STALL_HOURS
+
+
+def moot_cooldown_hours(store: Store) -> int:
+    """``factory.gripe_dispatch.moot_cooldown_hours`` — the dispatch
+    cooldown a moot drop that could not resolve its gripe stamps
+    (:data:`DISPATCH_COOLDOWN_META`, gr759153); unset or negative reads
+    :data:`DEFAULT_MOOT_COOLDOWN_HOURS`, 0 disables the cooldown."""
+    raw = psettings.get_int(MOOT_COOLDOWN_KEY, store=store)
+    return raw if raw is not None and raw >= 0 else DEFAULT_MOOT_COOLDOWN_HOURS
 
 
 def _idle_hours(store: Store, node_ids: tuple[int, ...]) -> float:
@@ -966,6 +989,16 @@ def _candidate_picks(
            AND NOT EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
                             WHERE ht.ref_id = r.ref_id AND h.namespace IN ('OPEN', 'FLAG')
                               AND h.value = ANY(%s))
+           -- gr759153: a moot drop the tick could not resolve stamps
+           -- meta.dispatch_cooldown_until — out of candidates until it
+           -- lapses (a malformed stamp fails open toward dispatch).
+           AND CASE
+                WHEN r.meta->>'dispatch_cooldown_until'
+                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}T[0-9]{{2}}:[0-9]{{2}}(:[0-9]{{2}}([.][0-9]+)?)?Z$'
+                 AND pg_input_is_valid(r.meta->>'dispatch_cooldown_until', 'timestamptz')
+                THEN (r.meta->>'dispatch_cooldown_until')::timestamptz <= now()
+                ELSE TRUE
+           END
            AND NOT EXISTS (SELECT 1 FROM links bl JOIN refs bt ON bt.ref_id = bl.dst_ref_id
                             WHERE bl.src_ref_id = r.ref_id AND bl.relation = 'blocked-by'
                               AND bt.retired_at IS NULL

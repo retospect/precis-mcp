@@ -684,6 +684,18 @@ REGISTRY: dict[str, SettingSpec] = {
             "lane and host keeps dispatching.",
         ),
         SettingSpec(
+            key="factory.gripe_dispatch.moot_cooldown_hours",
+            type="int",
+            env_var=None,
+            default=6,
+            doc="DB-only. Hours a gripe stays out of gripe_dispatch "
+            "candidates after its plan dropped on a moot verdict the "
+            "tick could not resolve (meta.dispatch_cooldown_until, "
+            "gr759153): an unproven 'already fixed' claim pauses the "
+            "re-mint loop instead of feeding it. 0 disables the "
+            "cooldown.",
+        ),
+        SettingSpec(
             key="factory.gripe_dispatch.stall_hours",
             type="int",
             env_var=None,

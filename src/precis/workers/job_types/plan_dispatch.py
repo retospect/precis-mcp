@@ -152,10 +152,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    the fix loop's own rulings. A job stamped
    ``human_only_hit`` keeps its ask — no verdict closes ahead of the
    human-only ruling, before or after the ask mints (td604234,
-   td604695). An unverified or hand-posted moot has
-   no sha for a ``resolved:`` — the plan's gripe gets
-   ``<verdict> — plan dropped`` instead, so the record of why the plan
-   went away survives. A ``brief`` generator is exempt from all of it.
+   td604695). An unverified or hand-posted moot records
+   ``<verdict> — plan dropped`` on the gripe and cools its dispatch
+   (gr759153). A ``brief`` generator is exempt from all of it.
 2b. **todo briefs** (:func:`_step_todo_briefs`) — a ``brief`` generator
    under a root carrying ``meta.source_todo`` whose newest job succeeded:
    the ``handoff:`` comment that job posted (its chunk ``meta`` binds it
@@ -1176,7 +1175,6 @@ _SHA_FROM_RE = re.compile(r"\s*sha:([0-9a-f]{7,40})\s*", re.IGNORECASE)
 #: one naming a gripe other than the plan's is never this plan's
 #: verdict — the S1d rejection, kept for the trusted close).
 _GRIPE_TOKEN_RE = re.compile(r"\bgr(\d+)\b", re.IGNORECASE)
-
 #: Doable exclusions the tick honours: the shared registry minus
 #: ``child-failed:`` — plan retries are the tick's, not the bubble's —
 #: plus ``rescue:``: a node in rescue belongs to the rescue pass, never
@@ -5129,6 +5127,54 @@ def _gripe_verdict_note(store: Any, gid: int, n: _Node, mv_line: Any) -> str | N
     return f"gripe gr{gid}: verdict noted — {line[:120]}"
 
 
+def _cool_moot_gripe(store: Any, gid: int) -> str | None:
+    """Stamp the gripe's dispatch cooldown (gr759153) and return the
+    ISO until, ``None`` when the setting is 0 (off). A moot the tick
+    cannot prove pauses the re-mint loop — ``gripe_dispatch.candidates``
+    skips the gripe while the stamp is in the future."""
+    from precis.workers import gripe_dispatch as _gd
+
+    hours = _gd.moot_cooldown_hours(store)
+    if hours <= 0:
+        return None
+    until = (
+        (datetime.now(UTC) + timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+    )
+    store.stamp_ref_meta(gid, {_gd.DISPATCH_COOLDOWN_META: until})
+    return until
+
+
+def _unverified_moot_gripe(
+    store: Any, n: _Node, gid: int, mv_line: Any, res: PassResult
+) -> None:
+    """Preserve the verdict and cool dispatch when the build supplied no
+    verified fix. An ancestor of origin/main alone proves nothing about
+    the gripe. Keep both writes best-effort so the drop can finish."""
+    try:
+        note = _gripe_verdict_note(store, gid, n, mv_line)
+        if note:
+            res.notes.append(note)
+    except Exception as exc:
+        res.notes.append(f"td{n.id}: gripe verdict note failed ({exc})")
+    try:
+        until = _cool_moot_gripe(store, gid)
+        if until is not None:
+            res.notes.append(
+                f"gripe gr{gid}: dispatch cooled until {until} (moot unproven)"
+            )
+    except Exception as exc:
+        res.notes.append(f"td{n.id}: gripe cooldown stamp failed ({exc})")
+
+
+def _moot_would(gid: int, sha: str | None, res: PassResult) -> None:
+    if sha is not None:
+        res.notes.append(f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}")
+    else:
+        res.notes.append(
+            f"would note the moot verdict on gr{gid} and cool its dispatch"
+        )
+
+
 def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
     """A node closed on a ``moot:`` verdict carries ``MOOT_TAG``
     (gr548813): the plan's reason is gone (its gripe already resolved,
@@ -5155,7 +5201,10 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
     the ask is answered or the key is cleared. A verified sha resolves
     the plan's gripe exactly as a land does (the same
     ``resolved: <sha>`` + ``STATUS:verify`` ``land_slice`` writes);
-    one alert on the root tells a human the plan went away."""
+    one alert on the root tells a human the plan went away.
+
+    An unverified moot gets the ``— plan dropped`` note and a dispatch
+    cooldown. Ancestry alone cannot establish that a commit fixed the gripe."""
     from precis.workers.job_types import land_slice as _land_slice
 
     for n in plan.todos():
@@ -5216,12 +5265,8 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                 res.notes.append(f"td{root.id} has a live job; moot close deferred")
                 continue
             if w.dry_run:
-                if sha is not None and gid is not None:
-                    res.notes.append(
-                        f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}"
-                    )
-                elif gid is not None:
-                    res.notes.append(f"would note the moot verdict on gr{gid}")
+                if gid is not None:
+                    _moot_would(gid, sha, res)
                 continue
             if sha is not None and gid is not None:
                 # The verified moot IS the fix's land — resolve the
@@ -5284,15 +5329,7 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                         )
                     continue
             elif gid is not None:
-                # gr602896: no verified sha — the gripe still gets the
-                # record (``<verdict> — plan dropped``). Best-effort:
-                # a note that cannot write must not hold the drop.
-                try:
-                    note = _gripe_verdict_note(store, gid, n, mv_line)
-                    if note:
-                        res.notes.append(note)
-                except Exception as exc:
-                    res.notes.append(f"td{n.id}: gripe verdict note failed ({exc})")
+                _unverified_moot_gripe(store, n, gid, mv_line, res)
             if root is not None and not _closed(root):
                 w.comment(root, f"plan_dispatch: plan closed — {why}")
                 w.set_status(root, "won't-do")
@@ -5302,12 +5339,8 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                 f"plan td{n.root} closed as won't-do: {why}; {closed} node(s)"
             )
         if w.dry_run:
-            if sha is not None and gid is not None:
-                res.notes.append(
-                    f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}"
-                )
-            elif gid is not None:
-                res.notes.append(f"would note the moot verdict on gr{gid}")
+            if gid is not None:
+                _moot_would(gid, sha, res)
             continue
         if not stamped and sha is not None and gid is not None:
             # Generator path: the close ran above, so a raise here is
@@ -5324,16 +5357,9 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                     f"td{n.id}: gripe stamp failed ({exc}); moot close deferred"
                 )
                 continue
-        elif gid is not None and sha is None:
-            # gr602896: no verified sha — the gripe still gets the
-            # record (``<verdict> — plan dropped``). Best-effort: a note
-            # that cannot write must not hold the drop.
-            try:
-                note = _gripe_verdict_note(store, gid, n, mv_line)
-                if note:
-                    res.notes.append(note)
-            except Exception as exc:
-                res.notes.append(f"td{n.id}: gripe verdict note failed ({exc})")
+        elif gid is not None and sha is None and node_kind(n.meta) == "generator":
+            # The task arm already made these writes before its root close.
+            _unverified_moot_gripe(store, n, gid, mv_line, res)
         w.remove_tags(n, [MOOT_TAG])
         root = plan.nodes.get(n.root)
         raise_alert(

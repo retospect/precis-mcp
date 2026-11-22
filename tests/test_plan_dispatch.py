@@ -6999,14 +6999,15 @@ def test_human_only_hit_verdict_never_closes(store: Store) -> None:
     assert _meta(store, task)["rearmed_after_job"] == denied
 
 
-def test_unverified_moot_writes_the_verdict_to_the_gripe(
-    store: Store,
+def test_unverified_moot_with_on_main_claim_only_cools_dispatch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr602896: a moot close with no verified sha leaves its record on
-    the plan's gripe — ``<verdict line> — plan dropped`` — instead of
-    the ``resolved:`` a verified sha would earn."""
+    """An ancestor without verified fix evidence earns only a cooldown."""
     from precis.plans.nodes import MOOT_TAG
+    from precis.workers import factory_rescue as _rescue
+    from precis.workers import gripe_dispatch as gd
 
+    monkeypatch.setattr(_rescue, "_sha_on_main", lambda sha, *, fetch: True)
     gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
     mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
     build = mint.ids["build"]
@@ -7024,9 +7025,12 @@ def test_unverified_moot_writes_the_verdict_to_the_gripe(
         for c in store.chunks.list_chunks_for_ref(gid)
         if c.chunk_kind == "gripe_comment"
     ]
+    assert _status(store, gid) == "fixing"
     assert texts == [
         f"moot: gr{gid} already fixed by b258df7ae — plan dropped (td{build})"
     ]
+    until = _gripe_meta(store, gid).get(gd.DISPATCH_COOLDOWN_META)
+    assert isinstance(until, str) and until.endswith("Z")
     res2 = pd.run_pass(store)
     assert (res2.asks, res2.dispatched) == (0, 0)
     assert (
@@ -7039,6 +7043,12 @@ def test_unverified_moot_writes_the_verdict_to_the_gripe(
         )
         == 1
     )
+
+
+def _gripe_meta(store: Store, gid: int) -> dict[str, Any]:
+    ref = store.get_ref(kind="gripe", id=gid)
+    assert ref is not None
+    return dict(ref.meta or {})
 
 
 def test_no_commit_handoff_moot_never_asks(

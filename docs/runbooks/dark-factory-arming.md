@@ -656,8 +656,12 @@ main plus the newest 3 completed `release/**` runs carrying a `soak` job
 signature: `ci:check.yml:<file>::<test>` (`[param]` stripped) for a
 pytest red, `ci:check.yml:infra:<job name>` (tagged `fix:infra`, not
 `fix:code`) for a failed job with no test node. Dedupe is the exact
-title `nightly red: <sig>` / `soak red: <sig>`: open → a `seen again:`
-comment; terminal → refile, under 7 days naming the old handle. An open
+title `nightly red: <sig>` / `soak red: <sig>` and complete run ID. If any
+matching gripe already records that run in its filing body or a
+`seen again:` comment, replay skips the signature even after the gripe
+closes or the run leaves the ledger. A new run adds a `seen again:`
+comment to an open match or files a new gripe, naming the old handle
+if it closed less than 7 days ago. An open
 unresolved gripe with no live todo link is flake-closed after two
 consecutive green runs; a `resolved: <sha>` gripe gets `green on <url>`
 once a green head contains the sha. `ci_watch.seen` (cap 50) is the
