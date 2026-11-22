@@ -596,7 +596,8 @@
           const sel = window.getSelection.call(window);
           if (!sel || sel.isCollapsed || sel.rangeCount === 0) return '';
           if (insideSkip(sel.anchorNode) || insideSkip(sel.focusNode)) return '';
-          const text = sel.toString.call(sel).trim();
+          const raw = sel.toString.call(sel);
+          const text = raw.trim.call(raw);
           const length = Array.from(text).length;
           return length >= 2 && length <= 2000 ? text : '';
         };

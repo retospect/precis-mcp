@@ -156,7 +156,8 @@ def test_the_drain_signal_keeps_the_stamp_until_the_exit(
     inflight._reset_for_tests()
     inflight.leave(inflight.enter())  # a call just ended
     quiet = iw.resolved_respawn_quiet_s()
-    assert quiet > 0 and inflight.busy(quiet)  # the drain would defer
+    # the drain would defer, and for its whole 2 s cap below
+    assert quiet > 2.0 and inflight.busy(quiet)
 
     exits: list[int] = []
 
@@ -173,18 +174,27 @@ def test_the_drain_signal_keeps_the_stamp_until_the_exit(
         monkeypatch.setattr(iw.threading, "main_thread", lambda: me)
     try:
         assert iw.install_drain_signal(drain_timeout_s=0.1, defer_cap_s=2.0)
+        signalled = time.monotonic()
         handlers[iw.DRAIN_SIGNAL](iw.DRAIN_SIGNAL, None)
         drain = [t for t in threading.enumerate() if t.name == "drain-restart"]
         assert len(drain) == 1
-        # Still deferring (~2 s cap): the stamp stays while it serves.
-        seen_live = False
+        # The deferral runs its full ~2 s cap (the quiet window is longer),
+        # so the stamp must still be there well into it, not just at the
+        # signal. ``exits`` is read before the stamps: the exit can land
+        # between any two reads, but the forget always precedes it, so an
+        # exit seen first means the key must already be gone.
+        seen_live_late = False
         while drain[0].is_alive():
-            if any(r["instance"] == "drain-host:4" for r in mss.read_stamps(store)):
-                seen_live = True
-            assert exits == []
+            exited = bool(exits)
+            elapsed = time.monotonic() - signalled
+            live = any(r["instance"] == "drain-host:4" for r in mss.read_stamps(store))
+            if exited:
+                assert not live  # dropped before the exit, never after
+            elif live and elapsed >= 1.0:
+                seen_live_late = True
             time.sleep(0.05)
         drain[0].join(15)
-        assert seen_live  # it stayed until the drain exit dropped it
+        assert seen_live_late  # still live 1 s into the ~2 s deferral
         assert exits == [0]
         assert mss.read_stamps(store) == []
     finally:
