@@ -502,7 +502,9 @@ with the node handles behind it, pending nodes first, at most 50 per row
 is handles only. Open a member with the single-node view to read its
 evidence.
 
-These reads create no proposals or reviews.
+These reads create no proposals or reviews. The interactive pass that
+acts on them: [[precis-gardener-memory-help]] § "An interactive
+gardening pass".
 
 ## Review a memory's graph neighbourhood and shape smells
 

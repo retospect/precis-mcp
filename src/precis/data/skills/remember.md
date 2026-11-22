@@ -147,7 +147,7 @@ it never retires them. First examples: incident me564175, ruling me564176.
 
 ## See also
 
-- [[reconsolidate]] — the periodic pass that catches what writes missed.
+- [[precis-gardener-memory-help]] — the live MCP gardening pass for periodic cleanup; [[reconsolidate]] is its repo-dev routing.
 - [[precis-memory-help]] — graph semantics, reconciliation policy, misled-me route.
 - [[precis-make-memory]] — extraction and batch recall for free text.
 - [[precis-fisheye-help]] — the fisheye read that sets the 4000-char gloss cap.

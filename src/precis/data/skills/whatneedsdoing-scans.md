@@ -51,21 +51,24 @@ nightly build ⋅ main on CI):
   Convention: `docs/conventions/code-anchors.md`.
 - **Memory index** (`scripts/memory-lint`) — a broken link / unindexed file,
   a flagged **landed thread** (a `## Threads` bullet whose cited commits are
-  all in main → verify + delete), or over-budget are quick fixes. On
-  **reconsolidation DUE** (last full pass an earlier day) run
-  `scripts/memory-lint --currency` for the per-claim ledger (gone kebab
-  branch/worktree naming unshipped work · repo path missing on main), then
-  judgment-resolve each suspect — **adjust** the anchor, **kill** the memory,
-  or **promote** a decision to a docstring/doc — plus the compact+delete-landed
-  pass, then append a dated line to `memory_consolidation_log.md`; on "done
-  today", skip the heavy pass (**once/day at most** — constant re-auditing
-  churns without benefit). The same `scripts/memory-lint` call also runs a
+  all in main → verify + delete), or over-budget are quick fixes. These
+  advisory reads are not the gardening pass. On **reconsolidation DUE**
+  (last full pass an earlier day) run the live MCP pass of
+  [[precis-gardener-memory-help]] (§ "An interactive gardening pass";
+  repo-dev routing in [[reconsolidate]]): `view='smells'` and
+  `view='shape'` over the repo-dev subtree, pending proposals, open
+  memory-review todos and `project:memory` gripes — no export, no
+  `--currency`. Verify each finding live, then **adjust**, **kill** or
+  **promote** per the pass, and record a dated entry in the graph pass log
+  (`memory_consolidation_log`, me474383); on "done today", skip the heavy
+  pass (**once/day at most** — constant re-auditing churns without
+  benefit). The same `scripts/memory-lint` call also runs a
   **sibling-repo path check** (weekly, self-gated, no judgment pass needed —
   `~/work/<name>` / `~/work/project(s)/code/<name>` paths memory cites, <!-- home-path: allow — the path shapes the check matches -->
   verified to still exist on disk) and self-stamps its own log
   (`~/.cache/precis/memory-sibling-repos.log`, untracked; procedure in
   `docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
-  for the SAME resolve step above (adjust / kill / promote), not a
+  for the live pass's verify step (adjust / kill / promote), not a
   separate action.
 
 ## Rulings and eval cadences

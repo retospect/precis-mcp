@@ -22,6 +22,14 @@
 # edited after MEMORY.md.pre-cutover was written to a file the graph never
 # reads (a session that started before the cutover) and needs porting by hand.
 #
+# ROLE: this script is the cached-export DIAGNOSTIC (offline hygiene over the
+# session-start snapshot), not the memory gardening pass — the pass runs live
+# over MCP calls (procedure: get(kind='skill',
+# id='precis-gardener-memory-help')), starting with the subtree smells, pending
+# /garden proposals, open memory-review todos and project:memory gripes
+# (ruling me688123). An operator export/refresh is a separate explicit ask,
+# never a reflex. Findings here are candidates re-verified live, not verdicts.
+#
 # The export's manifest (_sections.tsv: handle, section, updated, body chars,
 # chars the fisheye eye shows, live ring links, links hidden by the eye's
 # per-group cap, dead-end links, part-of hub handle, live qualified-by count,
@@ -135,6 +143,8 @@ usage: scripts/memory-lint [--currency] [--bands]
 Advisory hygiene + reconsolidation-cadence check; always exits 0 on a run.
 Scope is the WHOLE cached snapshot (memory dir + node export); there is no
 per-ref, hub or limit filter. A run may stamp the weekly sibling-repo check.
+This is the cached-export diagnostic: the live gardening pass runs over MCP
+calls, not this script (see the header comment's ROLE note).
 
   --currency   add the per-claim currency ledger (check 5)
   --bands      add the recency-band report (graph mode)
@@ -1105,7 +1115,8 @@ PY
     fi
 fi
 
-# 4. reconsolidation cadence (once/day)
+# 4. reconsolidation cadence (once/day) — this check only reads the clock;
+#    the pass it names runs live over MCP calls (see the ROLE note at top).
 # The log is appended oldest-first, so pick the chronologically LATEST pass
 # date — ISO dates sort lexically, so `sort | tail -1` is the max regardless of
 # file order (a bare `head -1` read the OLDEST entry and left the check
@@ -1143,7 +1154,7 @@ elif [[ "$last" == "$today" ]]; then
     echo "reconsolidation: done today ($last) — skip the heavy pass"
 elif (( GRAPH )); then
     (( SNAP_STALE )) && echo "reconsolidation: cached log may predate a live pass (snapshot STALE/UNKNOWN) — read the live memory_consolidation_log node before running the heavy pass"
-    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…, args={'superseded_by': …}) / promote-to-doc) + delete(kind='memory', args={'superseded_by': …}) any landed thread flagged above. Procedure: the reconsolidate skill; record the pass as a dated entry at the top of the memory_consolidation_log node"
+    echo "reconsolidation: DUE (last $last) — the pass runs live over MCP, not over this snapshot: start with the live reads (search(kind='memory', view='smells'/'shape', args={'under': 'me<hub>'}), get(kind='job', id='/garden/proposals'), open memory-review todos, project:memory gripes; procedure: get(kind='skill', id='precis-gardener-memory-help')), recheck this script's findings live, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…, args={'superseded_by': …}) / promote-to-doc) + delete(kind='memory', args={'superseded_by': …}) any landed thread flagged above, and record the pass as a dated entry at the top of the memory_consolidation_log node. 'scripts/memory-lint --currency' is the cached-snapshot ledger — a diagnostic, not the pass"
 else
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Append a dated line to memory_consolidation_log.md"
 fi

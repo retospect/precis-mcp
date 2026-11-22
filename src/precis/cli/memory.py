@@ -24,7 +24,9 @@ The write and load halves of `me690866`:
   ``--full`` keeps the old whole-graph listing, one ``- <Title> (<handle>) —
   <hook>`` bullet per node. ``--export-dir`` also writes each topic node's body
   to ``DIR/<handle>.md`` (same query, swapped in whole) so
-  ``scripts/memory-lint`` can lint node bodies.
+  ``scripts/memory-lint`` can lint node bodies — an offline diagnostic
+  snapshot; the interactive gardening pass runs live over MCP calls and
+  never needs an export (ruling me688123).
 - ``precis memory backfill-space [--dry-run] [--limit N]`` infers ``SPACE:``
   on live memories that carry none (gr548275): present tags, then the
   writer signal on the refs row (``meta.file_mirror`` / ``slug`` /

@@ -23,62 +23,60 @@ the `Next:` hint or the [[remember]] skill, not just the node.
 
 ## The pass
 
-1. **Lint.** `scripts/memory-lint` (graph mode reads the cached node export
-   at `~/.cache/precis/memory-nodes/`), then `scripts/memory-lint --currency`
-   for the per-claim ledger. A stale snapshot's findings are candidates, not
-   verdicts: recheck each live before correcting it. Refreshing the cache is
-   an explicit operator export (see Export vs refresh), never a reflex.
+The default pass runs live over MCP and never reads the node export. The
+procedure is [[precis-gardener-memory-help]] § "An interactive gardening
+pass"; this skill adds the repo-dev routing.
+
+1. **Survey live.** Scope the repo-dev graph or the hub you were given, then
+   read `search(kind='memory', view='smells', args={'under': 'me474312'})`
+   and `view='shape'` the same way, the pending proposals
+   (`get(kind='job', id='/garden/proposals')`), the open memory-review todos
+   (`search(kind='todo', tags=['memory-review', 'STATUS:open'])`) and the open
+   `project:memory` gripes. Every finding is a candidate: recheck it live
+   before correcting it.
 2. **Mechanical findings — fix in the main loop:**
-   - `no hub` → `link(…, rel='part-of')` to the hub the hint names.
-   - `orphan` / `dead links` → link to neighbours; `link(…, mode='remove')`
-     works on retired targets.
-   - `unqualified thread` → link the hub's relevant gotchas with
+   - `no-section` / `multi-parent` / orphan → `link(…, rel='part-of')` to the
+     one right hub; `link(…, mode='remove')` works on retired targets.
+   - `unqualified-thread` → link the hub's relevant gotchas with
      `rel='qualifies'` — find them via `search(kind='memory',
      tags=['SPACE:repo-dev', 'section:gotchas'], args={'under': 'me<hub>'},
-     q=…)`; if none applies, tag the thread `gotchas:none` (a `part-of`
-     child of a thread inherits its parent's qualification).
-   - `stalled review` (a `memory-review` todo open > 7 days) → read the todo
-     via `get(kind='todo', id='td…')`, settle the memory yourself (edit with
-     `reason='misled: …'`, caveat / `qualifies` gotcha, or retire), mark the
-     todo done; if you cannot, `tag(kind='todo', id='td…',
-     add=['waiting-for:reto'])`. `under review` lines are informational.
-   - `flat hub` on a node with > 8 `part-of` children → tag the node
-     `section:index`, do not prune children (until gr548270 changes the
-     hint).
-   - `big hub` (> 40 direct members) → propose sub-hubs to Reto first.
+     q=…)`; if none applies, tag the thread `gotchas:none`.
+   - A memory-review todo open > 7 days → read it (`get(kind='todo',
+     id='td…')`), settle the memory yourself (edit with `reason='misled: …'`,
+     caveat / `qualifies` gotcha, or retire), mark the todo done; if you
+     cannot, `tag(kind='todo', id='td…', add=['waiting-for:reto'])`.
+   - A hub with > 40 direct members → propose sub-hubs to Reto first.
 3. **Judgment findings — delegate verify-and-recommend, one read-only
-   Sonnet agent per hub; the main loop applies the writes:**
-   `eye-truncated` (trim landed history, split the rest into `part-of`
-   children), `landed thread` / `retire candidate` / `cold` (verify, move
-   keepers, delete), `stale thread` (14+ days untouched: retire, or move
-   what matters to its file under the backlog threads dir / a gotcha / a
-   todo), `--currency` suspects (adjust, kill or promote-to-doc). The agent
-   only reads: it verifies each Left:/claim against git and prod via the MCP
-   and returns a table (node → retire/rewrite/keep → evidence), the exact
-   text to move and its destination per retire, the exact replacement
-   Left: line per rewrite, promote-to-doc candidates, and what it could
-   not verify with the missing affordance named. Brief each agent with:
-   never drop a still-true claim without moving it; check the repo before
-   calling something history; cite `path.py::Qual.name` and bare shas; no
-   repo doc edits. The main loop then applies, in order: `edit`/`put` the
-   moves, `delete` the retires (`dry_run=True` first; a node with live
-   mentions needs `superseded_by=`), rewrite the Left: lines.
-   (No subagent runtime? Do the verify-and-recommend yourself, one hub at a
-   time, with the same read-only remit. Sonnet unavailable? Use the best
-   available read-only model, never a writing lane, and name the model in
-   the pass record; if none is available, do the review yourself rather than
-   skipping it.)
-4. **Verify** by live readback of every touched node (below); for a
-   graph-wide claim, a fresh export and `scripts/memory-lint` (aim: no
-   findings), and read one hub's fisheye.
-5. **Record** a dated entry at the top of memory_consolidation_log (me474383):
-   date, what changed, counts, and the scope — the reviewed handles or
-   subtree and the coverage still unreviewed. Keep that node under the fisheye cap —
-   move the oldest entries verbatim to an archive child under me489908;
-   do not summarise them.
+   Sonnet agent per hub; the main loop applies the writes:** `grab-bag`,
+   `history-dense`, `thread_shape`, `compact`, `stale-hot`, `dangling_mention`,
+   `griped` and pending proposals (verify; retire, rewrite, split or keep).
+   The agent only reads: it verifies each claim against git and prod via the
+   MCP and returns a table (node → retire/rewrite/keep → evidence), the exact
+   text to move and its destination per retire, the exact replacement per
+   rewrite, promote-to-doc candidates, and what it could not verify with the
+   missing affordance named. Brief each agent: never drop a still-true claim
+   without moving it; check the repo before calling something history; cite
+   `path.py::Qual.name` and bare shas; no repo doc edits. The main loop then
+   applies, in order: `edit`/`put` the moves, `delete` the retires
+   (`dry_run=True` first; a node with live mentions needs `superseded_by=`),
+   the rewrites; never a pending proposal's payload by hand. (No subagent
+   runtime? Do it yourself, one hub at a time, same read-only remit. Sonnet
+   unavailable? Use the best available read-only model, never a writing
+   lane, and name it in the pass record; else review it yourself.)
+4. **Verify** by live readback of every touched node (below), one hub's
+   fisheye, and the same smells read over the scope. Claim only that scope.
+5. **Record** a dated entry at the top of the graph pass log,
+   memory_consolidation_log (me474383): date, what changed, counts, and the
+   scope — reviewed handles or subtree and the coverage still unreviewed.
+   Keep that node under the fisheye cap — move the oldest entries verbatim to
+   an archive child under me489908; do not summarise them.
 6. **Promote-to-doc candidates** the agents listed go to Reto as one list;
    moving them is a repo change on a branch. Missing MCP affordances the
    pass surfaced go into one gripe.
+
+Diagnostic, not the gardening pass: when an operator separately asks for an
+offline snapshot check, `scripts/memory-lint` over an explicit export
+(see Export vs refresh) — every finding re-verified live, never a reflex.
 
 Cadence: the SessionStart hook reports DUE; at most once a day.
 
