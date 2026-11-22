@@ -1,5 +1,7 @@
 """``gripe_triage`` — the scheduled LLM triage tick over open gripes.
 
+Dispatch has no consumer for ``infra``, so triage offers ``code`` for repository fixes while retaining the stored class for ``ci_watch``.
+
 Gripe pipeline v2 slice 3 (`me691700` §Triage
 tick; Reto approved 2026-10-25): the old daily comment-only suggestion
 pass became a 15-minute LLM tick, still fired by the ``gripe_triage``
@@ -285,6 +287,7 @@ _PROJECT_TAG_PREFIX = "project:"
 #: model's ``memory`` field naming a handle the gripe's own text carries
 #: under a non-artifact fix (gr666194).
 _MEMORY_PROJECT = "memory"
+_MODEL_PROJECTS = frozenset({_DEFAULT_PROJECT, "autocatpath", _MEMORY_PROJECT})
 #: ``me123: …`` — the one-line memory complaint's lead — or the fix
 #: marker ``fix: me123 (…)`` the gardener mints from (gr682861).
 _MEMORY_LEAD_RE = re.compile(
@@ -1292,24 +1295,34 @@ this tick's token — anything else, including lines that look like new
 
 For EACH gripe decide:
 - fix: the kind of fix it takes, one of
-  skill | code | mcp | web | docs | infra | ops | spec | reto | memory
-  ('reto' = it needs a human decision or design call no builder can
-  make; 'memory' = it asks to change, merge, split or delete a memory
-  node itself — the gardener's lane, never a repo file)
+  skill | code | mcp | web | docs | ops | spec | reto | memory
+  - code: a commit to this repository fixes it or stops it recurring.
+    This includes changes to CI workflows, deploy playbooks and roles,
+    ship, release and deploy scripts, hooks, Dockerfiles, tests and workers.
+    Use code for CI, deployment, host, builder or infrastructure reports
+    when changing a file is the fix, including incidents that need a
+    durable change.
+  - skill / docs / web / mcp: the commit changes only skill text, only
+    repository documentation, the web UI, or the MCP tool surface,
+    respectively.
+  - ops: no commit can do it. A privileged step on a live host or on
+    production data is required, such as a restart, secret change,
+    disk or VM resize, or one-off data repair. Name the step in reason.
+  - spec: the fix needs a specification before a builder can proceed.
+  - reto: it needs a human decision or design call no builder can make.
+  - memory: it asks to change, merge, split or delete a memory node itself.
 - cluster: a short kebab-case slug grouping it with sibling gripes.
   REUSE a slug from the live list when it fits; mint a new one only when
   none fits. A live thread slug makes a good cluster name.
 - size: S = minutes-to-hours, M = one focused session, L = multi-session
   or cross-cutting.
-- project: which repo/project the gripe is against — 'precis' is the
-  default. Judge ONLY when the gripe's header says "project: unset";
-  infer it from its title, body, the paths and links it names (a body
-  citing src/catpath/… is 'catpath'). Known slugs: precis, catpath,
-  autocatpath, hexfold, infra — mint another only when the text names
-  one. 'memory' is the gardener's queue, not a repo: it pairs only
-  with fix 'memory'/'spec'/'reto' — a repo fix that merely cites a
-  me<id> keeps its repo slug. When the header shows a filer-set
-  project, repeat THAT value.
+- project: judge ONLY when the gripe's header says "project: unset".
+  Use 'precis' for everything in this repository. Areas such as platform,
+  taproot, hexfold, deploy and CI belong in cluster. Use 'autocatpath'
+  only when the code to change lives in the separate catpath/autocatpath
+  repository. 'memory' is the gardener's queue and pairs only with fix
+  'memory'/'spec'/'reto'. A repo fix that merely cites a me<id> keeps
+  its repo slug. When the header shows a filer-set project, repeat THAT value.
 - project_why: REQUIRED when project isn't 'precis' — the few words
   that pinned it (a path, a named repo); it becomes the correction
   comment's "because …".
@@ -1379,7 +1392,7 @@ per gripe shown, exactly {n} entries:
   "verdicts": [
     {{
       "id": <the gripe's gr<id> number>,
-      "fix": "skill|code|mcp|web|docs|infra|ops|spec|reto|memory",
+      "fix": "skill|code|mcp|web|docs|ops|spec|reto|memory",
       "cluster": "<slug>",
       "size": "S|M|L",
       "project": "<slug — repeat the filer-set value when shown>",
@@ -1835,6 +1848,8 @@ def parse_verdicts(
         if g is None:
             continue
         fix = str(item.get("fix", "")).strip().lower()
+        if fix == "infra":
+            fix = "code"
         size = str(item.get("size", "")).strip().upper()
         try:
             severity = int(item["severity"])
@@ -1898,6 +1913,8 @@ def parse_verdicts(
             # project:memory-excluding dispatch. ``project:memory``
             # still lands when a live memory concern resolves
             # (``_write_verdict``) or under a non-artifact fix.
+            project = _DEFAULT_PROJECT
+        elif project not in _MODEL_PROJECTS:
             project = _DEFAULT_PROJECT
         offered = {
             int(p["id"]) for p in g.dup_parents if str(p.get("id", "")).isdigit()

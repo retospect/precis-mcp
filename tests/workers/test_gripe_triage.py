@@ -34,7 +34,7 @@ from precis.utils.dispatch_score import (
     score_sql,
 )
 from precis.utils.llm.router import LlmResult, Tier
-from precis.workers import gripe_triage
+from precis.workers import gripe_dispatch, gripe_triage
 from precis.workers.gripe_triage import Thread, ThreadIndex
 from tests._refs import insert_gripe
 
@@ -445,16 +445,16 @@ class TestTick:
                     "verdicts": [
                         _verdict(
                             gid,
-                            project="catpath",
+                            project="autocatpath",
                             project_why="body names src/catpath/importer.py",
                         )
                     ]
                 }
             ),
         )
-        assert "project:catpath" in _open_tag_values(store, gid)
+        assert "project:autocatpath" in _open_tag_values(store, gid)
         assert any(
-            c.startswith("project: precis -> catpath, because")
+            c.startswith("project: precis -> autocatpath, because")
             for c in _comments(store, gid)
         )
 
@@ -518,13 +518,15 @@ class TestTick:
             _llm(
                 {
                     "verdicts": [
-                        _verdict(gid, project="catpath", project_why="model guessed")
+                        _verdict(
+                            gid, project="autocatpath", project_why="model guessed"
+                        )
                     ]
                 }
             ),
         )
         values = _open_tag_values(store, gid)
-        assert "project:infra" in values and "project:catpath" not in values
+        assert "project:infra" in values and "project:autocatpath" not in values
         assert not any(c.startswith("project:") for c in _comments(store, gid))
 
     def test_project_unset_prompt_line_and_precis_write(self, store: Store) -> None:
@@ -2708,6 +2710,24 @@ class TestSeverityBackfill:
 # ── verdict parsing edge cases ────────────────────────────────────────────
 
 
+_NON_BUILD_FIX_CONSUMERS = {
+    "ops": "an operator session",
+    "reto": "the owner's ask todo",
+    "spec": "needs_spec",
+    "memory": "the gardener",
+}
+
+
+def test_prompt_fix_classes_have_consumers() -> None:
+    head = re.search(r"(?m)^- fix:.*\n  ([^\n]+)", gripe_triage._PROMPT_HEAD)
+    tail = re.search(r'"fix": "([^"]+)"', gripe_triage._PROMPT_TAIL)
+    assert head is not None and tail is not None
+    offered = {fix.strip() for fix in head[1].split("|")}
+    assert offered == set(tail[1].split("|"))
+    build_classes = {tag.removeprefix("fix:") for tag in gripe_dispatch.FIX_CLASS_TAGS}
+    assert not offered - build_classes - _NON_BUILD_FIX_CONSUMERS.keys()
+
+
 class TestParse:
     def _g(self, ref_id: int = 1, **kw: Any) -> gripe_triage.ClaimedGripe:
         return gripe_triage.ClaimedGripe(
@@ -2729,6 +2749,22 @@ class TestParse:
             {"verdicts": [_verdict("gr7")]}, [self._g(7)]
         )
         assert set(verdicts) == {7} and misses == []
+
+    def test_legacy_infra_verdict_routes_to_code(self) -> None:
+        verdicts, misses = gripe_triage.parse_verdicts(
+            {"verdicts": [_verdict(1, fix="infra", project="infra")]}, [self._g()]
+        )
+        assert misses == []
+        assert verdicts[1].fix == "code"
+        assert verdicts[1].project == "precis"
+
+    @pytest.mark.parametrize("project", ["catpath", "hexfold", "deploy", "new-slug"])
+    def test_unrecognized_model_project_defaults_to_precis(self, project: str) -> None:
+        verdicts, misses = gripe_triage.parse_verdicts(
+            {"verdicts": [_verdict(1, project=project)]}, [self._g()]
+        )
+        assert misses == []
+        assert verdicts[1].project == "precis"
 
     def test_bad_envelope(self) -> None:
         junk: Any
