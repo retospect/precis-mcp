@@ -1,4 +1,11 @@
 # {{ ansible_managed }}
+{# systemd Environment= takes the quoted-assignment form: the word is split
+   on whitespace and its double quotes are stripped, so an unquoted JSON value
+   reaches the process cut at the first space (gr764103). Inside the quotes
+   backslash -> \\, " -> \" and % -> %% (specifier), backslash first. #}
+{% macro systemd_env(key, val) -%}
+Environment="{{ key }}={{ val | string | trim | replace('\\', '\\\\') | replace('"', '\\"') | replace('%', '%%') }}"
+{%- endmacro %}
 # precis worker — pulls chunk_embeddings / chunk_summaries batches from
 # the postgres queue. Multiple nodes run identical units; postgres
 # row-level locking arbitrates work.
@@ -15,7 +22,7 @@ Group=deploy
 
 WorkingDirectory=/tmp
 
-Environment=PATH={{ precis_worker_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+{{ systemd_env('PATH', (precis_worker_venv) ~ '/bin:/usr/local/bin:/usr/bin:/bin') }}
 Environment=HOME=/var/lib/precis
 # §L (gr171431 §1): this unit's HOME diverges from the pgpass role's
 # Linux deploy home (/home/deploy), so a password-free PRECIS_DATABASE_URL
@@ -23,8 +30,8 @@ Environment=HOME=/var/lib/precis
 # Point PGPASSFILE at the pgpass role's actual file directly instead of
 # changing HOME (which other code may depend on for caches/config).
 Environment=PGPASSFILE=/home/deploy/.pgpass
-Environment=PRECIS_DATABASE_URL={{ precis_worker_dsn }}
-Environment=HF_HOME={{ precis_worker_hf_home }}
+{{ systemd_env('PRECIS_DATABASE_URL', precis_worker_dsn) }}
+{{ systemd_env('HF_HOME', precis_worker_hf_home) }}
 Environment=PRECIS_PROCESS=precis-worker
 Environment=PRECIS_SOURCE=precis-worker
 Environment=PRECIS_STRUCTURE_PREFLIGHT=1
@@ -35,7 +42,7 @@ Environment=PRECIS_STRUCTURE_PREFLIGHT=1
 # dft role's EnvironmentFile drop-in sets the same value (drop-ins win),
 # so the two always agree.
 {% if (precis_capabilities.dft | default([])) | length > 0 %}
-Environment=PRECIS_DFT_NODE={{ precis_capabilities.dft | first }}
+{{ systemd_env('PRECIS_DFT_NODE', precis_capabilities.dft | first) }}
 {% endif %}
 # §F cycle b: the ExecStart --embedder/--embedder-url flags below only
 # reach cli/worker.py's OWN embedder resolution (the standing `embed`
@@ -46,8 +53,8 @@ Environment=PRECIS_DFT_NODE={{ precis_capabilities.dft | first }}
 # resolve with no explicit override falls back to PrecisConfig's
 # "mock" default instead of this host's configured backend. Same
 # values as the ExecStart flags; mirrors asa_bot's/asa_slack's units.
-Environment=PRECIS_EMBEDDER={{ precis_worker_embedder }}
-Environment=PRECIS_EMBEDDER_URL={{ precis_worker_embedder_url }}
+{{ systemd_env('PRECIS_EMBEDDER', precis_worker_embedder) }}
+{{ systemd_env('PRECIS_EMBEDDER_URL', precis_worker_embedder_url) }}
 # Nanopub network passes (daily host-agnostic cadences: nanopub_mirror
 # registry delta sync + ots_sweep calendar anchoring). Default ON
 # cluster-wide — the cadence lease is a fleet singleton with no
@@ -59,20 +66,20 @@ Environment=PRECIS_MIRROR_ENABLED=1
 {% if precis_worker_nanopub_ots | default(true) %}
 Environment=PRECIS_OTS_ENABLED=1
 {% endif %}
-Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(25) }}
-Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
-Environment=PRECIS_MAX_TREE_USD={{ precis_max_tree_usd | default(10.0) }}
-Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+{{ systemd_env('PRECIS_MAX_TICKS', precis_max_ticks | default(25)) }}
+{{ systemd_env('PRECIS_MAX_TODO_USD', precis_max_todo_usd | default(5.0)) }}
+{{ systemd_env('PRECIS_MAX_TREE_USD', precis_max_tree_usd | default(10.0)) }}
+{{ systemd_env('PRECIS_DAILY_COST_CEILING', precis_daily_cost_ceiling | default(50.0)) }}
 # Whether the deploy user's `claude -p` login is API-billed (gr549279):
 # 0 (default) = OAuth subscription — claude_p rows log billed_usd=0.
-Environment=PRECIS_CLAUDE_P_BILLED={{ '1' if (precis_claude_p_billed | default(false)) else '0' }}
+{{ systemd_env('PRECIS_CLAUDE_P_BILLED', '1' if (precis_claude_p_billed | default(false)) else '0') }}
 # Operator hold switch: comma-separated job_types the claim path skips
 # (queued rows wait; in-flight rows finish). Empty = nothing held.
-Environment=PRECIS_SUSPENDED_JOB_TYPES={{ precis_suspended_job_types | default('') }}
+{{ systemd_env('PRECIS_SUSPENDED_JOB_TYPES', precis_suspended_job_types | default('')) }}
 # CPU-limit passthrough for containerized jobs this worker spawns
 # (docker run inherits cpuset/shares from the environment).
-Environment=PRECIS_JOB_CPUSET={{ precis_job_cpuset | default('') }}
-Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
+{{ systemd_env('PRECIS_JOB_CPUSET', precis_job_cpuset | default('')) }}
+{{ systemd_env('PRECIS_JOB_CPU_SHARES', precis_job_cpu_shares | default('')) }}
 # job_claude_docker (sandbox_run executor) run-control moved to
 # service_config (§L control cutover) — the `precis service seed` task
 # mirrors this host's agent_sandbox_hosts membership into a row the first
@@ -81,14 +88,14 @@ Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
 # target_node not named here) — derived from the SAME inventory group as
 # the service seed so the allowlist and the executor-enable can't drift.
 # Empty (no group members) = submits fail closed everywhere.
-Environment=PRECIS_SANDBOX_HOSTS={{ (groups['agent_sandbox_hosts'] | default([])) | join(',') }}
+{{ systemd_env('PRECIS_SANDBOX_HOSTS', (groups['agent_sandbox_hosts'] | default([])) | join(',')) }}
 {% if inventory_hostname in (groups['agent_sandbox_hosts'] | default([])) %}
 # Claim-gate identity: the sandbox executor only claims jobs whose
 # params.target_node matches. Scoped to sandbox hosts — compute lanes set
 # their own PRECIS_NODE in their drop-ins, and setting it on every system
 # worker would flip node-keyed branches (e.g. the struct_relax container
 # sweep) on hosts that never asked for it.
-Environment=PRECIS_NODE={{ inventory_hostname }}
+{{ systemd_env('PRECIS_NODE', inventory_hostname) }}
 {% endif %}
 
 # Shared API keys — see inventory/group_vars/all/precis_env.yml. Identity
@@ -96,7 +103,7 @@ Environment=PRECIS_NODE={{ inventory_hostname }}
 # (gr204873).
 {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
 {% if not (env_key == 'PRECIS_OA_FETCH' and (precis_worker_fetch_dedicated | default(false))) %}
-Environment={{ env_key }}={{ env_val }}
+{{ systemd_env(env_key, env_val) }}
 {% endif %}
 {% endfor %}
 # Dedicated OA-fetch lane (option A, Reto 2026-10-21): `fetch` lives in
@@ -112,8 +119,8 @@ Environment=PRECIS_OA_FETCH=0
 # bounded and pinned to the same reused singleton port as the watcher, so a
 # worker-spawned OCR can't grab the GPU node's whole 121 GiB unified pool
 # (gripe 171249). Inert on non-GPU/non-docker hosts.
-Environment=VLLM_GPU_MEMORY_UTILIZATION={{ surya_vllm_gpu_mem_util | default('0.25') }}
-Environment=SURYA_INFERENCE_PORT={{ surya_inference_port | default('8912') }}
+{{ systemd_env('VLLM_GPU_MEMORY_UTILIZATION', surya_vllm_gpu_mem_util | default('0.25')) }}
+{{ systemd_env('SURYA_INFERENCE_PORT', surya_inference_port | default('8912')) }}
 
 ExecStart={{ precis_worker_venv }}/bin/precis worker \
   --profile system \

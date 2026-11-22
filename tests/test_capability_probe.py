@@ -910,3 +910,62 @@ def test_darwin_mem_total_none_when_every_source_fails(
     monkeypatch.setattr(cap.subprocess, "run", run)
     monkeypatch.setattr(cap.os, "sysconf", sysconf)
     assert cap._darwin_mem_total_mb() is None
+
+
+# ── repo_checkout_<name> probe: malformed PRECIS_SLICE_REPOS (gr764103) ──
+
+
+def test_repo_probe_warns_once_naming_env_and_repo_not_value(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A mangled PRECIS_SLICE_REPOS (the unquoted-unit symptom) still reads 0,
+    and says why exactly once per process, without echoing the value."""
+    cap._SLICE_REPOS_WARNED.clear()
+    mangled = "{catpath:"
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", mangled)
+    probe = cap._make_repo_probe("catpath")
+    with caplog.at_level("WARNING", logger=cap.log.name):
+        assert probe() == 0
+        assert probe() == 0
+    warns = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warns) == 1
+    text = warns[0].getMessage()
+    assert "PRECIS_SLICE_REPOS" in text and "catpath" in text
+    assert mangled not in text
+    cap._SLICE_REPOS_WARNED.clear()
+
+
+def test_repo_probe_warning_skips_the_default_repo(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from precis.plans import lanes
+
+    cap._SLICE_REPOS_WARNED.clear()
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", "{catpath:")
+    with caplog.at_level("WARNING", logger=cap.log.name):
+        cap._warn_once_if_slice_repos_malformed(
+            lanes.DEFAULT_REPO, "PRECIS_SLICE_REPOS"
+        )
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_repo_probe_stays_quiet_when_env_unset_or_valid(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    cap._SLICE_REPOS_WARNED.clear()
+    probe = cap._make_repo_probe("catpath")
+    with caplog.at_level("WARNING", logger=cap.log.name):
+        monkeypatch.delenv("PRECIS_SLICE_REPOS", raising=False)
+        assert probe() == 0
+        # well-formed JSON, entry absent: the operator's mapping, not mangling
+        monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"other": str(tmp_path)}))
+        assert probe() == 0
+        # well-formed and present, but not a git checkout
+        monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"catpath": str(tmp_path)}))
+        assert probe() == 0
+        (tmp_path / ".git").mkdir()
+        assert probe() == 1
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+    cap._SLICE_REPOS_WARNED.clear()

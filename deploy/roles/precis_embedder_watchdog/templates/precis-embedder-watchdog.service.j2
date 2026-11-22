@@ -1,4 +1,11 @@
 # {{ ansible_managed }}
+{# systemd Environment= takes the quoted-assignment form: the word is split
+   on whitespace and its double quotes are stripped, so an unquoted JSON value
+   reaches the process cut at the first space (gr764103). Inside the quotes
+   backslash -> \\, " -> \" and % -> %% (specifier), backslash first. #}
+{% macro systemd_env(key, val) -%}
+Environment="{{ key }}={{ val | string | trim | replace('\\', '\\\\') | replace('"', '\\"') | replace('%', '%%') }}"
+{%- endmacro %}
 # precis-embedder-watchdog (gripe 51394 pt2) — probes precis_embedder's
 # /readyz and, after N consecutive failures, restarts it. Runs as root:
 # the restart command is `systemctl restart precis-embedder`, which a
@@ -16,11 +23,11 @@ WorkingDirectory=/tmp
 
 # UTC logging fleet-wide — see 00a-timezone.yml.
 Environment=TZ=UTC
-Environment=PRECIS_EMBEDDER_WATCHDOG_URL=http://{{ precis_embedder_watchdog_host }}:{{ precis_embedder_watchdog_port }}/readyz
-Environment=PRECIS_EMBEDDER_WATCHDOG_FAIL_THRESHOLD={{ precis_embedder_watchdog_fail_threshold }}
-Environment=PRECIS_EMBEDDER_WATCHDOG_STATEFILE={{ precis_embedder_watchdog_statefile }}
-Environment=PRECIS_EMBEDDER_WATCHDOG_CURL_TIMEOUT={{ precis_embedder_watchdog_curl_timeout }}
-Environment=PRECIS_EMBEDDER_WATCHDOG_RESTART_CMD=systemctl restart {{ precis_embedder_watchdog_systemd_unit }}
+{{ systemd_env('PRECIS_EMBEDDER_WATCHDOG_URL', 'http://' ~ (precis_embedder_watchdog_host) ~ ':' ~ (precis_embedder_watchdog_port) ~ '/readyz') }}
+{{ systemd_env('PRECIS_EMBEDDER_WATCHDOG_FAIL_THRESHOLD', precis_embedder_watchdog_fail_threshold) }}
+{{ systemd_env('PRECIS_EMBEDDER_WATCHDOG_STATEFILE', precis_embedder_watchdog_statefile) }}
+{{ systemd_env('PRECIS_EMBEDDER_WATCHDOG_CURL_TIMEOUT', precis_embedder_watchdog_curl_timeout) }}
+{{ systemd_env('PRECIS_EMBEDDER_WATCHDOG_RESTART_CMD', 'systemctl restart ' ~ (precis_embedder_watchdog_systemd_unit)) }}
 
 ExecStart=/bin/sh {{ precis_embedder_watchdog_script }}
 

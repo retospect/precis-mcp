@@ -246,8 +246,8 @@ def test_node_exporter_collects_restic_metric_on_monitoring_host_only() -> None:
 def test_receiver_unit_is_loopback_and_carries_the_ops_target() -> None:
     text = _render("precis-alertmanager-receiver.service.j2")
     assert "alertmanager-receiver \\\n  --host 127.0.0.1 --port 9095" in text
-    assert "Environment=PRECIS_OPS_ALERT_TARGET=discord/1/2" in text
-    assert "Environment=PGPASSFILE=/home/deploy/.pgpass" in text
+    assert 'Environment="PRECIS_OPS_ALERT_TARGET=discord/1/2"' in text
+    assert 'Environment="PGPASSFILE=/home/deploy/.pgpass"' in text
 
 
 def test_linux_tasks_deploy_every_piece_and_verify() -> None:

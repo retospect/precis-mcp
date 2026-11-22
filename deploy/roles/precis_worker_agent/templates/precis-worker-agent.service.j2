@@ -1,4 +1,11 @@
 # {{ ansible_managed }}
+{# systemd Environment= takes the quoted-assignment form: the word is split
+   on whitespace and its double quotes are stripped, so an unquoted JSON value
+   reaches the process cut at the first space (gr764103). Inside the quotes
+   backslash -> \\, " -> \" and % -> %% (specifier), backslash first. #}
+{% macro systemd_env(key, val) -%}
+Environment="{{ key }}={{ val | string | trim | replace('\\', '\\\\') | replace('"', '\\"') | replace('%', '%%') }}"
+{%- endmacro %}
 # precis AGENT-profile worker — Linux/systemd (the GPU node). Factory Phase-2 slice 2
 # (2026-07-18): relocates the CONTAINERIZED review passes (structural,
 # deep_review, diagram) off RAM-starved the gateway onto the GPU node (77G free,
@@ -33,7 +40,7 @@ Group=deploy
 
 WorkingDirectory=/tmp
 
-Environment=PATH={{ precis_worker_agent_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+{{ systemd_env('PATH', (precis_worker_agent_venv) ~ '/bin:/usr/local/bin:/usr/bin:/bin') }}
 Environment=HOME=/var/lib/precis
 # §L (gr171431 §1): this unit's HOME diverges from the pgpass role's
 # Linux deploy home (/home/deploy), so a password-free PRECIS_DATABASE_URL
@@ -41,13 +48,13 @@ Environment=HOME=/var/lib/precis
 # Point PGPASSFILE at the pgpass role's actual file directly instead of
 # changing HOME (which other code may depend on for caches/config).
 Environment=PGPASSFILE=/home/deploy/.pgpass
-Environment=PRECIS_DATABASE_URL={{ precis_worker_agent_dsn }}
+{{ systemd_env('PRECIS_DATABASE_URL', precis_worker_agent_dsn) }}
 Environment=PRECIS_PROCESS=precis-worker-agent
 Environment=PRECIS_SOURCE=precis-worker-agent
 # Embedder plumbing (gr185401): agent-profile embedder consumers read the
 # ENV via load_config(); mirrors the precis_worker role's §F-b env block.
-Environment=PRECIS_EMBEDDER={{ precis_worker_agent_embedder }}
-Environment=PRECIS_EMBEDDER_URL={{ precis_worker_agent_embedder_url }}
+{{ systemd_env('PRECIS_EMBEDDER', precis_worker_agent_embedder) }}
+{{ systemd_env('PRECIS_EMBEDDER_URL', precis_worker_agent_embedder_url) }}
 
 # Review gates — the passes we DO want here (all containerize via claude -p).
 Environment=PRECIS_STRUCTURAL_REVIEW=1
@@ -59,26 +66,26 @@ Environment=PRECIS_STRUCTURE_PREFLIGHT=1
 # container on this host's docker (deploy owns /usr/bin/docker → no socket fight).
 Environment=PRECIS_AGENT_CONTAINER=1
 Environment=PRECIS_CONTAINER_BIN=/usr/bin/docker
-Environment=PRECIS_AGENT_IMAGE={{ precis_agent_image | default('precis-agent:latest') }}
+{{ systemd_env('PRECIS_AGENT_IMAGE', precis_agent_image | default('precis-agent:latest')) }}
 
 # Planner-coroutine guardrails (mirror the the gateway plist defaults).
 # All four caps are set explicitly: an unset one runs at its code default,
 # which is invisible from here (that is how the tree cap ran untunable).
-Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(25) }}
-Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
-Environment=PRECIS_MAX_TREE_USD={{ precis_max_tree_usd | default(10.0) }}
-Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+{{ systemd_env('PRECIS_MAX_TICKS', precis_max_ticks | default(25)) }}
+{{ systemd_env('PRECIS_MAX_TODO_USD', precis_max_todo_usd | default(5.0)) }}
+{{ systemd_env('PRECIS_MAX_TREE_USD', precis_max_tree_usd | default(10.0)) }}
+{{ systemd_env('PRECIS_DAILY_COST_CEILING', precis_daily_cost_ceiling | default(50.0)) }}
 # Whether the deploy user's `claude -p` login is API-billed (gr549279):
 # 0 (default) = OAuth subscription — claude_p rows log billed_usd=0.
-Environment=PRECIS_CLAUDE_P_BILLED={{ '1' if (precis_claude_p_billed | default(false)) else '0' }}
+{{ systemd_env('PRECIS_CLAUDE_P_BILLED', '1' if (precis_claude_p_billed | default(false)) else '0') }}
 # Operator hold switch: comma-separated job_types the claim path skips
 # (queued rows wait; in-flight rows finish). Empty = nothing held.
-Environment=PRECIS_SUSPENDED_JOB_TYPES={{ precis_suspended_job_types | default('') }}
+{{ systemd_env('PRECIS_SUSPENDED_JOB_TYPES', precis_suspended_job_types | default('')) }}
 
 # CPU-limit passthrough for containerized jobs this worker spawns
 # (docker run inherits cpuset/shares from the environment).
-Environment=PRECIS_JOB_CPUSET={{ precis_job_cpuset | default('') }}
-Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
+{{ systemd_env('PRECIS_JOB_CPUSET', precis_job_cpuset | default('')) }}
+{{ systemd_env('PRECIS_JOB_CPU_SHARES', precis_job_cpu_shares | default('')) }}
 
 # NB PRECIS_MCP_CONFIG is deliberately UNSET here — it gates job_claude_inproc,
 # so leaving it out keeps plan_tick/fix_gripe on the gateway. Containerized reviews
@@ -89,7 +96,7 @@ Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
 # (email/API-key contacts) are vault-overridden via precis_identity_env
 # (gr204873).
 {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
-Environment={{ env_key }}={{ env_val }}
+{{ systemd_env(env_key, env_val) }}
 {% endfor %}
 
 ExecStart={{ precis_worker_agent_venv }}/bin/precis worker \

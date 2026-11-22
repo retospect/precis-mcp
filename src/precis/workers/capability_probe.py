@@ -441,6 +441,40 @@ def _probe_anki_sync() -> int:
     )
 
 
+#: Repos whose malformed-``PRECIS_SLICE_REPOS`` warning already fired in this
+#: process (the probe runs every heartbeat; the log must not).
+_SLICE_REPOS_WARNED: set[str] = set()
+
+
+def _warn_once_if_slice_repos_malformed(repo: str, env_var: str) -> None:
+    """Log one WARNING per repo per process when ``env_var`` is set but is not
+    a JSON object (gr764103: a mangled unit env retracted the capability row
+    every cycle with no trace). Names the variable and the repo, never the
+    value, which may carry a path or secret. An unset variable is a normal
+    unarmed host and stays quiet."""
+    import json
+
+    raw = os.environ.get(env_var, "")
+    if repo == lanes.DEFAULT_REPO:
+        return  # the default repo's root never reads the variable
+    if not raw.strip() or repo in _SLICE_REPOS_WARNED:
+        return
+    try:
+        malformed = not isinstance(json.loads(raw), dict)
+    except ValueError:
+        malformed = True
+    if not malformed:
+        return
+    _SLICE_REPOS_WARNED.add(repo)
+    log.warning(
+        "capability_probe: repo_checkout_%s reads 0 because %s is set but is not "
+        "a valid JSON object (value not logged); check how the service unit "
+        "renders it",
+        repo,
+        env_var,
+    )
+
+
 def _make_repo_probe(name: str) -> Callable[[], int | None]:
     """The probe for ``repo_checkout_<name>``: ``run_slice.slice_root_for``
     resolving to a directory that holds a ``.git`` entry. ``1`` present; ``0``
@@ -454,6 +488,7 @@ def _make_repo_probe(name: str) -> Callable[[], int | None]:
         try:
             root = run_slice.slice_root_for(name)
         except (RuntimeError, FileNotFoundError):
+            _warn_once_if_slice_repos_malformed(name, run_slice.SLICE_REPOS_ENV)
             return 0
         except (OSError, subprocess.SubprocessError):
             log.warning(

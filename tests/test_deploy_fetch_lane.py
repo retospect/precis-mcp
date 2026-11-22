@@ -202,7 +202,7 @@ def test_rollback_service_pins_fetch_off_when_dedicated() -> None:
 
 def test_rollback_service_passes_overlay_through_when_not_dedicated() -> None:
     out = _render(_SERVICE, precis_worker_fetch_dedicated=False)
-    assert "Environment=PRECIS_OA_FETCH=1" in out
+    assert 'Environment="PRECIS_OA_FETCH=1"' in out
 
 
 # --------------------------------------------------------------------------

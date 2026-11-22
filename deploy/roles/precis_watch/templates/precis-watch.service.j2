@@ -1,4 +1,11 @@
 # {{ ansible_managed }}
+{# systemd Environment= takes the quoted-assignment form: the word is split
+   on whitespace and its double quotes are stripped, so an unquoted JSON value
+   reaches the process cut at the first space (gr764103). Inside the quotes
+   backslash -> \\, " -> \" and % -> %% (specifier), backslash first. #}
+{% macro systemd_env(key, val) -%}
+Environment="{{ key }}={{ val | string | trim | replace('\\', '\\\\') | replace('"', '\\"') | replace('%', '%%') }}"
+{%- endmacro %}
 # precis watch — watches NAS inbox + spawns Marker subprocesses to ingest
 # PDFs. Linux-only systemd unit (the GPU node, where CUDA does most of the work).
 #
@@ -18,7 +25,7 @@ Group=deploy
 
 WorkingDirectory=/tmp
 
-Environment=PATH={{ precis_watch_venv }}/bin:/usr/local/bin:/usr/bin:/bin
+{{ systemd_env('PATH', (precis_watch_venv) ~ '/bin:/usr/local/bin:/usr/bin:/bin') }}
 Environment=HOME=/var/lib/precis
 # §L (gr171431 §1): this unit's HOME diverges from the pgpass role's
 # Linux deploy home (/home/deploy), so a password-free PRECIS_DATABASE_URL
@@ -26,8 +33,8 @@ Environment=HOME=/var/lib/precis
 # Point PGPASSFILE at the pgpass role's actual file directly instead of
 # changing HOME (which other code may depend on for caches/config).
 Environment=PGPASSFILE=/home/deploy/.pgpass
-Environment=PRECIS_DATABASE_URL={{ precis_watch_dsn }}
-Environment=HF_HOME={{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}
+{{ systemd_env('PRECIS_DATABASE_URL', precis_watch_dsn) }}
+{{ systemd_env('HF_HOME', precis_worker_hf_home | default('/var/lib/precis/hf-cache')) }}
 # Shared API keys (Semantic Scholar, Unpaywall, Elsevier, …) — same
 # block precis_worker carries. The ingest pipeline enriches metadata via
 # the S2 graph API; without SEMANTIC_SCHOLAR_API_KEY the watcher hits S2's
@@ -35,7 +42,7 @@ Environment=HF_HOME={{ precis_worker_hf_home | default('/var/lib/precis/hf-cache
 # (email/API-key contacts) are vault-overridden via precis_identity_env
 # (gr204873).
 {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
-Environment={{ env_key }}={{ env_val }}
+{{ systemd_env(env_key, env_val) }}
 {% endfor %}
 
 # Cap the surya-ocr-2 OCR footprint on GPU nodes. marker-pdf 2.0 / surya-2
@@ -51,8 +58,8 @@ Environment={{ env_key }}={{ env_val }}
 # non-CUDA (mps/cpu) hosts are NOT inert: surya falls back to a llamacpp
 # backend that hard-requires a `llama-server` binary on PATH (gr236139) —
 # the watch role brew-installs llama.cpp on macOS for this.
-Environment=VLLM_GPU_MEMORY_UTILIZATION={{ surya_vllm_gpu_mem_util | default('0.25') }}
-Environment=SURYA_INFERENCE_PORT={{ surya_inference_port | default('8912') }}
+{{ systemd_env('VLLM_GPU_MEMORY_UTILIZATION', surya_vllm_gpu_mem_util | default('0.25')) }}
+{{ systemd_env('SURYA_INFERENCE_PORT', surya_inference_port | default('8912')) }}
 
 # Reclaim any orphaned surya vLLM container from a prior hard-kill before a
 # fresh watch cycle: surya registers its docker cleanup via atexit, which is
