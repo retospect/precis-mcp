@@ -178,7 +178,7 @@ Handles \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\c
 
 Finding \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending] hub \footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{?}[unverified: source pending] mixed \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{,}\footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}\textsuperscript{?}[unverified: source pending] repeat \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]) and (also \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
-Prose \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}} and doi:10.1/x and \href{https://precis.example.test/r/structure/12}{st12} and \footnote{nobody99~\cite{nobody99}} and patent \footnote{Patent No. US123~\cite{us123}}. See \cref{chunk:dc2,chunk:dc11}.\label{chunk:dc8}
+Prose \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}} and doi:10.1/x and \href{https://precis.example.test/r/structure/12}{st12} and \footnote{nobody99~\cite{nobody99}} and patent \footnote{Patent No. US123~\cite{us123}}. See \cref{chunk:dc2,chunk:dc11}~(\cpageref{chunk:dc2}).\label{chunk:dc8}
 
 \begin{figure}[htbp]
 \centering
@@ -191,7 +191,7 @@ Prose \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite
 E = mc^2
 \end{equation}
 
-\Cref{chunk:dc9} opens a sentence. Runs \cref{chunk:dc2,chunk:dc4} merge, \hyperref[chunk:dc2]{the intro} keeps its text, a dead (removed) and a legacy \cref{chunk:dc4} resolve, a run-in \nameref{chunk:dc16} names itself, the end matter \nameref{chunk:dc17} too, and \cref{chunk:dc11}. \Cref{chunk:dc11} starts one.\label{chunk:dc14}
+\Cref{chunk:dc9} opens a sentence. Runs \cref{chunk:dc2,chunk:dc4}~(\cpageref{chunk:dc2,chunk:dc4}) merge, \hyperref[chunk:dc2]{the intro} keeps its text, a dead (removed) and a legacy \cref{chunk:dc4}~(\cpageref{chunk:dc4}) resolve, a run-in \nameref{chunk:dc16}~(\cpageref{chunk:dc16}) names itself, the end matter \nameref{chunk:dc17}~(\cpageref{chunk:dc17}) too, and \cref{chunk:dc11}. \Cref{chunk:dc11} starts one.\label{chunk:dc14}
 
 \subsection{Deep part}\label{chunk:dc15}
 
@@ -241,7 +241,7 @@ Material & Source \\
 \section*{Acknowledgements}\label{chunk:dc17}
 \addcontentsline{toc}{section}{Acknowledgements}
 
-Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
+Thanks to all; see \cref{chunk:dc2}~(\cpageref{chunk:dc2}).\label{chunk:dc18}
 
 
 \section*{Unverified claims}

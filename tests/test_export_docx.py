@@ -2186,6 +2186,38 @@ def test_crossref_label_styles_short_default_full_opt_in() -> None:
     assert _render_text("Done. [dc4] holds", full) == "Done. Equation (1) holds"
 
 
+def test_section_crossref_names_the_section() -> None:
+    """gr690475: the docx stand-in for the PDF's ``\\cpageref`` page marker
+    — a cross-ref resolving to a section names its heading after the
+    number, in a merged run and alone; a figure names nothing."""
+    from precis.export import docx as dx
+
+    ctx = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        xref={
+            "dc1": ("Section", "1"),
+            "dc2": ("Section", "2"),
+            "dc3": ("Figure", "1"),
+            "dc4": ("Section", "2.1"),
+        },
+        xref_names={"dc1": "Intro", "dc2": "Methods", "dc4": "Scope"},
+        xref_types={
+            "dc1": "section",
+            "dc2": "section",
+            "dc3": "figure",
+            "dc4": "subsection",
+        },
+        dc_handles={"dc1", "dc2", "dc3", "dc4"},
+    )
+    assert _render_text("see [dc4]", ctx) == "see section 2.1 (Scope)"
+    assert (
+        _render_text("see [dc1] and [dc2] and [dc3]", ctx)
+        == "see sections 1 (Intro) and 2 (Methods) and fig. 1"
+    )
+    assert _render_text("see [dc3]", ctx) == "see fig. 1"
+
+
 def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
     """A cross-ref to a retired chunk prints "a removed <noun>" (never the
     bare ``dc`` handle) and resolves to its recorded live replacement when
@@ -2906,7 +2938,7 @@ def test_nested_layout_numbers_sections_from_one(
     paras = docx.Document(str(out)).paragraphs
     texts = [p.text for p in paras]
     assert "Nested" in texts and "1 Introduction" in texts and "1.1 Scope" in texts
-    assert "See section 1.1." in texts
+    assert "See section 1.1 (Scope)." in texts
     head = next(p for p in paras if p.text == "1.1 Scope")
     assert head.style.name == "Heading 2"
 
@@ -2993,8 +3025,8 @@ def test_numbers_and_cross_references_are_word_fields(
 
     # visible text: as before fields existed
     assert (
-        "See fig. 1, table 1, section 2, and Eq. (1). Equation (1) holds."
-        " Above, above is this section." in texts
+        "See fig. 1, table 1, section 2 (Methods), and Eq. (1). Equation (1)"
+        " holds. Above, above is this section." in texts
     )
     assert "Figure 1: First widget." in texts
     assert "Table 1: Legend" in texts
@@ -3080,7 +3112,8 @@ def test_adjacent_cross_references_print_as_one_run_of_fields(
 ) -> None:
     """gr725244: references separated by whitespace only print as the PDF's
     ``\\cref{a,b}`` does ("sections 1 and 2", "figs. 1 to 3", "sections 2
-    and 3 and fig. 1" in the default short label style), every number its
+    and 3 and fig. 1" in the default short label style — sections carry
+    their heading name, gr690475), every number its
     own ``REF`` field to an existing
     bookmark; a range has fields for its first and last target only; a
     reference into the citing section ("above") or an "or" ends the run;
@@ -3155,8 +3188,8 @@ def test_adjacent_cross_references_print_as_one_run_of_fields(
     tail = r"\h \* MERGEFORMAT"
     sec_head = {n: f"REF _Ref_{h} {tail}" for n, h in sections.items()}
 
-    p = para("See sections 1 and 2")
-    assert p.text == "See sections 1 and 2."
+    p = para("See sections 1 (Intro)")
+    assert p.text == "See sections 1 (Intro) and 2 (Methods)."
     assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
 
     p = para("See figs")
@@ -3164,23 +3197,23 @@ def test_adjacent_cross_references_print_as_one_run_of_fields(
     assert fields(p) == [f"REF _Ref_{f1} {tail}", f"REF _Ref_{f3} {tail}"]
 
     p = para("See sections 2")
-    assert p.text == "See sections 2 and 3 and fig. 1."
+    assert p.text == "See sections 2 (Methods) and 3 (Results) and fig. 1."
     assert fields(p) == [
         sec_head["Methods"],
         sec_head["Results"],
         f"REF _Ref_{f1} {tail}",
     ]
 
-    p = para("See section 1 above")
-    assert p.text == "See section 1 above section 2."
+    p = para("See section 1 (Intro) above")
+    assert p.text == "See section 1 (Intro) above section 2 (Methods)."
     assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
 
-    p = para("See sections 1 to 3")
-    assert p.text == "See sections 1 to 3."
+    p = para("See sections 1 (Intro) to")
+    assert p.text == "See sections 1 (Intro) to 3 (Results)."
     assert fields(p) == [sec_head["Intro"], sec_head["Results"]]
 
-    p = para("See section 1 or")
-    assert p.text == "See section 1 or section 2."
+    p = para("See section 1 (Intro) or")
+    assert p.text == "See section 1 (Intro) or section 2 (Methods)."
     assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
 
     every = [i.text.strip() for i in body.iter(qn("w:instrText"))]
@@ -3353,8 +3386,8 @@ def test_crossref_into_own_section_prints_above_or_below(
     export_docx(hub.live_store, ref, target_path=out)
     texts = [p.text for p in docx.Document(str(out)).paragraphs]
     assert (
-        "(see above) and (see below). Above is the setup; section 2 is elsewhere."
-        in texts
+        "(see above) and (see below). Above is the setup; section 2 (Other)"
+        " is elsewhere." in texts
     )
 
 

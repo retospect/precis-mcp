@@ -3397,11 +3397,28 @@ def test_cref_into_own_section_is_the_word_above_or_below() -> None:
     ctx.cursor.dc = "dc3"
     out = latex._render_inline(text, ctx)
     assert out == (
-        r"(see above) and (see below). Above is setup, \cref{chunk:dc5} elsewhere."
+        r"(see above) and (see below). Above is setup,"
+        r" \cref{chunk:dc5}~(\cpageref{chunk:dc5}) elsewhere."
     )
     ctx.cursor.dc = "dc5"  # citing from section 2: unchanged
     assert r"\cref{chunk:dc2}" in latex._render_inline("see [dc2]", ctx)
     assert "\\precisrel" not in out
+
+
+def test_polish_xrefs_pages_section_targets() -> None:
+    """gr690475: a ``\\cref`` resolving to a numbered section picks up
+    ``~(\\cpageref{…})`` so the reader finds the section by page; a merged
+    run merges the page marks, a mixed run pages its section members only,
+    and a figure-only mark stays bare."""
+    paged = frozenset({"dc1", "dc2"})
+    out = latex._polish_xrefs(r"see \cref{chunk:dc1}", paged)
+    assert out == r"see \cref{chunk:dc1}~(\cpageref{chunk:dc1})"
+    out = latex._polish_xrefs(r"see \cref{chunk:dc1} and \cref{chunk:dc2}", paged)
+    assert out == r"see \cref{chunk:dc1,chunk:dc2}~(\cpageref{chunk:dc1,chunk:dc2})"
+    out = latex._polish_xrefs(r"see \cref{chunk:dc1} and \cref{chunk:f1}", paged)
+    assert out == r"see \cref{chunk:dc1,chunk:f1}~(\cpageref{chunk:dc1})"
+    assert latex._polish_xrefs(r"see \cref{chunk:f1}", paged) == r"see \cref{chunk:f1}"
+    assert latex._polish_xrefs(r"see \cref{chunk:dc1}") == r"see \cref{chunk:dc1}"
 
 
 def test_cref_to_paragraph_heading_uses_nameref() -> None:

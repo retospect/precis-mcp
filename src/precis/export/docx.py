@@ -645,6 +645,12 @@ class _Ctx:
     #: and the cross-reference run last printed into a paragraph
     #: (:class:`_XrefRun`), which an adjacent reference extends.
     xref_types: dict[str, str] = field(default_factory=dict)
+    #: dc handle → the name of the section its cross-ref resolves to
+    #: (:attr:`walker.XrefNumbers.names`) — printed after the number
+    #: (``section 2.1 (Methods)``) as the stand-in for the PDF's
+    #: ``\cpageref`` page marker (gr690475; a Word cross-reference has no
+    #: page-number field).
+    xref_names: dict[str, str] = field(default_factory=dict)
     _xref_run: _XrefRun | None = field(default=None, repr=False)
     cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
     #: every live ``dc`` handle (cross-ref liveness) and legacy ``¶`` handle →
@@ -979,6 +985,7 @@ def export_docx(
         xref_order=nums.order,
         xref_section=nums.section,
         xref_types=nums.types,
+        xref_names=nums.names,
         dc_handles={c.dc for c in chunks},
         legacy_to_dc=walker.legacy_map(chunks),
         abbrevs=store.drafts.defined_abbrevs(ref.id),
@@ -2520,7 +2527,11 @@ class DocxRenderer:
         a reference into the citing chunk's own section prints ``above`` /
         ``below`` (``Above``). Nothing when there is no number. References
         joined by whitespace, a comma or "and" print as one
-        run (``Sections 1 and 2``; :meth:`_print_xref`)."""
+        run (``Sections 1 and 2``; :meth:`_print_xref`). A reference
+        resolving to a numbered section names it after the number
+        (``section 2 (Methods)``) — the stand-in for the PDF's
+        ``\\cpageref`` page marker (gr690475; a Word cross-reference has
+        no page-number field)."""
         if not xref.live or xref.surface:
             text = xref.surface or xref.fallback or walker.DEAD_XREF_TEXT
         elif xref.relative is not None:
@@ -2549,11 +2560,22 @@ class DocxRenderer:
                 _flush_cites(self.ctx, sink)
                 sink.add_run(f"{shown} ")
                 self._ref_field(sink, xref.dc, number, noun)
+                self._name_text(sink, xref.dc, noun)
                 return
         else:
             return  # front matter / glossary / before section 1: nothing to print
         _flush_cites(self.ctx, sink)
         sink.add_run(text)
+
+    def _name_text(self, sink: Any, dc: str, noun: str | None) -> None:
+        """`` (Methods)`` after a section cross-ref's number: the section's
+        heading text from the pre-pass (:attr:`_Ctx.xref_names`), the
+        docx stand-in for the PDF's ``(\\cpageref)`` page marker
+        (gr690475)."""
+        if noun == "Section":
+            name = self.ctx.xref_names.get(dc)
+            if name:
+                sink.add_run(f" ({name})")
 
     def _print_xref(self, sink: Any, xref: walker.Xref) -> None:
         """Print ``xref`` as ``\\cref`` would. A reference that follows the
@@ -2581,6 +2603,7 @@ class DocxRenderer:
         ):
             if part.dc:
                 self._ref_field(sink, part.dc, part.number, part.noun or None)
+                self._name_text(sink, part.dc, part.noun or None)
             else:
                 sink.add_run(part.text)
         ctx._xref_run = _XrefRun(sink, members, list(sink._p)[n_before:])

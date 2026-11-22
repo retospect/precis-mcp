@@ -1024,6 +1024,10 @@ class _Ctx:
     #: tell a reference into the citing chunk's own section
     #: (:func:`walker.relative_word`; cleveref still numbers the rest).
     xref_pass: walker.XrefNumbers | None = None
+    #: ``dc`` handles of cross-ref targets that resolve to a numbered
+    #: section: :func:`_polish_xrefs` appends ``(\cpageref{…})`` to their
+    #: ``\cref`` mark, so the reader finds the section by page (gr690475).
+    page_xrefs: set[str] = field(default_factory=set)
     cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
     #: Memo for :func:`walker.dead_xref` — a dead cross-ref handle maps to
     #: ``(replacement dc | None, neutral text)`` (gr493181).
@@ -1255,12 +1259,16 @@ _CREF = re.compile(r"\\cref\{([^{}]*)\}")
 _CITE_MARK_END = re.compile(r"\\cite(?:\[[^\]]*\])?\{[^{}]*\}$")
 
 
-def _polish_xrefs(s: str) -> str:
+def _polish_xrefs(s: str, paged: frozenset[str] = frozenset()) -> str:
     """Post-pass over one rendered chunk's ``\\cref`` marks: merge adjacent
     runs into one ``\\cref{a,b}`` (cleveref prints "sections 1 and 2"),
     space a ``\\cref`` off a directly preceding ``\\cite`` mark (and its
     ``{\\scriptsize …}`` link run), and capitalise to ``\\Cref`` at the
-    start of the chunk or a sentence (the :func:`_glsify` rule)."""
+    start of the chunk or a sentence (the :func:`_glsify` rule). A mark's
+    section-resolving targets (``dc`` handles in ``paged``,
+    :attr:`_Ctx.page_xrefs`) pick up ``~(\\cpageref{…})`` — the page
+    marker that lets a draft reader find the section by page (gr690475);
+    a mixed run keeps the pages of its section members."""
     if "\\cref{" not in s and "\\precisrel{" not in s:
         return s
     items: list[str | tuple[str, ...]] = []
@@ -1269,8 +1277,17 @@ def _polish_xrefs(s: str) -> str:
         items += [s[last : m.start()], (m.group(1),)]
         last = m.end()
     items.append(s[last:])
+
+    def cref(item: tuple[str, ...]) -> str:
+        pages = ",".join(
+            label for label in item if label.removeprefix("chunk:") in paged
+        )
+        return f"\\cref{{{','.join(item)}}}" + (
+            f"~(\\cpageref{{{pages}}})" if pages else ""
+        )
+
     s = "".join(
-        item if isinstance(item, str) else f"\\cref{{{','.join(item)}}}"
+        item if isinstance(item, str) else cref(item)
         for item in walker.merge_xref_runs(items)
     )
     out: list[str] = []
@@ -1754,10 +1771,23 @@ class LatexRenderer:
             sink.append(f"\\precisrel{{{xref.relative}}}")
         elif dc in self.ctx.paragraph_handles:
             # ``\\paragraph`` is unnumbered: ``\\cref`` would print the parent
-            # section's number, so name the heading instead.
+            # section's number, so name the heading instead; the page
+            # marker still says where it sits (gr690475; the poster has
+            # no pages to find it by).
             sink.append(f"\\nameref{{chunk:{dc}}}")
+            if not self.ctx.poster:
+                sink.append(f"~(\\cpageref{{chunk:{dc}}})")
         else:
             sink.append(f"\\cref{{chunk:{dc}}}")
+            if (
+                not self.ctx.poster
+                and self.ctx.xref_pass is not None
+                and self.ctx.xref_pass.types.get(dc) in walker.XREF_SECTION_TYPES
+            ):
+                # A section number alone leaves the reader hunting: the
+                # page marker is appended at ``\\cref``-merge time
+                # (:func:`_polish_xrefs`, ctx.page_xrefs).
+                self.ctx.page_xrefs.add(dc)
 
     code_kinds = frozenset({"listing", "code"})
     aside_kinds = frozenset({"aside", "box"})
@@ -2556,7 +2586,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     # superscript-comma separator. Renderer-side because footmisc's
     # [multiple] stays inert under this preamble's hyperref.
     s = s.replace("\x02\\footnote{", "\\textsuperscript{,}\\footnote{")
-    return _polish_xrefs(s.replace("\x02", ""))
+    return _polish_xrefs(s.replace("\x02", ""), frozenset(ctx.page_xrefs))
 
 
 #: ``\begin{longtable}`` refsteps ``table`` itself, under whichever name

@@ -817,10 +817,16 @@ class XrefNumbers:
     the chunk sits in; absent in front and back matter) place a reference
     relative to its citing chunk (:func:`relative_word`). ``types`` maps a
     dc to the cleveref type its ``\\label`` carries (``figure``, ``table``,
-    ``section`` / ``subsection`` / ``subsubsection``) for the targets whose
+    ``equation``, ``section`` / ``subsection`` / ``subsubsection``) for the
+    targets whose
     type is known, so a run of references to them can print as cleveref
     would (:func:`format_xref_run`); a list item, a code listing, an aside,
-    a run-in heading or a back-matter heading is not in it."""
+    a run-in heading or a back-matter heading is not in it. ``names`` maps
+    a section-resolving target's dc to the heading text the reader finds
+    it by — a numbered or run-in heading's own text, any other labelled
+    chunk's enclosing numbered heading — the docx stand-in for the PDF's
+    ``\\cpageref`` page marker (gr690475; Word cross-references carry no
+    page-number field)."""
 
     labels: dict[str, tuple[str, str]]
     numbered_headings: set[str]
@@ -828,6 +834,7 @@ class XrefNumbers:
     order: dict[str, int] = field(default_factory=dict)
     section: dict[str, str] = field(default_factory=dict)
     types: dict[str, str] = field(default_factory=dict)
+    names: dict[str, str] = field(default_factory=dict)
 
 
 #: The cleveref type of a heading by its numbered depth.
@@ -868,9 +875,11 @@ def number_xrefs(
     shift = depth_shift(chunks, title_dc)
     back_matter = back_matter_handles(chunks)
     current = ""  # number of the enclosing numbered section
+    current_name = ""  # its heading text
     in_back = False  # inside unnumbered journal back matter
     order: dict[str, int] = {}
     section: dict[str, str] = {}
+    names: dict[str, str] = {}
     for i, c in enumerate(chunks):
         order[c.dc] = i
         if c.chunk_kind == "heading" and not is_glossary_heading(c):
@@ -901,13 +910,19 @@ def number_xrefs(
                     counters[i] = 0
                 shown.add(c.dc)
                 current = ".".join(str(n) for n in counters[: d + 1])
+                current_name = " ".join((c.text or "").split())
                 types[c.dc] = XREF_SECTION_TYPES[d]
-            # else: run-in paragraph heading — resolves to the enclosing section
+                names[c.dc] = current_name
+            else:
+                # run-in paragraph heading — resolves to the enclosing
+                # section's number but names itself
+                names[c.dc] = " ".join((c.text or "").split())
             labels[c.dc] = ("Section", current)
             if not in_back:
                 section[c.dc] = current
         elif c.chunk_kind not in ("ulist", "olist") and current:
             labels[c.dc] = ("Section", current)
+            names[c.dc] = current_name
             if c.chunk_kind not in XREF_UNTYPED_KINDS:
                 # A \\label in a paragraph takes the type of the sectioning
                 # counter last stepped: the enclosing section's depth.
@@ -920,6 +935,12 @@ def number_xrefs(
         if eq is None or eq[1]:  # not standalone, or the starred escape hatch
             continue
         equations[c.dc] = len(equations) + 1
+    for dc in equations:
+        # An equation's ``\label`` binds the equation counter, not the
+        # section it sits in: ``\cref`` prints "Eq. (N)", and the reader
+        # finds it by that number — no section name / page marker.
+        types[dc] = "equation"
+        names.pop(dc, None)
     return XrefNumbers(
         labels=labels,
         numbered_headings=shown,
@@ -927,6 +948,7 @@ def number_xrefs(
         order=order,
         section=section,
         types=types,
+        names=names,
     )
 
 

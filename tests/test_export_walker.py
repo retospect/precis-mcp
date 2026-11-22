@@ -277,6 +277,9 @@ def test_number_xrefs_reads_structure_only() -> None:
         "dc7": ("Table", "2"),
     }
     assert nums.numbered_headings == {"dc2"} and nums.equations == {"dc4": 1}
+    # the section a target resolves to, by name — an equation never is one
+    assert nums.names == {"dc2": "Intro", "dc3": "Intro"}
+    assert nums.types["dc4"] == "equation"
 
 
 def test_term_segments_defines_once_and_never_in_a_heading() -> None:
@@ -787,30 +790,35 @@ _PARITY_CHUNKS = [
 #: spellings differ from cleveref's ``\crefname`` table by design
 #: (``xref_labels="full"`` opts back in) — the parity under test is the
 #: grouping and order, so the closure below re-prints through the same
-#: short names.
+#: short names. Both backends locate a referenced section for the reader
+#: (gr690475): the PDF's ``(\cpageref)`` page marker is Word's
+#: ``(heading name)``.
 _PARITY = [
-    ("see [dc2] [dc3]", "see sections 1 and 2"),
-    ("see [dc2][dc3] [dc6]", "see sections 1, 2 and 4"),
-    ("see [dc2] [dc3] [dc5]", "see sections 1 to 3"),
+    ("see [dc2] [dc3]", "see sections 1 (A) and 2 (B)"),
+    ("see [dc2][dc3] [dc6]", "see sections 1 (A), 2 (B) and 4 (D)"),
+    ("see [dc2] [dc3] [dc5]", "see sections 1 (A) to 3 (C)"),
     ("see [dc9] [dc7] [dc8]", "see figs. 1 to 3"),
-    ("see [dc2] [dc3] [dc9]", "see sections 1 and 2 and fig. 3"),
-    ("see [dc10] [dc7] [dc11] [dc3]", "see table 1, fig. 1, Eq. (1), and section 2"),
-    ("see [dc3] [dc4]", "see section 2 and section 2.1"),
+    ("see [dc2] [dc3] [dc9]", "see sections 1 (A) and 2 (B) and fig. 3"),
+    (
+        "see [dc10] [dc7] [dc11] [dc3]",
+        "see table 1, fig. 1, Eq. (1), and section 2 (B)",
+    ),
+    ("see [dc3] [dc4]", "see section 2 (B) and section 2.1 (B1)"),
     ("[dc11] [dc12] hold.", "Equations (1) and (2) hold."),
     ("by [dc11] [dc12]", "by Eqs. (1) and (2)"),
-    ("see [dc2] [dc13] [dc3]", "see section 1 above section 2"),
+    ("see [dc2] [dc13] [dc3]", "see section 1 (A) above section 2 (B)"),
     ("see [dc7]", "see fig. 1"),
-    ("see [dc2] and [dc3]", "see sections 1 and 2"),
-    ("see [dc2], [dc3]", "see sections 1 and 2"),
-    ("see [dc2], [dc3] and [dc6]", "see sections 1, 2 and 4"),
-    ("see [dc2], [dc3], and [dc5]", "see sections 1 to 3"),
+    ("see [dc2] and [dc3]", "see sections 1 (A) and 2 (B)"),
+    ("see [dc2], [dc3]", "see sections 1 (A) and 2 (B)"),
+    ("see [dc2], [dc3] and [dc6]", "see sections 1 (A), 2 (B) and 4 (D)"),
+    ("see [dc2], [dc3], and [dc5]", "see sections 1 (A) to 3 (C)"),
     ("see [dc7] and [dc10]", "see fig. 1 and table 1"),
     ("[dc7] and [dc8] show", "Figs. 1 and 2 show"),
-    ("see [dc2] or [dc3]", "see section 1 or section 2"),
-    ("see [dc2]; [dc3]", "see section 1; section 2"),
-    ("see [dc2] and [dc13]", "see section 1 and above"),
-    ("see [dc13] and [dc2]", "see above and section 1"),
-    ("[dc2] [dc3] show it.", "Sections 1 and 2 show it."),
+    ("see [dc2] or [dc3]", "see section 1 (A) or section 2 (B)"),
+    ("see [dc2]; [dc3]", "see section 1 (A); section 2 (B)"),
+    ("see [dc2] and [dc13]", "see section 1 (A) and above"),
+    ("see [dc13] and [dc2]", "see above and section 1 (A)"),
+    ("[dc2] [dc3] show it.", "Sections 1 (A) and 2 (B) show it."),
 ]
 
 
@@ -836,6 +844,7 @@ def test_word_and_pdf_merge_the_same_cross_references(
         xref_types=nums.types,
         xref_order=nums.order,
         xref_section=nums.section,
+        xref_names=nums.names,
         numbered_headings=nums.numbered_headings,
         eq_numbers=nums.equations,
         dc_handles=handles,
@@ -846,8 +855,10 @@ def test_word_and_pdf_merge_the_same_cross_references(
     assert paragraph.text == printed
 
     # LaTeX's \cref arguments, printed by the one formatter: the same members
-    # in the same groups and order as Word's runs. Word's short label style
-    # names keep the comparison about grouping, not spelling.
+    # in the same groups and order as Word's runs, each section's number
+    # followed by its name as Word prints it (the PDF's \cpageref mark is
+    # checked separately below). Word's short label style names keep the
+    # comparison about grouping, not spelling.
     def cleveref(m: re.Match[str]) -> str:
         run = [
             walker.resolve_xref(
@@ -855,8 +866,10 @@ def test_word_and_pdf_merge_the_same_cross_references(
             )
             for a in m.group(2).split(",")
         ]
-        return _printed(
-            walker.format_xref_run(
+        return "".join(
+            (p.text or p.number)
+            + (f" ({nums.names[p.dc]})" if p.dc in nums.names else "")
+            for p in walker.format_xref_run(
                 run,
                 sentence_start=m.group(1) == "C",
                 names=dx._SHORT_XREF_NAMES,
@@ -864,7 +877,21 @@ def test_word_and_pdf_merge_the_same_cross_references(
             )
         )
 
-    assert re.sub(r"\\([cC])ref\{([^{}]*)\}", cleveref, tex) == printed
+    unmarked = re.sub(r"~?\(\\cpageref\{[^{}]*\}\)", "", tex)
+    assert re.sub(r"\\([cC])ref\{([^{}]*)\}", cleveref, unmarked) == printed
+
+    # Every \cpageref lists exactly its \cref mark's section-resolving
+    # targets (gr690475).
+    paged = {dc for dc, t in nums.types.items() if t in walker.XREF_SECTION_TYPES}
+    marks = re.findall(r"\\[cC]ref\{([^{}]*)\}", tex)
+    assert re.findall(r"\\cpageref\{([^{}]*)\}", tex) == [
+        pages
+        for pages in (
+            ",".join(a for a in mark.split(",") if a.removeprefix("chunk:") in paged)
+            for mark in marks
+        )
+        if pages
+    ]
 
 
 @pytest.mark.parametrize(
