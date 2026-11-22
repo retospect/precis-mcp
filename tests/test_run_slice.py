@@ -1638,6 +1638,51 @@ def test_reviewer_brief_posts_one_verdict_and_mints_nothing(
     assert pd.parse_verdict("review: LAND") == ("LAND", "")
 
 
+_SEEN_ATTEMPT = {
+    "todo": 7,
+    "ref": "refs/factory/build/7/70",
+    "head": "7" * 40,
+    "job": 70,
+}
+
+
+@pytest.mark.parametrize(
+    ("role", "named", "stamp"),
+    [
+        ("reviewer", _SEEN_ATTEMPT, _SEEN_ATTEMPT),
+        ("reviewer", {}, None),
+        (None, {}, "absent"),
+    ],
+)
+def test_reviewer_launch_records_the_attempt_its_brief_names(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    role: str | None,
+    named: dict[str, Any],
+    stamp: Any,
+) -> None:
+    """td763090: the launch stamps the held attempt its brief named on the
+    review job, so the tick credits the verdict to that build even when a
+    replacement holds the land by then; a reviewer launch naming none
+    clears an older record, and a build launch stamps nothing."""
+
+    def fake_target(*_a: Any, reviewed: dict[str, Any], **_kw: Any) -> str | None:
+        reviewed.update(named)
+        return "td7: Build it" if role else None
+
+    monkeypatch.setattr(run_slice, "_review_target", fake_target)
+    store = _Store()
+    meta = {"generate": {"role": role, "from": "td7"}} if role else None
+    store.add_todo(42, "Review td7", body="Review td7.", meta=meta)
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    if stamp == "absent":
+        assert "reviewed_attempt" not in ctx.meta_set
+    else:
+        assert "reviewed_attempt" in ctx.meta_set
+        assert ctx.meta_set["reviewed_attempt"] == stamp
+
+
 def test_analyst_brief_posts_one_analysis_and_mints_nothing(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -3460,9 +3505,11 @@ def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
         return _proc()
 
     monkeypatch.setattr(run_slice, "_git", fake_git)
-    target = run_slice._review_target(store, meta, tree=tmp_path)
+    reviewed: dict[str, Any] = {}
+    target = run_slice._review_target(store, meta, tree=tmp_path, reviewed=reviewed)
     assert target is not None
     assert "STALE CHECKOUT" in target and "fatal: unable to read the hub" in target
+    assert reviewed == {}  # td763090: judge nothing, credit nothing
     assert new in target
     assert "The branch head is" not in target
     assert "verified head" not in target
@@ -3470,9 +3517,11 @@ def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
 
     # The fetch works and the ref holds the pushed head: the usual brief.
     state.update(fetch_ok=True, tip=new)
-    target = run_slice._review_target(store, meta, tree=tmp_path)
+    target = run_slice._review_target(store, meta, tree=tmp_path, reviewed=reviewed)
     assert target is not None and "STALE CHECKOUT" not in target
     assert f"The branch head is `{new}`" in target
+    # td763090: the attempt the brief names is the one the verdict judges.
+    assert reviewed == {"todo": 7, "ref": HUB_REF, "head": new, "job": 70}
 
     # A clean fetch that disagrees with the stamp is no safer than a
     # failed one (td730820): the branch moved after the defer stamped
@@ -16124,6 +16173,25 @@ def test_review_quota_window_relaunches_on_the_fallback_now(
     argv = seams["launch"][-1][0]
     assert argv[0].endswith("codex") and argv[1] == "exec"
     assert rctx.meta_set["lane"] == "codex"
+
+
+def test_review_moved_to_its_fallback_is_placed_by_the_fallback_s_binary(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td763090: the closed lane's launch stamped ``meta.adapter``, which
+    placement reads before the pin — the move rewrites it with the pin,
+    so a reclaim of the parked review needs the fallback's binary, never
+    the closed lane's."""
+    from precis.workers.executors._common import placement_requires
+
+    _review_lanes(monkeypatch)
+    store = _Store()
+    pctx, _handle = _quota_on_sub_with_fallback(seams, store, "codex")
+    assert pctx.meta_set["params"]["lane"] == "codex"
+    assert pctx.meta_set["adapter"] == "codex_exec"
+    meta = {"job_type": "run_slice", **pctx.meta, **pctx.meta_set}
+    tokens = placement_requires(meta, {"codex": "codex_exec"})
+    assert "codex_bin" in tokens and "claude_bin" not in tokens
 
 
 def _quota_on_sub_with_fallback(

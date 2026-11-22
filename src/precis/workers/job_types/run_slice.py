@@ -771,8 +771,8 @@ def _move_review_to_fallback(
     lane_table: tuple[_lanes.Lane, ...] | None = None,
 ) -> bool:
     """Rewrite a reviewer job's ``params.lane`` to its
-    ``meta.review_fallback`` lane (gr761723) and drop the mark so the
-    move happens once. ``False`` (nothing moved) without a fallback, when
+    ``meta.review_fallback`` lane (gr761723), and ``meta.adapter`` to that
+    lane's adapter, and drop the mark so the move happens once. ``False`` (nothing moved) without a fallback, when
     the job already runs on it, or when the fallback is not usable now
     (:func:`_usable_fallback`)."""
     from precis.plans.templates import REVIEW_FALLBACK_KEY
@@ -792,7 +792,13 @@ def _move_review_to_fallback(
         return False
     was = params.get("lane")
     params["lane"] = fallback
-    ctx.set_meta(params=dict(params), **{REVIEW_FALLBACK_KEY: None})
+    # td763090: ``meta.adapter`` (the closed lane's, stamped at its
+    # launch) is what placement reads before the pin, so it moves with
+    # the pin — else a reclaimed review would need the old lane's binary.
+    lane = next(ln for ln in table if ln.name == fallback)
+    ctx.set_meta(
+        params=dict(params), adapter=lane.adapter, **{REVIEW_FALLBACK_KEY: None}
+    )
     ctx.append_chunk(
         "job_event",
         f"run_slice: review moved from lane {was!r} to its fallback lane "
@@ -2874,6 +2880,7 @@ def _review_target(
     tree: Path | None = None,
     root: Path | None = None,
     resolution: Mapping[str, Any] | None = None,
+    reviewed: dict[str, Any] | None = None,
 ) -> str | None:
     """What a reviewer judges, inlined so a lane without the precis MCP can
     review (td564019 cut 1): the reviewed todo's title, its newest
@@ -2897,7 +2904,12 @@ def _review_target(
     the resolution changed — ``git range-diff origin/<base> <of>
     origin/slice/<id>`` replaces the diff instruction, ``of`` being made
     present in the clone first (:class:`_ReviewRefusal`, attempt-free, when
-    the hub no longer holds it)."""
+    the hub no longer holds it).
+
+    ``reviewed`` (td763090), when given, is filled with the held attempt
+    the brief names to judge — ``{todo, ref, head, job}``
+    (:data:`~precis.plans.templates.REVIEWED_ATTEMPT_KEY`) — and left
+    empty when it names none (a landed squash, a stale checkout)."""
     from precis.plans.templates import PENDING_LAND_KEY
 
     if _generate_role(meta) != "reviewer":
@@ -2992,6 +3004,15 @@ def _review_target(
                 "this review again."
             )
         elif pending:
+            if reviewed is not None:
+                attempt = pending.get("ref") if isinstance(pending, dict) else None
+                attempt = attempt if isinstance(attempt, str) and attempt else None
+                reviewed.update(
+                    todo=target_id,
+                    ref=attempt,
+                    head=pushed or head or None,
+                    job=_outcome.build_job_of_ref(attempt),
+                )
             res = _resolution_of(resolution)
             if res is not None and tree is not None:
                 of, of_ref = res
@@ -8107,13 +8128,22 @@ def submit(ctx: Any, spec: Any) -> Any:
         if not repo_review:
             # A held slice's attempt ref is fetched into this clone before
             # the brief names the head to judge (gr741695).
+            reviewed: dict[str, Any] = {}
             brief_kwargs["target"] = _review_target(
                 store,
                 todo.meta,
                 tree=tree,
                 root=root,
                 resolution=params.get("resolution"),
+                reviewed=reviewed,
             )
+            if _generate_role(todo.meta) == "reviewer":
+                # td763090: the verdict is credited to the attempt this
+                # launch's brief named, never to the one held when it is
+                # read; a relaunch that names none clears the old record.
+                from precis.plans.templates import REVIEWED_ATTEMPT_KEY
+
+                ctx.set_meta(**{REVIEWED_ATTEMPT_KEY: reviewed or None})
         brief = render_brief(**brief_kwargs, read_mcp=read_scope)
         if not repo_review:
             _install_acceptance_tests(tree, artifacts, deny)

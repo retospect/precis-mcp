@@ -211,18 +211,27 @@ class BuildRun(NamedTuple):
     outcome: bool | None
 
 
-#: Build runs in the window. ``refs`` has no ``created_at`` index, so the
-#: window is a ``ref_id`` floor: the scalar subquery walks a
+#: Build runs in the window: ``j.created_at`` past the cutoff is the
+#: window's one exact bound. ``refs`` has no ``created_at`` index, so a
+#: ``ref_id`` floor only prunes the scan: the scalar subquery walks a
 #: ``ref_id``-leading btree (``refs_pkey`` or ``refs_ref_id_kind_key``)
-#: backwards from the newest ref to the first one created before the
-#: window (ids rise with ``created_at``, the column's ``now()`` default),
-#: and ``j.ref_id > floor`` rides the outer index — the test DB plans
-#: ``refs_slice_overlap_jobs_idx`` (the ``run_slice``/``land_slice``
+#: backwards from the newest ref to the first one created a day before
+#: the cutoff, and ``j.ref_id > floor`` rides the outer index — the test
+#: DB plans ``refs_slice_overlap_jobs_idx`` (the ``run_slice``/``land_slice``
 #: partial index) with ``job_type = 'run_slice' AND ref_id > floor`` as
-#: its index condition, so no old job's heap row is read. The
-#: ``created_at`` test stays as the exact filter. The todo join reads the class off
-#: ``params.todo_id`` (the todo the job executes, as the mint stamps do),
-#: guarded so a malformed id is no cast error.
+#: its index condition, so no old job's heap row is read.
+#:
+#: The day of slack (:data:`_BUILD_RUNS_FLOOR_SLACK`, td763090) is what
+#: keeps the floor from dropping an in-window build: ``created_at``
+#: defaults to ``now()``, the *transaction's* start, while the id is drawn
+#: when the row is inserted, so a transaction open across the cutoff
+#: writes a pre-cutoff ``created_at`` on an id above in-window rows. With
+#: the floor at the cutoff, that row would become the floor and silently
+#: hide them; a day back, only a transaction open for over a day could.
+#: The todo join reads the class off ``params.todo_id`` (the todo the job
+#: executes, as the mint stamps do), guarded so a malformed id is no cast
+#: error.
+_BUILD_RUNS_FLOOR_SLACK = "1 day"
 _BUILD_RUNS_SQL = (
     "SELECT j.meta->>'lane', "
     "COALESCE(NULLIF(j.meta->>'model', ''), %s), "
@@ -239,6 +248,7 @@ _BUILD_RUNS_SQL = (
     "THEN (j.meta->'params'->>'todo_id')::bigint END "
     "WHERE j.ref_id > COALESCE((SELECT f.ref_id FROM refs f "
     "WHERE f.created_at <= now() - (%s * interval '1 day') "
+    f"- interval '{_BUILD_RUNS_FLOOR_SLACK}' "
     "ORDER BY f.ref_id DESC LIMIT 1), 0) "
     "AND j.kind = 'job' AND j.retired_at IS NULL "
     "AND j.meta->>'job_type' = 'run_slice' "
