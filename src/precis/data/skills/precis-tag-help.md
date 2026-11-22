@@ -53,10 +53,11 @@ meta moves through `put(meta=…)` / `edit(args={'meta': …})`.
 ## How do I add the same tag to many refs?
 
 ```python
-tag(kind="anki", id=[204, 205], add=["deck-aixmat-2026"], remove=["deck-ml-potentials"])
 tag(kind="todo", id=[158, 159], add=["STATUS:done"], remove=["STATUS:open"])
 tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
 tag(kind="paper", id=["pa1190", "dynamat26", 160060], add=["aixmat-2026"], reason="conference reading list")
+
+tag(kind="anki", id=[204, 205], add=["deck-aixmat-2026"], remove=["deck-ml-potentials"])
 ```
 
 `id=[...]` applies the same `add=` / `remove=` to every ref in the
