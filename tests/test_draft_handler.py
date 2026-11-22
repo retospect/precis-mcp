@@ -4059,6 +4059,54 @@ def test_put_leaves_a_hyphen_led_paragraph_alone(draft: DraftHandler, hub: Hub) 
     assert [c.chunk_kind for c in _order(hub, "nt")] == ["heading", "paragraph"]
 
 
+def test_put_list_chunk_kind_converts_bullets(draft: DraftHandler, hub: Hub) -> None:
+    """gr684738: chunk_kind='ulist'/'olist' + markdown bullets lands the
+    structured list — the same conversion paragraph gets — instead of a
+    zero-item container carrying raw markdown no export reads. The named
+    kind wins over the bullet markers."""
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    heading = _order(hub, "nt")[0]
+    r = draft.put(
+        id="nt", chunk_kind="ulist", text="- a\n- b", at={"after": heading.handle}
+    )
+    assert "markdown bullets → structured list" in r.body
+    assert "[ulist] holding 2 items" in r.body
+    assert [(c.chunk_kind, c.depth) for c in _order(hub, "nt")] == [
+        ("heading", 0),
+        ("ulist", 0),
+        ("item", 1),
+        ("item", 1),
+    ]
+    # '-' markers under chunk_kind='olist' still mint an olist.
+    r2 = draft.put(id="nt", chunk_kind="olist", text="- c\n- d")
+    assert "[olist] holding 2 items" in r2.body
+    assert [c.chunk_kind for c in _order(hub, "nt")] == [
+        "heading",
+        "ulist",
+        "item",
+        "item",
+        "olist",
+        "item",
+        "item",
+    ]
+
+
+def test_put_list_chunk_kind_refuses_non_list_text(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr684738: a ulist/olist container carries no prose — non-bullet
+    text= refuses with the working call, and nothing is minted."""
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    with pytest.raises(BadInput, match="list container"):
+        draft.put(id="nt", chunk_kind="ulist", text="a plain sentence")
+    # one bullet is no list worth restructuring — same refusal
+    with pytest.raises(BadInput, match="list container"):
+        draft.put(id="nt", chunk_kind="olist", text="- a")
+    with pytest.raises(BadInput, match="list container"):
+        draft.put(id="nt", chunk_kind="ulist", text="- a\n- b\n\nPlain prose")
+    assert [c.chunk_kind for c in _order(hub, "nt")] == ["heading"]
+
+
 def test_outline_collapses_a_list_to_one_row(draft: DraftHandler, hub: Hub) -> None:
     """A survey whose sections are bullet lists has thousands of items; the
     outline shows shape, and the container read shows the items."""

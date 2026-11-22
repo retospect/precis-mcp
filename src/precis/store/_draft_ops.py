@@ -2930,12 +2930,20 @@ class DraftStore(_AbbrevMixin):
                 # export already reads (migration 0037). Bullet text left
                 # inside a paragraph renders only in the web reader and
                 # collapses to one run-on line in the PDF and docx.
+                # An explicit 'ulist'/'olist' ask runs the same parse —
+                # a container carries no prose (its 'item' children do),
+                # so its text= may be only bullets; anything else minted
+                # a malformed zero-item list no export reads (gr684738).
                 tree = (
                     mdlist.parse_list_block(block)
-                    if chunk_kind == "paragraph"
+                    if chunk_kind in ("paragraph", "ulist", "olist")
                     else None
                 )
                 if tree is not None:
+                    # The named kind wins over the bullet markers —
+                    # chunk_kind='olist' + '- item' mints an olist.
+                    if chunk_kind in ("ulist", "olist"):
+                        tree.chunk_kind = chunk_kind
                     out.extend(
                         self._insert_list_tree(
                             conn,
@@ -2949,6 +2957,15 @@ class DraftStore(_AbbrevMixin):
                         )
                     )
                     continue
+                if chunk_kind in ("ulist", "olist") and block.strip():
+                    raise BadInput(
+                        f"a {chunk_kind!r} list container requires a markdown "
+                        "list with at least two items",
+                        next="put(kind='draft', id='<slug>', "
+                        "chunk_kind='paragraph', text='- first\\n- "
+                        "second') — markdown bullets convert to a "
+                        "ulist/olist container + item chunks",
+                    )
                 out.append(
                     self._insert_draft_chunk(
                         conn,

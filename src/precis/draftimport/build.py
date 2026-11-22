@@ -448,7 +448,13 @@ def run_import(
                 made = store.drafts.add_chunks(
                     ref_id=draft_ref.id,
                     chunk_kind=store_kind,
-                    text=text or "(figure omitted)",
+                    # a ulist/olist container carries no prose — its
+                    # 'item' children do (gr684738)
+                    text=(
+                        ""
+                        if store_kind in ("ulist", "olist")
+                        else text or "(figure omitted)"
+                    ),
                     at={"into": parent_handle, "last": True},
                     meta=meta,
                 )

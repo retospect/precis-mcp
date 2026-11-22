@@ -92,6 +92,10 @@ domain sub-stores hold a core and are reached as composed properties —
 first, fully carved: draft ops exist only on the sub-store (no flat
 delegations remain on ``Store``).
 
+Draft list containers hold structure and their item children hold the prose
+read by exporters. Explicit list puts parse Markdown into that shape, and
+importers can pass empty text to create containers for separately parsed items.
+
 PCB chat guards use READ COMMITTED capture after ordered FOR UPDATE parents,
 retired rows and leaves: an earlier repeatable snapshot would miss a child that
 commits while locking waits. Short parts/footprint SHARE NOWAIT locks protect
