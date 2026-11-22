@@ -116,7 +116,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    text, or a shared ``file::function`` on the verdict's ``anchors:``
    line with token-Jaccard text similarity of at least 0.6), or
    :data:`PRELAND_FIX_CAP` rounds in a
-   row (gr684815). ``REVERT``
+   row (gr684815). The ask resets only the count (gr762396): the head,
+   digest, anchors and text stay, so the first round after the answer
+   still stops on an unchanged head or the same finding, and a held land
+   whose head is the one the last send-back rejected (a session that
+   pushed nothing re-held it) never releases the reviewer — the build
+   reopens and parks on the "unchanged head" stop instead — unless a
+   coordinator ``brief:`` on the reviewer or the builder's ``validated:``
+   rebuttal, newer than the last rejection, buys that head one fresh
+   review (a new finding from a brief-bought review is an ordinary
+   send-back), or the gating review is not the one that rejected it. ``REVERT``
    mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
@@ -3533,12 +3542,15 @@ def _preland_round(
     pushed: str,
     raw: str,
     single: bool,
+    now: datetime | None = None,
 ) -> tuple[int, dict[str, Any], tuple[str, str] | None]:
     """``(count, record, stop)`` of the pre-land FIX/REVERT sent
     back to ``t`` (gr684815, gr688058): ``count`` one more than the
     ``meta.preland_fix_rounds`` stamp holds, ``record`` the value to
     write while the loop goes on (the finding's digest and anchors plus
-    the pushed head this verdict judged), and ``stop`` — the
+    the pushed head this verdict judged; since gr762396 also the
+    send-back time ``at``, the ``reviewer`` that wrote it and the
+    verdict as written, ``kind`` and ``verdict``), and ``stop`` — the
     ``(reason, why)`` for :func:`_park_preland_rounds`, ``reason`` a
     :data:`_PRELAND_STOPS` key — ``None`` while the loop should run.
 
@@ -3555,9 +3567,21 @@ def _preland_round(
     the verdict JUDGED is not the pushed tip (the reviewer is reading a
     stale branch — read only on a single-target review, whose verdict
     can name just the one tip), or the count reaches
-    :data:`PRELAND_FIX_CAP`."""
+    :data:`PRELAND_FIX_CAP`. A review a coordinator ``brief:`` bought
+    on the rejected head (``prev["exempt"] == "brief"``, gr762396) never
+    stops on the unchanged head: a new finding there is an ordinary
+    send-back, and only the same finding again stops. A record another
+    review node wrote (``reviewer``) is not this one's: the verdict
+    starts a fresh record at round 1 (a record with no ``reviewer``
+    counts as this node's)."""
     prev = t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY)
     prev = prev if isinstance(prev, dict) else {}
+    wrote = prev.get("reviewer")
+    if isinstance(wrote, int) and wrote != n.id:
+        # gr762396: another review node wrote the kept record (the gate
+        # was re-minted) — this verdict starts its own record at round
+        # 1, and that record guards the loop from here.
+        prev = {}
     try:
         count = int(prev.get("count") or 0) + 1
     except (TypeError, ValueError):
@@ -3571,6 +3595,10 @@ def _preland_round(
         "head": pushed or None,
         "anchors": anchors,
         "text": text[:_FINDING_TEXT_CAP],
+        "at": (now or datetime.now(UTC)).astimezone(UTC).isoformat(),
+        "reviewer": n.id,
+        "kind": kind,
+        "verdict": rest[:_FINDING_TEXT_CAP],
     }
     # The stale read is judged first: a reviewer that read the old head
     # re-reports the old finding, which would otherwise read as "same
@@ -3610,7 +3638,12 @@ def _preland_round(
             ),
         )
     prev_head = str(prev.get("head") or "")
-    if pushed and prev_head and _same_sha(pushed, prev_head):
+    if (
+        pushed
+        and prev_head
+        and _same_sha(pushed, prev_head)
+        and prev.get("exempt") != "brief"
+    ):
         return (
             count,
             record,
@@ -3661,14 +3694,26 @@ def _park_preland_rounds(
     stop: tuple[str, str],
     now: datetime,
     pushed: str = "",
+    record: dict[str, Any] | None = None,
 ) -> None:
     """Hold the sent-back build ``t`` on a coordinator ask instead of
     rebuilding again (gr684815, gr688058): ``stop`` is
     :func:`_preland_round`'s ``(reason, why)`` — the same finding twice
     running, an unchanged reviewed head, a stale-read verdict, or
     :data:`PRELAND_FIX_CAP` rounds. The ask's title names the reason and
-    its body that reason's own reading (:data:`_PRELAND_STOPS`). The
-    count clears, so the answer buys a fresh one.
+    its body that reason's own reading (:data:`_PRELAND_STOPS`).
+
+    Only the count resets (gr762396): ``record`` — the round record of
+    the verdict that stopped, else the standing stamp — is kept with
+    ``count`` 0, so its head, finding digest, anchors and text survive
+    the answer. The first round after it still stops on an unchanged
+    head or the same finding, and :func:`_step_reviews` never releases
+    the reviewer onto the head it rejected. A stale read keeps no head:
+    the reviewer never judged the pushed tip, so a re-review of it is
+    the answer, not a loop. ``stopped_at`` dates the stop: a ``brief:``
+    on the reviewer or a builder ``validated:`` newer than it buys the
+    head one more review (:func:`_rehold_exemption`); a spent exemption
+    mark (``exempt``) does not survive the park.
 
     One open ask per slice (gr738860): the ask carries
     ``meta.preland_stop = {node, reason, head, repeats}``, and a stop on
@@ -3679,7 +3724,16 @@ def _park_preland_rounds(
     ``pushed`` is the pushed head the verdict judged (``""`` for none)."""
     reason, why = stop
     head = pushed or None
-    w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: None})
+    if record is None:
+        record = _dict_of(t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY))
+    kept: dict[str, Any] = {
+        **{k: v for k, v in record.items() if k != "exempt"},
+        "count": 0,
+        "stopped_at": now.astimezone(UTC).isoformat(),
+    }
+    if reason == "stale read":
+        kept["head"] = None
+    w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: kept})
     existing = _open_preland_stop_ask(plan, t)
     if existing is not None:
         prior = existing.meta.get(PRELAND_STOP_KEY)
@@ -3869,9 +3923,11 @@ def _review_back_to_builder(
                 f"td{t.id}: resolution review {kind} — conflict try {_ck} failed"
             )
             continue
-        count, record, stop = _preland_round(n, t, kind, rest, pushed, raw, single)
+        count, record, stop = _preland_round(n, t, kind, rest, pushed, raw, single, now)
         if stop is not None:
-            _park_preland_rounds(plan, w, res, n, t, kind, rest, stop, now, pushed)
+            _park_preland_rounds(
+                plan, w, res, n, t, kind, rest, stop, now, pushed, record
+            )
         else:
             w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: record})
     sent_back = [t.id for t in targets if t.id not in ruled]
@@ -3879,6 +3935,149 @@ def _review_back_to_builder(
         f"td{n.id}: review {kind} pre-land — back to the builder: "
         + (", ".join(f"td{i}" for i in sent_back) or "nothing")
         + (f"; STATUS stands on {', '.join(f'td{i}' for i in ruled)}" if ruled else "")
+    )
+
+
+def _rejected_head(t: _Node, params: Any) -> str:
+    """The head the held land ``params`` would ship when it is the one
+    the last pre-land send-back of ``t`` rejected
+    (``meta.preland_fix_rounds.head``, gr762396), else ``""``."""
+    head = str(params.get("head") or "") if isinstance(params, dict) else ""
+    rounds = _dict_of(t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY))
+    rejected = str(rounds.get("head") or "")
+    return head if head and rejected and _same_sha(head, rejected) else ""
+
+
+def _rejected_at(plan: _Plan, t: _Node) -> datetime | None:
+    """When ``t``'s kept pre-land record was last rejected or stopped
+    (gr762396): ``stopped_at`` (the park), else ``at`` (the send-back);
+    only a record stamped before either existed falls back to the
+    newest pre-land-stop ask on ``t``."""
+    rounds = _dict_of(t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY))
+    for key in ("stopped_at", "at"):
+        try:
+            return datetime.fromisoformat(str(rounds[key]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    asks = [
+        m.created_at
+        for m in plan.nodes.values()
+        if m.kind == "todo"
+        and _dict_of(m.meta.get(PRELAND_STOP_KEY)).get("node") == t.id
+    ]
+    return max(asks, default=None)
+
+
+def _rehold_exemption(store: Any, plan: _Plan, n: _Node, t: _Node) -> str | None:
+    """What buys the rejected head one more review (Reto 2026-11-22,
+    gr762396), newer than :func:`_rejected_at`: ``"brief"`` — a
+    coordinator ``brief:`` on the reviewer ``n`` ("how to verify what is
+    already there"); ``"validated"`` — the builder's ``validated:``
+    rebuttal on ``t`` (the self-correction path); else ``None``. Once
+    per record: the review it buys writes a new record (``at``) or a
+    new stop (``stopped_at``), newer than the evidence."""
+    since = _rejected_at(plan, t)
+    if since is None:
+        return None
+    from precis.workers.job_types import run_slice as _rs
+
+    brief_at = getattr(
+        _newest_brief_chunk(n, _rs._todo_chunks(store, n.id)), "created_at", None
+    )
+    if isinstance(brief_at, datetime) and brief_at > since:
+        return "brief"
+    verdict = _verdict_comment(store, t.id, since=since)
+    if verdict is not None and verdict[0] == "validated":
+        return "validated"
+    return None
+
+
+def _held_on_rejected_head(
+    store: Any, plan: _Plan, w: _Writer, n: _Node, t: _Node, params: Any
+) -> str:
+    """The head to park ``t`` on instead of releasing the reviewer ``n``
+    (gr762396): :func:`_rejected_head`, but only when ``n`` is the review
+    that wrote the kept record (``reviewer``; a record without one is
+    taken as ``n``'s) — a re-minted review node judges afresh — and no
+    :func:`_rehold_exemption` stands. An exemption is marked on the
+    record (``exempt``) for :func:`_preland_round` and returns ``""``."""
+    head = _rejected_head(t, params)
+    if not head:
+        return ""
+    rounds = _dict_of(t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY))
+    wrote = rounds.get("reviewer")
+    if isinstance(wrote, int) and wrote != n.id:
+        return ""
+    exempt = _rehold_exemption(store, plan, n, t)
+    if exempt is None:
+        return head
+    if rounds.get("exempt") != exempt:
+        w.stamp_meta(
+            t, {_templates.PRELAND_FIX_ROUNDS_KEY: {**rounds, "exempt": exempt}}
+        )
+    return ""
+
+
+def _park_rejected_head(
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    t: _Node,
+    head: str,
+    now: datetime,
+) -> None:
+    """Hold ``t`` on the "unchanged head" stop instead of releasing the
+    reviewer ``n`` onto ``head`` — the head its last FIX/REVERT already
+    rejected (gr762396: five FIX rounds on one head, td716268). A session
+    that adds nothing re-holds the rejected head (the EMPTY-push
+    continue, the ahead-branch route, a ``validated:``/``no-op:``
+    re-hold), and a review of an unchanged tree only repeats itself. A
+    standing ``pending_land`` moves to the ``meta.preland_held`` stash
+    and ``t`` reopens, as a send-back leaves it, so the reviewer stays
+    blocked until a rebuild defers a new head; the ask comes from
+    :func:`_park_preland_rounds`, whose comment names the head."""
+    record = _dict_of(t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY))
+    held = t.meta.get(_templates.PENDING_LAND_KEY)
+    if isinstance(held, dict):
+        w.stamp_meta(
+            t,
+            {
+                _templates.PRELAND_HELD_KEY: {
+                    "params": held,
+                    "reviewer": n.id,
+                    "at": now.astimezone(UTC).isoformat(),
+                },
+                _templates.PENDING_LAND_KEY: None,
+            },
+        )
+        claims = _claims(t)
+        if claims:
+            w.remove_tags(t, claims)
+        if t.status != "open":
+            w.set_status(t, "open")
+    kind = str(record.get("kind") or "")
+    rest = str(record.get("verdict") or "")
+    if not kind or not rest:
+        # A record stamped before the verdict was kept as written.
+        kind, _, rest = str(record.get("text") or "").partition(" ")
+    why = (
+        f"review td{n.id} already sent the branch back on head {head[:12]}, "
+        "and the held land is that unchanged head — the rebuild pushed "
+        "nothing new, so no review re-runs on it (gr762396)"
+    )
+    _park_preland_rounds(
+        plan,
+        w,
+        res,
+        n,
+        t,
+        kind.upper() or "FIX",
+        rest or "(the rejected finding's text is not recorded)",
+        ("unchanged head", why),
+        now,
+        head,
+        record,
     )
 
 
@@ -3903,6 +4102,32 @@ def _step_reviews(
         if _closed(n):
             continue
         jobs = plan.jobs(n)
+        seen = n.meta.get("review")
+        unread = bool(
+            jobs
+            and jobs[-1].status == "succeeded"
+            and not _voided(jobs[-1])
+            and not (isinstance(seen, dict) and seen.get("job") == jobs[-1].id)
+        )
+        if not unread:
+            # gr762396: the reviewer is about to be released onto a held
+            # land — never onto the head its last send-back rejected,
+            # unless a newer `brief:` on the reviewer or `validated:` on
+            # the build buys it one review.
+            rejected = [
+                (t, sha)
+                for t in _pending_targets(plan, n)
+                if t.status not in _RULING_STATUSES
+                and (
+                    sha := _held_on_rejected_head(
+                        store, plan, w, n, t, t.meta.get(_templates.PENDING_LAND_KEY)
+                    )
+                )
+            ]
+            for t, sha in rejected:
+                _park_rejected_head(plan, w, res, n, t, sha, now)
+            if rejected:
+                continue
         if not jobs or jobs[-1].status != "succeeded":
             continue
         newest = jobs[-1]
@@ -3915,7 +4140,6 @@ def _step_reviews(
                 w.set_status(n, "open")
             res.notes.append(f"td{n.id}: review job:{newest.id} voided")
             continue
-        seen = n.meta.get("review")
         if isinstance(seen, dict) and seen.get("job") == newest.id:
             continue
         verdict, raw = _read_verdict(store, n.id, newest.created_at)
@@ -4884,7 +5108,13 @@ def _sent_back_at(store: Any, n: _Node, held: dict[str, Any]) -> datetime | None
     return None
 
 
-def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
+def _step_verdicts(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    now: datetime | None = None,
+) -> None:
     """A node carrying a verdict is dropped here, ahead of the moot
     close (gr602896): a ``no-op:``/``moot:``/``validated:`` line on a
     ``handoff:``, posted by hand as a bare verdict comment (its first
@@ -4921,7 +5151,11 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     and closed the node, the review ran on the same head, and every
     second round minted another pre-land-stop ask. An older verdict is
     left open with a note, and a ``validated:``/``no-op:`` on a stashed
-    node held by an OPEN coordinator ask neither re-holds nor closes."""
+    node held by an OPEN coordinator ask neither re-holds nor closes.
+    Nor does one whose stash is the head the last send-back rejected
+    (gr762396): the re-hold would release the reviewer onto it in this
+    pass, so the node parks on the "unchanged head" stop instead
+    (:func:`_park_rejected_head`)."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
             continue
@@ -5057,6 +5291,29 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
                 res.notes.append(
                     f"td{n.id}: `{kind_}:` ignored — held on an open "
                     "coordinator ask; left open (gr738860)"
+                )
+                continue
+            reviewer_id = _dict_of(held).get("reviewer")
+            reviewer_node = (
+                plan.nodes.get(reviewer_id) if isinstance(reviewer_id, int) else None
+            )
+            rejected = (
+                _held_on_rejected_head(store, plan, w, reviewer_node, n, held_params)
+                if reviewer_node is not None
+                else ""
+            )
+            if rejected and reviewer_node is not None:
+                # gr762396: this re-hold would release the reviewer this
+                # very pass (dispatch runs after this step) onto the head
+                # its last send-back rejected — park instead.
+                _park_rejected_head(
+                    plan,
+                    w,
+                    res,
+                    reviewer_node,
+                    n,
+                    rejected,
+                    now or datetime.now(UTC),
                 )
                 continue
             # gr681208: a pre-land FIX/REVERT reopened this build and
@@ -11892,7 +12149,7 @@ def run_pass(
         _step_reopen(plan, w, res)
         _step_conflict_clear(plan, w, res)
         _step_rearm(plan, w, res)
-        _step_verdicts(store, plan, w, res)
+        _step_verdicts(store, plan, w, res, now)
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
         _step_ci_rerun(store, plan, w, res, now)

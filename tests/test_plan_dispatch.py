@@ -8267,6 +8267,16 @@ def _rebuild_and_review(
     newest ``run_slice`` ends clean and defers its land again (``head``
     the pushed tip it stamps, gr688058), the released reviewer runs and
     posts ``verdict``; returns the pass that read it."""
+    _rehold(store, build, head)
+    pd.run_pass(store)
+    _succeed_newest(store, review)
+    _todo_comment(store, review, verdict)
+    return pd.run_pass(store)
+
+
+def _rehold(store: Store, build: int, head: str | None = None) -> None:
+    """The reopened build's newest ``run_slice`` ends clean and defers
+    its land again: ``pending_land`` (``head`` the pushed tip), done."""
     _set_job_status(store, _run_slice_jobs(store, build)[-1], "succeeded")
     store.stamp_ref_meta(
         build,
@@ -8279,8 +8289,17 @@ def _rebuild_and_review(
         },
     )
     _mark_done(store, build)
-    pd.run_pass(store)
-    _succeed_newest(store, review)
+
+
+def _rehold_reviewed(
+    store: Store, build: int, review: int, verdict: str, head: str
+) -> pd.PassResult:
+    """:func:`_rebuild_and_review` with no pass between the re-hold and
+    the review: the review job already ran on ``head`` and posted
+    ``verdict`` (a release the gr762396 guard never saw). Returns the
+    pass that read it."""
+    _rehold(store, build, head)
+    _job(store, review, lane="claude-sub")
     _todo_comment(store, review, verdict)
     return pd.run_pass(store)
 
@@ -8340,7 +8359,8 @@ def test_preland_fix_rounds_cap_asks_the_coordinator(store: Store) -> None:
         f"finding {pd.PRELAND_FIX_CAP}" in c for c in _todo_comments(store, build)
     )
     assert len(_run_slice_jobs(store, build)) == before
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["finding"]
     assert _status(store, review) == "open"
     pd.run_pass(store)
     assert len(_run_slice_jobs(store, build)) == before
@@ -8363,7 +8383,8 @@ def test_preland_same_finding_twice_asks_the_coordinator(store: Store) -> None:
     (ask,) = _blocked_by_ids(store, build)
     assert "ask-coordinator" in _open_tags(store, ask)
     assert len(_run_slice_jobs(store, build)) == before
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["finding"]
 
 
 def test_preland_distinct_findings_on_new_heads_keep_rebuilding(
@@ -8427,7 +8448,9 @@ def test_preland_fix_on_an_unchanged_head_asks_the_coordinator(
     """gr688058 (a): the pushed tip the second verdict judges is the
     first's — the rebuild pushed nothing new, so the builder is not
     acting on the finding. The loop stops on the second verdict, not
-    the cap."""
+    the cap. (Since gr762396 the tick no longer releases the reviewer
+    onto that head; the verdict here comes from a review that ran
+    anyway — one dispatched before the guard existed.)"""
     h = "5" * 40
     mint = _reviewed_pending(
         store,
@@ -8437,7 +8460,7 @@ def test_preland_fix_on_an_unchanged_head_asks_the_coordinator(
     build, review = mint.ids["build"], mint.ids["review"]
     pd.run_pass(store)
     before = len(_run_slice_jobs(store, build))
-    res = _rebuild_and_review(
+    res = _rehold_reviewed(
         store,
         build,
         review,
@@ -8451,7 +8474,8 @@ def test_preland_fix_on_an_unchanged_head_asks_the_coordinator(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
     assert len(_run_slice_jobs(store, build)) == before
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["head"] == h
     pd.run_pass(store)
     assert len(_run_slice_jobs(store, build)) == before
 
@@ -8484,7 +8508,8 @@ def test_preland_verdict_on_a_stale_head_asks_the_coordinator(
     assert "stale branch" in "\n".join(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["head"] is None
 
 
 def test_preland_stale_read_outranks_the_same_finding(store: Store) -> None:
@@ -8555,7 +8580,8 @@ def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
     assert "shared active anchor and token Jaccard similarity >= 0.6" in "\n".join(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["finding"]
 
 
 def test_preland_same_anchor_new_finding_text_keeps_rebuilding(
@@ -8713,7 +8739,8 @@ def test_preland_expected_head_does_not_pass_a_stale_judged_head(
     assert "stale branch" in "\n".join(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["head"] is None
 
 
 def test_preland_expected_before_verified_still_reads_the_judged_head(
@@ -8746,7 +8773,8 @@ def test_preland_expected_before_verified_still_reads_the_judged_head(
     assert "stale branch" in "\n".join(
         str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
     )
-    assert _meta(store, build).get("preland_fix_rounds") is None
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 0 and rounds["head"] is None
 
 
 def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
@@ -9199,6 +9227,359 @@ def test_second_preland_stop_on_a_slice_notes_the_open_ask(store: Store) -> None
     assert len(fresh) == 1
     assert _meta(store, fresh[0])["preland_stop"]["head"] == "b" * 40
     assert fresh[0] in _blocked_by_ids(store, build)
+
+
+_REJECTED = "6" * 40
+_REJECTED_FIX = (
+    "review: FIX — reconsolidate.md::The pass still opens with cached-export "
+    f"lint; verified head {_REJECTED}\n\nanchors: reconsolidate.md::The pass"
+)
+
+
+def _rejected_once(store: Store) -> tuple[int, int, int]:
+    """td716268's shape: one pre-land FIX on ``_REJECTED``, the rebuild
+    minted. Returns ``(build, review, run_slice jobs so far)``."""
+    mint = _reviewed_pending(store, _REJECTED_FIX, head=_REJECTED)
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    assert _meta(store, build)["preland_fix_rounds"]["head"] == _REJECTED
+    return build, review, len(_run_slice_jobs(store, build))
+
+
+def test_rehold_on_the_rejected_head_never_releases_the_reviewer(
+    store: Store,
+) -> None:
+    """gr762396: a session that adds nothing re-holds the head the last
+    FIX rejected (run_slice's EMPTY-push continue returns the start sha).
+    The tick mints no review on it: the build reopens with the land
+    stashed, parks on the "unchanged head" stop with one ask, and a
+    comment names the head. Further passes add nothing."""
+    build, review, runs = _rejected_once(store)
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, _REJECTED)
+    res = pd.run_pass(store)
+    assert len(_jobs_under(store, review)) == reviews
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and "loop stopped (unchanged head)" in str(ref.title)
+    assert _meta(store, ask)["preland_stop"]["head"] == _REJECTED
+    assert _status(store, build) == "open"
+    meta = _meta(store, build)
+    assert meta.get("pending_land") is None
+    assert meta["preland_held"]["params"]["head"] == _REJECTED
+    assert meta["preland_held"]["reviewer"] == review
+    assert meta["preland_fix_rounds"]["count"] == 0
+    named = [
+        c
+        for c in _todo_comments(store, build)
+        if c.startswith("plan_dispatch:") and _REJECTED[:12] in c
+    ]
+    assert len(named) == 1 and f"ask td{ask}" in named[0]
+    assert len(_run_slice_jobs(store, build)) == runs
+    for _ in range(3):
+        assert pd.run_pass(store).asks == 0
+    assert len(_jobs_under(store, review)) == reviews
+    assert len(_run_slice_jobs(store, build)) == runs
+    assert _blocked_by_ids(store, build) == [ask]
+
+
+def test_park_ask_quotes_the_verdict_as_written(store: Store) -> None:
+    """gr762396 review nit: the rejected-head park's ask quotes the
+    newest verdict as the reviewer wrote it, not the normalized digest
+    form (lower-cased, anchors and shas dropped)."""
+    build, _review, _runs = _rejected_once(store)
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "FIX — reconsolidate.md::The pass still opens with cached-export" in body
+    assert f"verified head {_REJECTED}" in body
+
+
+def test_validated_rebuttal_buys_one_review_then_parks(store: Store) -> None:
+    """Ruling 2026-11-22 (gr762396), the self-correction path: a builder
+    `validated:` newer than the rejection re-holds the rejected head and
+    earns it one review. That review rejecting the same head again —
+    even with a different finding — stops on the unchanged head, and a
+    second `validated:` buys nothing while the stop stands."""
+    build, review, _runs = _rejected_once(store)
+    reviews = len(_jobs_under(store, review))
+    _set_job_status(store, _run_slice_jobs(store, build)[-1], "succeeded")
+    _todo_comment(store, build, "handoff: validated: the branch is ready as it stands")
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _status(store, build) == "done"
+    assert _meta(store, build)["pending_land"]["head"] == _REJECTED
+    assert len(_jobs_under(store, review)) == reviews + 1
+
+    _succeed_newest(store, review)
+    _todo_comment(
+        store,
+        review,
+        f"review: FIX — remember.md::See also still routes to the cache; "
+        f"verified head {_REJECTED}\n\nanchors: remember.md::See also",
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and "loop stopped (unchanged head)" in str(ref.title)
+    reviews = len(_jobs_under(store, review))
+    _todo_comment(store, build, "handoff: validated: the branch is ready as it stands")
+    assert pd.run_pass(store).asks == 0
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    assert len(_jobs_under(store, review)) == reviews
+    assert _blocked_by_ids(store, build) == [ask]
+
+
+def test_rehold_gated_by_another_review_node_is_reviewed(store: Store) -> None:
+    """Ruling 2026-11-22 (gr762396): the park is scoped to the review that
+    rejected the head. A kept record written by another review node (one
+    since won't-done by the dead-chain sweep, the gate re-minted) does
+    not stop the review now gating the build."""
+    build, review, _runs = _rejected_once(store)
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["reviewer"] == review
+    store.stamp_ref_meta(
+        build, {"preland_fix_rounds": {**rounds, "reviewer": review + 1000}}
+    )
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, _REJECTED)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert len(_jobs_under(store, review)) == reviews + 1
+    assert _preland_stops(store, build) == []
+
+
+def test_another_review_nodes_rejection_starts_its_own_record(
+    store: Store,
+) -> None:
+    """Ruling 2026-11-22 (gr762396): a review node other than the record's
+    writer rejecting the same head with the same finding is an ordinary
+    send-back — a new record under that reviewer at round 1, no stop. The
+    loop stays bounded: the next empty re-hold parks on its own record."""
+    build, review, _runs = _rejected_once(store)
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    store.stamp_ref_meta(
+        build, {"preland_fix_rounds": {**rounds, "reviewer": review + 1000}}
+    )
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    runs = len(_run_slice_jobs(store, build))
+    _succeed_newest(store, review)
+    _todo_comment(store, review, _REJECTED_FIX)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _preland_stops(store, build) == []
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 1 and rounds["reviewer"] == review
+    assert rounds["head"] == _REJECTED
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, _REJECTED)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert len(_jobs_under(store, review)) == reviews
+
+
+def _answer_stop(store: Store, build: int, ask: int) -> None:
+    """The coordinator answers the stop: a ``brief:`` on the build and
+    the ask closed."""
+    _todo_comment(store, build, "brief: route the default pass to the live smells")
+    _mark_done(store, ask)
+
+
+def test_same_finding_after_an_answer_parks_again(store: Store) -> None:
+    """gr762396 (a): the park resets only the count. A build stopped on
+    "unchanged head", answered with a `brief:`, re-holds the same head
+    and the reviewer still runs (released before the guard): its FIX
+    with the same anchors parks again on a NEW ask — the forgotten
+    record let td716267 rebuild five times on one head."""
+    build, review, _runs = _rejected_once(store)
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    (first,) = _blocked_by_ids(store, build)
+    _answer_stop(store, build, first)
+    pd.run_pass(store)
+    runs = len(_run_slice_jobs(store, build))
+    res = _rehold_reviewed(store, build, review, _REJECTED_FIX, head=_REJECTED)
+    assert res.asks == 1
+    stops = _preland_stops(store, build)
+    assert len(stops) == 2 and stops[0] == first
+    assert stops[1] in _blocked_by_ids(store, build)
+    assert len(_run_slice_jobs(store, build)) == runs
+    pd.run_pass(store)
+    assert len(_run_slice_jobs(store, build)) == runs
+
+
+def _brief_on_review_released(store: Store) -> tuple[int, int, int]:
+    """Parked on the rejected head; the coordinator answers with a
+    ``brief:`` on the REVIEW (how to verify what is there) and closes the
+    ask; the rebuild re-holds the same head and the next pass runs.
+    Returns ``(build, review, review jobs before that pass)``."""
+    build, review, _runs = _rejected_once(store)
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    _todo_comment(store, review, "brief: check the live pass against the brief")
+    _mark_done(store, ask)
+    pd.run_pass(store)
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, _REJECTED)
+    assert pd.run_pass(store).asks == 0
+    return build, review, reviews
+
+
+def test_brief_on_the_review_buys_the_rejected_head_one_review(
+    store: Store,
+) -> None:
+    """Ruling 2026-11-22 (gr762396): a coordinator ``brief:`` on the
+    review newer than the stop exempts the rejected head once — the
+    re-held head gets one fresh review with the brief."""
+    build, review, reviews = _brief_on_review_released(store)
+    assert len(_jobs_under(store, review)) == reviews + 1
+    assert _meta(store, build)["pending_land"]["head"] == _REJECTED
+    assert len(_preland_stops(store, build)) == 1
+
+
+def test_second_rejection_after_a_review_brief_parks_again(store: Store) -> None:
+    """Ruling 2026-11-22 (gr762396): the exemption is spent by the review
+    it bought. That review rejects the same head again: the loop stops,
+    and the next re-hold of that head parks under (b) — the older review
+    brief no longer exempts it."""
+    build, review, _reviews = _brief_on_review_released(store)
+    _succeed_newest(store, review)
+    _todo_comment(store, review, _REJECTED_FIX)
+    assert pd.run_pass(store).asks == 1
+    first, second = _preland_stops(store, build)
+    assert second in _blocked_by_ids(store, build)
+    _todo_comment(store, build, "brief: rebuild the default pass")
+    _mark_done(store, second)
+    pd.run_pass(store)
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, _REJECTED)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert len(_jobs_under(store, review)) == reviews
+    assert len(_preland_stops(store, build)) == 3
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+
+
+def test_new_finding_from_a_brief_bought_review_sends_the_builder_back(
+    store: Store,
+) -> None:
+    """Ruling 2026-11-22 (gr762396): the review a `brief:` bought finds
+    something new on the same head — an ordinary send-back. The builder
+    gets the finding, the round counts, and no "unchanged head" stop
+    fires (the rebuild was never asked to change anything)."""
+    build, review, _reviews = _brief_on_review_released(store)
+    runs = len(_run_slice_jobs(store, build))
+    _succeed_newest(store, review)
+    _todo_comment(
+        store,
+        review,
+        f"review: FIX — whatneedsdoing-scans.md::Structural scans still "
+        f"prescribes --currency; verified head {_REJECTED}\n\n"
+        "anchors: whatneedsdoing-scans.md::Structural scans",
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert len(_preland_stops(store, build)) == 1
+    assert _status(store, build) == "open"
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 1 and rounds["head"] == _REJECTED
+    assert "exempt" not in rounds
+    handbacks = [
+        c for c in _todo_comments(store, build) if c.startswith("handoff: review:")
+    ]
+    assert "Structural scans" in handbacks[-1]
+
+
+def test_old_review_brief_never_exempts_a_head_rejected_after_it(
+    store: Store,
+) -> None:
+    """gr762396 review bug: the exemption is measured against the newest
+    rejection, not the last stop. Stop on H1, `brief:` on the review,
+    the rebuild pushes H2, the review sends H2 back without a stop, and
+    an empty re-hold of H2 parks — the old brief buys H2 nothing."""
+    build, review, _runs = _rejected_once(store)
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    _todo_comment(store, review, "brief: check the live pass against the brief")
+    _mark_done(store, ask)
+    pd.run_pass(store)
+    h2 = "8" * 40
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — remember.md::See also still points at the old pass; "
+        f"verified head {h2}\n\nanchors: remember.md::See also",
+        head=h2,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["head"] == h2
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, h2)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert len(_jobs_under(store, review)) == reviews
+    assert _meta(store, build).get("pending_land") is None
+
+
+def test_pre_deploy_record_dates_the_rejection_by_its_ask(store: Store) -> None:
+    """gr762396: a record with neither ``stopped_at`` nor ``at`` (stamped
+    before either existed) is dated by the newest pre-land-stop ask on
+    the build — a review `brief:` newer than that ask buys the head one
+    review."""
+    build, review, _runs = _rejected_once(store)
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    old = {k: v for k, v in rounds.items() if k not in ("at", "stopped_at")}
+    store.stamp_ref_meta(build, {"preland_fix_rounds": old})
+    _todo_comment(store, review, "brief: check the live pass against the brief")
+    _mark_done(store, ask)
+    pd.run_pass(store)
+    reviews = len(_jobs_under(store, review))
+    _rehold(store, build, _REJECTED)
+    assert pd.run_pass(store).asks == 0
+    assert len(_jobs_under(store, review)) == reviews + 1
+
+
+def test_new_head_after_an_answer_is_reviewed_and_counts_from_one(
+    store: Store,
+) -> None:
+    """gr762396: the kept record blocks only the rejected head. After
+    the answer, a rebuild that pushes a new head releases the reviewer
+    as before, and its new finding counts round 1."""
+    build, review, _runs = _rejected_once(store)
+    _rehold(store, build, _REJECTED)
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    _answer_stop(store, build, ask)
+    pd.run_pass(store)
+    reviews = len(_jobs_under(store, review))
+    h2 = "7" * 40
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — remember.md::See also still points at the old pass; "
+        f"verified head {h2}\n\nanchors: remember.md::See also",
+        head=h2,
+    )
+    assert len(_jobs_under(store, review)) == reviews + 1
+    assert res.asks == 0
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 1 and rounds["head"] == h2
+    assert _preland_stops(store, build) == [ask]
 
 
 def test_bare_verdict_never_closes_a_build_with_a_live_preland_reviewer(

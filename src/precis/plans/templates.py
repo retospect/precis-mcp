@@ -348,7 +348,8 @@ MECH_BRIEF_MARK = " — mechanical red on jo"
 #: declares (the active findings — the tick never reads prose cites,
 #: td688394 r5) and the pushed head the
 #: verdict judged (gr688058), plus normalized finding text for similarity
-#: comparison (gr702711). ``plan_dispatch`` counts and caps it;
+#: comparison (gr702711). ``plan_dispatch`` counts and caps it — a
+#: coordinator ask zeroes only ``count``, the rest survives it (gr762396);
 #: ``land_slice._record_land`` clears it.
 PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
 #: ``meta.preland_held`` on a build todo a pre-land FIX/REVERT sent back
