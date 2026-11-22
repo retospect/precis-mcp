@@ -61,6 +61,13 @@ Semantics (`precis-memory-help`):
                                      the last 14 days, the CLI index's
                                      list; ``args={'days': N}`` widens
                                      it (gr681310)
+    - get(id='/review')            — the lint/health view: memories under
+                                     review (an open ``memory-review``
+                                     todo or gripe) plus stalled
+                                     processing on the 50 most recently
+                                     edited memories; ``args={'hours': N}``
+                                     (default 6) sets the stall floor
+                                     (gr681310)
     - get(id=N, extent='fisheye'|'fisheye+1hop'|'fisheye+2hop'[+recall])
                                    — the walk: link rings via
                                      ``eye_render.render_eye``; ``+recall``
@@ -535,6 +542,18 @@ _EXPIRES_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "week
 #: Upper bound of ``id='/threads'``'s ``args={'days': N}`` window.
 _THREADS_MAX_DAYS = 3650
 
+#: ``id='/review'``'s stall floor (gr681310): a memory counts as
+#: processing-outstanding only after sitting untouched this many hours —
+#: a fresh write is expected to be pending while the workers tick.
+_REVIEW_STALL_HOURS = 6
+
+#: Upper bound of ``id='/review'``'s ``args={'hours': N}`` window.
+_REVIEW_MAX_HOURS = 24 * 365
+
+#: ``id='/review'``'s processing scan reads only this many newest edits —
+#: ``processing_report`` costs one statement per memory.
+_REVIEW_PROCESSING_SAMPLE = 50
+
 #: ``args={'scratch_for': '<owner>'}`` on ``put`` — the task-scratch pair
 #: (gr605669): ``SPACE:scratch`` plus the ``scratch-for:<owner>`` tag a
 #: ring ``tags`` filter or ``search(tags=[…])`` scopes to one task. The
@@ -991,7 +1010,9 @@ class MemoryHandler(AuditedRetirementHandler):
         # of contents (gr568237): every root of the live graph, the
         # same paged forest render ``search(view='toc')`` runs. /threads
         # is the live-threads roster (gr681310): ``args={'days': N}``.
-        return ("recent", "sticky", "toc", "threads")
+        # /review is the lint/health view (gr681310): memories under
+        # review plus stalled processing; ``args={'hours': N}``.
+        return ("recent", "sticky", "toc", "threads", "review")
 
     #: ``id='/toc'`` pages under the byte budget like the tag forest —
     #: ``args={'page': N, 'page_size': M}`` (gr568237).
@@ -1026,6 +1047,8 @@ class MemoryHandler(AuditedRetirementHandler):
             return self._render_sticky()
         if view == "threads":
             return self._render_threads()
+        if view == "review":
+            return self._render_review()
         return super()._list_view(view)
 
     def _render_threads(self, days: int | str | None = None) -> Response:
@@ -1071,6 +1094,110 @@ class MemoryHandler(AuditedRetirementHandler):
                 f"(+{older} older thread node{'' if older == 1 else 's'}: "
                 f"{call % min(2 * n, _THREADS_MAX_DAYS)})"
             )
+        return Response(body="\n".join(out))
+
+    def _render_review(self, hours: int | str | None = None) -> Response:
+        """``id='/review'``: memories under review or stalled (gr681310).
+
+        *Under review* lists live memories carrying an open
+        ``memory-review`` todo
+        (:func:`precis.utils.memory_hubs.review_todos`) or an open
+        ``raises-concern-about`` gripe
+        (:func:`precis.utils.memory_hubs.open_memory_gripes`), each with
+        the todo or gripe handle and date. *Processing outstanding*
+        checks the 50 most recently edited memories untouched for
+        ``hours`` hours (default ``_REVIEW_STALL_HOURS``) and reports the
+        ones whose :func:`precis.handlers._memory_processing.processing_report`
+        still has an outstanding stage — one statement per candidate, so
+        the 50-row sample and the stall floor keep the view cheap.
+        """
+        from precis.handlers._memory_processing import _stamp, processing_report
+        from precis.utils.memory_hubs import open_memory_gripes, review_todos
+
+        call = "get(kind='memory', id='/review', args={'hours': %d})"
+        try:
+            h = _REVIEW_STALL_HOURS if hours is None else int(str(hours))
+        except ValueError:
+            h = -1
+        if not 0 <= h <= _REVIEW_MAX_HOURS:
+            raise BadInput(
+                f"hours= must be a non-negative integer up to "
+                f"{_REVIEW_MAX_HOURS}, got {hours!r}",
+                next=call % _REVIEW_STALL_HOURS,
+            )
+        refs = self.store.list_refs(kind=self.kind, order_by="updated_desc", limit=None)
+        by_id = {int(r.id): r for r in refs}
+        ids = sorted(by_id)
+        todos = review_todos(self.store, ids)
+        gripes = open_memory_gripes(self.store, ids)
+        gripe_days = {
+            gid: g.created_at.astimezone(UTC).strftime("%Y-%m-%d")
+            for gid, g in self.store.fetch_refs_by_ids(
+                (g for gs in gripes.values() for g, _t in gs),
+                include_deleted=False,
+            ).items()
+        }
+        flagged = sorted(
+            set(todos) | set(gripes),
+            key=lambda rid: by_id[rid].updated_at,
+            reverse=True,
+        )
+        n_flagged = len(flagged)
+        out = [
+            "# /review — memories under review or with stalled processing",
+            "",
+            f"## Under review — {n_flagged} "
+            f"memor{'y' if n_flagged == 1 else 'ies'} with an open "
+            "review todo or gripe",
+        ]
+        for rid in flagged:
+            handle = handle_registry.try_format("memory", rid) or f"me{rid}"
+            bits = []
+            if rid in todos:
+                bits.append(", ".join(f"todo {t}" for t in todos[rid].split(",")))
+            if rid in gripes:
+                bits.append(
+                    ", ".join(
+                        f"gripe {handle_registry.try_format('gripe', g) or f'gr{g}'}"
+                        f":{gripe_days.get(g, 'unknown')}"
+                        for g, _t in gripes[rid]
+                    )
+                )
+            out.append(f"- {handle} {by_id[rid].title or ''} — {' · '.join(bits)}")
+        if not flagged:
+            out.append("none")
+        cutoff = datetime.now(UTC) - timedelta(hours=h)
+        candidates = [
+            r for r in refs[:_REVIEW_PROCESSING_SAMPLE] if r.updated_at <= cutoff
+        ]
+        stalled: list[tuple[datetime, Ref, str]] = []
+        for r in candidates:
+            try:
+                report = processing_report(self.store, int(r.id))
+            except NotFound:
+                continue  # retired between the listing and the scan
+            stages = [s for s in report.stages if s.outstanding_since is not None]
+            if not stages:
+                continue
+            oldest = min(s.outstanding_since for s in stages if s.outstanding_since)
+            names = "; ".join(f"{s.name} ({s.state})" for s in stages)
+            stalled.append((oldest, r, names))
+        stalled.sort(key=lambda item: item[0])
+        out += [
+            "",
+            f"## Processing outstanding — {len(stalled)} of the "
+            f"{len(candidates)} most recently edited memories untouched "
+            f"≥{h}h (of {_REVIEW_PROCESSING_SAMPLE} sampled)",
+        ]
+        for oldest, r, names in stalled:
+            handle = handle_registry.try_format("memory", int(r.id)) or f"me{r.id}"
+            out.append(
+                f"- {handle} {r.title or ''} — {names} "
+                f"— oldest outstanding since {_stamp(oldest)}"
+            )
+            out.append(f"  get(kind='memory', id='{handle}', view='processing')")
+        if not stalled:
+            out.append("none")
         return Response(body="\n".join(out))
 
     def _render_sticky(self) -> Response:
@@ -1149,6 +1276,9 @@ class MemoryHandler(AuditedRetirementHandler):
         # ``id='/threads'``'s recency window (``args={'days': N}``,
         # gr681310) — declared so the extras gate accepts it.
         days: int | str | None = None,
+        # ``id='/review'``'s stall floor (``args={'hours': N}``,
+        # gr681310) — declared so the extras gate accepts it.
+        hours: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         if days is not None:
@@ -1158,12 +1288,25 @@ class MemoryHandler(AuditedRetirementHandler):
                     next="get(kind='memory', id='/threads', args={'days': 14})",
                 )
             self._check_list_id_view(id, view)
-            if any(v is not None for v in (q, page, page_size, _kw.get("sort"))):
+            if any(v is not None for v in (q, page, page_size, hours, _kw.get("sort"))):
                 raise BadInput(
                     "id='/threads' takes only args={'days': N}",
                     next="get(kind='memory', id='/threads', args={'days': 14})",
                 )
             return self._render_threads(days)
+        if hours is not None:
+            if id != "/review":
+                raise BadInput(
+                    "hours= only applies to get(kind='memory', id='/review')",
+                    next="get(kind='memory', id='/review', args={'hours': 6})",
+                )
+            self._check_list_id_view(id, view)
+            if any(v is not None for v in (q, page, page_size, _kw.get("sort"))):
+                raise BadInput(
+                    "id='/review' takes only args={'hours': N}",
+                    next="get(kind='memory', id='/review', args={'hours': 6})",
+                )
+            return self._render_review(hours)
         if id == "/links" or (view == "links" and _kw.get("reason") == "missing"):
             return super().get(
                 id=id,

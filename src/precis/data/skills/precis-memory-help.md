@@ -877,6 +877,22 @@ The live-threads roster is `get(kind='memory', id='/threads')`: top-level
 newest first, each with its handle and `Left:` line; older ones are
 counted in the footer. Widen the window with `args={'days': 30}`.
 
+## Memories under review or with stalled processing
+
+`get(kind='memory', id='/review')` is the lint/health view. "Under
+review" lists live memories carrying an open `memory-review` todo or an
+open `raises-concern-about` gripe, each with the todo or gripe handle and
+date. "Processing outstanding" checks the 50 most recently edited
+memories that have sat untouched for at least `args={'hours': N}`
+(default 6) and names the ones whose `view='processing'` report still has
+an outstanding stage, with the stage and since when plus the follow-up
+call. A fresh write is expected to be pending — lower the floor to see
+it:
+
+```python
+get(kind='memory', id='/review', args={'hours': 0})
+```
+
 ## A `section:` tag was refused — the type set is closed per space
 ## Register a new `section:` type
 
