@@ -13,14 +13,12 @@ from dataclasses import dataclass
 class ResponseImage:
     """A binary payload a :class:`Response` delivers alongside ``body``.
 
-    Currently only the draft figure render check's PNG (gr592765):
-    ``view='render'`` was specified to hand the caller the picture, and
-    a byte count plus a blob path is a report, not a delivery. The MCP
-    tool surface emits each item as an ``ImageContent`` block (the
+    Draft figure checks and quest synthesis deliver PNGs. The MCP tool
+    surface emits each item as an ``ImageContent`` block (the
     per-call sink in :mod:`precis.runtime.dispatch` carries them past
     the text-only ``(body, is_error)`` contract); surfaces that cannot
     carry binary — the CLI, in-process ``runtime.dispatch`` — keep just
-    ``body``, which still reports the byte count and blob path.
+    ``body``, which describes the images.
     """
 
     data: bytes

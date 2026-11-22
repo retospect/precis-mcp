@@ -339,6 +339,9 @@ stored energies and kinetics alongside the PNG without running a solve.
 Draft quest-frontier figures use the same lazy dispatch. Their cache key
 includes the serving candidates' frontier data, and the renderer uses the
 same frontier result for the PNG and its frozen snapshot.
+The quest writer's `view='synthesis'` reads the graph and attaches live
+Pareto, slab and pathway renders as MCP images in caption order
+(`src/precis/quest/synthesis.py::render_synthesis`).
 
 ## Package map
 

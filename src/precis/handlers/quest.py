@@ -35,6 +35,9 @@ rolls up *health* (momentum + an embedding alignment floor) and *gaps* (thin
 support, no literature, low-mastery served concepts, un-answered hypotheses);
 ``view='gaps'`` (per quest) and ``id='/gaps'`` (corpus-wide) surface just that
 queue.
+
+``view='synthesis'`` linearises the quest graph for the writer and attaches
+live frontier figures as MCP images.
 """
 
 from __future__ import annotations
@@ -720,6 +723,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "tree",
     "gaps",
     "dossier",
+    "synthesis",
     "frontier",
     "leaderboard",
     "results",
@@ -1167,7 +1171,10 @@ class QuestHandler(NumericRefHandler):
             "strivings; view='tree' rolls up the "
             "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
             "id='/gaps' (all active quests) surfaces the exploration queue; "
-            "view='dossier' shows the living research synthesis; view='frontier' "
+            "view='synthesis' the writer's graph linearisation — directions, "
+            "served evidence and live frontier figures as MCP images; "
+            "view='dossier' the deprecated pinned synthesis (kept for quests "
+            "not yet converted); view='frontier' "
             "the Pareto frontier of candidate materials (banded); "
             "view='leaderboard' the same frontier as a TOON design table; "
             "view='results' a lineage-ordered results table (one row per "
@@ -2146,6 +2153,12 @@ class QuestHandler(NumericRefHandler):
         if view == "gaps" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_gaps_only(ref))
+        if view == "synthesis" and concrete:
+            from precis.quest.synthesis import render_synthesis
+
+            return render_synthesis(
+                self.store, self._resolve_live_ref(self._coerce_id(id))
+            )
         if view == "dossier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_dossier(ref))
@@ -2261,9 +2274,7 @@ class QuestHandler(NumericRefHandler):
             )
             nexts = [corrected] if corrected else []
             nexts += [
-                "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
-                "rubric, served, meta, replay, considerations "
+                f"quest views: {', '.join(_QUEST_CONCRETE_VIEWS)} "
                 "(quest-specific) · "
                 "fisheye ladder (kwd, summary, verbatim, fisheye, "
                 "fisheye+1hop, fisheye+2hop, optionally +recall) · "
@@ -2687,8 +2698,8 @@ class QuestHandler(NumericRefHandler):
                 body=(
                     f"# frontier — quest {ref.id}: {head}\n\n"
                     "this is an inquiry — it reads, reasons, and synthesises; it "
-                    "has no proposals and no Pareto frontier (see view='dossier' "
-                    "for its living synthesis)."
+                    "has no proposals and no Pareto frontier (see view='synthesis' "
+                    "for its directions and served evidence)."
                 )
             )
         # bootstrap-roadmap-quest AC7: the roadmap body has no frontier
@@ -2703,8 +2714,8 @@ class QuestHandler(NumericRefHandler):
                     "this is a roadmap — it has no candidate materials and no "
                     "Pareto frontier; the body has no frontier at all. Its "
                     "measured state is the capability ledger (see view='tree' "
-                    "for the table, or view='dossier' for the pinned "
-                    "capability-ledger chunk)."
+                    "for the table, or view='synthesis' for the graph's "
+                    "directions and served evidence)."
                 )
             )
         from precis.quest import frontier as frontier_mod
@@ -3163,7 +3174,7 @@ class QuestHandler(NumericRefHandler):
         )
 
     def _render_dossier(self, ref: Ref) -> str:
-        """`view='dossier'` — the quest's living research synthesis (slice 4)."""
+        """Render the quest's deprecated pinned synthesis draft."""
         from precis.quest import dossier as dossier_mod
 
         did, _handle, text = dossier_mod.read_dossier(self.store, ref.id)

@@ -13956,6 +13956,122 @@ class TestFrontierTreeDossierChunk:
         assert "Fe" in tree_chunk.text
 
 
+# ── graph synthesis figures (gr692320) ───────────────────────────────────
+
+
+class TestQuestGraphSynthesis:
+    def _two_frontier_candidates(self, store: Any) -> tuple[int, list[int]]:
+        """A quest whose two candidates trade off energy/barrier, so BOTH
+        sit on the frontier (mat-0 low energy/high barrier, mat-1 the
+        reverse — neither dominates)."""
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "barrier", "sense": "min"},
+                ]
+            },
+        )
+        ids = []
+        for i, (elem, energy, barrier) in enumerate(
+            (("Fe", -20.0, 0.8), ("Co", -8.0, 0.3))
+        ):
+            sid = compute_mod.ensure_candidate(
+                store,
+                qid,
+                {
+                    "name": f"mat-{i}",
+                    "structure": {
+                        "cell": {"a": 8.4, "b": 8.4, "c": 24.0},
+                        "ops": [
+                            {
+                                "op": "add_atom",
+                                "element": elem,
+                                "frac": [0.0, 0.0, 0.5],
+                            }
+                        ],
+                    },
+                },
+            )
+            assert sid is not None
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=10,
+                max_disp=0.0,
+                energy=energy,
+            )
+            store.stamp_ref_meta(sid, {"barrier": barrier})
+            ids.append(sid)
+        return qid, ids
+
+    def test_synthesis_embeds_figures_without_a_dossier(self, store: Any) -> None:
+        from precis.quest.directions import add_direction
+        from precis.quest.dossier import dossier_ref_id
+
+        qid, ids = self._two_frontier_candidates(store)
+        add_direction(store, qid, "Compare NO adsorption sites")
+        pw = store.insert_ref(
+            kind="pathway",
+            slug="pw-nh3",
+            title="NO to NH3",
+            meta={
+                "structure_refs": {"NO": ids[0]},
+                "graph": {
+                    "nodes": [
+                        {"id": "NO", "energy": -10.0, "rel_energy": 0.0},
+                        {"id": "NH3", "energy": -9.6, "rel_energy": 0.4},
+                    ],
+                    "links": [
+                        {
+                            "source": "NO",
+                            "target": "NH3",
+                            "kind": "reaction",
+                            "barrier": 0.55,
+                            "delta_e": 0.4,
+                        }
+                    ],
+                },
+            },
+        ).id
+        for sid in ids:
+            store.stamp_ref_meta(sid, {"barrier_pathway_ref_id": pw})
+
+        handler = QuestHandler(hub=Hub(store=store))
+        response = handler.get(id=qid, view="synthesis")
+
+        assert dossier_ref_id(store, qid) is None
+        assert "Compare NO adsorption sites" in response.body
+        assert "Figure 1. Pareto frontier" in response.body
+        assert response.body.count("Slab for frontier case") == 2
+        assert response.body.count(f"— NO [st{ids[0]}]") == 2
+        assert response.body.count("Energy profile for") == 1
+        assert f"[pw{pw}]" in response.body
+        assert len(response.images) == 4
+        assert all(img.mime == "image/png" for img in response.images)
+        assert all(img.data.startswith(b"\x89PNG\r\n\x1a\n") for img in response.images)
+
+        store.stamp_ref_meta(ids[1], {"barrier": 0.9})
+        refreshed = handler.get(id=qid, view="synthesis")
+        assert len(refreshed.images) == 3
+        assert all(
+            f"[st{ids[1]}]" not in line
+            for line in refreshed.body.splitlines()
+            if "Slab for frontier case" in line
+        )
+
+    def test_no_candidates_produces_no_figures(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        response = QuestHandler(hub=Hub(store=store)).get(id=qid, view="synthesis")
+        assert "A striving" in response.body
+        assert "Frontier figures" not in response.body
+        assert response.images == ()
+
+
 # ── atom cost (slice B, kinetics cutover) ───────────────────────────────
 
 

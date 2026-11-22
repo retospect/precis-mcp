@@ -3,31 +3,31 @@
 Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 :mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
-exploration queue), `logbook` (WORM entries), `dossier` (the living
+exploration queue), `logbook` (WORM entries), `synthesis` (writer's graph
+linearisation with live frontier figures), `dossier` (deprecated living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
-measurement protocols, deduped dispatch/harvest drift logbook entries,
-frontier/status protocol histograms; gr593142), `environment_basis` and
+measurement protocols, deduped dispatch/harvest drift entries,
+frontier/status histograms; gr593142), `environment_basis` and
 `correction_policy` (engine-free hashes/tuples), `atomcost` (element-price
 table → the ``atom_cost`` economic axis), `figures` (static matplotlib
-pareto/profile renderers + frozen data snapshots for draft export; CLI
-``precis quest figure``), `replay` (optimisation-benchmark read of the
-measured history — per-axis top-5% coverage + best-so-far/regret of the
-proposer's picks vs a seeded random baseline, gr608711; CLI
-``precis quest replay`` + ``get(kind='quest', view='replay')``),
+pareto/profile renderers + frozen snapshots for draft export; CLI
+``precis quest figure``), `replay` (measured-history optimisation
+benchmark — per-axis top-5% coverage + best-so-far/regret vs a seeded
+random baseline, gr608711; CLI ``precis quest replay`` + ``view='replay'``),
 `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
-`narrative_budget` (the growth-ratchet gate,
+`narrative_budget` (growth-ratchet gate,
 reusable by any rolling-context rewrite), `trap_check`
-(the planted-trap regression: a dormant sandbox quest carrying a
+(planted-trap regression: a dormant sandbox quest carrying a
 stale-engine measure, a swapped endpoint and an absurd barrier beside
-one control, ticked N times and scored on the frontier gate +
-ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
-cadence lands the score). The perpetual loop is the
-``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
+one control, scored on the frontier gate + ask-vs-propose leg,
+gr593141 — weekly ``quest_traps`` cadence). The perpetual
+loop is the ``quest_tick`` coordinator job
+(``workers.job_types.quest_tick``).
 `failure_class` (gr593138) splits untrusted barrier stamps:
-mechanical auto-requeues under caps, science routes to the agent.
+mechanical requeues under caps, science routes to the agent.
 
 Package-level invariants (detail lives on the named module):
 
@@ -82,6 +82,9 @@ Package-level invariants (detail lives on the named module):
   independent-seed gate still uses actual trust records: starting a child
   does not prove usable independent evidence. Historical launch lists stay
   unknown; neither queued jobs nor successful-only aggregates can supply them.
+- **The graph supplies the writer's synthesis.** ``synthesis.render_synthesis``
+  attaches live frontier/energy/slab figures on read; failed renders never
+  persist.
 - **The dossier can't bloat or lose its trail.** The pinned ledger is a
   nested attempt tree mutated only via explicit ops
   (``dossier.add_attempt``/``mark_attempt`` — exact-text addressed,

@@ -231,7 +231,7 @@ search(kind="quest", view="roots")  # top-level strivings + serves DAG (id="/roo
 get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-ref)
 ```
 
-**The complete `view=` set is** `tree · gaps · dossier · frontier ·
+**The complete `view=` set is** `tree · gaps · synthesis · dossier · frontier ·
 leaderboard · results · series · measures · logbook · pourbaix · status ·
 rubric · served · meta · replay · kinetics-summary · considerations`
 (quest-specific — `dossier` is deprecated, kept only for
@@ -521,6 +521,20 @@ query as the thing you expect to find, not as a question — *"subsurface
 H co-doping on Pd(111) lowers NO dissociation barrier"*, not *"does H
 help?"*. Search matches statements; [[precis-search-help]]'s `answers=`
 legs are the same move for papers.
+
+## Linearise the quest graph
+
+The writer reads `get(kind='quest', id=<quest>, view='synthesis')` for
+directions, served evidence handles and numbered figure captions. The
+MCP response includes matching PNGs in caption order. Carry those
+images into the written synthesis with their source handles.
+
+The figures include the Pareto plot when at least two points have both
+axes, plus slab renders and pathway energy profiles for up to four
+working-frontier cases closest to the best values on the plotted axes.
+The slab uses the pathway's relaxed starting adsorbate geometry when
+available and falls back to the stored candidate scene. A shared energy
+profile appears once. Each read retries any unavailable render.
 
 ## The dossier is deprecated
 
