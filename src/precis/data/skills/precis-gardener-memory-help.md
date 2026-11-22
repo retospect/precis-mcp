@@ -49,7 +49,9 @@ The memory passes are opt-in: a `graph_garden` job must name the pass —
 the detector each proposal's evidence and the `view='smells'` grouping
 carry.
 
-- `memory` — `dangling_mention` (a handle naming a retired ref),
+- `memory` — `dangling_mention` (a handle naming a retired ref; the
+  consolidation log and its archive are skipped, their handles record
+  past actions),
   `thread_shape` (a thread node whose `Left:` is missing or done),
   `anchor_rot` (a cited path/symbol/section/commit no longer resolves
   on main), `compact` (expired, cold-decaying or half-history, or
