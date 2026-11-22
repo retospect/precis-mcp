@@ -59,6 +59,11 @@ from precis.store._mappers import (
     _row_to_ref,
     _row_to_s2_neighbor,
 )
+from precis.store._secret_scope import (
+    link_fence,
+    secret_fence,
+    secret_fence_for,
+)
 from precis.store._tag_filter import build_tag_filter
 from precis.store.revision_context import (
     RevisionContext,
@@ -385,7 +390,13 @@ def _linked_refs_where(
             "OR (l.dst_ref_id = %s AND l.src_ref_id = r.ref_id))"
         )
         dir_params = [ref_id, ref_id]
-    clauses = ["r.retired_at IS NULL", "r.kind = %s", exists]
+    clauses = [
+        "r.retired_at IS NULL",
+        "r.kind = %s",
+        exists,
+        secret_fence("r", path="linked_refs"),
+        secret_fence_for(str(int(ref_id)), path="linked_refs"),
+    ]
     return clauses, [kind, *dir_params]
 
 
@@ -429,6 +440,7 @@ e AS (
     FROM x JOIN refs r ON r.ref_id = x.far
    WHERE (%(ret_ok)s::bool OR r.retired_at IS NULL)
      AND NOT (x.far = ANY(%(excl)s::bigint[]))
+     AND /*SECRET_FAR*/ TRUE
      AND (%(viewer)s::text IS NULL OR r.kind <> 'profile'
           OR r.owner_login IS NULL OR r.owner_login = %(viewer)s::text)
      AND (%(rels)s::text[] IS NULL OR x.rel = ANY(%(rels)s::text[]))
@@ -488,6 +500,7 @@ SELECT x.src_ref_id, x.dst_ref_id, x.relation FROM (
 JOIN refs s ON s.ref_id = x.src_ref_id AND s.retired_at IS NULL
 JOIN refs d ON d.ref_id = x.dst_ref_id AND d.retired_at IS NULL
 WHERE x.src_ref_id <> x.dst_ref_id
+  AND /*SECRET_LINK*/ TRUE
   AND (%(rels)s::text[] IS NULL OR x.relation = ANY(%(rels)s::text[]))
 ORDER BY x.link_id
 LIMIT %(lim)s::int
@@ -1996,6 +2009,7 @@ class LinksMixin:
             )
             params.extend([*p_left, relation, *p_right, inverse])
 
+        clauses.append(link_fence(path="links_for"))
         sql = (
             f"SELECT {_LINK_SELECT_PROJ} {_LINK_SELECT_FROM} "
             f"WHERE {' AND '.join(clauses)} "
@@ -2171,7 +2185,10 @@ class LinksMixin:
             counts: dict[str, dict[str, int]] = {}
             # Row layout: (tag, anchor, far, dir, rel, kind, title, state,
             # n, retired, ftrust, ltrust, link_id, src_chunk, dst_chunk)
-            for r in conn.execute(_NBH_SQL, params).fetchall():
+            nbh_sql = _NBH_SQL.replace(
+                "/*SECRET_FAR*/ TRUE", secret_fence("r", path="neighbourhood")
+            )
+            for r in conn.execute(nbh_sql, params).fetchall():
                 if r[0] == "c":
                     counts.setdefault(r[4], {})[r[5]] = int(r[8])
                 else:
@@ -2187,7 +2204,8 @@ class LinksMixin:
                 "   ORDER BY t.value LIMIT 1), 'live'),"
                 " trust_origin || ' · ' || trust_confidence,"
                 " owner_login"
-                " FROM refs r WHERE ref_id = %s AND kind = %s",
+                " FROM refs r WHERE ref_id = %s AND kind = %s AND "
+                + secret_fence("r", path="neighbourhood"),
                 (ref_id, kind),
             ).fetchone()
             if frow is None or (
@@ -2393,7 +2411,10 @@ class LinksMixin:
                 mine, other = parents[side], parents[1 - side]
                 in_front = set(front)
                 rows = conn.execute(
-                    _PATH_SQL,
+                    _PATH_SQL.replace(
+                        "/*SECRET_LINK*/ TRUE",
+                        link_fence("x.src_ref_id", "x.dst_ref_id", path="link_path"),
+                    ),
                     {"f": front, "rels": allowed, "lim": budget + 1},
                 ).fetchall()
                 if len(rows) > budget:
@@ -2528,13 +2549,14 @@ class LinksMixin:
         """
         if not ref_ids:
             return {}
+        fence = link_fence("src_ref_id", "dst_ref_id", path="count_links")
         sql = (
             "SELECT ref_id, COUNT(*)::int FROM ("
             "  SELECT src_ref_id AS ref_id FROM links "
-            "    WHERE src_ref_id = ANY(%s)"
+            f"    WHERE src_ref_id = ANY(%s) AND {fence}"
             "  UNION ALL"
             "  SELECT dst_ref_id AS ref_id FROM links "
-            "    WHERE dst_ref_id = ANY(%s)"
+            f"    WHERE dst_ref_id = ANY(%s) AND {fence}"
             ") sub GROUP BY ref_id"
         )
         with self.pool.connection() as conn:
@@ -2557,13 +2579,14 @@ class LinksMixin:
         """
         if not chunk_ids:
             return 0, {}
+        fence = link_fence("src_ref_id", "dst_ref_id", path="count_chunk_links")
         sql = (
             "SELECT link_id, chunk_id FROM ("
             "  SELECT link_id, src_chunk_id AS chunk_id FROM links "
-            "    WHERE src_chunk_id = ANY(%s)"
+            f"    WHERE src_chunk_id = ANY(%s) AND {fence}"
             "  UNION ALL"
             "  SELECT link_id, dst_chunk_id AS chunk_id FROM links "
-            "    WHERE dst_chunk_id = ANY(%s)"
+            f"    WHERE dst_chunk_id = ANY(%s) AND {fence}"
             ") sub"
         )
         with self.pool.connection() as conn:
@@ -2586,13 +2609,14 @@ class LinksMixin:
         """
         if not ref_ids:
             return {}
+        fence = link_fence("src_ref_id", "dst_ref_id", path="link_rel_summary")
         sql = (
             "SELECT ref_id, dir, relation, COUNT(*)::int FROM ("
             "  SELECT src_ref_id AS ref_id, 'out' AS dir, relation FROM links "
-            "    WHERE src_ref_id = ANY(%s)"
+            f"    WHERE src_ref_id = ANY(%s) AND {fence}"
             "  UNION ALL"
             "  SELECT dst_ref_id AS ref_id, 'in' AS dir, relation FROM links "
-            "    WHERE dst_ref_id = ANY(%s)"
+            f"    WHERE dst_ref_id = ANY(%s) AND {fence}"
             ") sub GROUP BY ref_id, dir, relation"
         )
         with self.pool.connection() as conn:

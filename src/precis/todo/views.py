@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from precis._result_budget import size_cell
 from precis.errors import BadInput
 from precis.response import Response
+from precis.store._secret_scope import secret_fence, secret_fence_for
 from precis.store._tag_filter import build_tag_filter
 from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _DOABLE_EXCLUSION_TAGS,
@@ -132,11 +133,12 @@ def _status_of_many(store: Store, ref_ids: list[int]) -> dict[int, str]:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT rt.ref_id, t.value
               FROM ref_tags rt
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE rt.ref_id = ANY(%s)
+               AND {secret_fence_for("rt.ref_id", path="todo_views")}
                AND t.namespace = 'STATUS'
             """,
             (ref_ids,),
@@ -175,15 +177,17 @@ def _ancestor_chain(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE chain(ref_id, parent_id, title, depth) AS (
                 SELECT ref_id, parent_id, title, 0
                   FROM refs WHERE ref_id = %s AND retired_at IS NULL
+                    AND {secret_fence("refs", path="todo_views")}
                 UNION ALL
                 SELECT r.ref_id, r.parent_id, r.title, c.depth + 1
                   FROM refs r
                   JOIN chain c ON r.ref_id = c.parent_id
                  WHERE r.retired_at IS NULL
+                   AND {secret_fence("r", path="todo_views")}
             )
             SELECT c.ref_id, c.title, c.depth,
                    COALESCE((rf.meta->>'rotation_root')::boolean, false),
@@ -224,6 +228,7 @@ def _picks_7d_by_strategic(store: Store) -> dict[int, int]:
                 SELECT r.ref_id
                   FROM refs r
                  WHERE r.kind = 'todo'
+                   AND {secret_fence("r", path="todo_views")}
                    AND r.retired_at IS NULL
                    AND {todo_root_sql("r")}
                    AND COALESCE((r.meta->>'rotation_root')::boolean, false)
@@ -242,6 +247,7 @@ def _picks_7d_by_strategic(store: Store) -> dict[int, int]:
                   FROM refs r
                   JOIN subtree st ON r.parent_id = st.ref_id
                  WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND {secret_fence("r", path="todo_views")}
               )
             SELECT st.strategic_id, count(e.event_id) AS picks_7d
               FROM subtree st
@@ -276,6 +282,7 @@ def render_roots(store: Store) -> Response:
               FROM refs r
              WHERE r.kind = 'todo'
                AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND {todo_root_sql("r")}
                AND COALESCE((r.meta->>'rotation_root')::boolean, false)
              ORDER BY r.ref_id
@@ -390,7 +397,7 @@ def render_projects(store: Store) -> Response:
     precis_root = os.environ.get("PRECIS_ROOT", "")
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    r.meta->'workspace'->>'path'    AS path,
                    r.meta->'workspace'->>'format'  AS format,
@@ -398,11 +405,12 @@ def render_projects(store: Store) -> Response:
               FROM refs r
              WHERE r.kind = 'todo'
                AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND r.meta->'workspace'->>'path' IS NOT NULL
                AND (
                    r.parent_id IS NULL
                    OR (SELECT p.meta->'workspace'->>'path' FROM refs p
-                         WHERE p.ref_id = r.parent_id)
+                         WHERE p.ref_id = r.parent_id AND {secret_fence("p", path="todo_views")})
                       IS DISTINCT FROM r.meta->'workspace'->>'path'
                )
              ORDER BY r.ref_id
@@ -412,13 +420,14 @@ def render_projects(store: Store) -> Response:
         for ref_id, title, path, fmt, brief in rows:
             ref_id = int(ref_id)
             open_count_row = conn.execute(
-                """
+                f"""
                 WITH RECURSIVE sub(ref_id) AS (
                     SELECT %s::bigint
                     UNION ALL
                     SELECT c.ref_id FROM refs c
                       JOIN sub ON c.parent_id = sub.ref_id
                      WHERE c.retired_at IS NULL
+                       AND {secret_fence("c", path="todo_views")}
                 )
                 SELECT count(*)
                   FROM sub s
@@ -541,7 +550,7 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    COALESCE(r.meta->'schedule'->>'cron',
                             'at:' || (r.meta->'schedule'->>'at')) AS cron,
@@ -552,6 +561,7 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
                        AND e.event IN ('spawn', 'deliver')) AS last_tick
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND (r.meta ? 'schedule')
                AND (r.meta->>'builtin') IS NULL
              ORDER BY r.ref_id
@@ -579,6 +589,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
                 SELECT r.ref_id
                   FROM refs r
                  WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND {secret_fence("r", path="todo_views")}
                    AND {todo_root_sql("r")}
                    AND COALESCE((r.meta->>'rotation_root')::boolean, false)
                    AND NOT EXISTS (
@@ -596,6 +607,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
                   FROM refs r
                   JOIN subtree st ON r.parent_id = st.ref_id
                  WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND {secret_fence("r", path="todo_views")}
               )
             SELECT DISTINCT st.strategic_id
               FROM subtree st
@@ -604,6 +616,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
                  SELECT 1 FROM refs c
                   WHERE c.parent_id = r.ref_id
                     AND c.retired_at IS NULL
+                    AND {secret_fence("c", path="todo_views")}
              )
                AND NOT EXISTS (
                  SELECT 1 FROM ref_tags rt
@@ -636,10 +649,12 @@ def render_strategic(store: Store) -> Response:
                        t.parent_id AS strategic_id
                   FROM refs t
                  WHERE t.kind = 'todo' AND t.retired_at IS NULL
+                   AND {secret_fence("t", path="todo_views")}
                    AND EXISTS (
                        SELECT 1 FROM refs s
                         WHERE s.ref_id = t.parent_id
                           AND s.kind = 'todo' AND s.retired_at IS NULL
+                          AND {secret_fence("s", path="todo_views")}
                           AND {todo_root_sql("s")}
                           AND COALESCE((s.meta->>'rotation_root')::boolean, false)
                    )
@@ -651,6 +666,7 @@ def render_strategic(store: Store) -> Response:
                   FROM tac_subtree ts
                   JOIN refs r ON r.parent_id = ts.desc_id
                  WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND {secret_fence("r", path="todo_views")}
               ),
               leaves AS (
                 SELECT ts.tactical_id, ts.desc_id AS leaf_id,
@@ -668,6 +684,7 @@ def render_strategic(store: Store) -> Response:
                       WHERE c.parent_id = ts.desc_id
                         AND c.kind = 'todo'
                         AND c.retired_at IS NULL
+                        AND {secret_fence("c", path="todo_views")}
                  )
               )
             SELECT s.ref_id AS strategic_id, s.title AS strategic_title,
@@ -680,6 +697,7 @@ def render_strategic(store: Store) -> Response:
               LEFT JOIN tac ON tac.strategic_id = s.ref_id
               LEFT JOIN leaves l ON l.tactical_id = tac.tactical_id
              WHERE s.kind = 'todo' AND s.retired_at IS NULL
+               AND {secret_fence("s", path="todo_views")}
                AND {todo_root_sql("s")}
                AND COALESCE((s.meta->>'rotation_root')::boolean, false)
              GROUP BY s.ref_id, s.title, tac.tactical_id, tac.tactical_title
@@ -790,18 +808,20 @@ def _fetch_subtree(store: Store, root_id: int) -> list[dict[str, Any]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE walk(ref_id, parent_id, title, depth, kind) AS (
                 SELECT ref_id, parent_id, title, 0, kind
                   FROM refs WHERE ref_id = %s
                               AND kind = 'todo'
                               AND retired_at IS NULL
+                              AND {secret_fence("refs", path="todo_views")}
                 UNION ALL
                 SELECT r.ref_id, r.parent_id, r.title, w.depth + 1, r.kind
                   FROM refs r
                   JOIN walk w ON r.parent_id = w.ref_id
                  WHERE r.kind IN ('todo', 'job')
                    AND r.retired_at IS NULL
+                   AND {secret_fence("r", path="todo_views")}
                    AND w.depth < 10
             )
             SELECT ref_id, parent_id, title, depth, kind FROM walk
@@ -827,10 +847,11 @@ def _all_open_tags(store: Store, ref_ids: list[int]) -> dict[int, list[str]]:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT rt.ref_id, t.value
               FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
              WHERE rt.ref_id = ANY(%s)
+               AND {secret_fence_for("rt.ref_id", path="todo_views")}
                AND t.namespace = 'OPEN'
             """,
             (ref_ids,),
@@ -935,11 +956,12 @@ def render_scratch(store: Store, ref_id: int) -> Response:
     owner_tag = f"scratch-for:{_h(ref_id)}"
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title
               FROM refs r
              WHERE r.kind = 'memory'
                AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
@@ -1108,6 +1130,7 @@ def _doable_rows(
             "    UNION ALL"
             "    SELECT p.ref_id, p.parent_id FROM refs p"
             "      JOIN up ON p.ref_id = up.parent_id"
+            f"    WHERE {secret_fence('p', path='todo_views')}"
             "  )"
             "  SELECT 1 FROM up WHERE ref_id = ANY(%s)"
             ")"
@@ -1124,6 +1147,7 @@ def _doable_rows(
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND {todo_root_sql("r")}
                AND COALESCE((r.meta->>'rotation_root')::boolean, false)
           ),
@@ -1133,6 +1157,7 @@ def _doable_rows(
             SELECT r.ref_id, st.strategic_id
               FROM refs r JOIN subtree st ON r.parent_id = st.ref_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
           ),
           picks AS (
             SELECT st.strategic_id, count(e.event_id) AS picks_7d
@@ -1146,12 +1171,14 @@ def _doable_rows(
             -- ref_ids whose ancestor chain contains a paused branch.
             SELECT DISTINCT r.ref_id
               FROM refs r
-             WHERE EXISTS (
+             WHERE {secret_fence("r", path="todo_views")}
+               AND EXISTS (
                  WITH RECURSIVE up(ref_id, parent_id) AS (
                      SELECT ref_id, parent_id FROM refs WHERE ref_id = r.ref_id
                      UNION ALL
                      SELECT p.ref_id, p.parent_id FROM refs p
                        JOIN up ON p.ref_id = up.parent_id
+                      WHERE {secret_fence("p", path="todo_views")}
                  )
                  SELECT 1 FROM up u
                    JOIN ref_tags rt ON rt.ref_id = u.ref_id
@@ -1172,6 +1199,7 @@ def _doable_rows(
           LEFT JOIN picks p ON p.strategic_id = st.strategic_id
           LEFT JOIN sv ON sv.strategic_id = st.strategic_id
          WHERE r.kind = 'todo' AND r.retired_at IS NULL
+           AND {secret_fence("r", path="todo_views")}
            AND COALESCE(
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1180,12 +1208,14 @@ def _doable_rows(
            AND NOT EXISTS (
                SELECT 1 FROM refs c WHERE c.parent_id = r.ref_id
                                       AND c.retired_at IS NULL
+                                      AND {secret_fence("c", path="todo_views")}
            )
            AND NOT EXISTS (
                SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
                 WHERE l.src_ref_id = r.ref_id
                   AND l.relation = 'blocked-by'
                   AND b.retired_at IS NULL
+                  AND {secret_fence("b", path="todo_views")}
                   AND COALESCE(
                         (SELECT t.value FROM ref_tags rt2 JOIN tags t ON t.tag_id = rt2.tag_id
                           WHERE rt2.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1287,6 +1317,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
                   SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
                    WHERE l.src_ref_id = r.ref_id AND l.relation = 'blocked-by'
                      AND b.retired_at IS NULL
+                     AND {secret_fence("b", path="todo_views")}
                 )
               ) AS blocked,
               count(*) FILTER (
@@ -1298,6 +1329,7 @@ def _doable_counters(store: Store) -> dict[str, int]:
               ) AS asking
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND NOT {direction_todo_sql("r")}
             """,
             (sorted(TERMINAL_TODO_STATUSES),),
@@ -1348,6 +1380,7 @@ def render_status_flat(
               FROM refs r
              WHERE r.kind = 'todo'
                AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND NOT {direction_todo_sql("r")}
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -1399,17 +1432,18 @@ def render_flat(store: Store, *, limit: int = 200) -> Response:
     terminal = sorted(views_terminal())
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id,
                    COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) AS status,
-                   r.parent_id, r.title
+                   CASE WHEN {secret_fence_for("r.parent_id", path="todo_views")} THEN r.parent_id END, r.title
               FROM refs r
              WHERE r.kind = 'todo'
                AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1455,13 +1489,14 @@ def render_waiting(store: Store) -> Response:
     buried the 40 live asks in Reto's queue under 211 closed ones."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    array_agg(t.value) AS waits
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'waiting-for:%%'
                AND NOT EXISTS (
@@ -1516,6 +1551,7 @@ def render_blocked(store: Store) -> Response:
                         SELECT 1 FROM refs b
                          WHERE b.ref_id = l.dst_ref_id
                            AND b.retired_at IS NULL
+                           AND {secret_fence("b", path="todo_views")}
                            AND COALESCE(
                                  (SELECT t.value FROM ref_tags rt
                                     JOIN tags t ON t.tag_id = rt.tag_id
@@ -1526,6 +1562,7 @@ def render_blocked(store: Store) -> Response:
                     )
               LEFT JOIN refs b ON b.ref_id = l.dst_ref_id
              WHERE r.kind IN ('todo', 'gripe') AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                -- Defensive parity with render_ask_user: a terminal leaf
                -- can't normally also be STATUS:blocked (closed-prefix
                -- replace), but a direct-SQL backfill could violate that —
@@ -1592,12 +1629,13 @@ def render_ask_user(store: Store) -> Response:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT DISTINCT r.ref_id, r.title, r.created_at
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND t.namespace = 'OPEN'
                AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
@@ -1647,12 +1685,14 @@ def _sig_gripes_for(store: Store, ref_ids: list[int]) -> dict[int, int]:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT l.src_ref_id, l.dst_ref_id
               FROM links l
               JOIN refs g ON g.ref_id = l.dst_ref_id AND g.kind = 'gripe'
              WHERE l.src_ref_id = ANY(%s) AND l.relation = 'related-to'
+               AND {secret_fence_for("l.src_ref_id", path="todo_views")}
                AND g.retired_at IS NULL
+               AND {secret_fence("g", path="todo_views")}
                AND EXISTS (SELECT 1 FROM ref_tags rt
                              JOIN tags t ON t.tag_id = rt.tag_id
                             WHERE rt.ref_id = g.ref_id AND t.namespace = 'OPEN'
@@ -1674,12 +1714,13 @@ def _rescue_rows(store: Store) -> list[dict[str, Any]]:
     own signature gripe, and for a plan root, which is never linked)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.kind, r.title, min(t.value) AS rescue_tag
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind IN ('todo', 'gripe') AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND t.namespace = 'OPEN' AND t.value LIKE 'rescue:%%'
                AND COALESCE(
                      (SELECT s.value FROM ref_tags rs
@@ -1905,14 +1946,15 @@ def _attention_unminted(
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    (EXTRACT(EPOCH FROM (now() - r.created_at)) / 60)::int
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND COALESCE(r.meta->>'executor', '') <> ''
                -- A recurring todo has no live job between cron ticks by design.
-               AND NOT (COALESCE(r.meta, '{}'::jsonb) ? 'schedule')
+               AND NOT (COALESCE(r.meta, '{{}}'::jsonb) ? 'schedule')
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -1923,6 +1965,7 @@ def _attention_unminted(
                      SELECT 1 FROM refs c
                       WHERE c.parent_id = r.ref_id AND c.kind = 'job'
                         AND c.retired_at IS NULL
+                        AND {secret_fence("c", path="todo_views")}
                         AND COALESCE(
                               (SELECT t3.value FROM ref_tags rt3
                                  JOIN tags t3 ON t3.tag_id = rt3.tag_id
@@ -1937,6 +1980,7 @@ def _attention_unminted(
                      SELECT 1 FROM refs ct
                       WHERE ct.parent_id = r.ref_id AND ct.kind = 'todo'
                         AND ct.retired_at IS NULL
+                        AND {secret_fence("ct", path="todo_views")}
                         AND COALESCE(
                               (SELECT t4.value FROM ref_tags rt4
                                  JOIN tags t4 ON t4.tag_id = rt4.tag_id
@@ -1962,12 +2006,13 @@ def _attention_ask_user(store: Store) -> list[dict[str, Any]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT DISTINCT r.ref_id, r.title, r.created_at
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND t.namespace = 'OPEN'
                AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
                AND COALESCE(
@@ -1999,13 +2044,14 @@ def _attention_halted(store: Store) -> list[dict[str, Any]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title, r.created_at, r.meta->>'budget_usd',
                    array_agg(t.value ORDER BY t.value) AS halt_tags
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND t.namespace = 'OPEN'
                AND (t.value = 'halt' OR t.value LIKE 'halt:%%')
                AND COALESCE(
@@ -2055,15 +2101,21 @@ def _attention_child_failed(store: Store) -> list[dict[str, Any]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title,
                    array_agg(t.value ORDER BY t.value) AS bubble_tags
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="todo_views")}
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'child-failed:%%'
+               AND NOT EXISTS (
+                   SELECT 1 FROM refs job
+                    WHERE job.ref_id::text = split_part(t.value, ':', 2)
+                      AND NOT {secret_fence("job", path="todo_views")}
+               )
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -2106,10 +2158,11 @@ def _latest_job_event_reasons(store: Store, job_ids: list[int]) -> dict[str, str
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT DISTINCT ON (c.ref_id) c.ref_id, c.text
               FROM chunks c
              WHERE c.ref_id = ANY(%s)
+               AND {secret_fence_for("c.ref_id", path="todo_views")}
                AND c.chunk_kind = 'job_event'
              ORDER BY c.ref_id, c.ord DESC
             """,

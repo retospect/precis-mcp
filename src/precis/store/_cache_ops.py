@@ -53,15 +53,24 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_LEN,
     _row_to_cache_entry,
     _row_to_ref,
 )
+from precis.store._secret_scope import ref_visible, secret_fence
 from precis.store.types import CacheEntry, ChunkInsert, Ref
 from precis.utils.title_views import title_plain_sql
+
+
+def _cache_unavailable() -> NotFound:
+    return NotFound(
+        "cache key is unavailable",
+        next="use a different query or list the visible cached entries",
+    )
+
 
 #: gr515227: title legs read the plain view (markup / LaTeX noise
 #: stripped at query time) — titles are stored raw.
@@ -157,6 +166,7 @@ class CacheMixin:
             WHERE cs.provider = %s
               AND cs.request_hash = %s
               AND refs.retired_at IS NULL
+              AND {secret_fence("refs", path="cache")}
             LIMIT 1
         """
         with self.pool.connection() as conn:
@@ -190,6 +200,7 @@ class CacheMixin:
             WHERE refs.kind = %s
               AND refs.ref_id = %s
               AND refs.retired_at IS NULL
+              AND {secret_fence("refs", path="cache")}
             LIMIT 1
         """
         with self.pool.connection() as conn:
@@ -233,6 +244,7 @@ class CacheMixin:
             WHERE refs.kind = %s
               AND ri.id_value = %s
               AND refs.retired_at IS NULL
+              AND {secret_fence("refs", path="cache")}
             LIMIT 1
         """
         with self.pool.connection() as conn:
@@ -244,6 +256,24 @@ class CacheMixin:
             row[_REFS_COLS_LEN : _REFS_COLS_LEN + _CACHE_COLS_LEN]
         )
         return (ref, cache)
+
+    def check_cache_fill(
+        self, *, kind: str, slug: str, provider: str, request_hash: str
+    ) -> None:
+        """Refuse a fill of a reserved key before calling the provider."""
+        with self.pool.connection() as conn:
+            hidden = conn.execute(
+                "SELECT 1 FROM refs r WHERE r.retired_at IS NULL AND NOT "
+                f"({secret_fence('r', path='cache_fill')}) AND ("
+                "  (r.kind = %s AND EXISTS (SELECT 1 FROM ref_identifiers ri "
+                "    WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+                "      AND ri.id_value = %s)) "
+                "  OR EXISTS (SELECT 1 FROM cache_state cs WHERE cs.ref_id = r.ref_id "
+                "    AND cs.provider = %s AND cs.request_hash = %s)) LIMIT 1",
+                (kind, slug, provider, request_hash),
+            ).fetchone()
+        if hidden is not None:
+            raise _cache_unavailable()
 
     def update_cache_entry(
         self,
@@ -289,6 +319,16 @@ class CacheMixin:
         cache_meta_json = Jsonb(cache_meta or {})
 
         with self.tx() as conn:
+            locked = conn.execute(
+                "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
+                (ref_id,),
+            ).fetchone()
+            if locked is None:
+                raise ValueError(
+                    f"update_cache_entry: ref_id={ref_id} not found or deleted"
+                )
+            if not ref_visible(self, ref_id, conn=conn):
+                raise _cache_unavailable()
             # Update the ref title (rare but possible — page titles
             # change). Touch updated_at so /recent listings reflect
             # the refresh.
@@ -298,10 +338,7 @@ class CacheMixin:
                 f"RETURNING {_REFS_COLS}",
                 (title, ref_id),
             ).fetchone()
-            if row is None:
-                raise ValueError(
-                    f"update_cache_entry: ref_id={ref_id} not found or deleted"
-                )
+            assert row is not None, "locked cache ref disappeared during refresh"
             ref = _row_to_ref(row)
 
             # An unchanged refresh keeps its chunks: when the new content
@@ -456,10 +493,12 @@ class CacheMixin:
                 "  AND ri.id_kind = 'cite_key' "
                 "WHERE r.kind = %s "
                 "  AND ri.id_value = %s "
-                "  AND r.retired_at IS NULL",
+                "  AND r.retired_at IS NULL FOR UPDATE OF r",
                 (kind, slug),
             ).fetchone()
             if existing is not None:
+                if not ref_visible(self, int(existing[0]), conn=conn):
+                    raise _cache_unavailable()
                 # Measures are append-only and their subject / measurand FKs
                 # RESTRICT: a cached ref that holds measures is not replaced
                 # (skipping the delete would leave the slug taken and the insert
@@ -547,7 +586,11 @@ class CacheMixin:
         duration) in one pass — ``list_refs`` alone sees neither
         ``cs.fetched_at`` nor ``cs.meta``.
         """
-        clauses = ["refs.retired_at IS NULL", "refs.kind = %s"]
+        clauses = [
+            "refs.retired_at IS NULL",
+            secret_fence("refs", path="cache"),
+            "refs.kind = %s",
+        ]
         params: list[Any] = [kind]
         if provider is not None:
             clauses.append("cs.provider = %s")
@@ -578,7 +621,11 @@ class CacheMixin:
         """Live ``cache_state`` rows for ``kind`` — the "of K" a
         ``/recent`` page header reports; same WHERE as
         :meth:`list_cache_entries` so the two numbers can't drift."""
-        clauses = ["refs.retired_at IS NULL", "refs.kind = %s"]
+        clauses = [
+            "refs.retired_at IS NULL",
+            secret_fence("refs", path="cache"),
+            "refs.kind = %s",
+        ]
         params: list[Any] = [kind]
         if provider is not None:
             clauses.append("cs.provider = %s")
@@ -687,6 +734,7 @@ class CacheMixin:
             JOIN refs ON refs.ref_id = cs.ref_id,
                  websearch_to_tsquery('english', %s) qq(qq)
             WHERE refs.retired_at IS NULL
+              AND {secret_fence("refs", path="cache")}
               AND refs.kind = %s
               AND (
                   to_tsvector('english', {_TITLE_PLAIN_SQL}) @@ qq.qq

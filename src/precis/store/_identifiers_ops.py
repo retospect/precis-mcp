@@ -73,6 +73,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
+from precis.store._secret_scope import secret_fence
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -459,7 +460,7 @@ class IdentifiersMixin:
             "FROM ref_identifiers pi "
             "JOIN refs r ON r.ref_id = pi.ref_id "
             "WHERE pi.id_kind = %s AND pi.id_value = %s "
-            "AND r.retired_at IS NULL"
+            "AND r.retired_at IS NULL AND " + secret_fence("r", path="identifier")
         )
         params: list[object] = [s, v]
         if kind is not None:
@@ -532,7 +533,8 @@ class IdentifiersMixin:
                     "FROM ref_identifiers pi "
                     "JOIN refs r ON r.ref_id = pi.ref_id "
                     "WHERE pi.id_kind = %s AND pi.id_value = ANY(%s) "
-                    "AND r.kind = 'paper' AND r.retired_at IS NULL",
+                    "AND r.kind = 'paper' AND r.retired_at IS NULL AND "
+                    + secret_fence("r", path="identifier"),
                     (scheme, list(norm_to_raw)),
                 ).fetchall()
                 for id_value, ref_id in rows:

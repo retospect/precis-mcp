@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any
 from precis.plans.lanes import ladder, load_lanes
 from precis.plans.nodes import node_kind
 from precis.response import Response
+from precis.store._secret_scope import secret_fence
 from precis.todo import views, work_gripes, work_quest
 from precis.todo.blocked import open_blocked_by
 from precis.todo.work_gripes import GripeBlock
@@ -584,12 +585,15 @@ def _live_claims(store: Store, ref_ids: list[int]) -> set[int]:
     ``ref_tags.expires_at`` in the future (NULL or past is not live)."""
     if not ref_ids:
         return set()
+    fence = secret_fence("r", path="work_view")
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
+            " JOIN refs r ON r.ref_id = rt.ref_id"
             " WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN'"
             "   AND t.value LIKE 'claimed-by:%%'"
-            "   AND rt.expires_at IS NOT NULL AND rt.expires_at > now()",
+            "   AND rt.expires_at IS NOT NULL AND rt.expires_at > now()"
+            f" AND {fence}",
             (ref_ids,),
         ).fetchall()
     return {int(r[0]) for r in rows}
@@ -601,7 +605,8 @@ def _prios_for(store: Store, ref_ids: list[int]) -> dict[int, int | None]:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id, prio FROM refs WHERE ref_id = ANY(%s)",
+            "SELECT ref_id, prio FROM refs WHERE ref_id = ANY(%s) AND "
+            + secret_fence("refs", path="work_view"),
             (ref_ids,),
         ).fetchall()
     return {int(r[0]): r[1] for r in rows}
@@ -647,7 +652,8 @@ def _job_fields(store: Store, job_ids: list[int]) -> dict[int, tuple[str, str, s
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, meta->>'lane', meta->>'model', meta->>'lease_host' "
-            "FROM refs WHERE ref_id = ANY(%s)",
+            "FROM refs WHERE ref_id = ANY(%s) AND "
+            + secret_fence("refs", path="work_view"),
             (job_ids,),
         ).fetchall()
     return {
@@ -676,7 +682,8 @@ def _job_sentences(
         metas = {
             int(rid): (m or {})
             for rid, m in conn.execute(
-                "SELECT ref_id, meta FROM refs WHERE ref_id = ANY(%s)",
+                "SELECT ref_id, meta FROM refs WHERE ref_id = ANY(%s) AND "
+                + secret_fence("refs", path="work_view"),
                 (ids,),
             ).fetchall()
         }
@@ -744,8 +751,9 @@ def _newest_job_lanes(store: Store, job_ids: list[int]) -> dict[int, str]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT DISTINCT ON (parent_id) parent_id, meta->>'lane' "
-            "FROM refs WHERE ref_id = ANY(%s) AND parent_id IS NOT NULL "
-            "ORDER BY parent_id, created_at DESC, ref_id DESC",
+            "FROM refs WHERE ref_id = ANY(%s) AND parent_id IS NOT NULL AND "
+            + secret_fence("refs", path="work_view")
+            + " ORDER BY parent_id, created_at DESC, ref_id DESC",
             (job_ids,),
         ).fetchall()
     return {int(pid): str(lane) for pid, lane in rows if lane}
@@ -1431,23 +1439,27 @@ def render_tree_ring(store: Store, ref_id: int) -> str:
     with store.pool.connection() as conn:
         children = conn.execute(
             "SELECT ref_id, title FROM refs WHERE parent_id = %s"
-            " AND kind IN ('todo', 'job') AND retired_at IS NULL"
-            " ORDER BY COALESCE(prio, 5), ref_id",
+            " AND kind IN ('todo', 'job') AND retired_at IS NULL AND "
+            + secret_fence("refs", path="work_view")
+            + " ORDER BY COALESCE(prio, 5), ref_id",
             (ref_id,),
         ).fetchall()
         siblings: list[tuple[Any, ...]] = []
         parent: tuple[Any, ...] | None = None
         if focus.parent_id is not None:
             parent = conn.execute(
-                "SELECT ref_id, title FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                "SELECT ref_id, title FROM refs WHERE ref_id = %s AND retired_at IS NULL AND "
+                + secret_fence("refs", path="work_view"),
                 (focus.parent_id,),
             ).fetchone()
-            siblings = conn.execute(
-                "SELECT ref_id, title FROM refs WHERE parent_id = %s AND ref_id <> %s"
-                " AND kind = 'todo' AND retired_at IS NULL"
-                " ORDER BY COALESCE(prio, 5), ref_id",
-                (focus.parent_id, ref_id),
-            ).fetchall()
+            if parent is not None:
+                siblings = conn.execute(
+                    "SELECT ref_id, title FROM refs WHERE parent_id = %s AND ref_id <> %s"
+                    " AND kind = 'todo' AND retired_at IS NULL AND "
+                    + secret_fence("refs", path="work_view")
+                    + " ORDER BY COALESCE(prio, 5), ref_id",
+                    (focus.parent_id, ref_id),
+                ).fetchall()
     if parent is None and not children:
         return ""
     ids = [int(r[0]) for r in children + siblings] + (

@@ -547,6 +547,7 @@ def _draft_dream_boost_seconds() -> float:
     return days * 86_400.0
 
 
+from precis.store._secret_scope import secret_fence, secret_fence_for
 from precis.store._tag_filter import (
     build_tag_filter,
     is_refuted_tag,
@@ -1075,6 +1076,7 @@ class ChunkStore:
         # Optional metadata preserves the integer API while exposing the executed leg.
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
+            secret_fence("r", path="lexical_count"),
             "r.retired_at IS NULL",
             # Ghost-chunk guard: a retired draft chunk keeps its embedding +
             # tsv but must never surface in search — else a stale handle is
@@ -1216,6 +1218,7 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        clauses.append(secret_fence("r", path="search"))
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1259,6 +1262,7 @@ class ChunkStore:
         "nothing exists" when the real cause is missing metadata.
         """
         clauses = [
+            secret_fence("r", path="yearless_count"),
             "r.retired_at IS NULL",
             "r.kind = 'paper'",
             "r.year IS NULL",
@@ -1430,6 +1434,7 @@ class ChunkStore:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
+        clauses.append(secret_fence("r", path="search"))
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1593,6 +1598,7 @@ class ChunkStore:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
+        clauses.append(secret_fence("r", path="search"))
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1690,6 +1696,7 @@ class ChunkStore:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
+        clauses.append(secret_fence("r", path="search"))
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1790,6 +1797,7 @@ class ChunkStore:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             where_params.extend(ex_params)
+        clauses.append(secret_fence("r", path="search"))
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -2010,6 +2018,7 @@ class ChunkStore:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
+        clauses.append(secret_fence("r", path="search"))
         if self._fence_speculative(tags, include_speculative):
             # Parameterless clause — safe under the double-splice of
             # ``where_extra`` into both the lex and sem CTEs below.
@@ -3763,7 +3772,8 @@ class ChunkStore:
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE c.chunk_id = %s AND c.ord >= 0 AND r.retired_at IS NULL",
+                "WHERE c.chunk_id = %s AND c.ord >= 0 AND r.retired_at IS NULL AND "
+                + secret_fence("r", path="chunk_text"),
                 (chunk_id,),
             ).fetchone()
         return str(row[0]) if row is not None and row[0] is not None else None
@@ -3936,6 +3946,7 @@ class ChunkStore:
         else:
             where = "c.ref_id = %s AND (c.meta->>'slug') = %s"
             params = (ref_id, slug)
+        where += " AND " + secret_fence_for("c.ref_id", path="get_chunk")
         with self.pool.connection() as conn:
             return _fetch_block_one(conn, where, params, with_embedding=with_embedding)
 
@@ -3952,7 +3963,11 @@ class ChunkStore:
         Excludes synthetic card chunks (ord < 0). ``pos_range=(lo, hi)``
         filters inclusively on both ends.
         """
-        clauses = ["c.ref_id = %s", "c.ord >= 0"]
+        clauses = [
+            "c.ref_id = %s",
+            "c.ord >= 0",
+            secret_fence_for("c.ref_id", path="list_chunks"),
+        ]
         params: list[Any] = [ref_id]
         if pos_range is not None:
             params.extend([pos_range[0], pos_range[1]])
@@ -3978,7 +3993,8 @@ class ChunkStore:
         with nullcontext(conn) if conn is not None else self.pool.connection() as c:
             return _fetch_chunks(
                 c,
-                "c.ref_id = %s AND c.chunk_kind = %s",
+                "c.ref_id = %s AND c.chunk_kind = %s AND "
+                + secret_fence_for("c.ref_id", path="list_chunks"),
                 [ref_id, chunk_kind],
                 with_embedding=False,
             )
@@ -4354,7 +4370,8 @@ class ChunkStore:
             row = conn.execute(
                 "SELECT count(*) FROM chunks c "
                 "JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE r.kind = %s AND r.retired_at IS NULL AND c.ord >= 0",
+                "WHERE r.kind = %s AND r.retired_at IS NULL AND c.ord >= 0 AND "
+                + secret_fence("r", path="chunk_count"),
                 (kind,),
             ).fetchone()
         assert row is not None

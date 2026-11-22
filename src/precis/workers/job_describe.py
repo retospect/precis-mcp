@@ -676,6 +676,8 @@ def quest_ids_for_structures(conn: Any, structure_ids: Iterable[int]) -> dict[in
     shares one request connection and must not check out a second pooled
     one while it is held.
     """
+    from precis.store._secret_scope import secret_fence_for
+
     ids = sorted({int(i) for i in structure_ids})
     if not ids:
         return {}
@@ -684,7 +686,8 @@ def quest_ids_for_structures(conn: Any, structure_ids: Iterable[int]) -> dict[in
         "SELECT rt.ref_id, t.value FROM ref_tags rt "
         "JOIN tags t ON t.tag_id = rt.tag_id "
         "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' "
-        "AND t.value LIKE 'quest:%%'",
+        "AND t.value LIKE 'quest:%%' AND "
+        + secret_fence_for("rt.ref_id", path="structure_quest_tags"),
         (ids,),
     ).fetchall():
         m = _QUEST_TAG_RE.match(str(value))

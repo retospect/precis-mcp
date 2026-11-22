@@ -9,54 +9,48 @@ Public surface:
     Ref, ChunkRow, Link, Tag, CacheEntry, ChunkInsert  — frozen row types
     Density, CacheFreshness, Namespace, Relation, ActorSlug  — type aliases
 
-Superseded-ref restoration removes only retirement, the merge pointer/dedup
-markers and incoming supersedes edges. Garden merges are refused so their
-reversal records survive for ``precis garden undo`` to restore original links.
-Identifier, content and ordinary-link
-transfers cannot be inferred backwards safely, so they and audit history stay
-put. The raw-id store door locks the loser and sets transaction-local operator
-trust itself; ``precis garden restore`` supplies the operator context and
-resolves the raw loser. No MCP/web restore door is exposed, and the store
-and worker layers never import handlers.
+The shared corpus uses server-side visibility predicates from
+:mod:`precis.store._secret_scope`. Apply them to the owning ref before
+sampling, ranking or aggregating a read. Link reads check both endpoints.
+Tag usage counts are evaluated per request because a privacy tag can
+change on another process between reads. Cache writes recheck visibility
+while holding the ref lock so a lookup miss cannot overwrite private data.
+Worker dispatch checks dependencies independently of board visibility to
+preserve work ordering. Direct SQL bypasses the store and remains subject
+to the standing restriction on reading private rows.
 
-Concept retirement locks the concept row, then its cards in id order,
-so card-link writers and concurrent retires serialize before the
-cascade reads each card's remaining live homes. A ``represents`` link
-re-checks both endpoints after its waits, refusing a re-home that
-lands behind the cascade.
+Superseded-ref restoration clears retirement, merge markers and incoming
+supersedes edges. Garden merges retain reversal records for ``precis garden undo``.
+Ambiguous identifier, content and link transfers stay put with audit history.
+The raw-id store path locks the loser and sets transaction-local operator
+trust. Only ``precis garden restore`` provides the operator entry point.
 
-Grouped ref counts deduplicate facet membership per ref before aggregating
-numeric JSON values. Repeated join rows from tag facets therefore cannot
-weight a ref's contribution, and absent or non-numeric JSON values leave
-the member count intact while reducing the numeric sample size.
+Concept retirement locks the concept then its cards in ID order. A
+``represents`` writer rechecks both endpoints after waiting so it cannot
+re-home a card behind the cascade.
+
+Grouped ref counts deduplicate facet membership before numeric aggregation.
+Missing or non-numeric JSON reduces the numeric sample size only.
 
 Lowercase paper facet filters match both the classifier's uppercase axis and
 literal tags with the same spelling, preserving existing manually tagged refs.
 The alias list follows the documented paper facets independently of the
 classifier registry, which also contains chunk and bookkeeping axes.
 
-Typing the seam: functions that need only a sliver of the Store take a
-role protocol from :mod:`precis.store.protocols` (import-light, no
-cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
-``Store | None``; ``Hub.live_store`` narrows it for store-backed paths.
+Narrow clients use the import-light role protocols in
+:mod:`precis.store.protocols`. ``Hub.live_store`` narrows the optional store.
 
-Paper re-keying lives in :mod:`precis.store.paper_rekey` so MCP and web
-edits share collision checks, audit history and PDF relocation. The key
-and reason commit together; filesystem moves remain best-effort, keeping
-the old storage path on failure because a database transaction cannot
-roll back a corpus filesystem operation.
+MCP and web share paper re-keying through :mod:`precis.store.paper_rekey`.
+The key and reason commit together. Failed PDF moves retain the prior
+storage path because filesystem operations sit outside database rollback.
 
-Stub acquisition refuses an identifier hit with substantial, disjoint title
-tokens. An identifier on a corrupt row must not silently claim another work
-is held; sparse or placeholder titles provide too little evidence to refuse.
-This guard preserves the row for operator repair rather than guessing which
-of its metadata, body and links belongs to the requested paper.
+Stub acquisition refuses identifier hits with substantial, disjoint title
+tokens, preserving potentially corrupt rows for operator repair. Sparse
+or placeholder titles provide too little evidence for refusal.
 
-Human byline edits keep rows with the same normalized name and ORCID at
-the same position. The edit form omits OpenAlex IDs, so a missing ID on
-an otherwise unchanged row preserves its index link alongside its
-source tier and verification stamp. Retention by position avoids moving
-identity evidence between co-authors with the same name.
+Human byline edits preserve OpenAlex linkage, source tier and verification
+stamp when normalized name, ORCID and position still match. The form omits
+OpenAlex IDs, and matching position keeps same-name coauthors distinct.
 
 Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered

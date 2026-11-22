@@ -55,6 +55,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.store._chunks_ops import _vec_param
 from precis.store._mappers import _lookup_chunk_id, _upsert_tag
+from precis.store._secret_scope import SECRET_PREFIX, secret_fence, secret_fence_for
 from precis.store.types import ActorSlug, Tag
 from precis.utils import job_footprint
 
@@ -119,29 +120,16 @@ def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
 
 # ── read-path caches (gr575088 db-thrash) ─────────────────────────────
 #
-#: ``tag_namespaces`` ran a DISTINCT over ``tags`` on every read-filter
-#: build (~77k scans in the review window), and ``suggest_tags`` /
-#: ``list_all_tags`` / ``search_tags_lexical`` each grouped ``ref_tags``
-#: and ``chunk_tags`` per call — a share of ref_tags' 109k seq scans.
-#: Both payloads are read-mostly, so they cache for a short TTL, keyed
-#: by database — a process can hold Stores against different DBs and
-#: must never serve one DB's roster to the other. Every store-layer tag
-#: write calls :func:`_bust_tag_caches` with its connection: the entries
-#: clear, ``gen`` bumps so an in-flight fill can't republish a stale
-#: snapshot behind the invalidation, and while the write's transaction
-#: is still open the connection is tracked — nothing publishes until it
-#: commits or rolls back, so uncommitted rows can't reach the cache and
-#: a pre-commit fill can't pin a snapshot the pending commit would
-#: invalidate. A writer in another process leaves staleness bounded by
-#: the TTL — acceptable for the advisory surfaces these feeds
-#: (autocomplete ordering, filter axes).
+#: The filter axis registry caches the global namespace vocabulary only.
+#: Usage queries need current attachment visibility, including tag changes
+#: committed by another process, so their results never enter this cache.
 _TAG_CACHE_TTL_S = 120.0
 
 
 class _TagDbCache:
     """One database's tag-cache state (keyed per :func:`_db_cache`)."""
 
-    __slots__ = ("dirty", "gen", "ns", "usage")
+    __slots__ = ("dirty", "gen", "ns")
 
     def __init__(self) -> None:
         #: Bumped by every invalidation — and again when a tracked writer
@@ -150,7 +138,6 @@ class _TagDbCache:
         #: commit boundary can't repopulate the entries it just missed.
         self.gen = 0
         self.ns: tuple[float, frozenset[str]] | None = None
-        self.usage: tuple[float, list[tuple[str, str, int]]] | None = None
         #: Connections whose tag writes are inside an open transaction.
         #: WeakSet: a connection dropped mid-transaction rolls back with
         #: the GC, so it must not pin the caches bypassed forever.
@@ -234,11 +221,9 @@ def _bust_tag_caches(conn: Connection) -> None:
             for s in _tag_caches.values():
                 s.gen += 1
                 s.ns = None
-                s.usage = None
             return
         state.gen += 1
         state.ns = None
-        state.usage = None
         if _txn_open(conn):
             state.dirty.add(conn)
 
@@ -273,45 +258,30 @@ def _tag_namespaces_cached(conn: Connection) -> frozenset[str]:
     return fresh
 
 
-def _tag_usage_roster(conn: Connection) -> list[tuple[str, str, int]]:
-    """``(namespace, value, usage_count)`` for every tag row, cached.
-
-    One UNIONed GROUP BY over ``ref_tags`` + ``chunk_tags`` per TTL per
-    process — the same rollup the discovery surfaces used to run per
-    call. Counts are cumulative attachments from both join tables,
-    matching the old ``rc.n + cc.n`` discovery SQL (``suggest_tags``
-    counted ref-level rows only before; chunk attachments are a
-    strictly better "most used" signal and keep one roster for all
-    three surfaces).
-    """
-    state = _db_cache(conn)
-    now = time.monotonic()
-    gen = 0
-    if state is not None:
-        with _tag_cache_lock:
-            _prune_dirty(state)
-            hit = state.usage
-            if hit is not None and now - hit[0] < _TAG_CACHE_TTL_S:
-                return hit[1]
-            gen = state.gen
+def _tag_usage_roster(
+    conn: Connection, *, needle: str = ""
+) -> list[tuple[str, str, int]]:
+    """Count visible ref and chunk attachments for matching tag values."""
+    ref_scope = secret_fence_for("rt.ref_id", path="tag_usage")
+    chunk_scope = secret_fence_for("c.ref_id", path="tag_usage")
     rows = conn.execute(
-        "SELECT t.namespace, t.value, COALESCE(u.n, 0)::int "
-        "FROM tags t "
-        "LEFT JOIN ("
-        "  SELECT tag_id, count(*) AS n FROM ("
-        "    SELECT tag_id FROM ref_tags "
-        "    UNION ALL "
-        "    SELECT tag_id FROM chunk_tags"
-        "  ) a GROUP BY tag_id"
-        ") u ON u.tag_id = t.tag_id"
+        "WITH matching_tags AS ("
+        "  SELECT tag_id, namespace, value FROM tags "
+        "  WHERE strpos(lower(namespace || ':' || value), %s) > 0"
+        "), attachments AS ("
+        "  SELECT rt.tag_id FROM matching_tags mt "
+        "  JOIN ref_tags rt USING (tag_id) WHERE " + ref_scope + "  UNION ALL "
+        "  SELECT ct.tag_id FROM matching_tags mt "
+        "  JOIN chunk_tags ct USING (tag_id) "
+        "  JOIN chunks c ON c.chunk_id = ct.chunk_id WHERE "
+        + chunk_scope
+        + ") SELECT mt.namespace, mt.value, count(*) "
+        "FROM attachments a JOIN matching_tags mt USING (tag_id) "
+        "GROUP BY mt.namespace, mt.value "
+        "ORDER BY count(*) DESC, mt.namespace, mt.value",
+        (needle,),
     ).fetchall()
-    fresh = [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
-    if state is not None:
-        with _tag_cache_lock:
-            _prune_dirty(state)
-            if gen == state.gen and not state.dirty:
-                state.usage = (now, fresh)
-    return fresh
+    return [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
 
 
 #: ``STATUS:`` values that end a job's run (mirrors
@@ -439,7 +409,11 @@ class TagsMixin:
 
         def _do(c: Connection) -> None:
             if pos is None:
-                # Ref-level tag.
+                # Serialize visibility changes with cache replacement and refresh.
+                if namespace == "OPEN" and value.startswith(SECRET_PREFIX):
+                    c.execute(
+                        "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,)
+                    )
                 if replace_prefix and namespace not in ("FLAG", "OPEN"):
                     c.execute(
                         "DELETE FROM ref_tags rt "
@@ -677,10 +651,7 @@ class TagsMixin:
             return []
         needle = q.lower()
         with self.pool.connection() as conn:
-            roster = _tag_usage_roster(conn)
-        hits = [t for t in roster if needle in f"{t[0]}:{t[1]}".lower()]
-        hits.sort(key=lambda t: (-t[2], t[0], t[1]))
-        return hits[:limit]
+            return _tag_usage_roster(conn, needle=needle)[:limit]
 
     def tag_namespaces(self) -> frozenset[str]:
         """Every ``tags.namespace`` in the table — the data-carried axes.
@@ -801,22 +772,16 @@ class TagsMixin:
             page = 1
         offset = (page - 1) * page_size
         if kind is None:
-            # Cached roster (gr575088) — every tag row with at least one
-            # ref-level or chunk-level attachment.
             with self.pool.connection() as conn:
-                roster = _tag_usage_roster(conn)
-            rows = [t for t in roster if t[2] > 0]
-            rows.sort(key=lambda t: (-t[2], t[0], t[1]))
-            return rows[offset : offset + page_size]
+                return _tag_usage_roster(conn)[offset : offset + page_size]
+        scope = secret_fence("r", path="tag_list")
         with self.pool.connection() as conn:
-            # Scope to refs of the given kind. Chunk-level
-            # attachments inherit the parent ref's kind.
             rows = conn.execute(
                 "SELECT t.namespace, t.value, COUNT(*) AS usage_count "
                 "FROM tags t "
                 "JOIN ref_tags rt ON rt.tag_id = t.tag_id "
                 "JOIN refs r ON r.ref_id = rt.ref_id "
-                "WHERE r.kind = %s AND r.retired_at IS NULL "
+                f"WHERE r.kind = %s AND r.retired_at IS NULL AND {scope} "
                 "GROUP BY t.namespace, t.value "
                 "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
                 "LIMIT %s OFFSET %s",
@@ -854,6 +819,7 @@ class TagsMixin:
         more useful number for an agent considering tag fragmentation.
         """
         with self.pool.connection() as conn:
+            scope = secret_fence("r", path="tag_metadata")
             tag_row = conn.execute(
                 "SELECT tag_id, created_at FROM tags "
                 "WHERE namespace = %s AND value = %s",
@@ -873,25 +839,30 @@ class TagsMixin:
             # hint. Join refs to compute live_count via a FILTER.
             agg = conn.execute(
                 "WITH all_attachments AS ( "
-                "  SELECT rt.created_at, r.retired_at "
+                "  SELECT rt.created_at, r.retired_at, "
+                f"         {scope} AS visible "
                 "    FROM ref_tags rt "
                 "    JOIN refs r ON r.ref_id = rt.ref_id "
                 "    WHERE rt.tag_id = %s "
                 "  UNION ALL "
-                "  SELECT ct.created_at, r.retired_at "
+                "  SELECT ct.created_at, r.retired_at, "
+                f"         {scope} AS visible "
                 "    FROM chunk_tags ct "
                 "    JOIN chunks c ON c.chunk_id = ct.chunk_id "
                 "    JOIN refs r ON r.ref_id = c.ref_id "
                 "    WHERE ct.tag_id = %s "
                 ") "
-                "SELECT COUNT(*), "
-                "       COUNT(*) FILTER (WHERE retired_at IS NULL), "
-                "       MIN(created_at), MAX(created_at) "
+                "SELECT COUNT(*) FILTER (WHERE visible), "
+                "       COUNT(*) FILTER (WHERE visible AND retired_at IS NULL), "
+                "       MIN(created_at) FILTER (WHERE visible), "
+                "       MAX(created_at) FILTER (WHERE visible), COUNT(*) "
                 "FROM all_attachments",
                 (tag_id, tag_id),
             ).fetchone()
             assert agg is not None
             count = int(agg[0])
+            if count == 0 and agg[4]:
+                return None
             live_count = int(agg[1])
             first_seen = agg[2] or tag_created_at
             last_seen = agg[3] or tag_created_at
@@ -909,7 +880,7 @@ class TagsMixin:
                 "       r.ref_id "
                 "FROM ref_tags rt "
                 "JOIN refs r ON r.ref_id = rt.ref_id "
-                "WHERE rt.tag_id = %s AND r.retired_at IS NULL "
+                f"WHERE rt.tag_id = %s AND r.retired_at IS NULL AND {scope} "
                 "ORDER BY rt.created_at DESC, r.ref_id DESC "
                 "LIMIT 5",
                 (tag_id,),
@@ -1013,12 +984,19 @@ class TagsMixin:
             page = 1
         offset = (page - 1) * page_size
         qv = _vec_param(query_vector)
+        ref_scope = secret_fence_for("rt.ref_id", path="tag_search")
+        chunk_scope = secret_fence_for("c.ref_id", path="tag_search")
         with self.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT namespace, value, "
+                "SELECT te.namespace, te.value, "
                 "       (vector <=> %s::vector) AS dist "
-                "FROM tag_embeddings "
-                "WHERE vector IS NOT NULL "
+                "FROM tag_embeddings te JOIN tags t USING (namespace, value) "
+                "WHERE vector IS NOT NULL AND ("
+                "  EXISTS (SELECT 1 FROM ref_tags rt WHERE rt.tag_id = t.tag_id "
+                f"          AND {ref_scope}) "
+                "  OR EXISTS (SELECT 1 FROM chunk_tags ct "
+                "             JOIN chunks c ON c.chunk_id = ct.chunk_id "
+                f"             WHERE ct.tag_id = t.tag_id AND {chunk_scope})) "
                 "ORDER BY vector <=> %s::vector ASC "
                 "LIMIT %s OFFSET %s",
                 (qv, qv, page_size, offset),
@@ -1049,13 +1027,7 @@ class TagsMixin:
         offset = (page - 1) * page_size
         needle = q.strip().lower()
         with self.pool.connection() as conn:
-            roster = _tag_usage_roster(conn)
-        # The old SQL matched ``namespace || ':' || value`` OR bare
-        # ``value`` — the first is a superset (value is inside it), so a
-        # plain substring check over the roster carries the same match.
-        hits = [t for t in roster if needle in f"{t[0]}:{t[1]}".lower()]
-        hits.sort(key=lambda t: (-t[2], t[0], t[1]))
-        return hits[offset : offset + page_size]
+            return _tag_usage_roster(conn, needle=needle)[offset : offset + page_size]
 
     def find_first_meta_for_open_tag(
         self,
@@ -1081,7 +1053,7 @@ class TagsMixin:
                 "  AND t.namespace = 'OPEN' "
                 "  AND t.value = %s "
                 "  AND r.retired_at IS NULL "
-                "LIMIT 1",
+                "  AND " + secret_fence("r", path="mint") + " LIMIT 1",
                 (kind, tag),
             ).fetchone()
         return None if row is None else (row[0] or {})

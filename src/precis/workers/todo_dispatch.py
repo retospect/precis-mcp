@@ -73,7 +73,7 @@ from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
-from precis.todo.blocked import open_blocked_by, undone_blocked_by
+from precis.todo.blocked import dispatch_blocked_by, undone_blocked_by
 from precis.workers.gripe_dispatch import (
     _ELSEWHERE_PROJECTS,
     _MIN_AGE_MINUTES,
@@ -285,7 +285,7 @@ def survey(store: Store) -> tuple[list[TodoPick], list[dict[str, Any]]]:
                 **_CLOSING_PARAMS,
             },
         ).fetchall()
-    blocked = open_blocked_by(store, [int(r[0]) for r in rows])
+    blocked = dispatch_blocked_by(store, [int(r[0]) for r in rows])
     # A split part sequences on its predecessor: only a live, done one
     # releases it — a dropped (``won't-do``, ``auto-timeout``) or retired
     # part holds the next, where an ordinary blocker clears on terminal.

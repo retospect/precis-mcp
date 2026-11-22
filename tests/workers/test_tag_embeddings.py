@@ -264,8 +264,7 @@ class TestTagCacheFreshness:
         assert ns in store.tag_namespaces()
 
     def test_suggest_tags_reflects_fresh_writes(self, store: Store) -> None:
-        # The usage roster cache busts on add_tag — a just-attached tag
-        # is suggestible on the very next call.
+        # A just-attached tag is suggestible on the very next call.
         from uuid import uuid4
 
         val = f"topic-{uuid4().hex[:8]}"
@@ -284,10 +283,8 @@ class TestTagCacheFreshness:
         store.add_tag(ref_id, Tag.open(val))
         assert ("OPEN", val, 1) in store.list_all_tags()
 
-    def test_caches_are_scoped_per_database(self, store: Store) -> None:
-        # td653050 review: the module-global pair mixed every Store the
-        # process held — now keyed by (dbname, host, port). A foreign
-        # database's cached state must not leak into this store's reads.
+    def test_namespace_cache_is_scoped_per_database(self, store: Store) -> None:
+        # Each Store sees only its own database's cached namespaces.
         import time
         from uuid import uuid4
 
@@ -295,7 +292,6 @@ class TestTagCacheFreshness:
 
         foreign = _tags_ops._TagDbCache()
         foreign.ns = (time.monotonic(), frozenset({"FOREIGN_NS"}))
-        foreign.usage = (time.monotonic(), [("OPEN", "foreign-tag", 99)])
         key = ("other_db", "otherhost", "5432")
         _tags_ops._tag_caches[key] = foreign
         try:
@@ -303,9 +299,6 @@ class TestTagCacheFreshness:
             store.add_tag(seed_ref(store), Tag.open(val))
             assert "FOREIGN_NS" not in store.tag_namespaces()
             assert "OPEN" in store.tag_namespaces()  # this DB's own data
-            roster = store.list_all_tags()
-            assert ("OPEN", "foreign-tag", 99) not in roster
-            assert any(v == val for _ns, v, _n in roster)
         finally:
             _tags_ops._tag_caches.pop(key, None)
 

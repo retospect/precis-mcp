@@ -155,6 +155,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from precis import icons as precis_icons
 from precis import profiles
+from precis.store._secret_scope import viewing_as_authenticated_user
 from precis.users import (
     PasswordRecord,
     PepperUnavailable,
@@ -1322,7 +1323,10 @@ class BasicAuthMiddleware:
         # this request makes (gr490266): web reads carry no revision
         # context, so without it listing filters see an unidentified caller.
         if fresh_cookie is None:
-            with profiles.viewing_as(user.login):
+            with (
+                profiles.viewing_as(user.login),
+                viewing_as_authenticated_user(user.abbrev),
+            ):
                 await self.app(scope, receive, send)
             return
 
@@ -1341,7 +1345,10 @@ class BasicAuthMiddleware:
                 )
             await send(message)
 
-        with profiles.viewing_as(user.login):
+        with (
+            profiles.viewing_as(user.login),
+            viewing_as_authenticated_user(user.abbrev),
+        ):
             await self.app(scope, receive, send_with_cookie)
 
     def _cookie_header(self, scope: Scope, login: str, tag: str) -> str:

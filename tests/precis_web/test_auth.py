@@ -22,6 +22,7 @@ from datetime import UTC
 
 from fastapi.testclient import TestClient
 
+from precis.store._secret_scope import viewer_handle
 from precis.users import PasswordRecord, WebUser, hash_password
 from precis_web.app import create_app
 from precis_web.auth import SESSION_COOKIE, SessionTokens
@@ -86,6 +87,25 @@ def _client(store: FakeUserStore, **cfg_kw) -> TestClient:
 def _basic(login: str, password: str) -> dict[str, str]:
     raw = base64.b64encode(f"{login}:{password}".encode()).decode()
     return {"Authorization": f"Basic {raw}"}
+
+
+def test_authenticated_browser_binds_secret_viewer() -> None:
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+
+    @app.get("/test-secret-viewer")
+    def viewer() -> str | None:
+        return viewer_handle()
+
+    client = TestClient(app)
+    assert client.get("/test-secret-viewer").status_code == 401
+    assert (
+        client.get("/test-secret-viewer", headers=_basic("reto", "pw")).json() == "rs"
+    )
+    assert client.get("/test-secret-viewer").json() == "rs"
 
 
 @pytest.fixture(autouse=True)

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from precis.store._secret_scope import secret_fence, secret_fence_for
 from precis.todo import views
 from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
@@ -137,6 +138,8 @@ def _lanes(store: Store, gripe_ids: list[int]) -> dict[int, str]:
             "SELECT DISTINCT ON (parent_id) parent_id, meta->>'lane' "
             "FROM refs WHERE parent_id = ANY(%s) AND kind = 'job' "
             "AND retired_at IS NULL "
+            f"AND {secret_fence('refs', path='gripe_lanes')} "
+            f"AND {secret_fence_for('parent_id', path='gripe_lanes')} "
             "ORDER BY parent_id, created_at DESC, ref_id DESC",
             (gripe_ids,),
         ).fetchall()

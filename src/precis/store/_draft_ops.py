@@ -49,6 +49,7 @@ from precis.store._draft_review_ops import (
     DraftReviewStore,
     ReviewableChunk,
 )
+from precis.store._secret_scope import secret_fence, secret_fence_for
 from precis.store.core import StoreCore
 from precis.utils import handle_registry
 from precis.utils.db_retry import retry_locked
@@ -937,7 +938,8 @@ class DraftStore(_AbbrevMixin):
             row = conn.execute(
                 "SELECT c.ref_id, c.ord, c.chunk_kind, c.text, r.kind "
                 "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE c.chunk_id = %s AND r.retired_at IS NULL",
+                "WHERE c.chunk_id = %s AND r.retired_at IS NULL AND "
+                + secret_fence("r", path="universal_chunk"),
                 (chunk_id,),
             ).fetchone()
         if row is None:
@@ -972,7 +974,8 @@ class DraftStore(_AbbrevMixin):
             rows = conn.execute(
                 "SELECT c.chunk_id, c.ref_id, c.ord, c.chunk_kind, c.text, r.kind "
                 "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-                "WHERE c.chunk_id = ANY(%s) AND r.retired_at IS NULL",
+                "WHERE c.chunk_id = ANY(%s) AND r.retired_at IS NULL AND "
+                + secret_fence("r", path="universal_chunk"),
                 (list(by_chunk_id),),
             ).fetchall()
         out: dict[str, dict[str, Any]] = {}
@@ -994,7 +997,8 @@ class DraftStore(_AbbrevMixin):
         chunk. ``None`` when no such chunk exists."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s AND "
+                + secret_fence_for("chunks.ref_id", path="chunk_text"),
                 (ref_id, ord),
             ).fetchone()
         return (row[0] or "") if row is not None else None
@@ -1021,18 +1025,19 @@ class DraftStore(_AbbrevMixin):
             where, key = "chunk_id = %s", parsed[2]
         else:
             where, key = "handle = %s", bare
+        scope = secret_fence_for("chunks.ref_id", path="draft_chunk")
         with self.pool.connection() as conn:
             row = conn.execute(
                 f"""SELECT chunk_id, handle, chunk_kind, text, pos,
                           parent_chunk_id, ref_id, meta, retired_at
-                     FROM chunks WHERE {where}""",
+                     FROM chunks WHERE {where} AND {scope}""",
                 (key,),
             ).fetchone()
             if row is None and where == "chunk_id = %s" and is_handle(bare):
                 row = conn.execute(
-                    """SELECT chunk_id, handle, chunk_kind, text, pos,
+                    f"""SELECT chunk_id, handle, chunk_kind, text, pos,
                               parent_chunk_id, ref_id, meta, retired_at
-                         FROM chunks WHERE handle = %s""",
+                         FROM chunks WHERE handle = %s AND {scope}""",
                     (bare,),
                 ).fetchone()
         if row is None:
@@ -1216,7 +1221,8 @@ class DraftStore(_AbbrevMixin):
                 "SELECT chunk_id, handle, chunk_kind, text, pos, "
                 "       parent_chunk_id, meta "
                 "  FROM chunks "
-                " WHERE ref_id = %s AND retired_at IS NULL AND pos IS NOT NULL",
+                " WHERE ref_id = %s AND retired_at IS NULL AND pos IS NOT NULL AND "
+                + secret_fence_for("chunks.ref_id", path="draft_reading_order"),
                 (ref_id,),
             ).fetchall()
         # children keyed by parent_chunk_id (None = root). A child whose

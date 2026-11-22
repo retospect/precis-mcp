@@ -3,6 +3,10 @@
 Neutral home for what used to be ``todo/views`` and
 ``todo/guards`` so workers need not import handler-private modules
 (import-linter contract in ``pyproject.toml``).
+
+Board reads apply ref visibility during recursive walks and before
+aggregation. A hidden intermediate ref ends the walk, so a visible
+descendant cannot reveal the path through it.
 """
 
 #: STATUS values that close a todo — the one set every "is this todo

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from precis.store._secret_scope import link_fence
 from precis.todo import blocker_terminal_sql
 
 if TYPE_CHECKING:
@@ -33,12 +34,8 @@ def open_blocked_by(
     rows = conn.execute(
         f"""SELECT l.src_ref_id, b.kind, b.ref_id FROM links l
             JOIN refs b ON b.ref_id = l.dst_ref_id
-            WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
-              AND b.retired_at IS NULL
-              AND NOT EXISTS (
-                SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
-                  AND t.value IN {blocker_terminal_sql()})
+            WHERE {_open_blocker_predicate()}
+              AND {link_fence(path="work_view")}
             ORDER BY l.src_ref_id, b.ref_id""",
         (list(ref_ids),),
     ).fetchall()
@@ -46,6 +43,37 @@ def open_blocked_by(
     for src, kind, dst in rows:
         grouped.setdefault(int(src), []).append((str(kind), int(dst)))
     return {src: tuple(targets) for src, targets in grouped.items()}
+
+
+def _open_blocker_predicate() -> str:
+    return f"""l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
+              AND b.retired_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                  AND t.value IN {blocker_terminal_sql()})"""
+
+
+def dispatch_blocked_by(
+    store: Store, ref_ids: list[int], *, conn: Connection | None = None
+) -> set[int]:
+    """Check dispatch eligibility against all open dependencies.
+
+    Dispatch returns only the supplied source ids. A private target must
+    still hold its dependent work, even when the board cannot name it.
+    """
+    if not ref_ids:
+        return set()
+    if conn is None:
+        with store.pool.connection() as read_conn:
+            return dispatch_blocked_by(store, ref_ids, conn=read_conn)
+    rows = conn.execute(
+        f"""SELECT DISTINCT l.src_ref_id FROM links l
+            JOIN refs b ON b.ref_id = l.dst_ref_id
+            WHERE {_open_blocker_predicate()}""",
+        (ref_ids,),
+    ).fetchall()
+    return {int(row[0]) for row in rows}
 
 
 def undone_blocked_by(
@@ -79,4 +107,4 @@ def undone_blocked_by(
     return {int(r[0]) for r in rows}
 
 
-__all__ = ["open_blocked_by", "undone_blocked_by"]
+__all__ = ["dispatch_blocked_by", "open_blocked_by", "undone_blocked_by"]

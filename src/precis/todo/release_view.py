@@ -39,6 +39,7 @@ from precis.plans import release as _release
 from precis.plans.gates import read_ci_verdicts, read_prod_head
 from precis.plans.nodes import DISPATCH_HOLD_KEY
 from precis.response import Response
+from precis.store._secret_scope import secret_fence
 from precis.todo import TERMINAL_TODO_STATUSES, views
 from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
@@ -137,14 +138,16 @@ def _subtree(store: Store, root: int) -> list[dict[str, Any]]:
     """Every live todo and job under ``root`` (root included), id order."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE walk(ref_id, kind, depth) AS (
                 SELECT ref_id, kind, 0 FROM refs
                  WHERE ref_id = %s AND kind = 'todo' AND retired_at IS NULL
+                   AND {secret_fence("refs", path="release_view")}
                 UNION ALL
                 SELECT r.ref_id, r.kind, w.depth + 1
                   FROM refs r JOIN walk w ON r.parent_id = w.ref_id
                  WHERE r.kind IN ('todo', 'job') AND r.retired_at IS NULL
+                   AND {secret_fence("r", path="release_view")}
                    AND w.kind = 'todo' AND w.depth < 10
             )
             SELECT r.ref_id, r.parent_id, r.kind, r.title, r.meta,
@@ -175,10 +178,11 @@ def _todo_rows(store: Store, ref_ids: list[int]) -> dict[int, dict[str, Any]]:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT ref_id, parent_id, kind, title, meta, created_at, updated_at
               FROM refs
              WHERE ref_id = ANY(%s) AND kind = 'todo' AND retired_at IS NULL
+               AND {secret_fence("refs", path="release_view")}
             """,
             (list(ref_ids),),
         ).fetchall()
@@ -444,11 +448,12 @@ def _wait_asks(store: Store, key: str, rn: str) -> list[int]:
     like = f"{_WAIT_TAG}:{key}"
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.ref_id FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t USING (tag_id)
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="release_view")}
                AND t.namespace = 'OPEN'
                AND (t.value = %s OR t.value LIKE %s)
                AND NOT EXISTS (

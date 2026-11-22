@@ -92,8 +92,9 @@ account IDs. Web routes own consent and token exchange; `oauth_transport`
 publishes MCP resource discovery. Request identity and dispatch revalidation
 keep OAuth grants separate from personal-token IDs and infrastructure callers.
 Capabilities distinguish explicit full MCP access (including writes and shared
-services) from private-kind-scoped connections. User identity does not create
-per-document ACLs for the shared corpus.
+services) from private-kind-scoped connections. Refs are shared by default.
+The store uses authenticated user identity to gate reads of refs carrying
+an active `user_secret:<handle>` tag. See [user-secret tags](conventions/user-secret-tag.md).
 
 `mcp_identity` also stores the third bearer class (gr595554): client
 capability tokens (`precis_cap_`), per-consumer credentials on

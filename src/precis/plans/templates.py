@@ -47,7 +47,7 @@ from precis.plans.todo_chain import (
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
-from precis.todo.blocked import open_blocked_by, undone_blocked_by
+from precis.todo.blocked import dispatch_blocked_by, undone_blocked_by
 from precis.todo.guards import (
     check_ask_meta,
     check_no_cycle,
@@ -1790,7 +1790,7 @@ def mint_todo_build(
                 "the split's parts build in order; wait for the one before it"
             )
         else:
-            blockers = open_blocked_by(m.store, [todo_id], conn=m.conn)
+            blockers = dispatch_blocked_by(m.store, [todo_id], conn=m.conn)
             blocked_what = "has an open blocker"
             blocked_next = (
                 "resolve the blocked-by targets before offering the todo again"

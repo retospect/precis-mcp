@@ -61,6 +61,7 @@ from precis.store._mappers import (
     _chunk_noise_clauses,
     _row_to_ref,
 )
+from precis.store._secret_scope import secret_fence
 from precis.store._stub_predicate import (
     ACQUIRE_RESTAMP_MIN_HOURS,
     MANUAL_DOWNLOAD_ID_KINDS,
@@ -849,7 +850,8 @@ class RefsMixin:
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug, r.pdf_role, "
             "r.meta->>'converted_from_kind' "
-            "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL"
+            "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL AND "
+            + secret_fence("r", path="resolve")
         )
 
         def _do(c: Connection) -> ResolvedHandle | None:
@@ -1072,7 +1074,8 @@ class RefsMixin:
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
             " LIMIT 1) AS slug, r.pdf_role, r.meta->>'converted_from_kind' "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
-            "WHERE c.chunk_id = %s AND r.retired_at IS NULL"
+            "WHERE c.chunk_id = %s AND r.retired_at IS NULL AND "
+            + secret_fence("r", path="resolve")
         )
 
         def _do(c: Connection) -> ResolvedHandle | None:
@@ -2139,7 +2142,10 @@ class RefsMixin:
         kinds. The caller's ``isinstance`` of ``id`` picks the path.
         """
         if isinstance(id, int):
-            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
+            sql = (
+                f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
+                f" AND {secret_fence('refs', path='get')}"
+            )
             params: tuple[Any, ...] = (kind, id)
             if not include_deleted:
                 sql += " AND retired_at IS NULL"
@@ -2169,7 +2175,10 @@ class RefsMixin:
             if ident_row is None:
                 return None
             ref_id = int(ident_row[0])
-            sql = f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
+            sql = (
+                f"SELECT {_REFS_COLS} FROM refs WHERE kind = %s AND ref_id = %s"
+                f" AND {secret_fence('refs', path='get')}"
+            )
             if not include_deleted:
                 sql += " AND retired_at IS NULL"
             row = c.execute(sql, (kind, ref_id)).fetchone()
@@ -2196,7 +2205,7 @@ class RefsMixin:
                 "  AND ri.id_value = %s "
                 "  ORDER BY (r2.retired_at IS NULL) DESC, "
                 "           (ri.id_kind = 'cite_key') DESC LIMIT 1"
-                ") AND retired_at IS NULL",
+                ") AND retired_at IS NULL AND " + secret_fence("refs", path="mint"),
                 (slug,),
             ).fetchone()
         return _row_to_ref(row) if row is not None else None
@@ -2262,8 +2271,9 @@ class RefsMixin:
                 "SELECT pi.ref_id FROM ref_identifiers pi "
                 "JOIN refs r ON r.ref_id = pi.ref_id "
                 "WHERE pi.id_kind = 'doi' AND pi.id_value LIKE %s ESCAPE '\\' "
-                "AND r.kind = 'paper' AND r.retired_at IS NULL "
-                "ORDER BY pi.ref_id LIMIT %s",
+                "AND r.kind = 'paper' AND r.retired_at IS NULL AND "
+                + secret_fence("r", path="doi_prefix")
+                + " ORDER BY pi.ref_id LIMIT %s",
                 (pattern, limit),
             ).fetchall()
         return [int(r[0]) for r in rows]
@@ -2329,7 +2339,10 @@ class RefsMixin:
         ids = list(ref_ids)
         if not ids:
             return {}
-        sql = f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = ANY(%s)"
+        sql = (
+            f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = ANY(%s)"
+            f" AND {secret_fence('refs', path='get')}"
+        )
         if not include_deleted:
             sql += " AND retired_at IS NULL"
         with nullcontext(conn) if conn is not None else self.pool.connection() as c:
@@ -2377,7 +2390,7 @@ class RefsMixin:
         frag, frag_params = profiles.visible_sql(
             "refs", profiles.resolve_viewer(cast("Store", self), viewer)
         )
-        sql += f"AND {frag} "
+        sql += f"AND {frag} AND {secret_fence('refs', path='residue')} "
         params.extend(frag_params)
         if exclude_id is not None:
             sql += "AND ref_id != %s "
@@ -2491,8 +2504,9 @@ class RefsMixin:
         sql = (
             f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
             "WHERE r.kind = %s AND r.retired_at IS NULL "
-            "AND r.meta->>%s = %s "
-            "ORDER BY r.created_at DESC LIMIT 1"
+            "AND r.meta->>%s = %s AND "
+            + secret_fence("r", path="mint")
+            + " ORDER BY r.created_at DESC LIMIT 1"
         )
         with self.pool.connection() as conn:
             row = conn.execute(sql, (kind, key, value)).fetchone()
@@ -4565,6 +4579,7 @@ class RefsMixin:
         clauses = [
             "r.retired_at IS NULL",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="list"),
         ]
         params: list[Any] = []
         if kind is not None:
@@ -4721,6 +4736,7 @@ class RefsMixin:
             "r.kind = ANY(%s)",
             "r.retired_at IS NOT NULL" if deleted else "r.retired_at IS NULL",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="list"),
         ]
         params: list[Any] = [list(kinds)]
         if profiles.KIND in kinds:
@@ -4947,8 +4963,9 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id, title, parent_id FROM refs "
-                "WHERE kind = 'folder' AND retired_at IS NULL "
-                "ORDER BY lower(title)"
+                "WHERE kind = 'folder' AND retired_at IS NULL AND "
+                + secret_fence("refs", path="folders")
+                + " ORDER BY lower(title)"
             ).fetchall()
         return [
             (int(r[0]), r[1] or "", int(r[2]) if r[2] is not None else None)
@@ -5192,6 +5209,7 @@ class RefsMixin:
         clauses = [
             "r.retired_at IS NULL",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="list"),
             "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
         params: list[Any] = [lexical_q(q)]
@@ -5264,6 +5282,7 @@ class RefsMixin:
         clauses = [
             "r.retired_at IS NULL",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="list"),
             "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
         params: list[Any] = [lexical_q(q)]
@@ -5358,6 +5377,7 @@ class RefsMixin:
         clauses = [
             "r.retired_at IS NULL",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="list"),
         ]
         params: list[Any] = []
         if kind is not None:
@@ -5525,6 +5545,7 @@ class RefsMixin:
         clauses.append(
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')"
         )
+        clauses.append(secret_fence("r", path="facets"))
         where = " AND ".join(clauses)
 
         select_exprs: list[str] = []

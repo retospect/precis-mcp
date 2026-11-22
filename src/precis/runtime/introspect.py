@@ -9,10 +9,8 @@ dispatch-level views serve the same questions over the MCP surface:
 * ``search(kind=K, view='meta')`` — the meta keys in use on live refs
   of one kind, with their jsonb type, the count of refs carrying the
   key, and a bounded example value. ``args={'key': 'params'}`` drills
-  one level into an object-valued key. The inventory changes on the
-  timescale of a feature, not a call, so the render is cached
-  in-process (``_META_VIEW_TTL_S``); the cached-at timestamp is shown
-  so a stale read is honest.
+  one level into an object-valued key. Counts and examples use the current
+  viewer's visible refs, so the rendered inventory is evaluated per request.
 * ``search(kind=K, view='tags')`` — per axis/value counts over
   ``ref_tags`` for live refs of one kind. ``status=`` narrows the
   counted set to one STATUS value; ``tags=`` filters it by the normal
@@ -45,21 +43,18 @@ tag row, so a closed-then-reopened ref counts only its latest close.
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.errors import BadInput, Unsupported
 from precis.response import Response
 from precis.runtime._shared import RuntimeShape
+from precis.store._secret_scope import secret_fence
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import _KIND_STATUS_VALUES, _STATUS_VALUES_ANY_KIND
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
 
-#: In-process TTL for the meta-key inventory — it describes the
-#: corpus's *shape*, which changes on deploy/feature timescales.
-_META_VIEW_TTL_S = 900.0
 #: Rows rendered by view='meta' (key × type pairs can exceed key count).
 _META_VIEW_LIMIT = 60
 #: Rows rendered by view='tags' (axis × value pairs).
@@ -106,7 +101,7 @@ def _flow_duration(seconds: Any) -> str:
 
 
 class IntrospectionMixin(RuntimeShape):
-    """``view='meta'`` / ``view='tags'`` / ``view='flow'`` render + cache."""
+    """Render the per-kind metadata, tag and flow views."""
 
     # ── dispatch entry point ────────────────────────────────────
 
@@ -184,26 +179,24 @@ class IntrospectionMixin(RuntimeShape):
                 f"args= keys {unknown!r} not supported with view='meta'",
                 options=["key", "limit"],
             )
-        cache_key = (kind, str(key) if key is not None else None)
-        cached = self._meta_cache_get(cache_key)
-        if cached is not None:
-            return Response(body=cached)
-
+        scope = secret_fence("r", path="introspect")
         assert self.store is not None  # gate above
         with self.store.pool.connection() as conn:
             total = conn.execute(
-                "SELECT count(*) FROM refs WHERE kind = %s AND retired_at IS NULL "
-                "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM 'search')",
+                "SELECT count(*) FROM refs r WHERE r.kind = %s AND r.retired_at IS NULL "
+                "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM 'search') "
+                f"AND {scope}",
                 (kind,),
             ).fetchone()
             if key is None:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT e.key, jsonb_typeof(e.value) AS typ, count(*) AS n,
                            min(left(e.value::text, %s)) AS example
-                      FROM refs r, jsonb_each(coalesce(r.meta, '{}'::jsonb)) e
+                      FROM refs r, jsonb_each(coalesce(r.meta, '{{}}'::jsonb)) e
                      WHERE r.kind = %s AND r.retired_at IS NULL
                        AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
+                       AND {scope}
                      GROUP BY e.key, jsonb_typeof(e.value)
                      ORDER BY n DESC, e.key
                      LIMIT %s
@@ -212,13 +205,14 @@ class IntrospectionMixin(RuntimeShape):
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT e.key, jsonb_typeof(e.value) AS typ, count(*) AS n,
                            min(left(e.value::text, %s)) AS example
                       FROM refs r,
                            jsonb_each(r.meta -> %s) e
                      WHERE r.kind = %s AND r.retired_at IS NULL
                        AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
+                       AND {scope}
                        AND jsonb_typeof(r.meta -> %s) = 'object'
                      GROUP BY e.key, jsonb_typeof(e.value)
                      ORDER BY n DESC, e.key
@@ -259,24 +253,7 @@ class IntrospectionMixin(RuntimeShape):
                 ]
             ).lstrip("\n")
         )
-        body = "\n".join(lines)
-        self._meta_cache_put(cache_key, body)
-        return Response(body=body)
-
-    def _meta_cache_get(self, key: tuple[str, str | None]) -> str | None:
-        entry = getattr(self, "_meta_view_cache", {}).get(key)
-        if entry is None or entry[0] < time.monotonic():
-            return None
-        return entry[1]
-
-    def _meta_cache_put(self, key: tuple[str, str | None], body: str) -> None:
-        cache = getattr(self, "_meta_view_cache", None)
-        if cache is None:
-            cache = {}
-            self._meta_view_cache = cache
-        if len(cache) > 256:
-            cache.clear()
-        cache[key] = (time.monotonic() + _META_VIEW_TTL_S, body)
+        return Response(body="\n".join(lines))
 
     # ── view='tags' ─────────────────────────────────────────────
 
@@ -298,6 +275,7 @@ class IntrospectionMixin(RuntimeShape):
             "r.retired_at IS NULL",
             "r.kind = %s",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="introspect"),
         ]
         params: list[Any] = [kind]
         if filter_tags:
@@ -527,6 +505,7 @@ class IntrospectionMixin(RuntimeShape):
             "r.retired_at IS NULL",
             "r.kind = %s",
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+            secret_fence("r", path="introspect"),
         ]
         params: list[Any] = [kind]
         if filter_tags:

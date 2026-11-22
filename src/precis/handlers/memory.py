@@ -228,6 +228,7 @@ from precis.response import Response
 from precis.store import Tag
 from precis.store._links_ops import MACHINE_EDGE_META_KEYS, canonical_relation
 from precis.store._search_cut import semantic_fold_distance
+from precis.store._secret_scope import secret_fence
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry, search_trace
 from precis.utils.db_retry import retry_locked
@@ -2359,6 +2360,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 "SELECT count(*) FROM refs r "
                 "WHERE r.kind = 'memory' AND r.retired_at IS NULL "
                 "AND r.created_at > now() - interval '24 hours' "
+                f"AND {secret_fence('r', path='memory_count')} "
                 "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
                 "  ON t.tag_id = rt.tag_id WHERE rt.ref_id = r.ref_id "
                 "  AND t.namespace = 'OPEN' AND t.value = ANY(%s))",
@@ -2395,6 +2397,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 " AND ce.embedder = %s AND ce.status = 'ok' "
                 "JOIN refs r ON r.ref_id = c.ref_id AND r.retired_at IS NULL "
                 "WHERE c.chunk_kind = 'memory_body' AND c.retired_at IS NULL "
+                f"AND {secret_fence('r', path='memory_count')} "
                 "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
                 "  ON t.tag_id = rt.tag_id WHERE rt.ref_id = r.ref_id "
                 "  AND t.namespace = 'OPEN' AND t.value = ANY(%s)) "

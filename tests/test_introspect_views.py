@@ -75,21 +75,26 @@ class TestMetaView:
         )
         assert "is not an object" in body
 
-    def test_cached_within_ttl(
+    def test_meta_inventory_rechecks_visibility(
         self, runtime_with_store: PrecisRuntime, store: Store
     ) -> None:
-        _mk(store, "job", {"job_type": "sweep"})
-        args = {"kind": "job", "view": "meta"}
-        first = runtime_with_store.dispatch("search", args)
-        _mk(store, "job", {"job_type": "fix", "newkey": 1})
-        second = runtime_with_store.dispatch("search", args)
-        # Same body — the inventory is cached, so the new key doesn't
-        # appear until TTL expiry (or cache clear).
-        assert second == first
-        assert "newkey" not in second
-        runtime_with_store._meta_view_cache.clear()
-        third = runtime_with_store.dispatch("search", args)
-        assert "newkey" in third
+        from precis.store.revision_context import revision_context
+
+        ref = _mk(store, "job", {"private_key": 1, "params": {"private_value": 2}})
+        modes: tuple[dict[str, dict[str, str]], ...] = (
+            {},
+            {"__extras__": {"key": "params"}},
+        )
+        with revision_context(actor="user:bob"):
+            for extra in modes:
+                args = {"kind": "job", "view": "meta", **extra}
+                assert "private_" in runtime_with_store.dispatch("search", args)
+            store.add_tag(ref, Tag.open("user_secret:alice"))
+            for extra in modes:
+                args = {"kind": "job", "view": "meta", **extra}
+                body = runtime_with_store.dispatch("search", args)
+                assert "0 live refs" in body
+                assert "private_" not in body
 
 
 class TestTagsView:

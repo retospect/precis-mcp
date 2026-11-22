@@ -785,13 +785,20 @@ class CacheBackedHandler(Handler):
             )
 
         # True miss — fresh ref creation.
+        slug = self._slug_for(key)
+        self.store.check_cache_fill(
+            kind=self.spec.kind,
+            slug=slug,
+            provider=self.provider,
+            request_hash=request_hash,
+        )
         result = self._stamp_inject_scan(self._fetch_guarded(key))
         ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
         if not result.cacheable:
             ttl_to_write = 0
         ref, cache = self.store.put_cache_entry(
             kind=self.spec.kind,
-            slug=self._slug_for(key),
+            slug=slug,
             title=result.title,
             body_blocks=self._split_body_blocks(result.body_blocks),
             provider=self.provider,

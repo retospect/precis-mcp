@@ -300,6 +300,21 @@ def _src_blocked(store: Store) -> int:
     return src
 
 
+def test_survey_respects_private_blocker(store: Store) -> None:
+    from precis.store.revision_context import revision_context
+    from precis.todo.blocked import open_blocked_by
+
+    src = _todo(store)
+    blocker = _todo(store, "private dependency", tags=())
+    store.add_tag(blocker, Tag.open("user_secret:alice"))
+    store.add_link(src_ref_id=src, dst_ref_id=blocker, relation="blocked-by")
+    with revision_context(actor="user:bob"):
+        assert open_blocked_by(store, [src]) == {}
+        eligible, skipped = td.survey(store)
+        assert eligible == []
+        assert skipped == [{"todo": src, "reason": "blocked"}]
+
+
 def _src_hold_tag(store: Store) -> int:
     return _todo(store, tags=(FACTORY_BUILD_TAG, "hold:no-dispatch"))
 

@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.plans.gates import MIN_SHA_LEN, read_prod_head
 from precis.response import Response
+from precis.store._secret_scope import link_fence, secret_fence, secret_fence_for
 from precis.todo import blocker_terminal_sql
 from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
@@ -315,14 +316,16 @@ def _chain(store: Store, ref_id: int) -> list[int]:
     """``ref_id`` then its ancestors up ``refs.parent_id``, nearest first."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE chain AS (
                 SELECT ref_id, parent_id, 0 AS depth FROM refs
                  WHERE ref_id = %s AND retired_at IS NULL
+                   AND {secret_fence("refs", path="asks_view")}
                 UNION ALL
                 SELECT r.ref_id, r.parent_id, c.depth + 1 FROM refs r
                   JOIN chain c ON r.ref_id = c.parent_id
                  WHERE r.retired_at IS NULL AND c.depth < %s
+                   AND {secret_fence("r", path="asks_view")}
             )
             SELECT ref_id FROM chain ORDER BY depth
             """,
@@ -339,11 +342,12 @@ def _quest_in_chain(
         return None
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT l.src_ref_id, q.ref_id, q.title, q.prio
               FROM links l JOIN refs q ON q.ref_id = l.dst_ref_id
              WHERE l.src_ref_id = ANY(%s) AND l.relation = 'serves'
                AND q.kind = 'quest' AND q.retired_at IS NULL
+               AND {link_fence(path="asks_view")}
             """,
             (chain,),
         ).fetchall()
@@ -374,10 +378,11 @@ def _open_tags(store: Store, ids: list[int]) -> dict[int, list[str]]:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT rt.ref_id, t.value
               FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
              WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN'
+               AND {secret_fence_for("rt.ref_id", path="asks_view")}
             """,
             (ids,),
         ).fetchall()
@@ -428,6 +433,7 @@ def _blocked_counts(store: Store, ids: list[int]) -> dict[int, int]:
               FROM links l JOIN refs s ON s.ref_id = l.src_ref_id
              WHERE l.dst_ref_id = ANY(%s) AND l.relation = 'blocked-by'
                AND s.retired_at IS NULL
+               AND {link_fence(path="asks_view")}
                AND s.resolved_at IS NULL
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
@@ -530,7 +536,7 @@ def _ask_question(store: Store, ref_id: int, tags: list[str]) -> str:
 def _ref_rows(store: Store) -> list[AskRow]:
     with store.pool.connection() as conn:
         cands = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at,
                    r.updated_at,
                    COALESCE(
@@ -542,6 +548,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
                          'open') AS status
               FROM refs r
              WHERE r.kind IN ('todo', 'gripe', 'alert') AND r.retired_at IS NULL
+               AND {secret_fence("r", path="asks_view")}
                -- only alerts ever stamp resolved_at: a resolved alert
                -- leaves the list even without a terminal STATUS tag
                AND r.resolved_at IS NULL
@@ -599,13 +606,16 @@ def _ref_rows(store: Store) -> list[AskRow]:
         quest = _quest_in_chain(store, chain)
         thread = _thread_of(tags, chain, store)
         blocks = _ask_blocks(ask)
-        if blocks is not None and (quest is None or not thread):
-            # A parentless question sits where the slice it blocks sits.
+        if blocks is not None:
             blocked_chain = _chain(store, blocks)
-            quest = quest or _quest_in_chain(store, blocked_chain)
-            thread = thread or _thread_of(
-                _open_tags(store, [blocks]).get(blocks, []), blocked_chain, store
-            )
+            if not blocked_chain:
+                blocks = None
+            elif quest is None or not thread:
+                # A parentless question sits where the visible slice it blocks sits.
+                quest = quest or _quest_in_chain(store, blocked_chain)
+                thread = thread or _thread_of(
+                    _open_tags(store, [blocks]).get(blocks, []), blocked_chain, store
+                )
         options = (ask or {}).get("options")
         rows.append(
             AskRow(
@@ -819,11 +829,12 @@ def _pending_release_rows(store: Store) -> list[AskRow]:
     not a chat answer."""
     with store.pool.connection() as conn:
         cands = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.meta -> 'release_target', r.meta -> 'release',
                    r.created_at
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="asks_view")}
                AND r.meta ? 'release_target'
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2
@@ -1038,10 +1049,11 @@ def coordinator_model(store: Store) -> list[AskRow]:
     Oldest first — the longest wait surfaces first."""
     with store.pool.connection() as conn:
         cands = conn.execute(
-            """
+            f"""
             SELECT r.ref_id, r.title, r.created_at, r.updated_at
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="asks_view")}
                AND r.resolved_at IS NULL
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id

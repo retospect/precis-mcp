@@ -33,6 +33,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from precis.store._secret_scope import link_fence, secret_fence, secret_fence_for
 from precis.workers.job_describe import (
     PLATFORM_UPKEEP,
     quest_id_from_meta,
@@ -77,12 +78,16 @@ def live_jobs(store: Store, *, conn: Any | None = None) -> list[dict[str, Any]]:
     """
     with _connect(store, conn) as c:
         rows = c.execute(
-            """
-            SELECT r.ref_id, r.parent_id, r.title, t.value, r.meta
+            f"""
+            SELECT r.ref_id,
+                   CASE WHEN {secret_fence_for("r.parent_id", path="work_quest")}
+                        THEN r.parent_id END,
+                   r.title, t.value, r.meta
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'job' AND r.retired_at IS NULL
+               AND {secret_fence("r", path="work_quest")}
                AND t.namespace = 'STATUS'
                AND t.value = ANY(%s)
              ORDER BY r.ref_id
@@ -120,26 +125,30 @@ def _resolve(
         return quests, todo_parent
     ids = [int(i) for i in job_ids]
     jobs = {
-        int(r[0]): {"parent_id": r[1], "meta": r[2] or {}}
+        int(r[0]): r[1] or {}
         for r in conn.execute(
-            "SELECT ref_id, parent_id, meta FROM refs WHERE ref_id = ANY(%s)",
+            "SELECT ref_id, meta FROM refs WHERE ref_id = ANY(%s) AND "
+            + secret_fence("refs", path="work_quest"),
             (ids,),
         ).fetchall()
     }
     ancestors = conn.execute(
-        """
+        f"""
         WITH RECURSIVE up(job_id, ref_id, depth) AS (
             SELECT j.ref_id, p.ref_id, 1
               FROM refs j
               JOIN refs p ON p.ref_id = j.parent_id
              WHERE j.ref_id = ANY(%s)
+               AND {secret_fence("j", path="work_quest")}
                AND p.kind = 'todo' AND p.retired_at IS NULL
+               AND {secret_fence("p", path="work_quest")}
             UNION ALL
             SELECT u.job_id, p.ref_id, u.depth + 1
               FROM up u
               JOIN refs cur ON cur.ref_id = u.ref_id
               JOIN refs p ON p.ref_id = cur.parent_id
              WHERE p.kind = 'todo' AND p.retired_at IS NULL
+               AND {secret_fence("p", path="work_quest")}
                AND u.depth < %s
         )
         SELECT job_id, ref_id, depth FROM up
@@ -159,7 +168,8 @@ def _resolve(
             "SELECT l.src_ref_id, l.dst_ref_id FROM links l "
             "JOIN refs q ON q.ref_id = l.dst_ref_id "
             "WHERE l.src_ref_id = ANY(%s) AND l.relation = 'serves' "
-            "AND q.kind = 'quest' AND q.retired_at IS NULL",
+            "AND q.kind = 'quest' AND q.retired_at IS NULL AND "
+            + link_fence(path="work_quest"),
             (ancestor_ids,),
         ).fetchall():
             serves_by_ancestor.setdefault(int(src), []).append(int(dst))
@@ -167,28 +177,29 @@ def _resolve(
         conn,
         [
             sid
-            for j in jobs.values()
-            if (sid := structure_ref_id_from_meta(j["meta"])) is not None
+            for meta in jobs.values()
+            if (sid := structure_ref_id_from_meta(meta)) is not None
         ],
     )
     meta_qids = {
         qid
-        for j in jobs.values()
-        if (qid := quest_id_from_meta(j["meta"], structure_quests)) is not None
+        for meta in jobs.values()
+        if (qid := quest_id_from_meta(meta, structure_quests)) is not None
     }
     live_meta_quests = (
         {
             int(r[0])
             for r in conn.execute(
                 "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
-                "AND kind = 'quest' AND retired_at IS NULL",
+                "AND kind = 'quest' AND retired_at IS NULL AND "
+                + secret_fence("refs", path="work_quest"),
                 (sorted(meta_qids),),
             ).fetchall()
         }
         if meta_qids
         else set()
     )
-    for jid, job in jobs.items():
+    for jid, meta in jobs.items():
         resolved: int | None = None
         for _depth, anc in sorted(chain.get(jid, [])):
             served = serves_by_ancestor.get(anc)
@@ -196,7 +207,7 @@ def _resolve(
                 resolved = min(served)
                 break
         if resolved is None:
-            qid = quest_id_from_meta(job["meta"], structure_quests)
+            qid = quest_id_from_meta(meta, structure_quests)
             if qid in live_meta_quests:
                 resolved = qid
         quests[jid] = resolved

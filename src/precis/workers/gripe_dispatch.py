@@ -199,7 +199,7 @@ from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
-from precis.todo.blocked import open_blocked_by
+from precis.todo.blocked import dispatch_blocked_by
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
@@ -1547,7 +1547,7 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         # gripe next pass until the blocker closes. The claim re-gates
         # it too (``executors._common.build_blocked_holds`` follows the
         # chain's ``related-to`` edge back to the gripe).
-        if open_blocked_by(store, [c.gripe_id]):
+        if dispatch_blocked_by(store, [c.gripe_id]):
             log.info(
                 "gripe_dispatch: gr%d blocked since the pick — no mint",
                 c.gripe_id,
