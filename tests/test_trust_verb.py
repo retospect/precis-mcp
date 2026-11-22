@@ -460,6 +460,28 @@ def test_kg_review_reason_format_is_refused(
     assert _stamp(store, "ref", mid) == ("generated", "hunch", 1)
 
 
+@pytest.mark.parametrize("verdict", ["ok", "fixed"])
+def test_verdict_as_confidence_points_at_the_reason_token(
+    runtime_with_store: PrecisRuntime, store: Store, verdict: str
+) -> None:
+    """gr759085: ``fixed``/``ok`` in ``confidence`` is refused with the
+    kg-review reason shape that carries the verdict."""
+    mid = _put_memory(runtime_with_store, "verdict probe")
+    sha = _sha(store, "ref", mid)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "mode": "trust",
+            "__extras__": {"trust": {"confidence": verdict, "expected_sha": sha}},
+        },
+    )
+    assert "kg-review verdict, not a trust confidence" in out, out
+    assert f"kg-review:<model>:<YYYY-MM-DD>:{verdict}" in out, out
+    assert _stamp(store, "ref", mid) == ("generated", "hunch", 1)
+
+
 def test_kg_review_format_is_refused_on_put(runtime_with_store: PrecisRuntime) -> None:
     out = runtime_with_store.dispatch(
         "put",

@@ -104,6 +104,15 @@ def pop_trust_payload(args: dict[str, Any], extras_key: str) -> dict[str, Any] |
                 options=[o for o in TRUST_ORIGINS if o != "human"],
             )
     confidence = payload.get("confidence")
+    if confidence in ("ok", "fixed"):
+        # gr759085: a review verdict is the kg-review reason's last token.
+        raise BadInput(
+            f"{confidence!r} is a kg-review verdict, not a trust confidence",
+            next="args={'trust': {'confidence': 'considered', 'reason': "
+            f"'kg-review:<model>:<YYYY-MM-DD>:{confidence}', "
+            "'expected_sha': '<sha>'}}",
+            options=["considered", "hunch"],
+        )
     if confidence is not None and confidence not in ("considered", "hunch"):
         raise BadInput(
             f"trust confidence is 'considered' or 'hunch', not {confidence!r}",
