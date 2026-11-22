@@ -34,6 +34,7 @@ from precis.taproot.canon import (
     NotClaim,
     Verdict,
 )
+from precis.taproot.directed import QualifyResult
 from precis.taproot.reground import AtomVerifyResult
 from precis.taproot.seniority import is_claim_hub
 from tests.workers._helpers import seed_chunk, seed_ref
@@ -174,6 +175,43 @@ def _verify_by_passage(mapping: dict[str, set[str]]):
         ]
 
     return _v
+
+
+def _qualify_echo(proposed: str, passage: str) -> QualifyResult:
+    """Fake ``QualifyFn``: the passage licenses the atom as-is — the claim is
+    echoed verbatim (same sentence, so block-map keys still hit) and the quote
+    IS the passage text, so the verbatim-in-passage invariant holds."""
+    return QualifyResult(
+        supported=True, claim=_claim(proposed), quote=passage, reason="test"
+    )
+
+
+def _qualify_rewrite(rewritten: str):
+    """Fake ``QualifyFn``: the passage licenses only ``rewritten`` — the
+    qualified sentence replaces the draft-span wording (the "statement drawn
+    from the source" step)."""
+
+    def _q(proposed: str, passage: str) -> QualifyResult:
+        return QualifyResult(
+            supported=True,
+            claim=_claim(rewritten),
+            quote=passage,
+            reason="test rewrite",
+        )
+
+    return _q
+
+
+def _qualify_decline(_proposed: str, _passage: str) -> QualifyResult:
+    """Fake ``QualifyFn``: the passage asserts the content but will not
+    license it as a claim statement — the atom is refused like an unverified one."""
+    return QualifyResult(supported=False, claim=None, quote=None, reason="test decline")
+
+
+def _qualify_unavailable(_proposed: str, _passage: str) -> QualifyResult:
+    from precis.taproot.directed import QualifyUnavailable
+
+    raise QualifyUnavailable("dispatch dead")
 
 
 # ── segmentation (pure) ──────────────────────────────────────────────────
@@ -501,6 +539,8 @@ def test_plan_new_claim_writes_nothing(draft: DraftHandler, hub: Hub) -> None:
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert [p.action for p in result.plans] == ["new"]
@@ -563,6 +603,8 @@ def test_apply_mints_hub_and_rewrites_prose(draft: DraftHandler, hub: Hub) -> No
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -619,6 +661,8 @@ def test_apply_converges_onto_existing_hub(draft: DraftHandler, hub: Hub) -> Non
         block_fn=_block_hit(hub_id, "Ribbons are semiconducting."),
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,  # high-confidence same → no escalation
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -674,6 +718,8 @@ def test_apply_attach_evidence_raise_leaves_prose_untouched(
         block_fn=_block_hit(hub_id, "Ribbons are semiconducting."),
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,  # high-confidence same → no escalation
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -723,6 +769,8 @@ def test_apply_later_supporter_failure_reports_partial_not_prose_left(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -766,6 +814,8 @@ def test_apply_extraction_unavailable_is_retryable_not_no_claim(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -794,6 +844,8 @@ def test_apply_collapses_adjacent_cites_to_one_hub(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -832,6 +884,8 @@ def test_apply_collapse_space_separated_cites_leaves_no_artifact(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     fi = result.plans[0].hub_ref_id
@@ -855,6 +909,8 @@ def test_apply_leaves_no_claim_span_untouched(draft: DraftHandler, hub: Hub) -> 
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "no-claim"
@@ -876,6 +932,8 @@ def test_apply_skips_unresolvable_pc(draft: DraftHandler, hub: Hub) -> None:
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "unresolved"
@@ -916,6 +974,8 @@ def test_apply_needs_review_files_todo_and_leaves_prose(
         block_fn=_block_hit(hub_id, "Ribbons are semiconducting."),
         judge_fn=lambda a, b: _verdict("same", 0.40),  # low-confidence same
         merge_confirm_fn=lambda a, b: _verdict("different", 0.9),  # not confirmed
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "needs_review"
@@ -936,6 +996,8 @@ def test_apply_is_idempotent_at_draft_level(draft: DraftHandler, hub: Hub) -> No
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     # The draft's current body chunk now reads [fi…]; a fresh backfill of it
@@ -952,6 +1014,8 @@ def test_apply_is_idempotent_at_draft_level(draft: DraftHandler, hub: Hub) -> No
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert second.plans == []
 
@@ -976,6 +1040,8 @@ def test_plan_stub_pa_is_fetch_first_and_writes_nothing(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert [p.action for p in result.plans] == ["stub-fetch-first"]
@@ -1001,6 +1067,8 @@ def test_apply_stub_pa_skipped_no_write_prose_untouched(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "stub-fetch-first"
@@ -1027,6 +1095,8 @@ def test_plan_fetched_pa_default_is_reground(draft: DraftHandler, hub: Hub) -> N
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     p = result.plans[0]
@@ -1036,11 +1106,14 @@ def test_plan_fetched_pa_default_is_reground(draft: DraftHandler, hub: Hub) -> N
     assert _finding_count(hub.live_store) == before  # dry-run wrote nothing
 
 
-def test_apply_ref_level_pa_mints_ungrounded_and_rewrites(
+def test_apply_ref_level_pa_digs_down_and_grounds_the_edge(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    # AC3: fetched [pa] + --ref-level → ref-level (ungrounded) edge, [pa]→[fi].
-    paper, pa = _fetched_pa(hub.live_store)
+    # AC3 (dig-down ruling, gr720460): fetched [pa] + --ref-level promotes in
+    # one step, but only after the dig-down locates a source passage: the
+    # evidence edge grounds at that passage (never a whole-paper ungrounded
+    # edge), the dug pc handle is named on the edge meta, and [pa]→[fi].
+    paper, pa, chunk_id = _fetched_pa_c(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
 
     result = apply_chunk(
@@ -1053,22 +1126,108 @@ def test_apply_ref_level_pa_mints_ungrounded_and_rewrites(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
     assert plan.action == "new"
-    assert plan.ungrounded is True
-    assert result.n_ungrounded == 1
+    assert result.n_unbacked == 0
+    assert plan.dug_sources == [f"pc{chunk_id}"]
     assert plan.hub_ref_id is not None
     assert is_claim_hub(hub.live_store, plan.hub_ref_id)
     # prose rewritten pa → fi
     assert result.rewritten_text is not None
     assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
     assert "[pa" not in result.rewritten_text
-    # the evidence edge is ref-level (whole-paper, no grounding chunk)
-    assert _edge_is_ref_level(
+    # The evidence edge is CHUNK-GROUNDED at the located passage, never
+    # ref-level — and its meta names the dug pc handle with the pa arm fingerprint.
+    assert not _edge_is_ref_level(
         hub.live_store, paper_ref_id=paper, hub_ref_id=plan.hub_ref_id
     )
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (paper, plan.hub_ref_id),
+        ).fetchone()
+    assert row is not None
+    meta = row[0] or {}
+    assert meta["source_handle"] == f"pc{chunk_id}"
+    assert meta["arm"] == "pa"
+    assert meta["origin"] == "draft-backfill"
+
+
+def test_apply_ref_level_pa_unbacked_reports_the_sentence(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The dig-down ruling's no-source case (gr720460): a ref-level [pa] whose
+    # paper yields NO supporting passage mints NOTHING — the draft sentence is
+    # reported unbacked and the prose is left alone. Locate runs BEFORE
+    # extraction: an unbacked sentence never reaches the extractor.
+    _paper, pa = _fetched_pa(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=True,
+        extract_fn=_never_called,  # never reached — locate refuses first
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_none,
+        verify_batch_fn=_never_called,
+        qualify_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "unbacked"
+    assert plan.unbacked == "Ribbons are semiconducting"
+    assert plan.hub_ref_id is None
+    assert plan.dug_sources == [None]
+    assert result.n_unbacked == 1
+    assert result.rewritten_text is None  # prose left as-is
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_apply_ref_level_pa_partial_locate_still_digs_down(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # One supporter locates a passage, the other doesn't: the mint proceeds
+    # over the located passage (per-atom supporter scoping), the missing
+    # supporter is named None in dug_sources — no unbacked verdict when ANY
+    # source grounds the sentence.
+    _paper1, pa1, chunk_id = _fetched_pa_c(hub.live_store, paper_title="grounds")
+    _paper2, pa2, _c2 = _fetched_pa_c(
+        hub.live_store, paper_title="silent", text="NOMATCH nothing here"
+    )
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa1}][{pa2}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=True,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_by_sentinel,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "new"
+    assert result.n_unbacked == 0
+    assert plan.dug_sources == [f"pc{chunk_id}", None]
+    assert plan.hub_ref_id is not None
+    assert f"[fi{plan.hub_ref_id}]" in (result.rewritten_text or "")
 
 
 def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
@@ -1095,6 +1254,8 @@ def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     # One group (same-kind fold), skipped as mixed.
@@ -1140,6 +1301,8 @@ def test_apply_fetched_pa_default_regrounds_pa_to_pc(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -1217,6 +1380,8 @@ def test_apply_reground_records_claim_passage_citation(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "reground"
@@ -1261,6 +1426,8 @@ def test_apply_reground_nomatch_records_no_citation(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_none,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "reground-nomatch"
@@ -1293,6 +1460,8 @@ def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,  # the fetched [pa] group locates its passage
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     by_kind = {(p.group.kind, tuple(p.group.handles)): p.action for p in result.plans}
@@ -1330,6 +1499,9 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
             block_fn=_block_none,
             judge_fn=_never_called,
             merge_confirm_fn=_never_called,
+            locate_fn=_locate_first,
+            verify_batch_fn=_verify_all,
+            qualify_fn=_qualify_echo,
         )
 
     # The hub + edge committed; the draft prose still reads [pa…] (grounded).
@@ -1359,6 +1531,8 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert _finding_count(hub.live_store) == 1  # no duplicate hub
@@ -1394,6 +1568,8 @@ def test_apply_reground_multi_supporter_rewrites_all_to_pc(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -1431,6 +1607,8 @@ def test_apply_reground_multi_supporter_partial_nomatch_skips_whole_run(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_by_sentinel,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert len(result.plans) == 1  # one folded run
@@ -1478,6 +1656,8 @@ def test_apply_reground_partial_unresolved_handle_skips_whole_run(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,  # never reached — the run is skipped pre-route
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert len(result.plans) == 1  # one folded run
@@ -1517,6 +1697,8 @@ def test_apply_reground_nomatch_single_leaves_pa(draft: DraftHandler, hub: Hub) 
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_none,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "reground-nomatch"
@@ -1561,6 +1743,8 @@ def test_apply_figure_pointer_caption_is_no_claim_never_extracts(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "no-claim"
@@ -1591,6 +1775,8 @@ def test_apply_figure_pointer_caption_pa_arm_also_no_claim(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_never_called,  # never reached — forced no-claim first
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "no-claim"
@@ -1616,6 +1802,8 @@ def test_apply_non_figure_chunk_with_reproduced_from_still_extracts(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "new"
@@ -1643,6 +1831,8 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert r1.plans[0].action == "reground"
     assert f"[pc{chunk_id}]" in (r1.rewritten_text or "")
@@ -1663,13 +1853,14 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = r2.plans[0]
     assert plan.group.kind == "pc"
     assert plan.action == "new"
     assert plan.hub_ref_id is not None
-    assert plan.ungrounded is False  # chunk-grounded, not ref-level
     assert f"[fi{plan.hub_ref_id}]" in (r2.rewritten_text or "")
     # The evidence edge grounds at the passage chunk (src_chunk_id NOT NULL).
     assert not _edge_is_ref_level(
@@ -1740,6 +1931,7 @@ def test_apply_decomposes_multi_atom_mints_hubs_links_and_evidence_on_atoms_only
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -1792,6 +1984,7 @@ def test_apply_mints_no_hub_from_the_draft_sentence_without_own_evidence(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     titles = _finding_titles(hub.live_store)
@@ -1848,6 +2041,7 @@ def test_apply_needs_review_atom_contributes_no_conjunct_link(
         judge_fn=lambda a, b: _verdict("same", 0.40),  # low-confidence same
         merge_confirm_fn=lambda a, b: _verdict("different", 0.9),  # not confirmed
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -1893,6 +2087,7 @@ def test_apply_multi_atom_fanout_supporters_attach_to_every_atom(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -1924,6 +2119,7 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     atom_hub_ids = first.plans[0].cite_hub_ids
     assert len(atom_hub_ids) == 2
@@ -1949,6 +2145,7 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan2 = second.plans[0]
@@ -2000,6 +2197,7 @@ def test_apply_not_claims_stay_on_the_plan_with_no_memo_hub(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -2029,6 +2227,7 @@ def test_apply_mints_no_composite_whichever_way_it_was_written(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert len(result.plans[0].cite_hub_ids) == 2
@@ -2086,6 +2285,7 @@ def test_apply_two_atoms_converging_on_one_hub_cite_it_once(
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert planned.plans[0].action == "attach"
     assert planned.plans[0].cite_hub_ids == [existing]
@@ -2101,6 +2301,7 @@ def test_apply_two_atoms_converging_on_one_hub_cite_it_once(
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].cite_hub_ids == [existing]
@@ -2141,6 +2342,7 @@ def test_apply_all_attach_dry_run_names_every_hub(
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert planned.plans[0].action == "attach"
@@ -2179,6 +2381,7 @@ def test_apply_rerun_after_partial_landing_reuses_sibling_and_files_no_second_to
         judge_fn=lambda a, b: _verdict("same", 0.40),  # low-confidence same
         merge_confirm_fn=lambda a, b: _verdict("different", 0.9),  # not confirmed
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert first.plans[0].action == "needs_review"
     assert first.rewritten_text is None
@@ -2199,6 +2402,7 @@ def test_apply_rerun_after_partial_landing_reuses_sibling_and_files_no_second_to
         judge_fn=lambda a, b: _verdict("same", 0.40 if a == "Atom one." else 0.99),
         merge_confirm_fn=lambda a, b: _verdict("different", 0.9),
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert second.plans[0].action == "needs_review"
@@ -2235,6 +2439,7 @@ def test_cli_backfill_report_shows_a_lone_atoms_not_claims(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert result.n_not_claims == 1
 
@@ -2248,6 +2453,47 @@ def test_cli_backfill_report_shows_a_lone_atoms_not_claims(
         "not a claim: 'enables next-gen tech' (forward-looking)"
         in capsys.readouterr().out
     )
+
+
+def test_cli_backfill_report_shows_an_unbacked_sentence(
+    draft: DraftHandler, hub: Hub, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The no-source case of the dig-down ruling: the CLI report is where an
+    # unbacked sentence surfaces (JSON fields + text line), and the chunk
+    # rollup counts it.
+    from precis.cli.taproot import _print_backfill
+
+    _paper, pa = _fetched_pa(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=True,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_none,
+        verify_batch_fn=_never_called,
+        qualify_fn=_never_called,
+    )
+    assert result.n_unbacked == 1
+
+    _print_backfill([result], "json", applied=True)
+    chunk = json.loads(capsys.readouterr().out)[0]
+    assert chunk["n_unbacked"] == 1
+    group = chunk["groups"][0]
+    assert group["action"] == "unbacked"
+    assert group["unbacked"] == "Ribbons are semiconducting"
+    assert group["hub_ref_id"] is None
+
+    _print_backfill([result], "text", applied=True)
+    out = capsys.readouterr().out
+    assert "1 unbacked sentence(s)" in out
+    assert "unbacked: 'Ribbons are semiconducting' —" in out
 
 
 # ── prose-less grounding is refused (gripe 245842) ───────────────────────
@@ -2274,6 +2520,8 @@ def test_apply_pc_on_front_matter_chunk_is_ungroundable(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "ungroundable"
@@ -2305,10 +2553,52 @@ def test_apply_pc_on_retired_chunk_is_ungroundable(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "ungroundable"
     assert result.rewritten_text is None
+    assert _links_count(hub.live_store) == links_before
+
+
+def test_apply_pc_group_with_no_live_passage_is_unbacked(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pc arm's defensive race (gr720460 dig-down gate): every cited chunk
+    # retired between the ungroundable gate and the passage read — simulated
+    # by the passage read returning None for the live handle. The ruling is
+    # the same as the [pa] arm's: mint nothing, report the sentence unbacked.
+    # (Before, this path fell through and minted unverified draft-worded
+    # atoms — the exact mint the ruling forbids.)
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+    findings_before = _finding_count(hub.live_store)
+    links_before = _links_count(hub.live_store)
+
+    monkeypatch.setattr(
+        "precis.taproot.backfill._supporter_passages", lambda *_a, **_k: [None]
+    )
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_never_called,
+        qualify_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "unbacked"
+    assert plan.unbacked == "Ribbons are semiconducting"
+    assert plan.hub_ref_id is None
+    assert result.n_unbacked == 1
+    assert result.rewritten_text is None  # prose left as-is
+    assert _finding_count(hub.live_store) == findings_before
     assert _links_count(hub.live_store) == links_before
 
 
@@ -2334,6 +2624,8 @@ def test_apply_pc_run_drops_only_the_prose_less_supporter(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -2374,6 +2666,8 @@ def test_reground_locate_never_sees_the_front_matter_chunk(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,  # picks chunks[0] — the pool's first entry
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "reground"
@@ -2403,6 +2697,8 @@ def test_reground_on_a_front_matter_only_paper_is_nomatch(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         locate_fn=_locate_first,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "reground-nomatch"
@@ -2462,6 +2758,8 @@ def test_plan_pa_tagged_unusable_body_is_fetch_first_like_a_stub(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert [p.action for p in result.plans] == ["stub-fetch-first"]
 
@@ -2489,6 +2787,8 @@ def test_apply_chunk_mint_cap_refuses_over_mining_one_chunk(
             judge_fn=_never_called,
             merge_confirm_fn=_never_called,
             mint_cap=cap,
+            verify_batch_fn=_verify_all,
+            qualify_fn=_qualify_echo,
         )
 
     first = _run(
@@ -2530,6 +2830,7 @@ def test_apply_decomposition_mints_the_explains_edge_between_atom_hubs(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -2577,6 +2878,7 @@ def test_split_atom_unverified_by_any_passage_refuses_the_group(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_only({"Atom one."}),
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -2585,9 +2887,13 @@ def test_split_atom_unverified_by_any_passage_refuses_the_group(
     assert _finding_count(hub.live_store) == findings_before
 
 
-def test_lone_atom_skips_verification(draft: DraftHandler, hub: Hub) -> None:
-    # "each split atom" — a lone atom's claim text IS the cited span, so
-    # verify_batch_fn is never dispatched for it.
+def test_lone_atom_is_verified_and_qualified_before_minting(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The dig-down ruling (gr720460) knows no "lone atom" exemption: a
+    # single-atom extraction is still verified against the cited passage and
+    # qualified against it — the hub's statement is what the source licenses,
+    # never the draft span's wording on trust.
     _paper, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
 
@@ -2600,10 +2906,128 @@ def test_lone_atom_skips_verification(draft: DraftHandler, hub: Hub) -> None:
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
-        verify_batch_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
-    assert result.plans[0].action == "new"
+    plan = result.plans[0]
+    assert plan.action == "new"
+    assert plan.atom_supporters is not None  # the lone atom WAS verified
+    assert plan.atom_quotes and all(q for q in plan.atom_quotes)
+
+
+def test_lone_atom_unverified_by_its_passage_refuses_the_group(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The cited passage does not assert the lone atom's content: no mint, no
+    # rewrite — the same refusal a split-span conjunct gets.
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        # The refusal happens before the cascade: block/judge never run.
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_only(set()),
+        qualify_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "unverified"
+    assert result.rewritten_text is None
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_lone_atom_qualify_decline_refuses_the_group(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The passage asserts the content but will not license it as a claim
+    # statement: refused exactly like an unverified atom (gr720460 dig-down).
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_decline,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "unverified"
+    assert result.rewritten_text is None
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_lone_atom_qualify_unavailable_is_retryable_not_a_verdict(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A qualification dispatch failure (infra) is the retryable
+    # verify-unavailable plan — never silently minted, never a refusal.
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+    findings_before = _finding_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_unavailable,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "verify-unavailable"
+    assert result.rewritten_text is None
+    assert _finding_count(hub.live_store) == findings_before
+
+
+def test_hub_statement_is_the_qualified_sentence_not_the_draft_span(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The ruling's core: the minted hub's statement is what the SOURCE
+    # licenses (the qualified sentence), never the draft span's wording.
+    _paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_rewrite("The measured ribbons remain semiconducting."),
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "new"
+    assert plan.hub_ref_id is not None
+    assert _finding_titles(hub.live_store)[plan.hub_ref_id] == (
+        "The measured ribbons remain semiconducting."
+    )
 
 
 def test_split_atom_verification_scopes_evidence_to_its_own_passage(
@@ -2630,6 +3054,7 @@ def test_split_atom_verification_scopes_evidence_to_its_own_passage(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_by_passage({t1: {"Atom one."}, t2: {"Atom two."}}),
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]
@@ -2669,6 +3094,7 @@ def test_verify_dispatch_failure_is_retryable_not_a_verdict(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_boom,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "verify-unavailable"
@@ -2709,6 +3135,8 @@ def test_campaign_search_converges_where_ann_missed(
         judge_fn=lambda a, b: _verdict("same", 0.99),
         merge_confirm_fn=_never_called,
         campaign="test-camp",
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert planned.plans[0].action == "attach"
     assert planned.plans[0].hub_ref_id == int(existing["hub_ref_id"])
@@ -2722,6 +3150,8 @@ def test_campaign_search_converges_where_ann_missed(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
     assert plain.plans[0].action == "new"
 
@@ -2749,6 +3179,7 @@ def test_apply_refuses_extraction_fragments(draft: DraftHandler, hub: Hub) -> No
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_never_called,
+        qualify_fn=_qualify_echo,
     )
 
     assert result.plans[0].action == "bad-claim"
@@ -2778,6 +3209,7 @@ def test_apply_bad_atoms_dropped_good_atoms_still_mint(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
+        qualify_fn=_qualify_echo,
     )
 
     plan = result.plans[0]

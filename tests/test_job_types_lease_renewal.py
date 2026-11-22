@@ -54,7 +54,7 @@ def backfill_seen(monkeypatch: pytest.MonkeyPatch) -> list[int]:
         seen.append(chunk_id)
         return SimpleNamespace(
             plans=[],
-            n_ungrounded=0,
+            n_unbacked=0,
             n_explains_skipped=0,
             n_not_claims=0,
             rewritten_text=None,

@@ -2670,7 +2670,7 @@ async function sdConvertCites(dc) {
     const groups = (d.chunks || []).reduce((n, c) => n + (c.groups ? c.groups.length : 0), 0);
     if (!groups) { window.alert('no living-cite conversions found here.'); return; }
     const preview = (d.chunks || [])
-      .map((c) => `chunk ${c.chunk_id}: ${c.n_claims} claim(s), ${c.n_ungrounded} ungrounded`)
+      .map((c) => `chunk ${c.chunk_id}: ${c.n_claims} claim(s), ${c.n_unbacked} unbacked`)
       .join('\n');
     if (!window.confirm(`Convert to living cites?\n\n${preview}\n\nApply now?`)) return;
     const r2 = await fetch(`/drafts/{{ ident }}/cites/convert`, {

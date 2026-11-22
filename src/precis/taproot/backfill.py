@@ -12,10 +12,42 @@ Two citation forms, from the two grammars in draft prose:
   then re-ground. **fetched** (>0 blocks) defaults to a ``[pa]``->``[pc]``
   **re-ground**: a ``LocateFn`` (lexical pick + Tier.MEDIUM confirm) picks
   the supporting passage, then the existing ``[pc]`` path promotes it
-  (two-step). ``ref_level=True`` instead promotes **ref-level**
-  (``ungrounded`` per ``seed_claim_hub``'s counter) and rewrites ``[pa]``
-  -> ``[fi<hub>]`` directly, for whole-paper claims with no single
-  grounding passage.
+  (two-step). ``ref_level=True`` instead promotes **directly** in one step
+  — but the dig-down ruling (below) still applies: the arm locates the
+  supporting passage first and grounds the evidence edge there; it never
+  mints a whole-paper (``ungrounded``) edge.
+
+**The dig-down ruling** (gr720460, ruled 2026-11-20): a hub minted here
+must carry its own evidence edge to a source chunk, and its statement must
+be **drawn from that source** — never taken from the draft prose. Every
+arm enforces this mechanically before any mint:
+
+1. **Dig down to the source passage.** The ``[pc]`` arm's passage is the
+   named chunk. The ref-level ``[pa]`` arm locates each fetched
+   supporter's grounding passage (:data:`LocateFn` over the paper's
+   groundable chunks). When no passage resolves at all, **nothing is
+   minted and the draft sentence is reported unbacked** (action
+   ``"unbacked"``, counted in the job summary, printed by the CLI) — an
+   unbacked sentence never becomes a finding.
+2. **Verify every atom against the supporter passages**
+   (:func:`_verify_atoms_against_supporters`) — lone atoms included: a
+   conjunct no cited passage asserts is refused (``"unverified"``), never
+   minted with a wrong evidence edge.
+3. **Qualify each verified atom against the passage that verified it**
+   (injectable ``qualify_fn``, default
+   :func:`precis.taproot.directed.qualify_claim`): the claim bends
+   one-way to what the source actually licenses, anchored on a
+   mechanically-checked verbatim quote. The **qualified** sentence — not
+   the draft span's wording — is what the cascade judges and the hub
+   states. A passage that asserts the atom's content but will not
+   license it as a claim is refused like an unverified atom.
+
+Finding creation here is a proposal class under the shared judge
+(me731915): the mechanical precondition (steps 1-3) is enforced in code;
+the judge (``dedup_judge`` -> :func:`~precis.taproot.canon.place`) then
+rules whether the proposal converges (``attach``), mints (``new`` /
+``new_contradicts``), or is held for review (``needs_review`` -> one
+review todo, never an auto-applied risky merge).
 
 **Grounding prose is a precondition, both arms** (gripe 245842): a title/
 author front-matter block says "this paper exists", not "this passage
@@ -66,17 +98,6 @@ neither places nor mints it: a split span's cite run rewrites to one
 hub to hold their memo; they ride the plan and are printed by the CLI
 (json and text) and counted in the job summary. Other callers of
 ``apply_extraction`` (chase, migrate) keep their composites.
-
-What this does **not** establish, so nobody reads more into it:
-
-* Atom statements are still extracted from the draft span, not written
-  from the source passage — the ruling's "statement drawn from the
-  source" is unmet for atoms.
-* Per-atom verification against a cited passage runs only for a split
-  span on the ``[pc]`` path. A lone atom is not verified, and a
-  ref-level ``[pa]`` promote has no passage to verify against, so a
-  split span promoted that way mints unverified atoms on whole-paper
-  (``ungrounded``) edges.
 """
 
 from __future__ import annotations
@@ -118,6 +139,7 @@ from precis.utils.sentences import split_sentences
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.taproot.directed import QualifyResult
 
 __all__ = [
     "ChunkBackfill",
@@ -222,10 +244,18 @@ class GroupPlan:
     #: ``"bad-claim"`` — every extracted claim failed the shape check
     #: (verbatim copy of its chunk sentence, lowercase start, or leading
     #: "and" — an extraction fragment, not a claim);
-    #: ``"unverified"`` — a split extraction produced an atom no cited
-    #: supporter's own grounding passage asserts; the whole group is
+    #: ``"unverified"`` — an extracted atom no cited supporter's own
+    #: grounding passage asserts (or the passage asserts the content but
+    #: declines to license it as a claim statement); the whole group is
     #: refused (no write, prose left) rather than silently dropping a
     #: conjunct of the sentence the cite run grounds;
+    #: ``"unbacked"`` — the dig-down found no source passage at all (a
+    #: ref-level ``[pa]`` promote whose cited papers locate no supporting
+    #: passage, or a ``[pc]`` group every one of whose chunks retired
+    #: between the ungroundable gate and the passage read): mint nothing,
+    #: prose left, and :attr:`unbacked` carries
+    #: the draft sentence for the unbacked report — an unbacked sentence
+    #: never becomes a finding (gr720460, ruled 2026-11-20);
     #: ``"verify-unavailable"`` — the atom-verification dispatch itself
     #: failed (infra); retryable, prose left as-is;
     #: ``"extract-unavailable"`` — the extraction LLM dispatch failed (infra,
@@ -252,9 +282,17 @@ class GroupPlan:
     #: Every atom's ``(claim, Placement)`` pair from :func:`_run_cascade`'s
     #: per-atom cascade tail, in extraction order — handed to
     #: :func:`precis.taproot.hub.apply_extraction` as its ``atoms=`` arg.
-    #: Empty for no-claim / unresolved / ungroundable / stub-fetch-first /
-    #: reground(-nomatch).
+    #: For a group that passed the dig-down gate the claim is the
+    #: **qualified** sentence (drawn from the verifying passage), never
+    #: the draft span's wording. Empty for no-claim / unresolved /
+    #: ungroundable / stub-fetch-first / reground(-nomatch) / unbacked.
     atom_plans: list[tuple[CanonicalClaim, Placement]] = field(default_factory=list)
+    #: The verbatim grounding quote :func:`precis.taproot.directed.qualify_claim`
+    #: returned for each atom in :attr:`atom_plans` (aligned by index) — the
+    #: mechanical proof the statement is drawn from the source passage.
+    #: ``None`` per atom when qualification did not run (same plans as above
+    #: leave :attr:`atom_plans` empty).
+    atom_quotes: list[str | None] = field(default_factory=list)
     #: Rejected conjuncts (:func:`extract_claim`'s ``not_claims``) — a
     #: report only: the backfill mints no composite hub to hold their audit
     #: memo (gr720460), so the CLI prints them per group and the job
@@ -288,9 +326,6 @@ class GroupPlan:
     #: shows the whole run); otherwise set post-write by :func:`apply_chunk`
     #: once every atom has landed. Empty when the prose is left untouched.
     cite_hub_ids: list[int] = field(default_factory=list)
-    #: True for a fetched-``[pa]`` ref-level promote — the evidence edge cites
-    #: the whole paper (no grounding passage), so it lands ``ungrounded``.
-    ungrounded: bool = False
     #: For a ``"reground"`` action: the located chunk_id per supporter (run
     #: order), so :func:`apply_chunk` rewrites the ``[pa…]`` run to the matching
     #: ``[pc<chunk>]`` sequence. Empty for every other action.
@@ -302,16 +337,27 @@ class GroupPlan:
     #: persists it as a ``citation`` audit record so the intermediate ``[pc]``
     #: carries *what* is claimed, not just a bare pointer. Empty otherwise.
     reground_grounds: list[tuple[int, int, str]] = field(default_factory=list)
-    #: Per-atom verified-supporter indices for a split extraction:
-    #: ``atom_supporters[i]`` is the ordered list of indices into
-    #: :attr:`supporters` whose own grounding passage verified atom ``i``
-    #: (aligned with :attr:`atom_plans`). ``None`` when per-atom
-    #: verification did not run: the extraction did not decompose (a lone
-    #: atom's claim text IS the cited span, which the cite already
-    #: grounds), or the arm carries no passage at all (a ref-level
-    #: ``[pa]`` promote is ``ungrounded`` by construction). Drives
-    #: :func:`apply_chunk`'s per-atom evidence scoping.
+    #: Per-atom verified-supporter indices: ``atom_supporters[i]`` is the
+    #: ordered list of indices into :attr:`supporters` whose own grounding
+    #: passage verified atom ``i`` (aligned with :attr:`atom_plans`).
+    #: ``None`` whenever verification did not run to completion: a no-write
+    #: plan (no-claim, unresolved, ungroundable, unbacked, …) or the
+    #: ``"verify-unavailable"`` infra refusal. A group with no passage at
+    #: all is ``"unbacked"`` and never reaches the write path.
+    #: Drives :func:`apply_chunk`'s per-atom evidence scoping.
     atom_supporters: list[list[int]] | None = None
+    #: For a ref-level ``[pa]`` dig-down: the located passage's ``pc<chunk_id>``
+    #: handle per supporter (aligned with :attr:`supporters`), ``None`` for a
+    #: supporter whose paper located no passage. The apply path names this
+    #: handle on the evidence edge (``meta.source_handle``) so the edge
+    #: grounds at the located chunk; a ``None`` entry keeps the supporter's
+    #: own ``pa<id>`` (never reached on the write path — an atom verifies
+    #: against a passage or the group is refused). ``None`` for non-pa arms.
+    dug_sources: list[str | None] | None = None
+    #: For ``"unbacked"``: the draft sentence the dig-down could not ground —
+    #: the unbacked report's payload (CLI print + job count). ``None`` for
+    #: every other action.
+    unbacked: str | None = None
     note: str = ""
     #: For ``"extract-unavailable"``: the router's failure class and the
     #: horizon it named (``None`` when unclassified) — the job that
@@ -349,11 +395,10 @@ class ChunkBackfill:
         return sum(p.explains_skipped for p in self.plans)
 
     @property
-    def n_ungrounded(self) -> int:
-        """Ref-level (whole-paper, no grounding passage) evidence edges this
-        chunk's backfill landed — the ``[pa]`` arm's ``ref_level`` promotes.
-        Counts only groups whose hub actually committed (``hub_ref_id`` set)."""
-        return sum(1 for p in self.plans if p.ungrounded and p.hub_ref_id is not None)
+    def n_unbacked(self) -> int:
+        """Draft sentences this chunk's dig-down could not ground in any
+        source passage — reported (``"unbacked"`` plans), never minted."""
+        return sum(1 for p in self.plans if p.unbacked is not None)
 
 
 # Injected cascade functions (default to the real canon ones) — keeps the
@@ -364,6 +409,22 @@ ExtractFn = Callable[[str], ClaimExtraction]
 BlockFn = Callable[[CanonicalClaim, Any, Any], list[MergeCandidate]]
 JudgeFn = Callable[[str, str], Verdict]
 MergeConfirmFn = Callable[[str, str], Verdict]
+
+#: Bend a verified atom's wording one-way to what the verifying passage
+#: licenses (:func:`precis.taproot.directed.qualify_claim`'s shape) — the
+#: "statement drawn from the source" step of the dig-down ruling. Injected so
+#: tests run deterministically without a network dispatch.
+QualifyFn = Callable[[str, str], "QualifyResult"]
+
+
+def _default_qualify(proposed: str, passage: str) -> QualifyResult:
+    """The real qualify dispatch, bound lazily: :mod:`precis.taproot.directed`
+    pulls in :mod:`precis.taproot.hub`, which the plan path otherwise imports
+    only at write time — same lazy posture as ``apply_chunk``'s hub imports."""
+    from precis.taproot.directed import qualify_claim
+
+    return qualify_claim(proposed, passage)
+
 
 #: Suggest the grounding passage for a ``[pa]``→``[pc]`` re-ground: given the
 #: claim span and the cited paper's body chunks ``(chunk_id, ord, text)``,
@@ -764,18 +825,28 @@ def _run_cascade(
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
-    ungrounded: bool = False,
+    passages: list[PaperChunk | None] | None = None,
+    dug_sources: list[str | None] | None = None,
     campaign: str | None = None,
     verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
+    qualify_fn: QualifyFn | None = None,
 ) -> GroupPlan:
-    """The shared extract → block → judge → place tail, once supporters are
-    resolved. Runs the block/judge/place cascade once per atom; the
-    extraction's composite is never placed (module docstring, "No composite
-    hub") — canon (LLM/ANN) stays per-claim; only the write door
-    (:func:`precis.taproot.hub.apply_extraction`, called from
-    :func:`apply_chunk`) is decomposition-aware. ``ungrounded``
-    marks a ref-level ``[pa]`` promote (whole-paper edge, no grounding
-    passage).
+    """The shared extract → dig-down → verify → qualify → block → judge →
+    place tail, once supporters are resolved. Runs the block/judge/place
+    cascade once per atom; the extraction's composite is never placed (module
+    docstring, "No composite hub") — canon (LLM/ANN) stays per-claim; only the
+    write door (:func:`precis.taproot.hub.apply_extraction`, called from
+    :func:`apply_chunk`) is decomposition-aware.
+
+    The dig-down ruling (module docstring) is enforced here, before any
+    cascade run: ``passages`` (the supporters' grounding passages — the
+    ``[pc]`` arm's named chunks, or the ref-level ``[pa]`` arm's located
+    passages) must resolve to at least one real passage, every atom must
+    verify against one of them, and every verified atom is re-stated by
+    ``qualify_fn`` against the passage that verified it — the qualified
+    sentence, never the draft span's wording, is what reaches the judge.
+    ``dug_sources`` (pa arm only) maps each supporter to its located
+    ``pc<chunk_id>`` handle for the grounded evidence edge.
 
     An :class:`~precis.taproot.canon.ExtractionUnavailable` from ``extract_fn``
     (the strict extractor's infra-failure signal) becomes the retryable
@@ -839,46 +910,110 @@ def _run_cascade(
         )
     )
 
-    # Per-atom verification, split extractions only: a conjunct the cited
-    # passage never asserts is an extraction artefact — minting it would
-    # attach the wrong evidence edge. Every split atom must verify against
-    # at least one supporter's own passage or the whole group is refused
-    # (a partial mint would silently drop a conjunct of the sentence the
-    # cite run grounds). A lone-atom extraction skips this: its
-    # claim text IS the cited span, which the cite already grounds; and a
-    # ref-level [pa] promote carries no passage to verify against at all.
-    atom_supporters: list[list[int]] | None = None
-    if len(atoms) > 1 or extraction.composite is not None:
+    # ── the dig-down gate (gr720460 ruling): no source passage → no mint,
+    # and the draft sentence is reported unbacked. The [pa] arm's no-passage
+    # case is refused upstream in _plan_pa_group before extraction; reaching
+    # here with no passage at all is the pc arm's defensive race (every cited
+    # chunk retired between the ungroundable gate and this read) — the
+    # verdict is the same either way: an unbacked sentence never becomes a
+    # finding, and a hub is never minted on draft wording alone.
+    if passages is None:
         passages = _supporter_passages(store, supporters)
-        if any(p is not None for p in passages):
-            try:
-                atom_supporters = _verify_atoms_against_supporters(
-                    atoms, passages, verify_batch_fn=verify_batch_fn
-                )
-            except RegroundingUnavailable as exc:
-                return GroupPlan(
-                    group=group,
-                    action="verify-unavailable",
-                    supporters=supporters,
-                    note=(
-                        f"atom verification dispatch failed (infra, retryable): {exc}"
-                    ),
-                )
-            unverified = [i for i, v in enumerate(atom_supporters) if not v]
-            if unverified:
-                bad = "; ".join(
-                    f"atom {i}: {atoms[i].sentence[:80]!r}" for i in unverified
-                )
-                return GroupPlan(
-                    group=group,
-                    action="unverified",
-                    supporters=supporters,
-                    atom_supporters=atom_supporters,
-                    note=(
-                        "split atom(s) not asserted by any cited passage — "
-                        f"group refused, prose left as-is: {bad}"
-                    ),
-                )
+    if not any(p is not None for p in passages):
+        return GroupPlan(
+            group=group,
+            action="unbacked",
+            supporters=supporters,
+            dug_sources=dug_sources,
+            not_claims=extraction.not_claims,
+            unbacked=group.span_text.strip() or "(empty span)",
+            note=(
+                "dig-down found no live source passage for "
+                f"{', '.join(h for h, _rid in supporters)} — nothing minted, "
+                "sentence reported unbacked"
+            ),
+        )
+
+    # Verify EVERY atom (lone atoms included) against the supporter
+    # passages: a conjunct the cited passage never asserts is an
+    # extraction artefact — minting it would attach the wrong evidence
+    # edge. Every atom must verify against at least one supporter's own
+    # passage or the whole group is refused (a partial mint would
+    # silently drop a conjunct of the sentence the cite run grounds).
+    try:
+        atom_supporters = _verify_atoms_against_supporters(
+            atoms, passages, verify_batch_fn=verify_batch_fn
+        )
+    except RegroundingUnavailable as exc:
+        return GroupPlan(
+            group=group,
+            action="verify-unavailable",
+            supporters=supporters,
+            note=(f"atom verification dispatch failed (infra, retryable): {exc}"),
+        )
+    refused: dict[int, str] = {
+        i: "not asserted by any cited passage"
+        for i, v in enumerate(atom_supporters)
+        if not v
+    }
+    # Qualify each verified atom against the passage that verified it:
+    # the claim bends one-way to what the source licenses (the qualified
+    # sentence replaces the draft-span wording before the judge sees it).
+    # A passage that asserts the content but declines to license it as a
+    # claim statement is refused exactly like an unverified atom.
+    if qualify_fn is None:
+        qualify_fn = _default_qualify
+    from precis.taproot.directed import QualifyUnavailable
+
+    reworded: list[CanonicalClaim] = []
+    atom_quotes: list[str | None] = []
+    for i, atom in enumerate(atoms):
+        if i in refused:
+            reworded.append(atom)
+            atom_quotes.append(None)
+            continue
+        passage = passages[atom_supporters[i][0]]
+        if passage is None:  # pragma: no cover — verified implies a passage
+            reworded.append(atom)
+            atom_quotes.append(None)
+            continue
+        try:
+            res = qualify_fn(atom.sentence, passage.text)
+        except QualifyUnavailable as exc:
+            return GroupPlan(
+                group=group,
+                action="verify-unavailable",
+                supporters=supporters,
+                atom_supporters=atom_supporters,
+                note=(f"claim qualification dispatch failed (infra, retryable): {exc}"),
+            )
+        if not res.supported or res.claim is None:
+            refused[i] = (
+                f"passage asserts the content but will not license it as "
+                f"a claim statement: {res.reason}"
+            )
+            reworded.append(atom)
+            atom_quotes.append(None)
+            continue
+        reworded.append(res.claim)
+        atom_quotes.append(res.quote)
+    qualified = reworded
+    if refused:
+        bad = "; ".join(
+            f"atom {i}: {atoms[i].sentence[:80]!r} ({refused[i]})"
+            for i in sorted(refused)
+        )
+        return GroupPlan(
+            group=group,
+            action="unverified",
+            supporters=supporters,
+            atom_supporters=atom_supporters,
+            dug_sources=dug_sources,
+            note=(
+                "atom(s) not licensed by any cited passage — group "
+                f"refused, prose left as-is: {bad}"
+            ),
+        )
 
     def _place_one(claim: CanonicalClaim) -> tuple[CanonicalClaim, Placement]:
         candidates = block_fn(claim, store, embedder)
@@ -889,7 +1024,7 @@ def _run_cascade(
         judged = [(cand, judge_fn(claim.sentence, cand.claim)) for cand in candidates]
         return claim, place(claim, judged, merge_confirm_fn=merge_confirm_fn)
 
-    atom_plans = [_place_one(atom) for atom in atoms]
+    atom_plans = [_place_one(atom) for atom in qualified]
 
     # The composite is never placed: it is the draft's bundling sentence and
     # holds no evidence edge, so it cannot become a hub here (gr720460).
@@ -913,13 +1048,14 @@ def _run_cascade(
         claim=target_claim,
         placement=target_placement,
         atom_plans=atom_plans,
+        atom_quotes=atom_quotes,
         not_claims=extraction.not_claims,
         explains=explains,
         supporters=supporters,
         atom_supporters=atom_supporters,
+        dug_sources=dug_sources,
         hub_ref_id=target_placement.hub_ref_id,
         cite_hub_ids=cite_hub_ids,
-        ungrounded=ungrounded,
         note=target_placement.reason,
     )
 
@@ -953,7 +1089,7 @@ def _plan_reground(
                 supporters=fetched,
                 note=(
                     "no passage located to ground this [pa] — re-ground by hand "
-                    "or re-run with --ref-level to promote whole-paper (ungrounded)"
+                    "onto a real body passage, or drop the cite"
                 ),
             )
         targets.append(chosen[0])  # chunk_id
@@ -983,6 +1119,7 @@ def _plan_pa_group(
     locate_fn: LocateFn,
     campaign: str | None = None,
     verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
+    qualify_fn: QualifyFn | None = None,
 ) -> GroupPlan:
     """Route a whole-paper ``[pa]`` cite-group by its cited paper(s)' state.
 
@@ -998,10 +1135,13 @@ def _plan_pa_group(
     * **All fetched, default mode** — ``reground``/``reground-nomatch``:
       :func:`_plan_reground` locates the passage and rewrites ``[pa]``->
       ``[pc]`` (no hub). The arm's default.
-    * **All fetched, ``ref_level=True``** — the explicit whole-paper
-      override: cascade over all supporters, mint a ref-level
-      (``ungrounded``) evidence edge, rewrite ``[pa]``->``[fi<hub>]``. For
-      whole-paper claims with no single grounding passage.
+    * **All fetched, ``ref_level=True``** — the one-step promote override: dig
+      down first — :data:`LocateFn` picks each supporter's grounding passage;
+      when NO supporter's paper yields a passage the sentence is **unbacked**
+      (no mint, reported, prose left). Otherwise the cascade runs over the
+      located passages and the evidence edge grounds at the passage that
+      verified/qualified the atom — a ref-level ``[pa]`` promote never mints
+      a whole-paper (``ungrounded``) edge (gr720460 dig-down ruling).
     """
     fetched = [
         (h, rid) for (h, rid) in supporters if store.chunks.count_usable_chunks(rid) > 0
@@ -1026,9 +1166,40 @@ def _plan_pa_group(
         )
     if not ref_level:
         return _plan_reground(store, group, fetched, locate_fn=locate_fn)
-    # Explicit ref-level override: every supporter is fetched here (a mixed run
-    # was routed to stub-fetch-first above), so collapsing the whole contiguous
-    # run to one [fi<hub>] never erases an un-minted token.
+    # Explicit one-step promote: dig down to each supporter's grounding
+    # passage BEFORE extraction (an unbacked sentence never reaches the
+    # extractor — no LLM spend on a sentence no source grounds). Every
+    # supporter is fetched here (a mixed run was routed to stub-fetch-first
+    # above), so collapsing the whole contiguous run to one [fi<hub>] never
+    # erases an un-minted token.
+    passages: list[PaperChunk | None] = []
+    dug_sources: list[str | None] = []
+    for _handle, paper_ref_id in fetched:
+        chunks = _read_paper_chunks(store, paper_ref_id)
+        chosen = locate_fn(group.span_text, chunks) if chunks else None
+        if chosen is None:
+            passages.append(None)
+            dug_sources.append(None)
+            continue
+        cid, ordv, text = chosen
+        passages.append(
+            PaperChunk(chunk_id=cid, chunk_ord=ordv, section_path=None, text=text)
+        )
+        dug_sources.append(f"pc{cid}")
+    if not any(p is not None for p in passages):
+        sentence = group.span_text.strip()
+        return GroupPlan(
+            group=group,
+            action="unbacked",
+            supporters=fetched,
+            dug_sources=dug_sources,
+            unbacked=sentence or "(empty span)",
+            note=(
+                "dig-down found no source passage in "
+                f"{', '.join(h for h, _rid in fetched)} — nothing minted, "
+                "sentence reported unbacked"
+            ),
+        )
     return _run_cascade(
         store,
         embedder,
@@ -1038,9 +1209,11 @@ def _plan_pa_group(
         block_fn=block_fn,
         judge_fn=judge_fn,
         merge_confirm_fn=merge_confirm_fn,
-        ungrounded=True,
+        passages=passages,
+        dug_sources=dug_sources,
         campaign=campaign,
         verify_batch_fn=verify_batch_fn,
+        qualify_fn=qualify_fn,
     )
 
 
@@ -1058,6 +1231,7 @@ def _plan_group(
     chunk_kind: str | None = None,
     campaign: str | None = None,
     verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
+    qualify_fn: QualifyFn | None = None,
 ) -> GroupPlan:
     """Resolve → route for ONE cite-group (read-only).
 
@@ -1136,6 +1310,7 @@ def _plan_group(
             locate_fn=locate_fn,
             campaign=campaign,
             verify_batch_fn=verify_batch_fn,
+            qualify_fn=qualify_fn,
         )
 
     # [pc] arm: the handle names its grounding chunk outright, so a title/
@@ -1171,6 +1346,7 @@ def _plan_group(
         merge_confirm_fn=merge_confirm_fn,
         campaign=campaign,
         verify_batch_fn=verify_batch_fn,
+        qualify_fn=qualify_fn,
     )
 
 
@@ -1187,19 +1363,23 @@ def plan_chunk(
     locate_fn: LocateFn = _default_locate,
     campaign: str | None = None,
     verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
+    qualify_fn: QualifyFn | None = None,
 ) -> ChunkBackfill:
     """Plan the backfill of one draft chunk — writes **nothing**.
 
     For each paper cite-group: resolve its supporter papers, then route by
     kind. A ``[pc]`` group extracts the claim (empty extraction ->
-    ``no-claim``, prose left as-is) and runs the canonicalizer cascade
-    (``block`` -> ``dedup_judge`` -> ``place``) once per atom to decide
-    **attach** vs mint ``new``. A ``[pa]`` group classifies by block-count:
-    stub -> ``stub-fetch-first``, fetched -> ``reground`` (locate the passage,
-    rewrite ``[pa]``->``[pc]``; ``reground-nomatch`` if none found) unless
-    ``ref_level`` promotes it whole-paper. LLM- and embedder-bearing —
-    inherent, since neither convergence nor the grounding passage can be
-    known without the ANN + judge/locate.
+    ``no-claim``, prose left as-is), digs down to the cited passage,
+    verifies and qualifies each atom against it, then runs the
+    canonicalizer cascade (``block`` -> ``dedup_judge`` -> ``place``) once
+    per qualified atom to decide **attach** vs mint ``new``. A ``[pa]`` group
+    classifies by block-count: stub -> ``stub-fetch-first``, fetched ->
+    ``reground`` (locate the passage, rewrite ``[pa]``->``[pc]``;
+    ``reground-nomatch`` if none found) unless ``ref_level`` promotes it
+    directly — digging down first, reporting the sentence ``unbacked`` when
+    no source passage exists. LLM- and embedder-bearing — inherent, since
+    neither convergence nor the grounding passage can be known without the
+    ANN + judge/locate/qualify dispatches.
     """
     text, draft_ref_id, chunk_kind = _read_draft_chunk(store, chunk_id)
     plans = [
@@ -1216,6 +1396,7 @@ def plan_chunk(
             chunk_kind=chunk_kind,
             campaign=campaign,
             verify_batch_fn=verify_batch_fn,
+            qualify_fn=qualify_fn,
         )
         for group in segment_cite_groups(text)
     ]
@@ -1352,17 +1533,20 @@ def apply_chunk(
     mint_cap: MintCap | None = None,
     campaign: str | None = None,
     verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
+    qualify_fn: QualifyFn | None = None,
 ) -> ChunkBackfill:
     """Apply the backfill: mint/converge each claim hub through the cascade,
     attach its supporter papers as evidence, then rewrite the chunk prose
     ``[pc…]``/``[pa…]`` -> ``[fi<hub>]`` via the draft edit door.
 
     ``ref_level`` (threaded to :func:`_plan_group`) selects the ``[pa]``
-    arm's whole-paper override: without it a fetched ``[pa]`` group is
+    arm's one-step promote: without it a fetched ``[pa]`` group is
     **re-grounded** (``locate_fn`` picks the passage, rewrites to
     ``[pc<chunk>]``, no hub yet); with it the fetched ``[pa]`` promotes
-    directly to a ref-level (``ungrounded``) hub edge as ``[fi<hub>]``. A
-    stub ``[pa]`` is always skipped.
+    directly to ``[fi<hub>]`` — but only after the dig-down locates a source
+    passage, and the evidence edge grounds at that passage (a whole-paper
+    ``ungrounded`` edge is never minted; a sentence no passage grounds is
+    reported ``unbacked``). A stub ``[pa]`` is always skipped.
 
     The prose rewrite goes through ``draft_handler.edit``
     (:meth:`precis.store._draft_ops.DraftOps.edit_text`) — an **in-place**
@@ -1398,10 +1582,11 @@ def apply_chunk(
     def _todo_fn(claim: CanonicalClaim, placement: Placement) -> None:
         _file_review_todo(store, claim, placement, chunk_id=chunk_id, set_by=set_by)
 
-    def _edge_meta(handle: str) -> dict[str, Any]:
-        # A pa handle names no chunk, so _grounding_chunk_ord returns None and
-        # the edge lands ref-level (ungrounded) — the [pa]-arm override; a pc
-        # handle grounds at its passage. `arm` fingerprints which for queries.
+    def _edge_meta(handle: str, *, arm: str | None = None) -> dict[str, Any]:
+        # A pc handle names its chunk, so the edge grounds at its passage; a
+        # pa-arm dug handle IS the located pc<chunk_id>, so it grounds too —
+        # `arm` carries the fingerprint of which arm minted the edge when the
+        # handle alone can't say (a dug source is a pc handle from the pa arm).
         # No support/caveats: a mechanical draft-citation edge carries no
         # verdict (nothing read the passage against the claim), so it is born
         # withheld behind nanopub.preflight.withheld_edges until a verifier
@@ -1409,9 +1594,18 @@ def apply_chunk(
         return {
             "source_handle": handle,
             "origin": "draft-backfill",
-            "arm": "pa" if handle.startswith("pa") else "pc",
+            "arm": arm or ("pa" if handle.startswith("pa") else "pc"),
             "draft_chunk": f"dc{chunk_id}",
         }
+
+    def _supporter_edge(plan: GroupPlan, s_idx: int) -> tuple[int, dict[str, Any]]:
+        """``(paper_ref_id, edge meta)`` for supporter ``s_idx`` — the pa
+        arm's dug ``pc<chunk_id>`` source (grounded at the located passage)
+        when one exists, else the supporter's own handle."""
+        handle, paper_ref_id = plan.supporters[s_idx]
+        dug = plan.dug_sources[s_idx] if plan.dug_sources is not None else None
+        arm = "pa" if plan.group.kind == "pa" else None
+        return paper_ref_id, _edge_meta(dug or handle, arm=arm)
 
     plans: list[GroupPlan] = []
     # (start, end, replacement) edits, applied right-to-left so offsets hold.
@@ -1433,6 +1627,7 @@ def apply_chunk(
             chunk_kind=chunk_kind,
             campaign=campaign,
             verify_batch_fn=verify_batch_fn,
+            qualify_fn=qualify_fn,
         )
         plans.append(plan)
         if plan.action == "reground":
@@ -1497,21 +1692,15 @@ def apply_chunk(
         # whose evidence edge never landed this call — silent draft
         # corruption. ``hub_landed`` only flips True once ``apply_extraction``
         # has actually returned with a target hub id.
-        # Per-atom evidence scoping for a verified split extraction
-        # (plan.atom_supporters set): atom i's primary edge goes to the
-        # FIRST supporter whose own passage verified it, and each other
-        # verified supporter corroborates that atom only — an atom never
-        # gets an edge from a passage that doesn't assert it. The
-        # unverified path (lone atom, ref-level [pa]) keeps the blanket
-        # primary + corroborates-everything behaviour.
+        # Per-atom evidence scoping (plan.atom_supporters set — every group
+        # that reaches the write passed the dig-down gate, so this is the
+        # only live path): atom i's primary edge goes to the FIRST supporter
+        # whose own passage verified it, and each other verified supporter
+        # corroborates that atom only — an atom never gets an edge from a
+        # passage that doesn't assert it. The pa arm's dug passage names its
+        # pc<chunk_id> on the edge so the edge grounds at the located chunk.
         atom_papers: list[tuple[int, dict[str, Any] | None] | None] | None = (
-            [
-                (
-                    plan.supporters[v[0]][1],
-                    _edge_meta(plan.supporters[v[0]][0]),
-                )
-                for v in plan.atom_supporters
-            ]
+            [_supporter_edge(plan, v[0]) for v in plan.atom_supporters]
             if plan.atom_supporters is not None
             else None
         )
@@ -1539,24 +1728,23 @@ def apply_chunk(
             plan.hub_ref_id = plan.cite_hub_ids[0]
             plan.explains_skipped = outcome.explains_skipped
             hub_landed = True
-            # Remaining supporters → corroborating evidence. Verified
-            # path: only the supporters whose own passage verified that
-            # atom (the first already carried its primary edge). Default
-            # path: every remaining supporter corroborates every atom hub
-            # (the cited passage asserts all conjuncts).
+            # Remaining supporters → corroborating evidence: only the
+            # supporters whose own passage verified that atom (the first
+            # already carried its primary edge).
             for atom_idx, atom_hub_id in outcome.atom_hub_index.items():
                 extra = (
-                    [plan.supporters[j] for j in plan.atom_supporters[atom_idx][1:]]
+                    [j for j in plan.atom_supporters[atom_idx][1:]]
                     if plan.atom_supporters is not None
-                    else plan.supporters[1:]
+                    else list(range(1, len(plan.supporters)))
                 )
-                for handle, paper_ref_id in extra:
+                for s_idx in extra:
+                    paper_ref_id, meta = _supporter_edge(plan, s_idx)
                     attach_evidence(
                         store,
                         hub_ref_id=atom_hub_id,
                         paper_ref_id=paper_ref_id,
                         role=_DEFAULT_ROLE,
-                        meta=_edge_meta(handle),
+                        meta=meta,
                         set_by=set_by,
                     )
         except Exception as exc:  # isolate one group, keep the batch going

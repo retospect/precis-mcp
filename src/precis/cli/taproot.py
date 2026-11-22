@@ -146,8 +146,11 @@ def add_parser(subparsers: Any) -> None:
     b.add_argument(
         "--ref-level",
         action="store_true",
-        help="[pa] arm: promote a FETCHED whole-paper [pa<id>] cite ref-level "
-        "(ungrounded, no passage) and rewrite it to [fi<hub>]. Default (omitted) "
+        help="[pa] arm: promote a FETCHED whole-paper [pa<id>] cite in one "
+        "step — dig down to the paper's supporting passage, then mint the "
+        "hub with its evidence edge grounded at that passage (a whole-paper "
+        "ungrounded edge is never minted; a sentence no passage grounds is "
+        "reported unbacked, nothing minted). Default (omitted) "
         "re-grounds a fetched [pa]->[pc] at the located passage (no hub yet); "
         "stub [pa] cites are always skipped either way.",
     )
@@ -1102,7 +1105,7 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 "draft_ref_id": r.draft_ref_id,
                 "applied": applied,
                 "rewritten": r.rewritten_text is not None,
-                "n_ungrounded": r.n_ungrounded,
+                "n_unbacked": r.n_unbacked,
                 "n_explains_skipped": r.n_explains_skipped,
                 "groups": [
                     {
@@ -1111,9 +1114,11 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                         "handles": p.group.handles,
                         "hub_ref_id": p.hub_ref_id,
                         "cite_hub_ids": p.cite_hub_ids,
-                        "ungrounded": p.ungrounded,
+                        "dug_sources": p.dug_sources,
+                        "unbacked": p.unbacked,
                         "reground_targets": p.reground_targets,
                         "claim": p.claim.sentence if p.claim else None,
+                        "atom_quotes": p.atom_quotes,
                         "not_claims": [dict(nc) for nc in p.not_claims],
                         "note": p.note,
                     }
@@ -1136,13 +1141,12 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
         for p in r.plans:
             counts[p.action] = counts.get(p.action, 0) + 1
         summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
-        ung = r.n_ungrounded
-        ung_note = f"  ({ung} ref-level/ungrounded)" if ung else ""
+        extra = ""
+        if r.n_unbacked:
+            extra += f"  ({r.n_unbacked} unbacked sentence(s))"
         if r.n_explains_skipped:
-            ung_note += f"  ({r.n_explains_skipped} explains pair(s) dropped)"
-        print(
-            f"dc{r.chunk_id}: {len(r.plans)} cite-group(s) — {summary}{ung_note}{tag}"
-        )
+            extra += f"  ({r.n_explains_skipped} explains pair(s) dropped)"
+        print(f"dc{r.chunk_id}: {len(r.plans)} cite-group(s) — {summary}{extra}{tag}")
         for p in r.plans:
             handles = "+".join(p.group.handles)
             cited = "+".join(f"fi{h}" for h in p.cite_hub_ids or [p.hub_ref_id])
@@ -1155,10 +1159,12 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 arrow = f"→ {pcs} (re-ground)"
             else:
                 arrow = f"({p.action})"
-            if p.ungrounded and p.hub_ref_id is not None:
-                arrow += " [ref-level]"  # whole-paper [pa] promote, any action
             claim = (p.claim.sentence[:70] + "…") if p.claim else p.note
             print(f"    [{handles}] {arrow}  {claim}")
+            if p.unbacked is not None:
+                # The dig-down found no source passage: the sentence is
+                # reported, never minted (gr720460 ruling).
+                print(f"        unbacked: {p.unbacked!r} — {p.note}")
             if p.not_claims:
                 # No composite hub holds these any more (gr720460): this
                 # line is where a rejected conjunct is reported.

@@ -34,6 +34,7 @@ from precis.store.store import Store
 # recurse into the fake itself.
 from precis.taproot.backfill import apply_chunk as _REAL_APPLY_CHUNK
 from precis.taproot.canon import CanonicalClaim, ClaimExtraction
+from precis.taproot.directed import QualifyResult
 from precis.taproot.reground import AtomVerifyResult
 from precis.taproot.seniority import is_claim_hub
 from precis.workers.job_types import get_job_type, known_job_types
@@ -213,6 +214,22 @@ def _block_none(claim: Any, store: Any, embedder: Any) -> list[Any]:
     return []
 
 
+def _verify_all(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
+    """Fake ``VerifyBatchFn``: every atom verified by the offered passage."""
+    p = passages[0]
+    return [
+        AtomVerifyResult(i, True, p.chunk_ord, p.text, None)
+        for i, _ in enumerate(atoms)
+    ]
+
+
+def _qualify_echo(proposed: str, passage: str) -> QualifyResult:
+    """Fake ``QualifyFn``: the passage licenses the atom as-is (echoed)."""
+    return QualifyResult(
+        supported=True, claim=_claim(proposed), quote=passage, reason="test"
+    )
+
+
 def _never_called(*_a: Any, **_k: Any) -> Any:
     raise AssertionError("cascade fn should not have been called")
 
@@ -239,6 +256,8 @@ def _wrap_apply_chunk(sentence_for: Any) -> Any:
             block_fn=_block_none,
             judge_fn=_never_called,
             merge_confirm_fn=_never_called,
+            verify_batch_fn=_verify_all,
+            qualify_fn=_qualify_echo,
             **kw,
         )
 
@@ -302,13 +321,6 @@ def test_dispatch_counts_rejected_conjuncts_in_the_summary(
             not_claims=({"text": "a promise", "reason": "forward-looking"},),
         )
 
-    def _verify_all(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
-        p = passages[0]
-        return [
-            AtomVerifyResult(i, True, p.chunk_ord, p.text, None)
-            for i, _ in enumerate(atoms)
-        ]
-
     def _fake(
         store: Any, embedder: Any, draft_handler: Any, chunk_id: int, **kw: Any
     ) -> Any:
@@ -322,6 +334,7 @@ def test_dispatch_counts_rejected_conjuncts_in_the_summary(
             judge_fn=_never_called,
             merge_confirm_fn=_never_called,
             verify_batch_fn=_verify_all,
+            qualify_fn=_qualify_echo,
             **kw,
         )
 
@@ -369,6 +382,8 @@ def test_dispatch_extraction_outage_is_not_checkpointed_and_fails_job(
             block_fn=_block_none,
             judge_fn=_never_called,
             merge_confirm_fn=_never_called,
+            verify_batch_fn=_verify_all,
+            qualify_fn=_qualify_echo,
             **kw,
         )
 

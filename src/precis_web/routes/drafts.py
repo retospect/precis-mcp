@@ -140,6 +140,20 @@ from precis.taproot.canon import block as _backfill_block
 from precis.taproot.canon import dedup_judge as _backfill_dedup_judge
 from precis.taproot.canon import extract_claim_strict as _backfill_extract_claim
 from precis.taproot.canon import merge_confirm as _backfill_merge_confirm
+from precis.taproot.reground import verify_atoms_batch as _backfill_verify_atoms
+
+
+def _backfill_qualify(proposed: str, passage: str) -> QualifyResult:
+    """Default qualify: the real one-way qualification dispatch, bound lazily —
+    :mod:`precis.taproot.directed` pulls in :mod:`precis.taproot.hub`, which
+    this module otherwise touches only at write time (same lazy posture as
+    ``backfill._default_qualify``). Looked up fresh off this module's globals
+    so tests can monkeypatch it like the other ``_backfill_*`` cascade fns."""
+    from precis.taproot.directed import qualify_claim
+
+    return qualify_claim(proposed, passage)
+
+
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
     _strip_orcid_bracket,
@@ -171,6 +185,7 @@ from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+    from precis.taproot.directed import QualifyResult
 
 router = APIRouter(tags=["drafts"])
 
@@ -3616,7 +3631,7 @@ def _backfill_chunk_json(result: ChunkBackfill) -> dict[str, Any]:
     return {
         "chunk_id": result.chunk_id,
         "n_claims": result.n_claims,
-        "n_ungrounded": result.n_ungrounded,
+        "n_unbacked": result.n_unbacked,
         "rewritten_text": result.rewritten_text,
         "groups": [
             {
@@ -3684,6 +3699,8 @@ async def convert_cites_route(request: Request, ident: str) -> JSONResponse:
                     block_fn=_backfill_block,
                     judge_fn=_backfill_dedup_judge,
                     merge_confirm_fn=_backfill_merge_confirm,
+                    verify_batch_fn=_backfill_verify_atoms,
+                    qualify_fn=_backfill_qualify,
                 )
                 results.append(_backfill_chunk_json(plan))
             except BadInput:
@@ -3701,6 +3718,8 @@ async def convert_cites_route(request: Request, ident: str) -> JSONResponse:
                     block_fn=_backfill_block,
                     judge_fn=_backfill_dedup_judge,
                     merge_confirm_fn=_backfill_merge_confirm,
+                    verify_batch_fn=_backfill_verify_atoms,
+                    qualify_fn=_backfill_qualify,
                 )
                 results.append(_backfill_chunk_json(applied))
             except BadInput:

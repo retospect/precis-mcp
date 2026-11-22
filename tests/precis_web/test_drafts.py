@@ -3616,6 +3616,28 @@ def _block_none(claim, store, embedder):
     return []
 
 
+def _verify_all(atoms, passages):
+    from precis.taproot.reground import AtomVerifyResult
+
+    p = passages[0]
+    return [
+        AtomVerifyResult(i, True, p.chunk_ord, p.text, None)
+        for i, _ in enumerate(atoms)
+    ]
+
+
+def _qualify_echo(proposed: str, passage: str):
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.directed import QualifyResult
+
+    return QualifyResult(
+        supported=True,
+        claim=CanonicalClaim(sentence=proposed, scope={}),
+        quote=passage,
+        reason="test",
+    )
+
+
 def _seed_convert_draft(runtime_with_store) -> tuple[str, str]:
     """A draft ``cvdraft`` with one paragraph citing ``[pc<chunk>]`` on a
     seeded paper chunk; returns ``(draft slug, paragraph dc<id> handle)``."""
@@ -3658,6 +3680,8 @@ def test_convert_cites_dry_run_then_apply_stales_approval(
         _extract_const("Ribbons are semiconducting."),
     )
     monkeypatch.setattr(drafts_mod, "_backfill_block", _block_none)
+    monkeypatch.setattr(drafts_mod, "_backfill_verify_atoms", _verify_all)
+    monkeypatch.setattr(drafts_mod, "_backfill_qualify", _qualify_echo)
 
     slug, dc = _seed_convert_draft(runtime_with_store)
     store = runtime_with_store.hub.store
@@ -3705,6 +3729,8 @@ def test_convert_cites_dry_run_default_true(
         drafts_mod, "_backfill_extract_claim", _extract_const("A claim.")
     )
     monkeypatch.setattr(drafts_mod, "_backfill_block", _block_none)
+    monkeypatch.setattr(drafts_mod, "_backfill_verify_atoms", _verify_all)
+    monkeypatch.setattr(drafts_mod, "_backfill_qualify", _qualify_echo)
 
     slug, dc = _seed_convert_draft(runtime_with_store)
     store = runtime_with_store.hub.store

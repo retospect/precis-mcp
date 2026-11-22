@@ -72,8 +72,8 @@ def _render_chunk_summary(result: Any) -> str | None:
     for p in result.plans:
         counts[p.action] = counts.get(p.action, 0) + 1
     summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
-    if result.n_ungrounded:
-        summary += f", {result.n_ungrounded} ref-level/ungrounded"
+    if result.n_unbacked:
+        summary += f", {result.n_unbacked} unbacked sentence(s) reported"
     if result.n_explains_skipped:
         summary += f", {result.n_explains_skipped} explains pair(s) dropped"
     if result.n_not_claims:
@@ -125,12 +125,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     n_scanned = 0
     n_converted = 0
     n_failed = 0
-    n_ungrounded = 0
     n_explains_skipped = 0
     #: Conjuncts the extraction rejected as not-a-claim. The backfill mints
     #: no composite hub to hold their memo (gr720460), so the per-chunk
     #: event and this run total are where they are reported.
     n_not_claims = 0
+    #: Draft sentences the dig-down could not ground in any source passage —
+    #: minted into nothing, reported by the per-chunk event and this total
+    #: (gr720460 ruling: an unbacked sentence never becomes a finding).
+    n_unbacked = 0
     #: Chunks with a group whose extraction LLM was down — left OFF the
     #: checkpoint so a retry of this job re-runs them (an outage is not a
     #: verdict; checkpointing it would make the loss permanent).
@@ -187,7 +190,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 ctx.append_chunk("job_event", line)
             if result.rewritten_text is not None:
                 n_converted += 1
-            n_ungrounded += result.n_ungrounded
+            n_unbacked += result.n_unbacked
             n_explains_skipped += result.n_explains_skipped
             n_not_claims += result.n_not_claims
             stalled = [p for p in result.plans if p.action == "extract-unavailable"]
@@ -206,8 +209,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         f"taproot backfill — {where}: {n_scanned} scanned, "
         f"{n_converted} converted, {n_failed} failed"
     )
-    if n_ungrounded:
-        summary += f", {n_ungrounded} ref-level/ungrounded"
+    if n_unbacked:
+        summary += f", {n_unbacked} unbacked sentence(s) reported"
     if n_explains_skipped:
         summary += f", {n_explains_skipped} explains pair(s) dropped"
     if n_not_claims:

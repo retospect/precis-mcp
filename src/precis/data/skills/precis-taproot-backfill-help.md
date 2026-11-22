@@ -68,18 +68,22 @@ full canonicalizer cascade (`extract_claim → block → dedup_judge →
 place → apply_extraction`): a span bundling more than one atomic claim
 splits into several atom hubs, each carrying its own evidence edge, and
 the cite run rewrites to one `[fi<hub>]` per atom hub (`[fi12][fi13]`;
-two atoms that converge on one hub give one cite). On the `[pc]` path
-each atom of a split span is passage-verified first: a conjunct no cited
-passage asserts refuses the whole group. That check does not run for a
-single-claim span or for a ref-level `[pa]` promote (no passage to
-check against), and an atom's wording is extracted from the draft span,
-not written from the source. The backfill mints no **composite** hub
-for the bundling sentence, which has no evidence of its own (see
-[[precis-taproot-help]]'s "The evidence model" section for composites
-elsewhere); conjuncts the extraction rejected as not-a-claim are
-listed per group in the CLI output and counted in the job summary. A
-risky merge on any atom files one review `todo` (not re-filed while it
-is open) and leaves the `[pc…]` untouched; a
+two atoms that converge on one hub give one cite). Before any hub
+lands, every arm digs down to the source passage (gr720460 ruling): the
+cited passage itself on the `[pc]` path, a located passage on the
+`[pa]` path. Every atom — a lone claim included — is verified against
+those passages (a conjunct no cited passage asserts refuses the whole
+group), and each verified atom is then **qualified** against the
+passage that verified it: the claim bends one-way to what the source
+licenses, and the hub states that source-drawn sentence, never the
+draft span's wording. A sentence no passage grounds is reported
+**unbacked** — nothing is minted from it. The backfill mints no
+**composite** hub for the bundling sentence, which has no evidence of
+its own (see [[precis-taproot-help]]'s "The evidence model" section for
+composites elsewhere); conjuncts the extraction rejected as
+not-a-claim are listed per group in the CLI output and counted in the
+job summary. A risky merge on any atom files one review `todo` (not
+re-filed while it is open) and leaves the `[pc…]` untouched; a
 pointer-only span (no groundable claim) is left as-is. It is
 **on-demand, per draft or section** — not a corpus sweep — and
 idempotent: a re-run finds no `[pc…]` left to convert.
@@ -100,10 +104,13 @@ paper is fetched:
   `[pc]` path then promotes to a **chunk-grounded** hub on a later run
   (two-step; no hub minted by the re-ground itself). No passage found →
   `reground-nomatch`, left `[pa]`, no write. Pass `--ref-level` to instead
-  promote it whole-paper: mints a **ref-level (ungrounded)** evidence edge
-  and rewrites `[pa]`→`[fi<hub>]` directly — for claims with no single
-  grounding passage (e.g. "X is a landmark result"); `job_summary` reports
-  the `ref-level/ungrounded` count. A contiguous multi-paper `[pa1][pa2]`
+  promote it in **one step**: the arm digs down first (same locate), then
+  verifies and qualifies the claim against the located passage and mints
+  the hub with the evidence edge **grounded at that passage** — a
+  whole-paper (ungrounded) edge is never minted. If no cited paper yields
+  a passage, the sentence is reported **unbacked** (counted in the
+  `job_summary`, printed by the CLI) and nothing is minted — an unbacked
+  sentence never becomes a finding. A contiguous multi-paper `[pa1][pa2]`
   run re-grounds all-or-nothing: any supporter failing to locate leaves
   the whole run untouched (never erase a token).
 
@@ -157,9 +164,14 @@ The plan's per-group `action` splits into **final semantic verdicts** and
   on, and a figure caption's provenance pointer, which short-circuits
   *before* extraction (no LLM call at all). Either way it is a verdict; a
   re-run reproduces it. When it looks wrong the fix is editorial (re-cite
-  onto a real passage, or drop the cite), not a rerun. `ungroundable` /
-  `reground-nomatch` / `stub-fetch-first` / `unresolved` / `bad-claim` are
-  the same class: follow the note's next step, never a blind retry.
+  onto a real passage, or drop the cite), not a rerun. `unbacked` — the
+  dig-down (a ref-level `[pa]` promote) found no source passage in any
+  cited paper: nothing was minted and the draft sentence is reported
+  (CLI print + `job_summary` count). The fix is editorial too: re-cite
+  the sentence onto a passage that actually asserts it, or drop it.
+  `ungroundable` / `reground-nomatch` / `stub-fetch-first` / `unresolved`
+  / `bad-claim` are the same class: follow the note's next step, never a
+  blind retry.
 - **Retryable (infra, not a verdict).** Two actions, two retry paths:
   - `extract-unavailable` — the extraction LLM dispatch raised
     `ExtractionUnavailable` (dispatch failed or the reply cut off), so
@@ -168,8 +180,9 @@ The plan's per-group `action` splits into **final semantic verdicts** and
     re-enqueuing the same job re-runs it. The plan records the router's
     failure class and `retry_at` horizon — a quota window is not a dead
     endpoint.
-  - `verify-unavailable` — the atom-verification dispatch failed after
-    extraction. The prose is also left as-is, but the worker *does*
+  - `verify-unavailable` — the atom-verification or claim-qualification
+    dispatch failed after extraction. The prose is also left as-is, but
+    the worker *does*
     checkpoint that chunk, so re-claiming the same job skips it. Retry by
     enqueuing a **fresh** `taproot_backfill` job for that chunk (its
     `done_chunk_ids` starts empty) or re-running the CLI command.
