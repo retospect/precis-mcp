@@ -22,7 +22,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.embedder import EmbedderUnavailable
-from precis.errors import BadInput, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers import _finding_hub_mint
 from precis.handlers.finding import FindingHandler
 from precis.store.types import ChunkInsert, Tag
@@ -1714,3 +1714,265 @@ def test_mint_logs_elapsed_phase_on_failure(
     assert (
         "block=2.500 judge=0.000 place=0.000 containment=0.000 mint=0.000" in records[0]
     )
+
+
+# ── create-time tags=/link=/rel= on the hub-mint door (gr676914) ────────────
+
+
+def _tag_values(store, ref_id: int) -> set[str]:
+    return {t.value for t in store.tags_for(ref_id)}
+
+
+def _link_relations(store, src_ref_id: int, dst_ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        return [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (src_ref_id, dst_ref_id),
+            ).fetchall()
+        ]
+
+
+def test_put_hub_applies_tags_and_link(store) -> None:
+    """gr676914: ``put(supporters=..., tags=, link=, rel=)`` used to accept
+    the three and drop them. They land on the hub the response names — the
+    minted hub on a mint, the matched hub on an attach outcome."""
+    _seed_paper(store, cite_key="miller23a")
+    mem = _mk_memory(store, title="a note the claim relates to")
+    handler = _make_handler(store)
+
+    resp = handler.put(
+        title="A wholly novel claim with no neighbours.",
+        supporters=[{"paper": "miller23a"}],
+        dedup=False,
+        tags=["topic:capture"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+    hub_id = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+    assert "topic:capture" in _tag_values(store, hub_id)
+    assert _link_relations(store, hub_id, mem) == ["related-to"]
+    assert f"applied to fi{hub_id}" in resp.body
+
+    # Attach outcome: no hub is minted, so the extras land on the matched
+    # hub, and the response says which hub that is.
+    existing = mint_hub(
+        store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+    )
+    before = store.count_refs(kind="finding")
+    resp = handler.put(
+        title="Pd on carbon catalyzes the Suzuki reaction.",
+        supporters=[{"paper": "miller23a"}],
+        dedup=f"attach:fi{existing}",
+        tags=["topic:suzuki"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+    assert "converged onto" in resp.body
+    assert store.count_refs(kind="finding") == before
+    assert "topic:suzuki" in _tag_values(store, existing)
+    assert _link_relations(store, existing, mem) == ["related-to"]
+    assert f"applied to fi{existing}" in resp.body
+
+
+def test_put_hub_bad_link_target_writes_nothing(store) -> None:
+    """gr676914 slice 3: a ``link=`` target that is malformed or resolves to
+    nothing refuses before any write — no hub is left behind for a put that
+    failed (cf gr263195)."""
+    paper = _seed_paper(store, cite_key="miller23a")
+    handler = _make_handler(store)
+    before = store.count_refs(kind="finding")
+
+    for bad in ("not-a-target", "fi999999"):
+        with pytest.raises((BadInput, NotFound)):
+            handler.put(
+                title="A wholly novel claim with no neighbours.",
+                supporters=[{"paper": "miller23a"}],
+                dedup=False,
+                link=bad,
+            )
+
+    assert store.count_refs(kind="finding") == before
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s", (paper,)
+        ).fetchone()
+    assert row is None
+
+
+def test_put_hub_cascade_converge_applies_extras_to_the_matched_hub(store) -> None:
+    """A dedup-cascade ``attach`` mints nothing: the extras go to the hub
+    the judge matched, and the response names that hub, not a new one."""
+    _seed_paper(store, cite_key="miller23a")
+    mem = _mk_memory(store)
+    existing_sentence = "Pd/C catalyzes Suzuki coupling."
+    existing = mint_hub(store, CanonicalClaim(sentence=existing_sentence, scope={}))
+    before = store.count_refs(kind="finding")
+
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="Pd on carbon catalyzes the Suzuki reaction.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        embedder=object(),
+        block_fn=_block_hit(existing, existing_sentence),
+        judge_fn=lambda a, b: _verdict("same", 0.95),
+        tags=["topic:suzuki"],
+        link=f"me{mem}",
+    )
+
+    assert store.count_refs(kind="finding") == before
+    assert f"converged onto fi{existing}" in resp.body
+    assert (
+        f"applied to fi{existing}: tags topic:suzuki; link --cites--> me{mem}"
+        in resp.body
+    )
+    assert "topic:suzuki" in _tag_values(store, existing)
+    # A bare link= takes ``cites``, as on the chase and acquisition doors.
+    assert _link_relations(store, existing, mem) == ["cites"]
+
+
+@pytest.mark.parametrize(
+    "tag", ["STATUS:tracing", "STATUS:canonical", "TAPROOT:review"]
+)
+def test_put_hub_refuses_a_tag_on_an_axis_the_mint_stamps(store, tag: str) -> None:
+    """``mint_hub`` stamps STATUS:canonical and TAPROOT:claim. A closed-prefix
+    add replaces, so a create-time tag on either axis would displace the
+    stamp (or, on a converge, an existing hub's status) — refused before
+    any write."""
+    _seed_paper(store, cite_key="miller23a")
+    before = store.count_refs(kind="finding")
+    with pytest.raises(BadInput, match="the mint stamps"):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            tags=["topic:capture", tag],
+        )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hub_refuses_an_evidence_role_and_a_bare_rel(store) -> None:
+    """Evidence runs paper -> hub through ``supporters=``; a create-time
+    ``rel='corroborates'`` would write a raw hub -> paper row past
+    ``attach_evidence``. And ``rel=`` alone has nothing to apply to."""
+    paper = _seed_paper(store, cite_key="miller23a")
+    before = store.count_refs(kind="finding")
+    for link, rel, match in (
+        (f"pa{paper}", "corroborates", "evidence role"),
+        (None, "related-to", "requires link="),
+    ):
+        with pytest.raises(BadInput, match=match):
+            _finding_hub_mint.put_hub(
+                store,
+                sentence="A wholly novel claim with no neighbours.",
+                scope={},
+                supporters=[{"paper": "miller23a"}],
+                dedup=False,
+                link=link,
+                rel=rel,
+            )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hub_claim_link_rel_goes_through_the_claim_link_door(store) -> None:
+    """``rel='refines'`` to another hub takes ``link_claims`` — the door the
+    ``link`` verb uses for a hub source — and a non-hub target is refused
+    with nothing minted."""
+    paper = _seed_paper(store, cite_key="miller23a")
+    broad = mint_hub(
+        store, CanonicalClaim(sentence="Pd catalyzes cross-coupling.", scope={})
+    )
+    resp = _finding_hub_mint.put_hub(
+        store,
+        sentence="Pd/C catalyzes Suzuki coupling in water at 25 C.",
+        scope={},
+        supporters=[{"paper": "miller23a"}],
+        dedup=False,
+        link=f"fi{broad}",
+        rel="refines",
+    )
+    hub_id = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+    assert _link_relations(store, hub_id, broad) == ["refines"]
+
+    before = store.count_refs(kind="finding")
+    with pytest.raises(BadInput, match="joins two claim hubs"):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            link=f"pa{paper}",
+            rel="refines",
+        )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hub_self_link_on_converge_writes_nothing(store) -> None:
+    """``link=`` naming the hub the put converges onto cannot be applied.
+    The refusal comes inside the attach's transaction, so the supporter's
+    evidence edge and the tag roll back with it."""
+    paper = _seed_paper(store, cite_key="miller23a")
+    sentence = "Pd/C catalyzes Suzuki coupling."
+    existing = mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
+    tags_before = _tag_values(store, existing)
+
+    with pytest.raises(BadInput, match="cannot link to itself"):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence=sentence,
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            embedder=object(),
+            block_fn=_block_none,
+            tags=["topic:rolledback"],
+            link=f"fi{existing}",
+            rel="related-to",
+        )
+
+    assert _tag_values(store, existing) == tags_before
+    assert _link_relations(store, paper, existing) == []
+
+
+def test_put_hub_extras_refused_at_write_time_roll_the_mint_back(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store can refuse an edge whose target resolved fine (its own
+    admission rules). The extras are written inside the mint's transaction,
+    so that refusal takes the new hub and its evidence edge with it."""
+    from precis.store import Store
+
+    paper = _seed_paper(store, cite_key="miller23a")
+    mem = _mk_memory(store)
+    before = store.count_refs(kind="finding")
+    real_add_link = Store.add_link
+
+    def _refusing_add_link(self: Any, *, dst_ref_id: int, **kw: Any) -> Any:
+        if dst_ref_id == mem:
+            raise BadInput("edge refused at write time")
+        return real_add_link(self, dst_ref_id=dst_ref_id, **kw)
+
+    monkeypatch.setattr(Store, "add_link", _refusing_add_link)
+
+    with pytest.raises(BadInput, match="refused at write time"):
+        _finding_hub_mint.put_hub(
+            store,
+            sentence="A wholly novel claim with no neighbours.",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+            tags=["topic:capture"],
+            link=f"me{mem}",
+            rel="related-to",
+        )
+
+    assert store.count_refs(kind="finding") == before
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s", (paper,)
+        ).fetchone()
+    assert row is None

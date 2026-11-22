@@ -18,6 +18,7 @@ re-attaching an evidence edge that already exists (checked directly against
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -398,6 +399,7 @@ def seed_claim_hub(
     set_by: ActorSlug = "agent",
     mint_cap: MintCap | None = None,
     extra_meta: dict[str, Any] | None = None,
+    in_tx: Callable[[Any, int], None] | None = None,
 ) -> dict[str, Any]:
     """Mint (or converge onto) a claim hub for ``sentence``/``scope`` and
     attach each of ``supporters`` as evidence.
@@ -476,6 +478,12 @@ def seed_claim_hub(
     ``mint_cap`` (a run-shared :class:`~precis.taproot.canon.MintCap`) caps
     NEW hubs per first-supporter grounding chunk; a refused mint raises
     :class:`~precis.taproot.canon.MintCapped` with nothing written.
+
+    ``in_tx`` is called as ``in_tx(conn, hub_ref_id)`` inside the mint
+    transaction, after the hub and its evidence edges are written: what it
+    writes on the hub commits with the mint, and if it raises, the mint
+    rolls back with it (gr676914 — the put door's create-time tags and
+    link). It must not reach the network.
 
     Raises:
         BadInput: one or more supporters' ``paper`` doesn't resolve (or
@@ -601,6 +609,9 @@ def seed_claim_hub(
             if src_ord is None:
                 ungrounded += 1
             seen_edges.add(edge_key)
+
+        if in_tx is not None:
+            in_tx(conn, hub_ref_id)
 
     # Transaction committed -- now safe to reach the network (trigger 1).
     run_retraction_checks(store, owned_checks, hub_ref_id=hub_ref_id)

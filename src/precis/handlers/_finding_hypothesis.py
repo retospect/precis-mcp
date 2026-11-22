@@ -52,15 +52,25 @@ the human queue forever:
   row would assemble as an `AtomicClaim` — silently dropping `testableBy`,
   `motivatedBy` and `motivation` from the signed TriG while the gates
   applied hypothesis rules to it.
+
+**One transaction** (gr676914). The whole proposal runs inside
+`store.atomic()`: the hub, its motivation edges, the triage tag and the
+put's create-time `tags=`/`link=`/`rel=` commit together or not at all.
+The extras are checked before anything else (`_finding_common.
+check_put_extras`) and written last, on the hypothesis hub; a refused
+extra — or any refusal after the mint — leaves nothing behind. Nothing in
+the scope reaches the network.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 from precis.errors import BadInput
+from precis.handlers._finding_common import apply_put_extras, check_put_extras
 from precis.response import Response
 from precis.store import Store
 from precis.store.types import Tag
@@ -151,9 +161,60 @@ def put_hypothesis(
     set_by: str = "agent",
     mint_cap: MintCap | None = None,
     meta: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    link: str | None = None,
+    rel: str | None = None,
 ) -> Response:
     """Mint a hypothesis claim hub and park its prepared mint payload.
-    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874)."""
+    ``mint_cap`` caps NEW hubs per motivating source chunk (gr204874).
+
+    ``tags=``/``link=``/``rel=`` are the put schema's create-time extras:
+    checked first, written on the hypothesis hub in the proposal's one
+    transaction, and named in the response (module docstring)."""
+    extras = check_put_extras(store, tags=tags, link=link, rel=rel)
+    with store.atomic() as conn:
+        resp, hub_ref_id = _propose(
+            store,
+            sentence=sentence,
+            scope=scope,
+            motivation=motivation,
+            testable_by=testable_by,
+            motivated_by=motivated_by,
+            llm_models=llm_models,
+            from_memory=from_memory,
+            set_by=set_by,
+            mint_cap=mint_cap,
+            meta=meta,
+        )
+        if extras is not None:
+            applied = apply_put_extras(
+                store,
+                extras,
+                hub_ref_id,
+                conn=conn,
+                set_by=set_by,  # type: ignore[arg-type]
+            )
+            resp = replace(resp, body=f"{resp.body}\n{applied}")
+    return resp
+
+
+def _propose(
+    store: Store,
+    *,
+    sentence: str,
+    scope: dict[str, Any] | None,
+    motivation: str | None,
+    testable_by: str | None,
+    motivated_by: list[str] | None,
+    llm_models: list[str] | None,
+    from_memory: str | None,
+    set_by: str,
+    mint_cap: MintCap | None,
+    meta: dict[str, Any] | None,
+) -> tuple[Response, int]:
+    """The proposal itself — validate, mint, motivate, tag. Returns the
+    response and the hypothesis hub's ref id; :func:`put_hypothesis` runs it
+    inside one transaction."""
     # Local import: `nanopub.gates` pulls the evidence/mint stack, which
     # imports handlers back. Same reason `_finding_mint_preflight` does it.
     from precis.nanopub.gates import check_claim_sentence
@@ -387,7 +448,7 @@ def put_hypothesis(
     store.add_tag(hub_ref_id, Tag.open(PROPOSED_TAG))
 
     handle = handle_registry.format_handle("finding", hub_ref_id)
-    return Response(
+    resp = Response(
         body=(
             f"hypothesis hub {handle} minted (candidate for review)\n"
             f"claim: {sentence[:120]}\n"
@@ -400,6 +461,7 @@ def put_hypothesis(
             "a human approves/signs it — this door never does"
         )
     )
+    return resp, hub_ref_id
 
 
 def update_hypothesis(

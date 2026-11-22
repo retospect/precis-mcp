@@ -427,6 +427,15 @@ idempotently — a re-`put` of the same spec attaches nothing twice (the
 dedup key includes the grounding chunk). Cite the resulting `[fi<id>]`
 afterward.
 
+`tags=`, `link=` and `rel=` on the same `put` are written with the hub —
+no follow-up `tag` or `link` call. They land on the hub the response
+names, which on a converge is the matched hub; the response's
+`applied to fi<id>: …` line says which. A bare `link=` takes `cites`.
+`rel='refines'|'explains'|'disputes'|'conjunct-of'` needs a claim hub as
+`link=`. Refused before anything is written: a `link=` that resolves to
+nothing, an evidence role as `rel=` (evidence goes in `supporters`), and
+a `STATUS:` or `TAPROOT:` tag (the mint sets both).
+
 **Read the mint response's lint blocks — the top one is a promise, not
 a suggestion.** A fresh mint appends
 `mint-preflight will REFUSE these (reword before approve)` whenever the

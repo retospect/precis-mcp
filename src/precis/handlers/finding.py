@@ -378,14 +378,18 @@ class FindingHandler(AuditedRetirementHandler):
         On a converge the run's observation (``meta.why``, ``run_id``)
         is kept as a ``considered`` edge from the run's scope —
         ``from_memory=`` names it (else the run's agentlog) — to the
-        matched hub. See :mod:`precis.handlers._finding_hub_mint`.
+        matched hub. Create-time ``tags=``/``link=``/``rel=`` land on the
+        hub the response names — the matched hub on an attach or converge
+        — in the same write; a bad one refuses before anything is written
+        (gr676914). See :mod:`precis.handlers._finding_hub_mint`.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
         ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source
         papers) and ``llm_models=`` (the authoring model id(s) — an
         agent-prepared artifact attributes its machine author) to propose a
         nanopub hypothesis: a conjecture with no evidence by type, prepared
-        and parked for a human to approve. See
+        and parked for a human to approve. ``tags=``/``link=``/``rel=``
+        land on the hypothesis hub in the same write (gr676914). See
         :func:`precis.handlers._finding_hypothesis.put_hypothesis`.
 
         Existing-id ``put`` is rejected (mutate via tag/link/delete
@@ -485,6 +489,9 @@ class FindingHandler(AuditedRetirementHandler):
                 llm_models=llm_models,
                 from_memory=from_memory,
                 meta=meta,
+                tags=tags,
+                link=link,
+                rel=rel,
             )
 
         # --- Taproot hub-mint mode ---
@@ -538,6 +545,9 @@ class FindingHandler(AuditedRetirementHandler):
                 embedder=getattr(self.hub, "embedder", None),
                 extra_meta=meta,
                 from_memory=from_memory,
+                tags=tags,
+                link=link,
+                rel=rel,
             )
 
         # --- Acquisition mode (claim-first mint) ---

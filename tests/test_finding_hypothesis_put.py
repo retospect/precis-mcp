@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers._finding_hypothesis import (
     ARTIFACT_HYPOTHESIS,
     META_ARTIFACT_TYPE,
@@ -492,3 +492,132 @@ def test_refuses_to_converge_onto_a_pre_existing_ordinary_hub(store: Store) -> N
             (existing,),
         ).fetchall()
     assert [int(r[0]) for r in evidence] == [pa1]
+
+
+def test_put_hypothesis_applies_tags_and_link(store: Store) -> None:
+    """gr676914: the hypothesis door used to accept the put schema's
+    create-time ``tags=``/``link=``/``rel=`` and drop them. They land on the
+    hypothesis hub, and the response names it."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    mem = seed_ref(store, title="the note that provoked it", kind="memory")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+        tags=["topic:nanobuds"],
+        link=f"me{mem}",
+        rel="related-to",
+    )
+
+    hub_ref_id = _hub_id(resp.body)
+    tags = {t.value for t in store.tags_for(hub_ref_id)}
+    assert "topic:nanobuds" in tags
+    # The door's own triage tag is still there.
+    assert PROPOSED_TAG in tags
+    assert _links(store, hub_ref_id, "related-to") == [(mem, None)]
+    assert f"applied to fi{hub_ref_id}" in resp.body
+
+
+def _link_count(store: Store) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT count(*) FROM links").fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+@pytest.mark.parametrize(
+    ("extras", "match"),
+    [
+        ({"tags": ["STATUS:tracing"]}, "the mint stamps"),
+        ({"link": "fi999999"}, "resolves to no live ref"),
+        ({"link": "not-a-target"}, ""),
+        ({"link": "pa1", "rel": "corroborates"}, "evidence role"),
+    ],
+)
+def test_put_hypothesis_bad_extras_mint_nothing(
+    store: Store, extras: dict[str, Any], match: str
+) -> None:
+    """A create-time extra that cannot be honoured refuses before the
+    hypothesis hub is minted — a proposer cannot delete a hub, so a refusal
+    after the mint would leave it in the human queue."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    before = store.count_refs(kind="finding")
+    with pytest.raises((BadInput, NotFound), match=match):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+            **extras,
+        )
+    assert store.count_refs(kind="finding") == before
+
+
+def test_put_hypothesis_extras_refused_at_write_time_roll_the_mint_back(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store can refuse an edge whose target resolved fine. The proposal
+    is one transaction, so that refusal takes the hub, its motivation edges
+    and the triage tag with it."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    mem = seed_ref(store, title="the note that provoked it", kind="memory")
+    before = store.count_refs(kind="finding")
+    links_before = _link_count(store)
+    real_add_link = Store.add_link
+
+    def _refusing_add_link(self: Any, *, dst_ref_id: int, **kw: Any) -> Any:
+        if dst_ref_id == mem:
+            raise BadInput("edge refused at write time")
+        return real_add_link(self, dst_ref_id=dst_ref_id, **kw)
+
+    monkeypatch.setattr(Store, "add_link", _refusing_add_link)
+
+    with pytest.raises(BadInput, match="refused at write time"):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+            tags=["topic:nanobuds"],
+            link=f"me{mem}",
+            rel="related-to",
+        )
+
+    assert store.count_refs(kind="finding") == before
+    assert _link_count(store) == links_before
+
+
+def test_put_hypothesis_reproposal_adds_the_extras_to_the_same_hub(
+    store: Store,
+) -> None:
+    """Re-proposing the same sentence converges onto the existing hypothesis
+    hub; the extras land there and the response names it."""
+    _, ch1 = _paper_with_chunk(store, "First source")
+    _, ch2 = _paper_with_chunk(store, "Second source")
+    kwargs: dict[str, Any] = {
+        "title": _SENTENCE,
+        "hypothesis": True,
+        "motivation": "leap",
+        "testable_by": "experiment",
+        "llm_models": ["test-model"],
+        "motivated_by": [f"pc{ch1}", f"pc{ch2}"],
+    }
+    first = _hub_id(_handler(store).put(**kwargs).body)
+    before = store.count_refs(kind="finding")
+
+    resp = _handler(store).put(**kwargs, tags=["topic:nanobuds"])
+
+    assert store.count_refs(kind="finding") == before
+    assert f"applied to fi{first}: tags topic:nanobuds" in resp.body
+    assert "topic:nanobuds" in {t.value for t in store.tags_for(first)}
