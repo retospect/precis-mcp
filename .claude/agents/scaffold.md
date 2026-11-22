@@ -91,4 +91,4 @@ before your first `put`/`tag`, load them with ToolSearch
 `select:mcp__precis__put,mcp__precis__tag`; an unselected write dies with
 `No such tool available` and the record is lost (gr504489).
 
-Commit with a conventional subject (`type(scope): what changed`) before shipping, or pass `-m`; a placeholder subject fails ship immediately.
+Commit with `type(scope): what changed` plus the `Co-Authored-By:` footer your session gives you (the commit hook denies a message without it): write the message to a file with the Write tool and `git commit -F <file>` (`docs/conventions/shipping.md` §Long form). A placeholder subject fails ship.

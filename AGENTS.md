@@ -190,8 +190,9 @@ writes, no replay tooling. `docs/runbooks/memory-restore.md`.
 - Schema change: a new numbered migration, old ones untouched.
 - No secrets and no cluster addresses in the tree (the repo is public).
 - Commit message: `type(scope): what changed`, aim ≤72 chars, hard limit 120, optional short why
-  as body (rules in `docs/conventions/shipping.md` §Long form; `scripts/ship`
-  enforces them). No CHANGELOG; `git log` is the record.
+  as body, plus the `Co-Authored-By:` footer (hook-enforced), via
+  `git commit -F <file>` (rules in `docs/conventions/shipping.md` §Long form;
+  `scripts/ship` enforces them). No CHANGELOG; `git log` is the record.
 
 ## Agent sizing
 

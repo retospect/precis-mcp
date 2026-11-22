@@ -266,3 +266,57 @@ def test_recipe_patterns_catch_the_forbidden_shapes() -> None:
     assert flagged("scripts/release > .claude/release.log 2>&1") == set()
     assert flagged("cd x && make") == set()
     assert _fenced_lines("a\n```\nx \\\n  y\n```\nb\n") == [(4, "x  y")]
+
+
+# ── commit text names the footer (gr676944) ──────────────────────────────────
+#
+# scripts/hooks/guard-commit-on-main.py denies a commit whose message has no
+# ``Co-Authored-By:`` trailer. An agent definition that says how to commit
+# names the footer or the ``git commit -F`` recipe on the same line, or the
+# agent following it is denied once and rediscovers the rule.
+
+_COMMIT_TEXT_RE = re.compile(r"git commit|Commit with")
+_COMMIT_FOOTER_RE = re.compile(r"Co-Authored-By|(?<![\w-])-F\b")
+
+
+def commit_text_gaps(text: str) -> list[tuple[int, str]]:
+    """``(lineno, line)`` for each commit instruction naming no footer or ``-F``."""
+    return [
+        (lineno, line.strip())
+        for lineno, line in enumerate(text.splitlines(), start=1)
+        if _COMMIT_TEXT_RE.search(line) and not _COMMIT_FOOTER_RE.search(line)
+    ]
+
+
+def test_agent_commit_text_names_footer() -> None:
+    paths = sorted(_ROOT.glob(".claude/agents/*.md"))
+    assert len(paths) > 10, f"only {len(paths)} agent definitions — vacuous"
+    hits = [
+        f"{path.relative_to(_ROOT).as_posix()}:{lineno}: {line}"
+        for path in paths
+        for lineno, line in commit_text_gaps(read_text(path))
+    ]
+    assert not hits, (
+        "agent definitions say how to commit without the Co-Authored-By "
+        "footer or the `git commit -F <file>` recipe; the commit hook denies "
+        "a footerless message (docs/conventions/shipping.md §Long form):\n  "
+        + "\n  ".join(hits)
+    )
+
+
+def test_commit_text_gate_flags_a_footerless_recipe() -> None:
+    """A footerless commit instruction is flagged; the footer or ``-F`` passes."""
+    flagged = [
+        "Commit with a conventional subject, or pass `-m`.",
+        'git commit -m "fix(x): y"',
+        "git commit --no-FF-ish -m x",
+    ]
+    for line in flagged:
+        assert commit_text_gaps(line), f"not flagged: {line}"
+    passed = [
+        "Commit with `type(scope): what` plus the `Co-Authored-By:` footer.",
+        "write the message to a file and `git commit -F <file>`",
+        "do NOT commit anything while ship runs",
+    ]
+    for line in passed:
+        assert not commit_text_gaps(line), f"false positive: {line}"
