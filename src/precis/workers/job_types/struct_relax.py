@@ -108,10 +108,13 @@ import numpy as np
 from precis.structure.relax_dispatch import phase
 from precis.utils.container_limits import (
     KILLED_FOR_MEMORY,
+    container_cap_mb,
     container_limit_flags,
     container_user_flags,
+    job_estimate_mb,
     memory_cap_killed,
 )
+from precis.workers.executors._common import handle_memory_kill
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -386,6 +389,7 @@ def build_run_argv(
     gpus: int = 1,
     gpu_card: int | None = None,
     command: str = "gpaw-relax",
+    mem_mb: float | None = None,
 ) -> list[str]:
     """The container ``run`` argv ssh'd to the node (pure). Deterministic
     ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6;
@@ -401,10 +405,16 @@ def build_run_argv(
     image's ``precis-dft-run`` subcommand — ``gpaw-relax`` (the relax) or
     ``gpaw-analysis`` (the ``electronic_analysis`` job_type's single point +
     descriptor pass, gr592999); the staged contract (POSCAR + params.json
-    → result.json) is identical either way."""
+    → result.json) is identical either way.
+
+    ``mem_mb`` is the per-task footprint estimate (``meta.footprint_req`` —
+    the memory-kill requeue's bump, gr595538); it feeds
+    :func:`container_limit_flags`, which clamps it under the operator
+    ceilings. ``None`` (no estimate) resolves to the env knobs alone."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
     limits = container_limit_flags(
-        job_limit=os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip() or None
+        mem_mb=mem_mb,
+        job_limit=os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip() or None,
     )
     dft_cpuset = os.environ.get("PRECIS_DFT_CPUSET", "").strip()
     if dft_cpuset:
@@ -1349,7 +1359,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     raw_card = (ctx.meta.get("reserved") or {}).get("gpu_card")
     gpu_card = int(raw_card) if raw_card is not None else None
     argv = build_run_argv(
-        ref_id=structure_ref_id, in_dir=in_dir, out_dir=out_dir, gpu_card=gpu_card
+        ref_id=structure_ref_id,
+        in_dir=in_dir,
+        out_dir=out_dir,
+        gpu_card=gpu_card,
+        mem_mb=job_estimate_mb(ctx.meta),
     )
     ctx.append_chunk("job_event", f"relax[{fidelity}] on {node}: {' '.join(argv)}")
 
@@ -1421,6 +1435,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             # outcome the requeue policy (gr595538) reads to retry with a
             # bigger estimate instead of re-running identically.
             ctx.set_meta(outcome=KILLED_FOR_MEMORY)
+        if killed and handle_memory_kill(
+            ctx.store, ctx.ref_id, cap_mb=container_cap_mb(argv)
+        ):
+            # Requeued once with the footprint estimate bumped (or, on
+            # the second kill, parked for memory_triage) — not a failure.
+            return
         ctx.record_failure(
             f"struct_relax: container rc={rc}"
             f"{' (killed-for-memory)' if killed else ''}, no {_RESULT_FILE} "

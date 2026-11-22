@@ -83,6 +83,7 @@ Slice 1 (the stub-gated container-execution substrate) stages
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -93,7 +94,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from precis.utils.container_limits import KILLED_FOR_MEMORY, memory_cap_killed
+from precis.utils.container_limits import (
+    KILLED_FOR_MEMORY,
+    container_size_mb,
+    memory_cap_killed,
+)
 from precis.utils.llm.router import Backend, resolve_backend
 from precis.workers.executors import (
     _sandbox_harvest,
@@ -129,6 +134,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     append_chunk as _append_chunk,
+)
+from precis.workers.executors._common import (
+    handle_memory_kill as _handle_memory_kill,
 )
 from precis.workers.executors._common import (
     poison_guard as _poison_guard,
@@ -229,9 +237,23 @@ def _network_mode() -> str:
     return os.environ.get("PRECIS_SANDBOX_NETWORK") or "bridge"
 
 
-def _cgroup_caps() -> tuple[str, str, int]:
-    """``(--memory, --cpus, --pids-limit)`` caps. Env-overridable."""
-    memory = os.environ.get("PRECIS_SANDBOX_MEMORY") or "8g"
+def _cgroup_caps(meta: dict[str, Any] | None = None) -> tuple[str, str, int]:
+    """``(--memory, --cpus, --pids-limit)`` caps. Env-overridable.
+
+    ``PRECIS_SANDBOX_MEMORY`` stays the operator ceiling — when set it
+    wins verbatim, never raised. When unset, a bumped footprint estimate
+    on the job (``meta.footprint_req``, stamped by the memory-kill
+    requeue gr595538) sizes the sandbox's memory at ``max(8g, req)`` —
+    a retried attempt runs under the bigger cap the requeue asked for.
+    No estimate: the historical ``8g`` default, byte-identical."""
+    env_memory = os.environ.get("PRECIS_SANDBOX_MEMORY")
+    if env_memory:
+        memory = env_memory
+    else:
+        from precis.utils.container_limits import job_estimate_mb
+
+        req = job_estimate_mb(meta)
+        memory = f"{max(8192, math.ceil(req))}m" if req is not None else "8g"
     cpus = os.environ.get("PRECIS_SANDBOX_CPUS") or "2"
     try:
         pids = int(os.environ.get("PRECIS_SANDBOX_PIDS_LIMIT", "512"))
@@ -850,15 +872,19 @@ def _launch(store: Store, ref_id: int, meta: dict[str, Any], node: str | None) -
         return
     mode = str(params.get("mode") or "build")
     if mode == "run":
-        _launch_run(store, ref_id, params, node)
+        _launch_run(store, ref_id, params, node, meta)
     elif mode == "script":
         _launch_script(store, ref_id, params, node, meta=meta)
     else:
-        _launch_build(store, ref_id, params, node)
+        _launch_build(store, ref_id, params, node, meta)
 
 
 def _launch_build(
-    store: Store, ref_id: int, params: dict[str, Any], node: str | None
+    store: Store,
+    ref_id: int,
+    params: dict[str, Any],
+    node: str | None,
+    meta: dict[str, Any],
 ) -> None:
     """Stage ``/work`` with ``PROMPT.md``, launch a detached claude
     container, record its handle (``mode:build``)."""
@@ -940,7 +966,7 @@ def _launch_build(
     # make ``run --name`` fail; clear it first.
     _reap(name)
 
-    memory, cpus, pids_limit = _cgroup_caps()
+    memory, cpus, pids_limit = _cgroup_caps(meta)
     argv = build_run_argv(
         podman_bin=_podman_bin(),
         job_id=ref_id,
@@ -979,6 +1005,7 @@ def _launch_build(
             conn,
             ref_id,
             container=name,
+            memory_cap=memory,
             container_id=container_id,
             run_host=node or "",
             deadline=deadline,
@@ -998,7 +1025,11 @@ def _launch_build(
 
 
 def _launch_run(
-    store: Store, ref_id: int, params: dict[str, Any], node: str | None
+    store: Store,
+    ref_id: int,
+    params: dict[str, Any],
+    node: str | None,
+    meta: dict[str, Any],
 ) -> None:
     """Stage a prior build's harvested tarball into ``/work``, launch a
     detached re-run container (``mode:run`` — no claude, no OAuth).
@@ -1046,7 +1077,7 @@ def _launch_run(
     # make ``run --name`` fail; clear it first.
     _reap(name)
 
-    memory, cpus, pids_limit = _cgroup_caps()
+    memory, cpus, pids_limit = _cgroup_caps(meta)
     argv = build_rerun_argv(
         podman_bin=_podman_bin(),
         job_id=ref_id,
@@ -1079,6 +1110,7 @@ def _launch_run(
             conn,
             ref_id,
             container=name,
+            memory_cap=memory,
             container_id=container_id,
             run_host=node or "",
             deadline=deadline,
@@ -1194,7 +1226,7 @@ def _launch_script(
         read_mcp_pid = handle.pid
         mcp_dir = handle.socket_dir
 
-    memory, cpus, pids_limit = _cgroup_caps()
+    memory, cpus, pids_limit = _cgroup_caps(meta)
     # Warm lane only when the staged venv was built under this run's
     # image — interpreter paths are baked into the venv.
     venv_dir = (
@@ -1241,6 +1273,7 @@ def _launch_script(
             conn,
             ref_id,
             container=name,
+            memory_cap=memory,
             container_id=container_id,
             run_host=node or "",
             deadline=deadline,
@@ -1588,7 +1621,7 @@ def _poll_job(store: Store, ref_id: int, meta: dict[str, Any]) -> str | None:
     status, exit_code, oom_killed = state
     if status == "exited":
         ok = exit_code == 0
-        _terminate(
+        handled = _terminate(
             store,
             ref_id,
             name,
@@ -1598,7 +1631,7 @@ def _poll_job(store: Store, ref_id: int, meta: dict[str, Any]) -> str | None:
             oom_killed=oom_killed,
             meta=meta,
         )
-        return _SUCCEEDED if ok else _FAILED
+        return None if handled else (_SUCCEEDED if ok else _FAILED)
 
     # Still running (or created). §B-2 operator kill backstop (`precis jobs
     # kill`) takes precedence over the wall-clock deadline check below —
@@ -1660,7 +1693,7 @@ def _terminate(
     swept: str | None = None,
     oom_killed: bool | None = None,
     meta: dict[str, Any] | None = None,
-) -> None:
+) -> bool:
     """Write minimal forensics, reap the container + workdir, set the
     terminal STATUS, and bubble a failure to the parent todo.
 
@@ -1774,6 +1807,9 @@ def _terminate(
             )
             harvest_note = " harvest failed (see worker log)."
 
+    # Remove the old scratch tree before the new claim can create its own.
+    _remove_run_dirs(work_dir)
+
     with store.pool.connection() as conn:
         _append_chunk(
             store,
@@ -1810,9 +1846,18 @@ def _terminate(
         # or SIGKILL under --memory when the flag wasn't read) gets the
         # recognisable outcome the requeue policy (gr595538) reads to
         # retry with a bigger estimate instead of an identical re-run.
+        handled = False
         if memory_cap_killed(exit_code, oom_killed=oom_killed):
             _set_meta(conn, ref_id, outcome=KILLED_FOR_MEMORY)
-        if swept is not None:
+            # gr595538: requeue once with the footprint estimate bumped,
+            # or park (second kill) + mint the memory_triage job — inside
+            # this transaction, so the outcome stamp and the policy's
+            # action land atomically. Skips the terminal write + bubble.
+            memory = str((meta or {}).get("memory_cap") or _cgroup_caps(meta)[0])
+            handled = _handle_memory_kill(
+                store, ref_id, cap_mb=container_size_mb(memory), conn=conn
+            )
+        if swept is not None and not handled:
             from precis.store import Tag
 
             store.add_tag(
@@ -1821,17 +1866,15 @@ def _terminate(
                 set_by="system",
                 conn=conn,
             )
-        _set_status(store, ref_id, status, conn=conn)
+        if not handled:
+            _set_status(store, ref_id, status, conn=conn)
         conn.commit()
 
-    # Harvest (above) copies anything worth keeping out of /work/out
-    # before this — the scratch workdir is deleted either way.
-    _remove_run_dirs(work_dir)
-
-    if status == _FAILED:
+    if status == _FAILED and not handled:
         from precis.utils.job_bubble import bubble_job_failure
 
         bubble_job_failure(store, ref_id)
+    return handled
 
 
 def _duration_seconds(store: Store, ref_id: int) -> float | None:

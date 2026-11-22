@@ -143,9 +143,12 @@ class AiZynthEngine:
         container_cmd: str,
         models_dir: str | None,
         max_routes: int | None = None,
+        mem_mb: float | None = None,
     ) -> list[str]:
         """The ``podman/docker run`` argv for one plan (delegates to the
-        aizynth argv builder; lazy import keeps this module chem-dep-free)."""
+        aizynth argv builder; lazy import keeps this module chem-dep-free).
+        ``mem_mb`` is the bumped footprint estimate (gr595538) threaded
+        through to the shared cap resolution."""
         from precis_chem.aizynth import build_aizynth_argv
 
         return build_aizynth_argv(
@@ -157,6 +160,7 @@ class AiZynthEngine:
             container_cmd=container_cmd,
             models_dir=models_dir,
             max_routes=max_routes,
+            mem_mb=mem_mb,
         )
 
     def native_parser(

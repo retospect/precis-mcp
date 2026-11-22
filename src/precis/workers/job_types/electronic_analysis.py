@@ -58,7 +58,13 @@ from pathlib import Path
 from typing import Any
 
 from precis.structure.relax_dispatch import phase
-from precis.utils.container_limits import KILLED_FOR_MEMORY, memory_cap_killed
+from precis.utils.container_limits import (
+    KILLED_FOR_MEMORY,
+    container_cap_mb,
+    job_estimate_mb,
+    memory_cap_killed,
+)
+from precis.workers.executors._common import handle_memory_kill
 from precis.workers.job_types import JobTypeSpec, struct_relax
 
 log = logging.getLogger(__name__)
@@ -240,6 +246,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         out_dir=out_dir,
         gpu_card=gpu_card,
         command=_COMMAND,
+        mem_mb=job_estimate_mb(ctx.meta),
     )
     ctx.append_chunk("job_event", f"analysis[{FIDELITY}] on {node}: {' '.join(argv)}")
 
@@ -292,7 +299,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if rc != 0 or not result_path.exists():
         killed = memory_cap_killed(rc)
         if killed:
+            # gr595537/538: the --memory cap's OOM kill — stamp the
+            # recognisable outcome, then requeue once with the footprint
+            # estimate bumped (or, on the second kill, park for
+            # memory_triage) instead of recording a failure.
             ctx.set_meta(outcome=KILLED_FOR_MEMORY)
+        if killed and handle_memory_kill(
+            ctx.store, ctx.ref_id, cap_mb=container_cap_mb(argv)
+        ):
+            return
         ctx.record_failure(
             f"electronic_analysis: container rc={rc}"
             f"{' (killed-for-memory)' if killed else ''}, no "

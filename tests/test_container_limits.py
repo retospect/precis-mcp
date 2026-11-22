@@ -20,6 +20,7 @@ from precis.utils.container_limits import (
     container_limit_flags,
     container_memory_flags,
     container_user_flags,
+    job_estimate_mb,
     job_mem_limit_mb,
     mem_limit_preexec,
     memory_cap_killed,
@@ -112,6 +113,56 @@ def test_build_fold_argv_unset_is_unchanged(monkeypatch):
         models_dir="/nas/models",
     )
     assert "--cpuset-cpus" not in argv and "--cpu-shares" not in argv
+
+
+# ── the bumped footprint estimate (gr595538) ──────────────────────────
+
+
+def test_job_estimate_mb_reads_the_requeue_bump():
+    assert job_estimate_mb({"footprint_req": 3072}) == 3072.0
+    assert job_estimate_mb({"footprint_req": 2048.5}) == 2048.5
+    assert job_estimate_mb(None) is None
+    assert job_estimate_mb({}) is None
+    assert job_estimate_mb({"footprint_req": "3072"}) is None
+    assert job_estimate_mb({"footprint_req": 0}) is None
+    assert job_estimate_mb({"footprint_req": True}) is None
+
+
+def test_bumped_estimate_reaches_the_run_argv(monkeypatch):
+    # The memory-kill requeue stamps meta.footprint_req; the retried
+    # attempt's container must actually carry the bigger cap.
+    monkeypatch.delenv("PRECIS_JOB_CPUSET", raising=False)
+    monkeypatch.delenv("PRECIS_JOB_CPU_SHARES", raising=False)
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o", mem_mb=3072)
+    assert "--memory" in argv and "3072m" in argv
+    fold = build_fold_argv(
+        ref_id=7,
+        in_dir="/s/in",
+        out_dir="/s/out",
+        image="af3:sha",
+        models_dir="/nas/models",
+        mem_mb=3072,
+    )
+    assert "--memory" in fold and "3072m" in fold
+    route_argv = build_aizynth_argv(
+        ref_id=7,
+        in_dir="/i",
+        out_dir="/o",
+        smiles="CCO",
+        image="az:sha",
+        mem_mb=3072,
+    )
+    assert "--memory" in route_argv and "3072m" in route_argv
+
+
+def test_bumped_estimate_clamps_under_the_operator_ceiling(monkeypatch):
+    # An estimate never raises the fleet ceiling (gr595537 holds): a bump
+    # past the ceiling runs AT the ceiling.
+    monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "4g")
+    monkeypatch.delenv("PRECIS_JOB_CPUSET", raising=False)
+    monkeypatch.delenv("PRECIS_JOB_CPU_SHARES", raising=False)
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o", mem_mb=8192)
+    assert "4096m" in argv
 
 
 # ── --user for share-writing science containers (cluster-fileserver-move) ──

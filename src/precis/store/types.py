@@ -1308,6 +1308,11 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
             "waiting_ask_user",
             "waiting_manual_kick",
             "yielded",
+            # Memory-kill triage park (gr595538): a job killed for memory
+            # twice, waiting on its ``memory_triage`` job's verdict — not
+            # woken by any selector, terminal only via the triage's
+            # disposition. Keep in sync with ``_common.PARKED``.
+            "parked",
             # Terminal wall-deadline verdict (gr647914 / td648501):
             # ``ssh_node``'s deadline kill writes it only for a job_type
             # declaring ``deadline_kill_meta`` (``land_slice``), so the
@@ -1429,6 +1434,10 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # waiting_* park (nothing wakes it; it competes in the
             # claim order) and not terminal.
             "yielded",
+            # Memory-kill triage park (gr595538) — a twice-memory-killed
+            # job waiting on its ``memory_triage`` verdict. Keep in sync
+            # with ``_common.PARKED``.
+            "parked",
             # Terminal wall-deadline verdict (gr647914 / td648501) —
             # the job axis's distinct timed-out status, written only by
             # ``ssh_node``'s deadline kill for a job_type declaring

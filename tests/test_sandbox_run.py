@@ -1003,20 +1003,52 @@ def test_poll_exit_one_fails_and_bubbles(store: Store, sandbox_env: Path) -> Non
     assert any(t.startswith("child-failed:") for t in _tags(store, parent.id))
 
 
-def test_poll_oom_killed_stamps_outcome(store: Store, sandbox_env: Path) -> None:
-    """gr595537: the --memory cap's OOM kill (.State.OOMKilled) stamps
-    meta.outcome=killed-for-memory — the recognisable flag the requeue
-    policy (gr595538) reads to retry with a bigger estimate."""
+def test_poll_oom_killed_relaunches_with_bumped_cap(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr595537/538: the --memory cap's OOM kill (.State.OOMKilled) is not a
+    failure — the job is requeued once with the footprint estimate bumped
+    and a ``killed:memory`` flag; a second kill parks it for triage. (The
+    pre-gr595538 expectation here was ``STATUS:failed``: the gripe rules
+    that wrong — a memory kill is a sizing signal, not a crash.)"""
+    monkeypatch.delenv("PRECIS_SANDBOX_MEMORY", raising=False)
+    launched_caps: list[str] = []
+    real_run = claude_docker.subprocess.run
+
+    def capture_launch(argv: list[str], **kwargs: Any) -> Any:
+        if len(argv) > 1 and argv[1] == "run":
+            launched_caps.append(argv[argv.index("--memory") + 1])
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(claude_docker.subprocess, "run", capture_launch)
     jid = _mk_queued_job(store, params=_valid_params())
     claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+    state = sandbox_env / f"sandbox-{jid}.state"
+    state.write_text("exited 137 true", encoding="utf-8")
+    # Poll requeues (queued, flag, history) and this pass's claim phase
+    # immediately re-claims it — the retry launches at the bumped cap.
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, jid) == "running"
+    meta = _meta(store, jid)
+    assert "outcome" not in meta  # popped with the requeue
+    assert launched_caps == ["8g", "12288m"]
+    assert state.read_text(encoding="utf-8") == "running 0"
+    assert len(meta.get("killed_memory") or []) == 1
+    assert "killed:memory" in _tags(store, jid)
+
+    # The retried attempt dies again → parked, and one memory_triage job.
     (sandbox_env / f"sandbox-{jid}.state").write_text(
         "exited 137 true", encoding="utf-8"
     )
-    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap
-    assert _status(store, jid) == "failed"
-    meta = _meta(store, jid)
-    assert meta.get("outcome") == "killed-for-memory"
-    assert meta.get("exit_code") == 137
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap → park
+    assert _status(store, jid) == "parked"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+            "AND meta->>'idem_key' = %s",
+            (f"memory_triage:{jid}",),
+        ).fetchone()
+    assert row is not None
 
 
 def test_poll_sigkill_without_oom_flag_no_outcome(

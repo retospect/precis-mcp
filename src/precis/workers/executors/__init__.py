@@ -152,6 +152,13 @@ Fresh run_slice claims probe the same fixed CPU/memory footprint as launch.
 The probe refunds immediately because detached spawn owns the lifetime hold;
 a race before spawn parks on lane wait without spending an attempt.
 
+Memory-capped jobs requeue once with an increased memory request and a
+fresh launch. Admission reserves from the new request where the host
+advertises memory. A second memory kill parks the job for a parentless
+``memory_triage`` job so the diagnostic run cannot complete the original
+job's todo. The verdict and its follow-up share the parked job's row
+lock and transaction. See `executors/_common.py::handle_memory_kill`
+and `job_types/memory_triage.py::apply_verdict`.
 """
 
 from __future__ import annotations

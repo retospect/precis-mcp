@@ -320,6 +320,7 @@ returns the in-flight job's id rather than queueing twice.
 | `STATUS:timed-out`        | Killed at its wall-clock deadline with the job type's timed-out verdict (`land_slice`); the plan tick parks the slice at the re-land ask |
 | `STATUS:cancel_requested` | Cancellation in flight                 |
 | `STATUS:cancelled`        | Runner stopped on cancel request       |
+| `STATUS:parked`           | Killed for memory twice, waiting on its `memory_triage` verdict (below) |
 
 (`STATUS:submitted` is used only by future cluster executors;
 `claude_inproc` goes straight queued → running. A `coordinator` job
@@ -327,6 +328,25 @@ additionally parks at `STATUS:waiting_children` / `waiting_time` /
 `waiting_ask_user` / `waiting_manual_kick` between slices — that's a
 legitimate pause, not a stall; the `wake_runner` re-queues it when
 the wake condition fires.)
+
+## A job killed for memory — requeue, then park at `STATUS:parked`
+
+A job whose run dies to the per-task memory cap (container OOM-kill,
+exit 137) is not a failure: the first kill requeues it once with a
+fresh launch and a footprint estimate bumped ×1.5 from the largest
+of the previous estimate, learned p95, measured peak and attempt cap.
+Admission uses `meta.footprint_req` where memory is advertised, and
+operator ceilings still apply to the launch. The job gets a
+`killed:memory` flag. The second kill parks it at `STATUS:parked`
+(reason memory) and mints one independent `memory_triage` job (idem
+`memory_triage:<job_id>`). That pass reads the run logs and decides:
+too big for any box (the job is failed, `failure_class=too-big` — the
+drop), a bug/leak/runaway (a gripe is filed with the evidence), or
+unknown (an `ask-user` todo is minted and the job stays parked until
+the ruling). Model pauses defer triage. An invalid reply or a router
+error that cannot defer fails the triage job and records the reason in
+the same deduplicated ask-user path. The wake runner completes
+`STATUS:cancel_requested` on a memory-parked job without a wake condition.
 
 ## A coordinator job yields a pending question — `STATUS:waiting_ask_user`
 ## Why is this job parked waiting on me?

@@ -94,6 +94,12 @@ including repeated coordinator resumes only once per tick.
 | `embed_batch`       | `job_inproc`    | Bounded embedding work; memory `mode='process'` creates a request pinned to the selected current body/header revision |
 | `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
 
+## Memory-triage lane — memory_triage
+
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
+| `memory_triage`     | `claude_inproc` | Internal, minted by the memory-kill policy (gr595538), never by hand: a job killed for memory twice is parked (`STATUS:parked`) and this independent job reads its run logs with one BIG-tier call, deciding too-big (the job is failed — the drop), bug/leak/runaway (a gripe is filed with the evidence) or unknown (an `ask-user` todo is minted; the job stays parked). Invalid replies and router errors that cannot defer fail the triage job and create the same deduplicated follow-up. Params: `job_id`. See `precis-job-ops-help` §"A job killed for memory" |
+
 ## Process one memory before testing recall
 
 ```python

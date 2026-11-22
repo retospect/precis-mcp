@@ -956,6 +956,20 @@ def test_ssh_node_claim_reserves_predicted_rss(store: Store) -> None:
     assert _free(store, HOST, "mem_mb") == 30000 - expected
 
 
+def test_retry_estimate_reserves_memory_without_rollup(store: Store) -> None:
+    _advertise(store, HOST, {"mem_mb": 30000})
+    job = _queue_job(store, executor="ssh_node", job_type="fp_demo")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('footprint_req', 3072) "
+            "WHERE ref_id = %s",
+            (job,),
+        )
+
+    assert [r[0] for r in _claim(store, "ssh_node")] == [job]
+    assert _reserved_slots(store, job) == {"mem_mb": 3072}
+
+
 def test_ssh_node_claim_refused_when_mem_short(store: Store) -> None:
     """Capacity covers one 1250 MiB reservation; a second finds ``free``
     short of the (unclamped) units and is refused."""

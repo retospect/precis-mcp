@@ -17,7 +17,7 @@ Five wake conditions, each a separate SELECT bounded by the pass
    for ``ask-user:*`` human-approval pauses.
 4. ``tag_added`` — the named tag (exact match) is present.
 5. ``cancel_override`` — a ``STATUS:cancel_requested`` row that
-   also has ``meta.wake_when`` set and no live compute (no
+   has a wake condition or a memory park reason, and no live compute (no
    ``compute_handle``, no ``submit_started_at``). Nobody holds a parked
    job, so it is cancelled where it sits. It used to be re-queued "so
    the coordinator's cancel-poll fires on its next slice", but
@@ -389,7 +389,8 @@ def _wake_cancel_override(conn: Connection, *, limit: int) -> list[int]:
     ``meta.wake_when`` marks a row that was parked (a coordinator yield,
     ``park_job_until``); nothing clears it, so a job that parked once and
     then launched still carries it. The compute filter keeps such a row
-    out: with ``compute_handle`` or a live ``submit_started_at`` an
+    out. A memory park carries ``park_reason=memory`` instead of a wake
+    condition. With ``compute_handle`` or a live ``submit_started_at`` an
     executor holds the compute and its own cancel drive
     (``ssh_node._cancelling_jobs``) owns the stop. ``set_meta(key=None)``
     leaves a JSON null behind, hence ``->>`` rather than ``?``.
@@ -406,7 +407,7 @@ def _wake_cancel_override(conn: Connection, *, limit: int) -> list[int]:
                     AND t.namespace = %s
                     AND t.value = %s
                )
-           AND r.meta ? 'wake_when'
+           AND (r.meta ? 'wake_when' OR r.meta->>'park_reason' = 'memory')
            AND r.meta->>'compute_handle' IS NULL
            AND r.meta->>'submit_started_at' IS NULL
          ORDER BY r.ref_id

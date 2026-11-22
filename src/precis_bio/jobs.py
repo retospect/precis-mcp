@@ -32,7 +32,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from precis.utils.container_limits import KILLED_FOR_MEMORY, memory_cap_killed
+from precis.utils.container_limits import (
+    KILLED_FOR_MEMORY,
+    container_cap_mb,
+    job_estimate_mb,
+    memory_cap_killed,
+)
+from precis.workers.executors._common import handle_memory_kill
 from precis.workers.job_types import JobTypeSpec
 from precis_bio.alphafold import INPUT_FILE
 from precis_bio.engine import DEFAULT_SEEDS, resolve_engine
@@ -182,6 +188,7 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> ProteinFold
         seeds=seeds,
         container_cmd=_CONTAINER_CMD,
         models_dir=models_dir,
+        mem_mb=job_estimate_mb(ctx.meta),
     )
     ctx.append_chunk("job_event", f"fold[{engine.name}] on {node}: {' '.join(argv)}")
 
@@ -200,6 +207,12 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> ProteinFold
             # outcome the requeue policy (gr595538) reads to retry with a
             # bigger estimate instead of re-running identically.
             ctx.set_meta(outcome=KILLED_FOR_MEMORY)
+        if killed and handle_memory_kill(
+            ctx.store, ctx.ref_id, cap_mb=container_cap_mb(argv)
+        ):
+            # Requeued once with the footprint estimate bumped (or, on
+            # the second kill, parked for memory_triage) — not a failure.
+            return None
         ctx.record_failure(
             f"fold: container rc={rc}{' (killed-for-memory)' if killed else ''}"
             " — see the log event"

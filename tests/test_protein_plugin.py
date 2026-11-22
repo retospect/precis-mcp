@@ -23,7 +23,7 @@ import pytest
 
 from precis.dispatch import Hub, _try
 from precis.store import Store
-from precis.store.types import Relation
+from precis.store.types import Relation, Tag
 from precis.workers import job_types as jt
 from precis_bio import jobs as bio_jobs
 from precis_bio.alphafold import (
@@ -587,9 +587,11 @@ def test_container_dispatch_no_model_fails(
 def test_container_oom_exit_stamps_killed_for_memory(
     protein_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr595537: a --memory-cap kill (rc=137) stamps meta.outcome —
-    the recognisable flag the requeue policy (gr595538) reads to retry
-    with a bigger estimate instead of re-running identically."""
+    """gr595537/538: a --memory-cap kill (rc=137) stamps meta.outcome and
+    the requeue policy requeues the job once with the estimate bumped —
+    not a failure. (Pre-gr595538 this test asserted the kill ended
+    ``STATUS:failed``; the gripe rules that wrong.) A plain rc=1 leaves
+    meta.outcome unset and still fails."""
     in_dir = tmp_path / "in"
     out_dir = tmp_path / "out"
     in_dir.mkdir()
@@ -604,6 +606,13 @@ def test_container_oom_exit_stamps_killed_for_memory(
     ref = protein_store.insert_ref(
         kind="protein", slug="oom", title="oom", meta={"sequence": "ACDE"}
     )
+    job = protein_store.insert_ref(
+        kind="job",
+        slug=None,
+        title="fold oom",
+        meta={"executor": "ssh_node", "job_type": "fold"},
+    )
+    protein_store.add_tag(job.id, Tag.parse_strict("STATUS:running"), set_by="agent")
     params = {
         "protein_ref_id": ref.id,
         "name": "oom",
@@ -613,11 +622,19 @@ def test_container_oom_exit_stamps_killed_for_memory(
         "cache_key": "fold:oom",
         "target_node": "spruce",
     }
-    ctx = _FakeCtx(store=protein_store, params=params)
+    ctx = _FakeCtx(store=protein_store, params=params, ref_id=int(job.id))
     bio_jobs._dispatch(ctx, FOLD_SPEC)
-    assert ctx.status != "succeeded"
     assert ctx.meta_updates.get("outcome") == "killed-for-memory"
-    assert ctx.failure is not None and "killed-for-memory" in ctx.failure
+    assert ctx.failure is None
+    with protein_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (int(job.id),),
+        ).fetchone()
+    assert row is not None
+    status = row[0]
+    assert status == "queued"  # requeued, not failed
 
 
 # ─────────────────── structure convergence (slice 4c) ───────────────────
@@ -755,8 +772,11 @@ def test_kind_is_available_without_any_flag(monkeypatch: pytest.MonkeyPatch) -> 
 class _FakeCtx:
     """Minimal DispatchContext double for the fold dispatch."""
 
-    def __init__(self, *, store: Store, params: dict[str, Any]) -> None:
+    def __init__(
+        self, *, store: Store, params: dict[str, Any], ref_id: int = 0
+    ) -> None:
         self.store = store
+        self.ref_id = ref_id
         self.meta = {"params": params}
         self.status: str | None = None
         self.failure: str | None = None
@@ -775,3 +795,12 @@ class _FakeCtx:
 
     def set_meta(self, **fields: Any) -> None:
         self.meta_updates.update(fields)
+        if self.ref_id:
+            # Write through so executor-side policy reads (gr595538's
+            # handle_memory_kill reads the outcome stamp from the row)
+            # see what a real DispatchContext would have written.
+            with self.store.pool.connection() as conn:
+                from precis.workers.executors import _common
+
+                _common.set_meta(conn, self.ref_id, **fields)
+                conn.commit()

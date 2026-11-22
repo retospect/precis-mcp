@@ -121,6 +121,7 @@ from typing import Any
 from psycopg import Connection
 
 from precis.store._jobs_ops import model_footprint_vram_mb, predicted_rss_mb
+from precis.utils.container_limits import job_estimate_mb
 from precis.workers.admission import MEM_MB, VRAM_CARD_MB, VRAM_MB
 
 log = logging.getLogger(__name__)
@@ -599,7 +600,10 @@ def admission_units(
     :func:`min_samples` measured runs and a ``mem_mb`` row advertised →
     ``{"mem_mb": ceil(p95 × margin)}``. The conditional decrement of
     the merged reservation then refuses the claim when the headroom
-    isn't there, all-or-nothing with the tokens; :func:`admission_block`
+    isn't there, all-or-nothing with the tokens. Any executor with an
+    explicit footprint estimate also reserves memory where advertised.
+    The larger of that estimate and the learned requirement wins;
+    :func:`admission_block`
     additionally vetoes against live state (per-card fit, measured free
     less pending admissions) right after the decrement, refunding it.
 
@@ -631,7 +635,10 @@ def admission_units(
                 int(footprint) + vram_margin_mb(),
                 cache,
             )
-    if executor == SCIENCE_EXECUTOR and MEM_MB in advertised_here:
+    if MEM_MB not in advertised_here:
+        return units
+    mem_mb = math.ceil(job_estimate_mb(meta) or 0)
+    if executor == SCIENCE_EXECUTOR:
         size = meta.get("size")
         size_name = str(size.get("name")) if isinstance(size, dict) else None
         size_value = str(size.get("value")) if isinstance(size, dict) else None
@@ -646,13 +653,9 @@ def admission_units(
             )
         rss_p95 = cache[key]
         if rss_p95 is not None:
-            units[MEM_MB] = _clamp_to_capacity(
-                conn,
-                res_host,
-                MEM_MB,
-                math.ceil(rss_p95 * rss_margin_factor()),
-                cache,
-            )
+            mem_mb = max(mem_mb, math.ceil(rss_p95 * rss_margin_factor()))
+    if mem_mb:
+        units[MEM_MB] = _clamp_to_capacity(conn, res_host, MEM_MB, mem_mb, cache)
     return units
 
 

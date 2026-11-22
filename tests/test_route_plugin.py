@@ -24,6 +24,7 @@ import precis_chem
 from precis.dispatch import Hub, _try
 from precis.errors import BadInput
 from precis.store import Store
+from precis.store.types import Tag
 from precis.workers import job_types as jt
 from precis_chem import jobs as chem_jobs
 from precis_chem.aizynth import (
@@ -539,10 +540,11 @@ def test_container_dispatch_stages_max_routes_overlay(
 def test_container_oom_exit_stamps_killed_for_memory(
     route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr595537: a --memory-cap kill (rc=137) stamps meta.outcome —
-    the recognisable flag the requeue policy (gr595538) reads to retry
-    with a bigger estimate instead of re-running identically. A plain
-    rc=1 leaves meta.outcome unset."""
+    """gr595537/538: a --memory-cap kill (rc=137) stamps meta.outcome and
+    the requeue policy requeues the job once with the estimate bumped —
+    not a failure. (Pre-gr595538 this test asserted the kill ended
+    ``STATUS:failed``; the gripe rules that wrong.) A plain rc=1 leaves
+    meta.outcome unset and still fails."""
     in_dir = tmp_path / "in"
     out_dir = tmp_path / "out"
     in_dir.mkdir()
@@ -556,6 +558,13 @@ def test_container_oom_exit_stamps_killed_for_memory(
     ref = route_store.insert_ref(
         kind="route", slug="oom", title="oom", meta={"target": "CCO"}
     )
+    job = route_store.insert_ref(
+        kind="job",
+        slug=None,
+        title="retrosynth oom",
+        meta={"executor": "ssh_node", "job_type": "retrosynth"},
+    )
+    route_store.add_tag(job.id, Tag.parse_strict("STATUS:running"), set_by="agent")
     params = {
         "route_ref_id": ref.id,
         "target": "CCO",
@@ -564,11 +573,19 @@ def test_container_oom_exit_stamps_killed_for_memory(
         "cache_key": "retrosynth:oom",
         "target_node": "spruce",
     }
-    ctx = _FakeCtx(store=route_store, params=params)
+    ctx = _FakeCtx(store=route_store, params=params, ref_id=int(job.id))
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
-    assert ctx.status == "failed"
     assert ctx.meta_updates.get("outcome") == "killed-for-memory"
-    assert ctx.failure is not None and "killed-for-memory" in ctx.failure
+    assert ctx.failure is None
+    with route_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (int(job.id),),
+        ).fetchone()
+    assert row is not None
+    status = row[0]
+    assert status == "queued"  # requeued, not failed
 
     monkeypatch.setattr(
         chem_jobs, "RUNNER", lambda argv, *, node, timeout=None: (1, "boom")
@@ -1111,8 +1128,11 @@ def test_kind_is_available_without_any_flag(monkeypatch: pytest.MonkeyPatch) -> 
 class _FakeCtx:
     """Minimal DispatchContext double for the retrosynth dispatch."""
 
-    def __init__(self, *, store: Store, params: dict[str, Any]) -> None:
+    def __init__(
+        self, *, store: Store, params: dict[str, Any], ref_id: int = 0
+    ) -> None:
         self.store = store
+        self.ref_id = ref_id
         self.meta = {"params": params}
         self.status: str | None = None
         self.failure: str | None = None
@@ -1131,6 +1151,15 @@ class _FakeCtx:
 
     def set_meta(self, **fields: Any) -> None:
         self.meta_updates.update(fields)
+        if self.ref_id:
+            # Write through so executor-side policy reads (gr595538's
+            # handle_memory_kill reads the outcome stamp from the row)
+            # see what a real DispatchContext would have written.
+            with self.store.pool.connection() as conn:
+                from precis.workers.executors import _common
+
+                _common.set_meta(conn, self.ref_id, **fields)
+                conn.commit()
 
 
 def test_route_render_puts_smiles_in_code_spans() -> None:

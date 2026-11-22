@@ -22,8 +22,9 @@ The cap resolves per call from two layers — strictly opt-in, so a host
 with no knob set spawns byte-identical argv to before (no-env-no-flag):
 
 * the footprint estimate the caller passes as ``mem_mb`` (predicted peak +
-  margin — ``meta.footprint_req`` once gr595539 stamps it, sized off the
-  ``meta.footprint`` rows gr595536 measures);
+  margin — ``meta.footprint_req``). The memory-kill requeue policy
+  gr595538 records a larger estimate using the prior cap and available
+  footprint measurements;
 * ``PRECIS_JOB_MEM_LIMIT`` — the host-level operator ceiling, a docker size
   string (``"8g"``, ``"40960m"``, bytes). It *clamps* an estimate down and
   supplies the cap when none exists; ``0``/``none``/``off`` disables
@@ -48,7 +49,8 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +89,7 @@ _SIZE_UNITS: tuple[tuple[str, float], ...] = (
 )
 
 
-def _size_to_mb(raw: str) -> float | None:
+def container_size_mb(raw: str) -> float | None:
     """A docker size string → MiB (``"40g"`` → 40960, ``"512m"`` → 512).
     A bare number is bytes (docker's convention). ``None`` when
     unparseable."""
@@ -103,10 +105,34 @@ def _size_to_mb(raw: str) -> float | None:
         return None
 
 
+def container_cap_mb(argv: list[str]) -> float | None:
+    """Return the memory cap emitted by the container argv builder."""
+    if "--memory" not in argv:
+        return None
+    return container_size_mb(argv[argv.index("--memory") + 1])
+
+
 def _mem_limit_disabled() -> bool:
     """Whether ``PRECIS_JOB_MEM_LIMIT`` spells an explicit disable — the
     strongest signal in the resolution: it uncaps even a job knob."""
     return os.environ.get(_MEM_LIMIT_ENV, "").strip().lower() in _DISABLE_VALUES
+
+
+def job_estimate_mb(meta: Mapping[str, Any] | None) -> float | None:
+    """The bumped footprint estimate stamped by the memory-kill requeue
+    policy (gr595538), or ``None`` when the job carries none.
+
+    Reads ``meta.footprint_req`` — MiB, a number — the requeue writes after
+    a ``KILLED_FOR_MEMORY`` kill. Spawn paths pass it as ``mem_mb`` so
+    the retry can use the larger cap within the operator ceiling.
+    Missing or non-numeric values read as ``None``.
+    """
+    if not meta:
+        return None
+    raw = meta.get("footprint_req")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return float(raw) if raw > 0 and math.isfinite(raw) else None
 
 
 def job_mem_limit_mb(mem_mb: float | None = None) -> float | None:
@@ -125,7 +151,7 @@ def job_mem_limit_mb(mem_mb: float | None = None) -> float | None:
         return base
     if raw.lower() in _DISABLE_VALUES:
         return None
-    ceiling = _size_to_mb(raw)
+    ceiling = container_size_mb(raw)
     if ceiling is None or ceiling <= 0:
         log.warning(
             "%s=%r unreadable — falling back to the estimate",
@@ -161,7 +187,7 @@ def container_memory_flags(
     """
     if _mem_limit_disabled():
         return []
-    job_mb = _size_to_mb(job_limit) if job_limit else None
+    job_mb = container_size_mb(job_limit) if job_limit else None
     if job_limit and job_mb is None:
         log.warning(
             "job memory limit %r unreadable — passing it through raw", job_limit
@@ -308,9 +334,12 @@ def memory_cap_killed(
 __all__ = [
     "KILLED_FOR_MEMORY",
     "MEMORY_KILL_RETURNCODES",
+    "container_cap_mb",
     "container_limit_flags",
     "container_memory_flags",
+    "container_size_mb",
     "container_user_flags",
+    "job_estimate_mb",
     "job_mem_limit_mb",
     "mem_limit_preexec",
     "memory_cap_killed",

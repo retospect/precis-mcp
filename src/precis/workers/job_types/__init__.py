@@ -1284,6 +1284,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "cite_resolve",
     "lane_health",
     "boundary_probe",
+    "memory_triage",
 )
 
 #: The job types that declare a ``tidy`` hook (:attr:`JobTypeSpec.tidy`).
@@ -1585,6 +1586,14 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         # probe a branch hits inside the slice's test container.
         # Detached submit/poll under ssh_node, no LLM.
         from precis.workers.job_types.boundary_probe import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "memory_triage":
+        # The big-model pass over a twice-memory-killed job's run logs
+        # (gr595538): one BIG-tier read decides drop / gripe / ask-user.
+        # Lazy so CLIs that never triage don't pull the LLM router in.
+        from precis.workers.job_types.memory_triage import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

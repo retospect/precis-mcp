@@ -46,10 +46,13 @@ from typing import Any
 
 from precis.utils.container_limits import (
     KILLED_FOR_MEMORY,
+    container_cap_mb,
     container_limit_flags,
     container_user_flags,
+    job_estimate_mb,
     memory_cap_killed,
 )
+from precis.workers.executors._common import handle_memory_kill
 from precis.workers.job_types import JobTypeSpec
 from precis_chem import steer
 from precis_chem.askcos import (
@@ -303,6 +306,7 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
         container_cmd=_CONTAINER_CMD,
         models_dir=os.environ.get("PRECIS_CHEM_MODELS_DIR") or None,
         max_routes=max_routes or None,
+        mem_mb=job_estimate_mb(ctx.meta),
     )
     ctx.append_chunk("job_event", f"route[{engine.name}] on {node}: {' '.join(argv)}")
 
@@ -325,6 +329,12 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
             # outcome the requeue policy (gr595538) reads to retry with a
             # bigger estimate instead of re-running identically.
             ctx.set_meta(outcome=KILLED_FOR_MEMORY)
+        if killed and handle_memory_kill(
+            ctx.store, ctx.ref_id, cap_mb=container_cap_mb(argv)
+        ):
+            # Requeued once with the footprint estimate bumped (or, on
+            # the second kill, parked for memory_triage) — not a failure.
+            return None
         ctx.record_failure(
             f"retrosynth: container rc={rc}{' (killed-for-memory)' if killed else ''}"
             f", no {want} — see the log event"

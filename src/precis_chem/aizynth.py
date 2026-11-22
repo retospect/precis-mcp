@@ -183,6 +183,7 @@ def build_aizynth_argv(
     container_cmd: str = "podman",
     models_dir: str | None = None,
     max_routes: int | None = None,
+    mem_mb: float | None = None,
 ) -> list[str]:
     """The ``podman run`` argv for one AiZynth plan (pure, testable).
 
@@ -198,6 +199,11 @@ def build_aizynth_argv(
     argument; it merges the overlay (``post_processing.max_routes`` +
     ``all_routes``) over the base ``/models/config.yml`` so the run keeps N
     candidate routes.
+
+    ``mem_mb`` is the per-task footprint estimate (``meta.footprint_req`` —
+    the memory-kill requeue's bump, gr595538); it feeds
+    :func:`container_limit_flags` under the fleet ceiling. ``None`` (no
+    estimate) resolves to the env knobs alone.
     """
     argv = [
         container_cmd,
@@ -206,7 +212,7 @@ def build_aizynth_argv(
         "--name",
         f"precis-route-{ref_id}",
         *container_user_flags(),
-        *container_limit_flags(),
+        *container_limit_flags(mem_mb=mem_mb),
         "-v",
         f"{in_dir}:{CONTAINER_IN}:ro",
         "-v",

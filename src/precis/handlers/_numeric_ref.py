@@ -4313,16 +4313,25 @@ class NumericRefHandler(Handler):
         # remove= tag was present here but remove_tag() still reports no
         # row deleted, the add= already cleared it, and the response must
         # say so truthfully rather than "no such tag, unchanged".
-        pre_tags = set(self.store.tags_for(ref_id))
-        parsed_add = self._guard_tag_add(ref_id, parsed_add, pre_tags)
-        displaced = [
-            (old, t)
-            for t in parsed_add
-            if t.namespace == "closed"
-            for old in sorted(pre_tags, key=str)
-            if old.namespace == "closed" and old.prefix == t.prefix and old != t
-        ]
         with self.store.tx() as conn:
+            if self.kind == "job" and any(
+                t.namespace == "closed" and t.prefix == "STATUS"
+                for t in (*parsed_add, *parsed_remove)
+            ):
+                # Check transitions under the same lock used by worker
+                # dispositions, including verdicts on memory-parked jobs.
+                conn.execute(
+                    "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,)
+                )
+            pre_tags = set(self.store.tags_for(ref_id, conn=conn))
+            parsed_add = self._guard_tag_add(ref_id, parsed_add, pre_tags)
+            displaced = [
+                (old, t)
+                for t in parsed_add
+                if t.namespace == "closed"
+                for old in sorted(pre_tags, key=str)
+                if old.namespace == "closed" and old.prefix == t.prefix and old != t
+            ]
             for t in parsed_add:
                 self.store.add_tag(
                     ref_id,

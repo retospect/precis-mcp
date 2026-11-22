@@ -5458,6 +5458,7 @@ class JobHandler(NumericRefHandler):
         "waiting_time": frozenset({"cancel_requested", "failed"}),
         "waiting_ask_user": frozenset({"cancel_requested", "failed"}),
         "waiting_manual_kick": frozenset({"cancel_requested", "failed"}),
+        "parked": frozenset({"cancel_requested", "failed"}),
         "cancel_requested": frozenset({"cancelled"}),
         "succeeded": frozenset(),
         "failed": frozenset(),

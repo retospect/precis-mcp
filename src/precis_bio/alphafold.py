@@ -86,6 +86,7 @@ def build_fold_argv(
     container_cmd: str = "docker",
     xla_cache_dir: str | None = None,
     mem_limit: str | None = None,
+    mem_mb: float | None = None,
 ) -> list[str]:
     """The ``docker run`` argv for one AF3 de-novo fold (pure, testable).
 
@@ -107,7 +108,11 @@ def build_fold_argv(
     the shared resolution decides (usually no cap, unchanged default).
     Cheap insurance; a fold on a 21-mer stays well under any sane cap, and
     the operator sizes it in the role.
-    """
+
+    ``mem_mb`` is the per-task footprint estimate (``meta.footprint_req`` —
+    the memory-kill requeue's bump, gr595538); it feeds the same shared
+    resolution under ``mem_limit``/the fleet ceiling. ``None`` (no
+    estimate) resolves to the env knobs alone."""
     argv = [
         container_cmd,
         "run",
@@ -117,7 +122,7 @@ def build_fold_argv(
         "--name",
         f"precis-fold-{ref_id}",
     ]
-    argv += container_limit_flags(job_limit=mem_limit)
+    argv += container_limit_flags(mem_mb=mem_mb, job_limit=mem_limit)
     argv += container_user_flags()
     argv += [
         "-v",

@@ -161,11 +161,14 @@ class AlphaFold3Engine:
         seeds: list[int],
         container_cmd: str,
         models_dir: str,
+        mem_mb: float | None = None,
     ) -> list[str]:
         """The ``docker run`` argv for one fold (delegates to the AF3 argv
         builder; lazy import keeps this module bio-dep-free). ``name``/
         ``sequence``/``seeds`` are consumed when the input JSON is staged, not
-        on the command line — the argv only names the mounts + entrypoint."""
+        on the command line — the argv only names the mounts + entrypoint.
+        ``mem_mb`` is the bumped footprint estimate (gr595538) threaded
+        through to the shared cap resolution."""
         from precis_bio.alphafold import build_fold_argv
 
         return build_fold_argv(
@@ -177,6 +180,7 @@ class AlphaFold3Engine:
             container_cmd=container_cmd,
             xla_cache_dir=os.environ.get(FOLD_XLA_CACHE_ENV) or None,
             mem_limit=os.environ.get(FOLD_MEM_LIMIT_ENV) or None,
+            mem_mb=mem_mb,
         )
 
     def build_input(

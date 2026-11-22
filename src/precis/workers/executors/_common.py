@@ -7,6 +7,15 @@ SQL shape, and the same job-row helpers — this module is their single home.
 Executors import these under their existing ``_name`` aliases: bare-name
 references in their bodies, and tests' ``monkeypatch.setattr(module,
 "_set_status", ...)``, keep working unchanged.
+
+The non-terminal status policy lives here too: ``poison_guard`` (the
+§H crash-loop cap) and ``handle_memory_kill`` (gr595538 — a memory-cap
+kill requeues once with the footprint estimate bumped and a
+``killed:memory`` flag; a second kill parks at ``STATUS:parked`` for the
+``memory_triage`` job_type, which decides drop / gripe / ask-user). The
+``parked`` value rides the ``WAITING`` tuple so finalize passes leave it
+alone, but no wake_runner selector matches it — a parked job waits on a
+verdict, not on time.
 """
 
 from __future__ import annotations
@@ -84,10 +93,22 @@ WAITING_TIME = "waiting_time"
 WAITING_ASK_USER = "waiting_ask_user"
 WAITING_MANUAL_KICK = "waiting_manual_kick"
 
-#: Every waiting status — a parked job (coordinator Yield, or a
-#: non-coordinator lane's :func:`park_job_until`). Non-terminal but NOT
-#: still-running either: a finalize pass must leave these alone.
-WAITING = (WAITING_CHILDREN, WAITING_TIME, WAITING_ASK_USER, WAITING_MANUAL_KICK)
+#: A job killed for memory a second time (gr595538) — parked for the
+#: ``memory_triage`` job_type, never woken by a selector: a parked job
+#: waits for the triage verdict (drop / gripe / ask-user), not for time.
+PARKED = "parked"
+
+#: Every waiting status — a parked job (coordinator Yield, a
+#: non-coordinator lane's :func:`park_job_until`, or a twice-memory-killed
+#: row's :data:`PARKED`). Non-terminal but NOT still-running either: a
+#: finalize pass must leave these alone.
+WAITING = (
+    WAITING_CHILDREN,
+    WAITING_TIME,
+    WAITING_ASK_USER,
+    WAITING_MANUAL_KICK,
+    PARKED,
+)
 
 #: A clean mid-run claim release (relax-slices): a checkpointed job past
 #: its slice budget with work waiting behind it stops, yields its claim
@@ -3751,6 +3772,7 @@ def record_failure(
     gripe_rollback: int | None,
     failure_class: str | None = None,
     open_tag: str | None = None,
+    conn: Connection | None = None,
 ) -> None:
     """Tag a job ``STATUS:failed`` with a reason event chunk.
 
@@ -3786,46 +3808,60 @@ def record_failure(
     to the bubble's infra-classification read — enabling the same bounded
     auto-retry a lease-expiry orphan gets, rather than an immediate latch.
 
+    Use ``conn`` to keep a disposition and its evidence in the caller's
+    transaction.
+
     A ``reason`` matching :func:`classify_transient_backoff_hours`
     (rate/spend limits, transient API faults) additionally stamps
     ``meta.retry_after`` on the job — the sweeper's unpark phase re-arms
     the parked parent at that time instead of the 12h·2ᴺ cool-down.
     """
-    with store.pool.connection() as conn:
-        if open_tag is not None:
-            store.add_tag(ref_id, Tag.open(open_tag), set_by="system", conn=conn)
-        append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
-        set_status(store, ref_id, FAILED, conn=conn)
-        # gr635381: ``meta.error`` is stamped for EVERY failure, not only
-        # classified ones — a bare ``STATUS:failed`` with no breadcrumb
-        # forced the reader into the full job_event chunk for the cause.
-        meta_fields: dict[str, Any] = {"error": _error_meta(reason)}
-        if failure_class is not None:
-            meta_fields["failure_class"] = failure_class
-        set_meta(conn, ref_id, **meta_fields)
-        # Transient classification (docs/backlog/
-        # todo-parked-transient-failures.md): a retryable cause stamps
-        # ``meta.retry_after`` (ISO) on the job — the tag shape the bubble
-        # writes stays uniform; the sweeper's unpark phase reads this to
-        # re-arm the parked parent on the real backoff instead of the
-        # 12h·2ᴺ cool-down. Same tx as the STATUS flip + bubble.
-        backoff_hours = classify_transient_backoff_hours(reason)
-        if backoff_hours is not None:
-            transient_fields: dict[str, Any] = {
-                "retry_after": (
-                    datetime.now(UTC) + timedelta(hours=backoff_hours)
-                ).isoformat()
-            }
-            if failure_class is None:
-                transient_fields["failure_class"] = "transient"
-            set_meta(conn, ref_id, **transient_fields)
-        if gripe_rollback is not None:
-            set_status(store, gripe_rollback, "open", conn=conn)
-        # Slice-5 failure bubble.
-        from precis.utils.job_bubble import bubble_job_failure
+    if conn is None:
+        with store.pool.connection() as owned:
+            record_failure(
+                store,
+                ref_id,
+                reason,
+                gripe_rollback=gripe_rollback,
+                failure_class=failure_class,
+                open_tag=open_tag,
+                conn=owned,
+            )
+        return
 
-        bubble_job_failure(store, ref_id, conn=conn)
-        conn.commit()
+    if open_tag is not None:
+        store.add_tag(ref_id, Tag.open(open_tag), set_by="system", conn=conn)
+    append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
+    set_status(store, ref_id, FAILED, conn=conn)
+    # gr635381: ``meta.error`` is stamped for EVERY failure, not only
+    # classified ones — a bare ``STATUS:failed`` with no breadcrumb
+    # forced the reader into the full job_event chunk for the cause.
+    meta_fields: dict[str, Any] = {"error": _error_meta(reason)}
+    if failure_class is not None:
+        meta_fields["failure_class"] = failure_class
+    set_meta(conn, ref_id, **meta_fields)
+    # Transient classification (docs/backlog/
+    # todo-parked-transient-failures.md): a retryable cause stamps
+    # ``meta.retry_after`` (ISO) on the job — the tag shape the bubble
+    # writes stays uniform; the sweeper's unpark phase reads this to
+    # re-arm the parked parent on the real backoff instead of the
+    # 12h·2ᴺ cool-down. Same tx as the STATUS flip + bubble.
+    backoff_hours = classify_transient_backoff_hours(reason)
+    if backoff_hours is not None:
+        transient_fields: dict[str, Any] = {
+            "retry_after": (
+                datetime.now(UTC) + timedelta(hours=backoff_hours)
+            ).isoformat()
+        }
+        if failure_class is None:
+            transient_fields["failure_class"] = "transient"
+        set_meta(conn, ref_id, **transient_fields)
+    if gripe_rollback is not None:
+        set_status(store, gripe_rollback, "open", conn=conn)
+    # Slice-5 failure bubble.
+    from precis.utils.job_bubble import bubble_job_failure
+
+    bubble_job_failure(store, ref_id, conn=conn)
 
 
 def maybe_reset_gpu_after_kill(meta: dict[str, Any]) -> bool | None:
@@ -3926,6 +3962,175 @@ def poison_guard(
     return True
 
 
+#: The memory-kill requeue policy's constants (gr595538).
+#: Requeue bump multiplier — the next attempt's footprint estimate is
+#: ×1.5 over the best available source (never a smaller cap than before).
+MEMORY_KILL_BUMP = 1.5
+#: The OPEN tag a memory-killed requeue stamps — the searchable flag.
+MEMORY_KILL_FLAG = "killed:memory"
+#: Requeues allowed before a second kill parks the job: exactly one
+#: bigger retry, then triage decides (never an unbounded bump ladder).
+MEMORY_KILL_MAX_REQUEUES = 1
+
+
+def handle_memory_kill(
+    store: Store,
+    ref_id: int,
+    *,
+    cap_mb: float | None = None,
+    conn: Connection | None = None,
+) -> bool:
+    """The memory-kill policy's ACTION (gr595538) — the executor-side
+    half of §H's attempt-cap story, next to :func:`poison_guard`.
+
+    A job whose run died to the per-task memory cap deserves a bigger
+    retry, not a counted crash attempt: the kill sites stamp
+    ``meta.outcome = KILLED_FOR_MEMORY`` (``precis.utils.container_limits``)
+    immediately before calling this. First kill → the job is re-queued
+    once with its footprint estimate bumped (``meta.footprint_req``,
+    ×:data:`MEMORY_KILL_BUMP` over the best of the previous estimate, the
+    measured p95 for its ``(job_type, size)`` key and the killed attempt's
+    own peak and cap, or 8 GiB when none are known). It stamps the
+    :data:`MEMORY_KILL_FLAG` open tag. A second kill →
+    ``STATUS:parked`` (reason memory) and one ``memory_triage`` job minted
+    (idem ``memory_triage:<ref_id>``) to decide the disposition from the
+    run logs — never a bare failure, never a human wait.
+
+    ``meta`` persists across the requeue, so a stale outcome stamp must
+    not retrigger: this pops ``meta.outcome`` whenever it acts and counts
+    kills from the ``meta.killed_memory`` history it appends. Returns
+    ``True`` (and transitions the row, in ``conn``'s transaction when
+    given — else in one it opens and commits) when the outcome stamp was
+    present and acted on; ``False`` when the caller should proceed with
+    its normal failure path. The requeue never bubbles to the parent and
+    never touches ``meta.attempts`` — a poison-guard crash-loop count it
+    is explicitly not.
+    """
+
+    def _act(c: Connection) -> bool:
+        from precis.store._jobs_ops import predicted_rss_mb
+        from precis.utils.container_limits import KILLED_FOR_MEMORY, job_estimate_mb
+
+        row = c.execute(
+            "SELECT meta, prio FROM refs WHERE ref_id = %s FOR UPDATE",
+            (ref_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        meta = dict(row[0] or {})
+        if meta.get("outcome") != KILLED_FOR_MEMORY:
+            return False
+        status_now = current_status(c, ref_id)
+        if status_now in TERMINAL:
+            # A stale stamp on a terminal row (the kill-site call raced a
+            # terminal write) must not resurrect it — forensics stay.
+            return False
+        prio = row[1]
+        raw_hist = meta.get("killed_memory")
+        history = (
+            [dict(h) for h in raw_hist if isinstance(h, dict)]
+            if isinstance(raw_hist, list)
+            else []
+        )
+        requeue = len(history) < MEMORY_KILL_MAX_REQUEUES
+        peak = job_footprint.take(ref_id).get("ru_maxrss_mb")
+        previous = job_estimate_mb(meta)
+        fields: dict[str, Any] = {"killed_memory": history}
+        entry: dict[str, Any] = {
+            "at": datetime.now(UTC).isoformat(),
+            "peak_mb": peak,
+            "prev_req_mb": previous,
+            "cap_mb": cap_mb,
+        }
+        history.append(entry)
+        if requeue:
+            raw_size = meta.get("size")
+            size = raw_size if isinstance(raw_size, dict) else {}
+            sources = (
+                cap_mb,
+                previous,
+                predicted_rss_mb(
+                    c,
+                    str(meta.get("job_type") or ""),
+                    size.get("name"),
+                    size.get("value"),
+                    min_samples=_footprint_admission.min_samples(),
+                ),
+                float(peak) if peak is not None else None,
+            )
+            best = max(
+                (s for s in sources if s is not None and math.isfinite(s) and s > 0),
+                default=8192,
+            )
+            bumped = math.ceil(best * MEMORY_KILL_BUMP)
+            entry["bumped_req_mb"] = bumped
+            fields["footprint_req"] = bumped
+        else:
+            fields["park_reason"] = "memory"
+        release_job_reservation(c, ref_id)
+        c.execute(
+            "UPDATE refs SET meta = (meta - 'lease_until' - 'outcome' "
+            "- 'container' - 'container_id' - 'deadline' - 'read_mcp_pid' "
+            "- 'memory_cap' "
+            "- 'compute_handle' - 'submit_started_at') || %s::jsonb "
+            "WHERE ref_id = %s",
+            (Jsonb(fields), ref_id),
+        )
+
+        if requeue:
+            # Requeue once, to the back of the queue at unchanged prio —
+            # the fresh STATUS:queued tag stamp is the re-queue (the
+            # yield_claim shape). Never counts toward poison_guard's
+            # meta.attempts: the next claim is a fresh-work claim, and
+            # nothing here touches the attempt counter. Always a restart,
+            # never a resume — these sessions are per task and short.
+            store.add_tag(ref_id, Tag.open(MEMORY_KILL_FLAG), set_by="system", conn=c)
+            note = (
+                f"runner: killed for memory (peak {peak} MiB) — requeueing "
+                f"with the footprint estimate bumped to {bumped} MiB "
+                f"(×{MEMORY_KILL_BUMP} over the recorded sizing baseline)"
+            )
+            append_chunk(store, ref_id, JOB_EVENT_KIND, note, conn=c)
+            set_status(store, ref_id, QUEUED, conn=c)
+            return True
+
+        # Killed again after the requeue: park (STATUS:parked, reason
+        # memory) and hand the row + its run logs to the memory_triage
+        # job_type — the big-model pass that decides too-big (drop),
+        # bug/leak (gripe) or unexplained (ask-user todo). Never the
+        # user directly: only what triage cannot explain reaches a human.
+        append_chunk(
+            store,
+            ref_id,
+            JOB_EVENT_KIND,
+            "runner: killed for memory a second time — parking "
+            "(STATUS:parked, reason memory); a memory_triage job decides "
+            "the disposition",
+            conn=c,
+        )
+        set_status(store, ref_id, PARKED, conn=c)
+        from precis.workers._mint import mint_job_once
+
+        mint_job_once(
+            store,
+            conn=c,
+            job_type="memory_triage",
+            executor="claude_inproc",
+            title=f"memory triage: job {ref_id} killed for memory twice",
+            params={"job_id": ref_id},
+            parent_id=None,
+            prio=int(prio) if prio is not None else None,
+            idem_key=f"memory_triage:{ref_id}",
+        )
+        return True
+
+    if conn is not None:
+        return _act(conn)
+    with store.pool.connection() as c:
+        with c.transaction():
+            return _act(c)
+
+
 __all__ = [
     "CANCELLED",
     "CANCEL_REQUESTED",
@@ -3934,7 +4139,10 @@ __all__ = [
     "JOB_SUMMARY_KIND",
     "MAX_ATTEMPTS",
     "MAX_PAUSE_PARKS",
+    "MEMORY_KILL_BUMP",
+    "MEMORY_KILL_FLAG",
     "PARENT_GATED_EXECUTORS",
+    "PARKED",
     "PAUSE_BACKOFF",
     "QUEUED",
     "RECLAIM_WHY_EPOCH",
@@ -3956,6 +4164,7 @@ __all__ = [
     "current_status",
     "dark_advertised_by_host",
     "effective_requires",
+    "handle_memory_kill",
     "is_cancel_requested",
     "job_type_requires",
     "lane_adapter_map",
