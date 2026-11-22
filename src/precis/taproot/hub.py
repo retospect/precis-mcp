@@ -43,6 +43,7 @@ from precis.store.revision_context import trust_door
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ActorSlug, ChunkInsert, Tag
 from precis.taproot.canon import (
     NONEMPIRICAL_ARTIFACT_TYPES,
+    NOT_HYPOTHESIS_PREDICATE_PARAMS,
     STATUS_CANONICAL,
     STATUS_NAMESPACE,
     TAPROOT_CLAIM,
@@ -51,6 +52,7 @@ from precis.taproot.canon import (
     NotClaim,
     Placement,
     claim_sha,
+    not_hypothesis_predicate_sql,
 )
 from precis.taproot.claim_type import (
     META_CLAIM_TYPE,
@@ -309,6 +311,19 @@ def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
         {"ns": TAPROOT_NAMESPACE, "val": TAPROOT_CLAIM, "rid": ref_id},
     ).fetchone()
     return row is not None
+
+
+def _is_hypothesis_hub(ref_id: int, *, conn: Any) -> bool:
+    """True iff ``ref_id`` asserts a conjecture: the inverse of
+    :func:`~precis.taproot.canon.not_hypothesis_predicate_sql`, the one
+    reader of the ``meta.artifact_type`` marker
+    ``handlers/_finding_hypothesis.py`` writes at mint."""
+    row = conn.execute(
+        f"SELECT NOT {not_hypothesis_predicate_sql()} FROM refs r "
+        "WHERE r.ref_id = %(rid)s",
+        {"rid": ref_id, **NOT_HYPOTHESIS_PREDICATE_PARAMS},
+    ).fetchone()
+    return bool(row and row[0])
 
 
 def _hub_claim_type(ref_id: int, *, conn: Any) -> str | None:
@@ -2348,7 +2363,8 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
     ``loser_ref_id`` into ``winner_ref_id`` on ``conn``. Never writes.
 
     Raises :class:`BadInput` for structural/usage problems (a ref that
-    doesn't exist at all, a live-but-not-a-claim-hub ref, or a
+    doesn't exist at all, a live-but-not-a-claim-hub ref, a hypothesis hub
+    on either side, or a
     soft-deleted loser with no recorded merge into this winner) — those
     are caller mistakes, not part of "the plan" a dry-run reports
     (requirement 8's plan is about the merge's own mechanics, e.g. the
@@ -2392,6 +2408,29 @@ def _build_merge_plan(conn: Any, *, loser_ref_id: int, winner_ref_id: int) -> Me
         raise BadInput(
             f"winner ref_id={winner_ref_id} is not a live TAPROOT:claim hub",
             next="merge only collapses one claim hub into another",
+        )
+
+    # A hypothesis carries motivation edges and no evidence; folding one
+    # into a claim hub (or evidence into one) crosses the two. Raised
+    # here, not reported on the plan, so the dry run and every caller
+    # (CLI, claim page, MCP edit door) refuse alike (gr684893).
+    hypotheses = [
+        f"the {label} fi{ref_id}"
+        for label, ref_id in (("loser", loser_ref_id), ("winner", winner_ref_id))
+        if _is_hypothesis_hub(ref_id, conn=conn)
+    ]
+    if hypotheses:
+        raise BadInput(
+            f"cannot merge fi{loser_ref_id} into fi{winner_ref_id}: "
+            f"{' and '.join(hypotheses)} "
+            f"{'is a hypothesis hub' if len(hypotheses) == 1 else 'are hypothesis hubs'}"
+            " - a hypothesis is promoted or withdrawn through its own door, "
+            "never merged",
+            next=(
+                "get(kind='skill', id='precis-nanopub-help')  # 'Record a "
+                "rejection' withdraws a hypothesis; a reviewer's approve on "
+                "its claim page promotes it"
+            ),
         )
 
     blocked: list[str] = []
@@ -2625,8 +2664,9 @@ def merge_hubs(
 
     Raises:
         BadInput: same ``ref_id`` on both sides; a nonexistent or non-hub
-            ref; a soft-deleted loser with no recorded merge into this
-            winner; or (real run) either side past ``candidate``.
+            ref; a hypothesis hub on either side (dry run too); a soft-deleted
+            loser with no recorded merge into this winner; or (real run)
+            either side past ``candidate``.
     """
     if loser_ref_id == winner_ref_id:
         raise BadInput(

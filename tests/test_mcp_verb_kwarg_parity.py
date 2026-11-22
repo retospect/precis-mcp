@@ -301,6 +301,11 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # -- edit: finding acquisition-mode's dead-end flip side ----------
         ("finding", "edit", "unacquirable_mode"),
         ("finding", "edit", "unacquirable_note"),
+        # -- edit: claim-hub merge door, args= by design (gr684893 ruling:
+        # args={'merge_into': 'fi<winner>', 'reason': …}, the paper fold's
+        # spelling). A verb-level merge_into would be promoted out of
+        # args= for every kind and miss paper's args-dict door.
+        ("finding", "edit", "merge_into"),
         # -- edit: memory D3-shortcut argument-graph kwargs ---------------
         ("memory", "edit", "rule"),
         ("memory", "edit", "warrant"),

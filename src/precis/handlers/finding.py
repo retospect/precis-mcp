@@ -1190,8 +1190,9 @@ class FindingHandler(AuditedRetirementHandler):
         duplicate hub into this one: ``id`` is the WINNER, the loser comes
         via ``args={'loser': 'fi<N>' | <int> | '<pub_id>'}``
         (:func:`precis.taproot.hub.merge_hubs` with ``dry_run=True``,
-        always — :mod:`precis.handlers._finding_merge`). Applying a merge
-        is a human door (the claim page's merge form), never an agent verb.
+        always — :mod:`precis.handlers._finding_merge`). The apply is
+        ``edit(id='fi<loser>', args={'merge_into': 'fi<winner>', 'reason':
+        …})`` while both hubs are at ``'candidate'`` (gr684893).
         ``view ∈ kwd|summary|verbatim|fisheye|fisheye+1hop`` (the
         :class:`~precis.workers.working_set.Extent` ladder) renders the
         finding as an eye (:func:`precis.utils.eye_render.render_eye`); at
@@ -2215,6 +2216,7 @@ class FindingHandler(AuditedRetirementHandler):
         meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
         refine: str | None = None,
+        merge_into: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
@@ -2253,9 +2255,59 @@ class FindingHandler(AuditedRetirementHandler):
         (:func:`precis.workers.hub_refine.refine_hub_now`) and reports the
         pass counters; the attempt lease and regrounding gates apply.
 
+        ``args={'merge_into': 'fi<winner>', 'reason': …}`` (hub only,
+        exclusive with every other kwarg except ``dry_run``) collapses the
+        duplicate hub ``id`` into the winner while both are at
+        ``'candidate'`` — :func:`precis.handlers._finding_merge.merge_door`
+        (gr684893). ``id`` is the hub that retires; one pair per call.
+
         ``id=[...]`` (``batch_ids``) applies the same edit to every id in
         one transaction — :meth:`_edit_batch` (gr514482).
         """
+        if merge_into is not None:
+            from precis.handlers import _finding_merge
+
+            door = (
+                "edit(kind='finding', id='fi<loser>', args={'merge_into': "
+                "'fi<winner>', 'reason': '<why>'})"
+            )
+            if isinstance(id, list):
+                raise BadInput(
+                    "args={'merge_into': ...} takes one loser per call, not id=[...]",
+                    next=f"{door}  # once per duplicate",
+                )
+            others = {
+                "find": find,
+                "text": text,
+                "before": before,
+                "after": after,
+                "where": where,
+                "nth": nth,
+                "pick_candidate": pick_candidate,
+                "title": title,
+                "unacquirable_note": unacquirable_note,
+                "unacquirable_mode": unacquirable_mode,
+                "testable_by": testable_by,
+                "motivation": motivation,
+                "meta": meta,
+                "refine": refine,
+            }
+            given = sorted(k for k, v in others.items() if v is not None)
+            if match is not None and match != "unique":
+                given.append("match")
+            if given:
+                raise BadInput(
+                    "args={'merge_into': ...} is exclusive with the other "
+                    f"edit kwargs — got {', '.join(given)}",
+                    next=f"{door}  # alone; dry_run=True previews",
+                )
+            return _finding_merge.merge_door(
+                self.store,
+                loser=id,
+                winner=merge_into,
+                reason=reason,
+                dry_run=dry_run,
+            )
         if isinstance(id, list):
             return self._edit_batch(
                 id,

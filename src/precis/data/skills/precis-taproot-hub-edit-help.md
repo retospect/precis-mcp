@@ -187,33 +187,54 @@ offered once the hub is past `candidate`) and force (`dedup='force'`); see
 `precis-taproot-mint-help` "Search before you mint". Duplicates that got
 through are merged as follows.
 
-The merge door is a CLI verb, human-run: `precis taproot merge --loser fi<dup>
---winner fi<survivor>` (`--dry-run` prints the plan: edges repointed,
-redundant edges dropped, the loser retired). It refuses a loser past
-`candidate`. From the agent surface there is no merge verb — the
-`pub_id`-collision raise from a reword attempt above is the handoff:
-name the pair in a todo for the operator, or do it by hand. Pick the
-survivor (better wording / more evidence), then:
+Pick the survivor (better wording / more evidence). `id` is the duplicate
+that retires, `merge_into` the survivor:
 
 ```python
-# 1. repoint every citing draft chunk from the dup to the survivor
+# 1. preview: the plan, nothing written
 edit(
-    kind="draft",
-    id="dc1652005",
-    mode="find-replace",
-    find="[fi<dup>]",
-    text="[fi<survivor>]",
+    kind="finding",
+    id="fi<dup>",
+    args={"merge_into": "fi<survivor>", "reason": "same claim, minted twice"},
+    dry_run=True,
 )
-# 2. move evidence unique to the dup onto the survivor
-link(kind="finding", id="fi<survivor>", rel="corroborates", target="pc<chunk>")
-# 3. retire the dup
-delete(kind="finding", id="fi<dup>")
+# 2. apply: the same call without dry_run
+edit(
+    kind="finding",
+    id="fi<dup>",
+    args={"merge_into": "fi<survivor>", "reason": "same claim, minted twice"},
+)
 ```
 
-Repeat step 1 for every draft chunk citing `[fi<dup>]` (`search(kind='draft',
-q='[fi<dup>]')`) and step 2 for every evidence edge the dup holds that the
-survivor doesn't; delete last — a draft still citing the dup would 404 once
-it's gone.
+The plan lists the edges repointed to the survivor, the edges dropped
+because the survivor already holds them, self-loops dropped, and the draft
+chunks whose `[fi<dup>]` cite becomes `[fi<survivor>]`. Applying does
+exactly that in one transaction, retires the dup and records `fi<dup>
+--refines--> fi<survivor>`. Dropped links are deleted for good; the
+survivor's title, scope and `pub_id` are untouched. `reason` is required
+and lands on both hubs' event log. One pair per call, no other edit kwarg
+alongside; a re-run answers `already merged` and writes nothing.
+
+Refusals:
+
+- **Either hub past `candidate`** (reviewed, signed, published, rejected):
+  both modes refuse and name the operator's line, `precis taproot merge
+  --loser fi<dup> --winner fi<survivor> --dry-run`. Put that line in a todo
+  for the operator. Do not repoint links and delete by hand: that skips the
+  publish-state check and the redundant-edge handling.
+- **A draft chunk cites the dup and cannot be rewritten**: the refusal
+  lists the citing chunks; repoint those cites in the draft, then retry.
+- **Either hub is a hypothesis**: a conjecture is never merged. Withdraw
+  it with `precis-nanopub-help` "Record a rejection"; promotion is the
+  reviewer's approve on its claim page.
+- **`id` or `merge_into` is not a claim hub**, or both name the same hub.
+
+The plan without the edit door (it also shows a blocked pair instead of
+refusing):
+
+```python
+get(kind="finding", id="fi<survivor>", view="merge-plan", args={"loser": "fi<dup>"})
+```
 
 ## See also
 

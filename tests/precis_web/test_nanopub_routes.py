@@ -1337,6 +1337,39 @@ def test_merge_refuses_past_candidate_winner_writes_nothing(
     assert not _is_retired(store, loser)
 
 
+@pytest.mark.parametrize("confirm", ["", "1"])
+def test_merge_refuses_a_hypothesis_loser_with_a_message(
+    client: TestClient, runtime_with_store, monkeypatch: Any, confirm: str
+) -> None:
+    """gr684893: ``merge_hubs`` refuses a hypothesis on either side; the
+    claim page must show that refusal (400), not a 500."""
+    from precis.handlers._finding_hypothesis import (
+        ARTIFACT_HYPOTHESIS,
+        META_ARTIFACT_TYPE,
+    )
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    store = _store(runtime_with_store)
+    _stub_dedup_judge(monkeypatch)
+    winner = mint_hub(store, CanonicalClaim(sentence="A plain winner.", scope={}))
+    loser = mint_hub(
+        store,
+        CanonicalClaim(sentence="A conjectured loser.", scope={}),
+        extra_meta={META_ARTIFACT_TYPE: ARTIFACT_HYPOTHESIS},
+    )
+
+    resp = client.post(
+        f"/nanopub/fi{winner}/merge",
+        data={"loser": str(loser), "confirm": confirm},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert "hypothesis hub" in resp.text
+    assert not _is_retired(store, loser)
+
+
 def _approve_via_web(client: TestClient, hub: int, title: str, chunk: int, sha: str):
     import json
 

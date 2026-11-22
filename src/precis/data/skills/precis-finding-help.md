@@ -572,6 +572,22 @@ the title or scope change. If both are unchanged, existing attribution
 stays as is. Unsupported keys and non-string writer values raise
 `BadInput`.
 
+## Merge a duplicate claim hub
+
+```python
+edit(
+    kind="finding",
+    id="fi<dup>",  # the hub that retires
+    args={"merge_into": "fi<survivor>", "reason": "same claim, minted twice"},
+    dry_run=True,  # the plan; drop it to apply
+)
+```
+
+Evidence edges and draft `[fi<dup>]` cites move to the survivor and the
+duplicate retires. Both hubs must still be at `candidate`; `reason` is
+required; no other edit kwarg alongside. Plan contents and refusals:
+[[precis-taproot-hub-edit-help]] "Merge duplicate hubs".
+
 ## Record an unacquirable source
 
 `unacquirable_note=`
