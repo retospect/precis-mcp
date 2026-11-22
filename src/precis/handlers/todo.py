@@ -2101,7 +2101,19 @@ class TodoHandler(NumericRefHandler):
                         topic="todo.strategic.no_auto_run",
                     )
                 )
-        return self._facts_note(self._render_create_ack(ref.id), facts_deferred)
+        resp = self._facts_note(self._render_create_ack(ref.id), facts_deferred)
+        # gr763986: a defaulted rel on put(link='gr…') writes the same
+        # non-holding related-to edge link() warns about (gr761574).
+        if (
+            link is not None
+            and rel is None
+            and target is not None
+            and target.kind == "gripe"
+        ):
+            note = self._gripe_hold_note([int(ref.id)], link)
+            if note:
+                resp = dataclasses.replace(resp, body=f"{resp.body}\n{note}")
+        return resp
 
     # ── edit: in-place text rewrite (polish the wording) ──────────
 
@@ -3258,8 +3270,45 @@ class TodoHandler(NumericRefHandler):
                     "link meta requires a single todo id",
                     next="link each todo separately with its own meta=/reason=",
                 )
-            return self._link_batch(id, target=target, mode=mode, rel=rel)
-        return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
+            resp = self._link_batch(id, target=target, mode=mode, rel=rel)
+            ids = self._coerce_ids(id)
+        else:
+            resp = self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
+            ids = [self._coerce_id(id)]
+        if mode == "add" and rel is None and target is not None:
+            note = self._gripe_hold_note(ids, target)
+            if note:
+                resp = dataclasses.replace(resp, body=f"{resp.body}\n{note}")
+        return resp
+
+    def _gripe_hold_note(self, ids: list[int], target: str) -> str | None:
+        """The default ``related-to`` edge from a todo to a gripe does not
+        hold the gripe out of ``gripe_dispatch`` unless the todo is a plan
+        root, an open ask, a hand build or a todo-factory build (gr761574,
+        :func:`precis.workers.gripe_dispatch.plain_related_todos`) — say
+        so, and name ``fixes`` for a todo that is the gripe's work item
+        and ``see-also`` for a pointer. A terminal todo, or one already
+        linked ``fixes`` to the gripe, gets no note."""
+        from precis.utils.link_target import parse_link_target
+        from precis.workers.gripe_dispatch import plain_related_todos
+
+        dst = parse_link_target(target, store=self.store)
+        if dst.kind != "gripe":
+            return None
+        plain = [
+            handle_registry.format_handle(self.kind, rid)
+            for rid in plain_related_todos(self.store, ids, dst.ref_id)
+        ]
+        if not plain:
+            return None
+        gripe = handle_registry.format_handle("gripe", dst.ref_id)
+        return (
+            f"note: a plain related-to edge from {', '.join(plain)} does not hold "
+            f"{gripe} out of the factory (gripe_dispatch may still mint a build for it). If "
+            "the todo is the gripe's work item, link it rel='fixes' instead: "
+            f"link(kind='todo', id=<N>, target='{gripe}', rel='fixes'); a pure "
+            "pointer can be rel='see-also'."
+        )
 
     def _reparent(self, *, id: str | int, target: str | None, mode: str) -> Response:
         """Apply a ``rel='parent'`` move/detach with full tree guards."""

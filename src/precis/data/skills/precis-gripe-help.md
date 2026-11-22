@@ -618,8 +618,9 @@ routes, and its tags decide which.
 **A memory gripe** (`project:memory`) belongs to the gardener under
 [[precis-fix-memory-gripe-help]]; it never goes to a coder.
 
-**The factory** builds code fixes. Where its intake runs, it takes an
-`open` or `triaged` gripe that carries a fix class (`fix:code`,
+**The factory** builds code fixes. Where its intake runs, it takes a gripe in a
+dispatchable status (`open`, `triaged` or `ready_for_fix`) that carries a
+fix class (`fix:code`,
 `fix:skill`, `fix:docs`, `fix:web`, `fix:mcp`) and no hold tag, mints a
 plan and leaves a `dispatch:` comment naming the plan root
 ([[precis-work-help]] § "How does a gripe reach a build lane by

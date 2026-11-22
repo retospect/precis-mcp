@@ -228,6 +228,13 @@ def test_candidates_filter_and_order(store: Store, two_lanes: Any) -> None:
     assert gd.candidates(store, 0) == []
 
 
+def test_ready_for_fix_gripe_is_a_candidate(store: Store) -> None:
+    gid = _gripe(
+        store, "ready for dispatch", status="ready_for_fix", tags=("fix:code",)
+    )
+    assert [pick.gripe_id for pick in gd.candidates(store, 10)] == [gid]
+
+
 def test_gripe_trust_default_is_all(store: Store) -> None:
     assert gd.gripe_trust(store) == "all"
     _trust(store, "filer")
@@ -875,9 +882,10 @@ def test_closed_chain_frees_its_slot_and_its_gripe_reenters(
 def test_linked_todo_terminal_status_frees_the_gripe(
     store: Store, two_lanes: Any
 ) -> None:
-    """gr609044: a ``related-to`` todo whose STATUS is terminal (done,
-    won't-do, auto-timeout) no longer holds its gripe out; one that is
-    open/doing/blocked — or carries no STATUS — still does."""
+    """gr609044: a holding todo (here linked ``fixes``, gr761574) whose
+    STATUS is terminal (done, won't-do, auto-timeout) no longer holds its
+    gripe out; one that is open/doing/blocked — or carries no STATUS —
+    still does."""
     from precis.todo import TERMINAL_TODO_STATUSES
 
     cases = [
@@ -896,7 +904,7 @@ def test_linked_todo_terminal_status_frees_the_gripe(
         todo = store.insert_ref(kind="todo", slug=None, title=f"work for {gid}")
         if status is not None:
             store.add_tag(todo.id, Tag.closed("STATUS", status), set_by="agent")
-        store.add_link(src_ref_id=todo.id, dst_ref_id=gid, relation="related-to")
+        store.add_link(src_ref_id=todo.id, dst_ref_id=gid, relation="fixes")
         (freed if status in TERMINAL_TODO_STATUSES else held).append(gid)
     unlinked = _gripe(store, "unlinked", prio=5)
     picks = {c.gripe_id for c in gd.candidates(store, 10)}
@@ -904,6 +912,157 @@ def test_linked_todo_terminal_status_frees_the_gripe(
         assert gid in picks
     for gid in held:
         assert gid not in picks
+
+
+_ASK = {
+    "ask": {
+        "kind": "ruling",
+        "options": ["acknowledged"],
+        "blocks": "nothing",
+        "context": "a coordinator call",
+    }
+}
+
+
+def _expire_claims(store: Store, ref_id: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET expires_at = now() - interval '1 hour' "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'OPEN' AND t.value LIKE 'claimed-by:%%'",
+            (ref_id,),
+        )
+
+
+def _holder(store: Store, gid: int | None, shape: str) -> int:
+    """One todo in the named holder ``shape``, linked to ``gid`` (if any)."""
+    todo = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=f"{shape} for {gid}",
+        meta=dict(_ASK) if shape in ("ask", "closed-ask") else None,
+    )
+    status = {"doing": "doing", "closed-ask": "done", "done": "done"}.get(shape, "open")
+    store.add_tag(todo.id, Tag.closed("STATUS", status), set_by="agent")
+    if shape == "plan-root":
+        store.add_tag(todo.id, Tag.open(f"plan:{todo.id}"), set_by="system")
+    if shape in ("claimed", "stale-claim"):
+        # scripts/fleet-wave's hand-build lease on the code todo
+        store.add_tag(todo.id, Tag.open("claimed-by:fleet-w1"), set_by="agent")
+    if shape == "stale-claim":
+        _expire_claims(store, int(todo.id))
+    if shape == "factory-build":
+        # a todo-factory source (mint_todo_build): open, no lease, its
+        # chain root related-to the todo, not the gripe
+        store.add_tag(todo.id, Tag.open("factory:build"), set_by="system")
+    if shape == "plan-node":
+        # a non-root node of someone else's plan: plan:<root>, not plan:<self>
+        root = store.insert_ref(kind="todo", slug=None, title="another plan")
+        store.add_tag(todo.id, Tag.open(f"plan:{root.id}"), set_by="system")
+    relation = {"fixes": "fixes", "see-also": "see-also"}.get(shape, "related-to")
+    if gid is not None:
+        store.add_link(src_ref_id=todo.id, dst_ref_id=gid, relation=relation)
+    return int(todo.id)
+
+
+def test_only_work_in_flight_holds_a_gripe_out(store: Store, two_lanes: Any) -> None:
+    """gr761574: a live plan root ``related-to`` the gripe (a chain), an
+    open ask ``related-to`` it, a hand build ``related-to`` it (a live
+    ``claimed-by:`` lease — fleet-wave claims the todo, never the gripe
+    — or STATUS ``doing``), a todo-factory build source
+    (``factory:build``) ``related-to`` it, or a live todo linked
+    ``fixes`` it holds the gripe out of dispatch. A plain open todo's
+    ``related-to`` (a follow-up note, an umbrella listing its slices), a
+    non-root plan node, a ``see-also`` pointer, a closed ask and a lapsed
+    lease do not."""
+    shapes = (
+        "plan-root",
+        "ask",
+        "fixes",
+        "claimed",
+        "doing",
+        "factory-build",
+        "plain",
+        "plan-node",
+        "see-also",
+        "closed-ask",
+        "stale-claim",
+    )
+    gids = {shape: _gripe(store, f"held by {shape}", prio=5) for shape in shapes}
+    for shape, gid in gids.items():
+        _holder(store, gid, shape)
+    picks = {c.gripe_id for c in gd.candidates(store, 20)}
+    assert {s for s, gid in gids.items() if gid not in picks} == {
+        "plan-root",
+        "ask",
+        "fixes",
+        "claimed",
+        "doing",
+        "factory-build",
+    }
+
+
+def test_todo_link_to_gripe_without_rel_says_it_does_not_hold(
+    store: Store, hub: Any
+) -> None:
+    """gr761574: ``link()`` from a plain todo to a gripe with no ``rel=``
+    writes ``related-to``, which no longer holds the gripe out of
+    dispatch — the receipt says so and names ``fixes``; a holding todo
+    (plan root, open ask, hand or factory build), a terminal todo, one
+    already linked ``fixes`` the gripe, an explicit ``rel=`` and a
+    non-gripe target get no note."""
+    from precis.handlers.todo import TodoHandler
+
+    h = TodoHandler(hub=hub)
+    gid = _gripe(store, "pointed at")
+    plain = store.insert_ref(kind="todo", slug=None, title="follow-up note")
+    body = h.link(id=plain.id, target=f"gr{gid}").body
+    assert f"does not hold gr{gid} out of the factory" in body
+    assert f"target='gr{gid}', rel='fixes'" in body and "see-also" in body
+    root = store.insert_ref(kind="todo", slug=None, title="a chain root")
+    store.add_tag(root.id, Tag.open(f"plan:{root.id}"), set_by="system")
+    ask = store.insert_ref(kind="todo", slug=None, title="an ask", meta=dict(_ASK))
+    other = store.insert_ref(kind="todo", slug=None, title="another todo")
+    quiet = [
+        h.link(id=root.id, target=f"gr{gid}").body,
+        h.link(id=ask.id, target=f"gr{gid}").body,
+        h.link(id=other.id, target=f"gr{gid}", rel="fixes").body,
+        h.link(id=other.id, target=f"td{plain.id}").body,
+        # already the gripe's `fixes` work item: the extra edge changes nothing
+        h.link(id=other.id, target=f"gr{gid}").body,
+    ]
+    # A hand or factory build holds, a terminal todo holds nothing: no note.
+    for shape in ("claimed", "doing", "factory-build", "done"):
+        quiet.append(h.link(id=_holder(store, None, shape), target=f"gr{gid}").body)
+    assert not any("does not hold" in b for b in quiet), quiet
+    # The fan-in shape names only the plain todos of the batch.
+    root2 = store.insert_ref(kind="todo", slug=None, title="another chain root")
+    store.add_tag(root2.id, Tag.open(f"plan:{root2.id}"), set_by="system")
+    second = store.insert_ref(kind="todo", slug=None, title="umbrella")
+    body = h.link(id=[root2.id, second.id], target=f"gr{gid}").body
+    assert f"from td{second.id} does not hold" in body
+
+
+def test_todo_put_link_to_gripe_without_rel_says_it_does_not_hold(
+    store: Store, hub: Any
+) -> None:
+    """gr763986: ``put(kind='todo', link='gr<N>')`` with the default rel
+    writes the same non-holding ``related-to`` edge and gets the same
+    note; ``rel='fixes'``, a holding shape and a non-gripe target do not."""
+    from precis.handlers.todo import TodoHandler
+
+    h = TodoHandler(hub=hub)
+    gid = _gripe(store, "pointed at by a new todo")
+    body = h.put(text="follow up on the gripe", link=f"gr{gid}").body
+    assert f"does not hold gr{gid} out of the factory" in body
+    assert f"target='gr{gid}', rel='fixes'" in body
+    other = store.insert_ref(kind="todo", slug=None, title="unrelated")
+    quiet = [
+        h.put(text="the gripe's work item", link=f"gr{gid}", rel="fixes").body,
+        h.put(text="a hand build", link=f"gr{gid}", tags=["STATUS:doing"]).body,
+        h.put(text="a pointer at a todo", link=f"td{other.id}").body,
+    ]
+    assert not any("does not hold" in b for b in quiet), quiet
 
 
 def test_hand_minted_chain_counts(store: Store, two_lanes: Any) -> None:

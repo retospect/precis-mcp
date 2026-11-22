@@ -64,7 +64,7 @@ Each fire:
   gripe and leaves it ``triaged``; the chain's root closes, so the
   live-todo exclusion below no longer holds it. Each pass, a
   CI-signature gripe (:data:`CI_SIGNATURE_TAGS`: ``origin:ci-watch`` or
-  ``ci:nightly``) ``open``/``triaged`` whose newest ``moot:`` postdates
+  ``ci:nightly``) in a dispatchable status whose newest ``moot:`` postdates
   its last triage or status change, and whose sha is verified on main
   (GitHub compare, else the fix repo's ``origin/main``), gets
   ``resolved: <sha9> (main, release pending) — moot: already fixed
@@ -75,18 +75,27 @@ Each fire:
   ancestry-only close self-corrects there (a later red nightly on a
   newer head reports again), on any other gripe it would close a real
   report silently. At most :data:`_MOOT_SWEEP_BATCH` gripes a pass.
-* **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
-  ``triaged``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
+* **Candidates** (:func:`candidates`): live gripes with STATUS ``open``,
+  ``triaged``, or ``ready_for_fix``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
   ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
   2026-11-10), waiting :data:`_MIN_AGE_MINUTES`
   since the latest ``STATUS:triaged`` or fix-class attachment (filing
   time only if neither timestamp is known), with no open ``blocked-by``
   target of any kind — a todo or gripe blocker that has not reached a
   blocker-terminal STATUS holds the gripe out of dispatch, and it
-  returns once the blocker closes (gr656970) —, with no live todo
-  ``related-to`` them (a chain, hand-minted or ours, already exists — a
-  linked todo carrying a terminal STATUS is closed work and no longer
-  holds the gripe out, gr609044), no live
+  returns once the blocker closes (gr656970) —, not held by live work
+  on them (a live plan root ``related-to`` them: a chain, hand-minted or
+  ours, already exists; an open ask todo, ``meta.ask``, ``related-to``
+  them; a hand build ``related-to`` them, a todo with a live
+  ``claimed-by:`` lease or STATUS ``doing`` — ``scripts/fleet-wave``
+  claims the todo and never moves the gripe; a todo-factory build
+  ``related-to`` them, a source todo tagged ``factory:build``; or a
+  live todo linked ``fixes`` them, the gripe's hand work item, which
+  holds with no expiry — a stale ``fixes`` todo is released by closing
+  it. A plain ``related-to`` from any other todo, such as a follow-up
+  note, an umbrella listing its slices or a closed chain's review node,
+  does not hold the gripe, gr761574; a linked todo carrying a terminal
+  STATUS is closed work and never holds it, gr609044), no live
   ``meta.dispatch_cooldown_until`` stamp (``plan_dispatch``'s moot close
   writes it when a ``moot:`` drop could not resolve the gripe, so an
   unproven claim pauses the re-mint loop instead of feeding it,
@@ -185,7 +194,7 @@ from precis.plans import lanes as _lanes
 from precis.plans import route as _route
 from precis.plans.nodes import finish_mint
 from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
-from precis.plans.todo_chain import SOURCE_TODO_KEY
+from precis.plans.todo_chain import FACTORY_BUILD_TAG, SOURCE_TODO_KEY
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -257,7 +266,7 @@ HOLD_TAGS: tuple[str, ...] = (
     "rescue:intake",
 )
 #: STATUS values a gripe may carry to be dispatched.
-_DISPATCH_STATUSES: tuple[str, ...] = ("open", "triaged")
+_DISPATCH_STATUSES: tuple[str, ...] = ("open", "triaged", "ready_for_fix")
 #: Plan-root STATUS values that no longer hold a lane slot.
 _TERMINAL_STATUSES: tuple[str, ...] = ("done", "won't-do")
 #: ``meta.filed_by.client`` prefix of a Claude Code session.
@@ -701,7 +710,7 @@ def _sha_on_main(store: Store, sha: str) -> bool | None:
 def resolve_moot_gripes(store: Store) -> list[dict[str, Any]]:
     """Resolve the gripes a dispatched chain already found fixed (gr759153).
 
-    A CI-signature gripe (:data:`CI_SIGNATURE_TAGS`) ``open``/``triaged``
+    A CI-signature gripe (:data:`CI_SIGNATURE_TAGS`) in a dispatchable status
     whose newest ``moot:`` comment is newer than its last triage or
     status change (:data:`_MOOT_SINCE_TRIAGE_SQL`) and names ``already
     fixed by <sha>`` for this gripe gets, when the sha is verified on
@@ -1137,6 +1146,65 @@ def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
     return out
 
 
+#: gr761574: a non-terminal todo (alias ``t``) whose ``related-to`` edge
+#: holds a gripe out of dispatch — a plan root (the chain test
+#: :func:`_unlanded_chains` uses), an open ask (``meta.ask``, the
+#: coordinator route's and the stall sweep's), or a hand build: a live
+#: ``claimed-by:`` lease or STATUS ``doing`` (``scripts/fleet-wave``
+#: claims the todo and never moves the gripe), or a todo-factory build:
+#: the source todo carries ``factory:build`` (:data:`FACTORY_BUILD_TAG`)
+#: from mint until its chain closes, queued or running, while the chain
+#: root is ``related-to`` the todo, not the gripe. ``%%`` because both users
+#: run it with bound parameters; never NULL (a todo with no ``meta.ask``
+#: reads FALSE), so :func:`plain_related_todos` can negate it.
+_RELATED_HOLD_SQL = f"""(COALESCE(jsonb_typeof(t.meta->'ask') = 'object', FALSE)
+    OR EXISTS (SELECT 1 FROM ref_tags pt JOIN tags p ON p.tag_id = pt.tag_id
+                WHERE pt.ref_id = t.ref_id AND p.namespace = 'OPEN'
+                  AND p.value = 'plan:' || t.ref_id)
+    OR EXISTS (SELECT 1 FROM ref_tags ct JOIN tags c ON c.tag_id = ct.tag_id
+                WHERE ct.ref_id = t.ref_id AND c.namespace = 'OPEN'
+                  AND c.value LIKE 'claimed-by:%%'
+                  AND (ct.expires_at IS NULL OR ct.expires_at > now()))
+    OR EXISTS (SELECT 1 FROM ref_tags dt JOIN tags d ON d.tag_id = dt.tag_id
+                WHERE dt.ref_id = t.ref_id AND d.namespace = 'STATUS'
+                  AND d.value = 'doing')
+    OR EXISTS (SELECT 1 FROM ref_tags ft JOIN tags f ON f.tag_id = ft.tag_id
+                WHERE ft.ref_id = t.ref_id AND f.namespace = 'OPEN'
+                  AND f.value = '{FACTORY_BUILD_TAG}'))"""
+
+
+def plain_related_todos(
+    store: Store, todo_ids: list[int], gripe_id: int | None = None
+) -> list[int]:
+    """The live, non-terminal todos among ``todo_ids`` whose ``related-to``
+    edge to a gripe would NOT hold it out of dispatch (gr761574) — the
+    ones the todo link receipt warns about. A terminal todo holds nothing
+    and needs no warning; a holding shape (:data:`_RELATED_HOLD_SQL`)
+    does hold, and so does a todo already linked ``fixes`` ``gripe_id``."""
+    if not todo_ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT t.ref_id FROM refs t
+             WHERE t.ref_id = ANY(%s) AND t.kind = 'todo' AND t.retired_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM ref_tags st
+                                 JOIN tags s ON s.tag_id = st.tag_id
+                                WHERE st.ref_id = t.ref_id
+                                  AND s.namespace = 'STATUS'
+                                  AND s.value = ANY(%s))
+               AND NOT {_RELATED_HOLD_SQL}
+               AND NOT EXISTS (SELECT 1 FROM links fl
+                                WHERE fl.src_ref_id = t.ref_id
+                                  AND fl.dst_ref_id = %s
+                                  AND fl.relation = 'fixes')
+             ORDER BY t.ref_id
+            """,
+            (list(todo_ids), sorted(TERMINAL_TODO_STATUSES), gripe_id),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def candidates(store: Store, limit: int) -> list[DispatchPick]:
     """The next ``limit`` dispatchable gripes, release-waiver gripes first,
     then hottest score then oldest."""
@@ -1212,9 +1280,18 @@ def _candidate_picks(
                                              WHERE rt.ref_id = bt.ref_id
                                                AND t.namespace = 'STATUS' LIMIT 1),
                                            'open') NOT IN {blocker_terminal_sql()})
+           -- gr761574: only work in flight holds the gripe out — a live
+           -- todo linked ``fixes`` it, or one related-to it that is a
+           -- plan root, an open ask, a hand build (a live
+           -- ``claimed-by:`` lease or STATUS:doing; fleet-wave claims
+           -- the todo, never the gripe) or a todo-factory build
+           -- (``factory:build``). A plain related-to pointer does not.
            AND NOT EXISTS (SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id
-                            WHERE l.dst_ref_id = r.ref_id AND l.relation = 'related-to'
+                            WHERE l.dst_ref_id = r.ref_id
                               AND t.kind = 'todo' AND t.retired_at IS NULL
+                              AND (l.relation = 'fixes'
+                                   OR (l.relation = 'related-to'
+                                       AND {_RELATED_HOLD_SQL}))
                               AND NOT EXISTS (SELECT 1 FROM ref_tags lt
                                                 JOIN tags ls ON ls.tag_id = lt.tag_id
                                                WHERE lt.ref_id = t.ref_id

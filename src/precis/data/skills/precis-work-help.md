@@ -288,11 +288,18 @@ no open ask is closed won't-do; the second such stall tags the gripe
 `hold:no-dispatch` for a re-brief). The build carries the
 gripe text verbatim and picks its lane at dispatch (cheapest fit, free
 before paid); the land writes `resolved: <sha>` on the gripe.
-It picks the hottest `prio` then the oldest among gripes that are `open`
-or `triaged`, tagged `fix:` code/skill/docs/web/mcp (a `code` build),
-15+ minutes past the latest `STATUS:triaged` or fix tag, with no live
-todo `related-to` them. Setting `factory.gripe_trust`: `all` (default)
-takes any filer; `filer` only Claude Code, human or ci_watch filers.
+It picks the hottest `prio` then the oldest among gripes in a dispatchable
+status (`open`, `triaged` or `ready_for_fix`), tagged `fix:`
+code/skill/docs/web/mcp (a `code` build),
+15+ minutes past the latest `STATUS:triaged` or fix tag, and not held
+by live work. A live todo linked `fixes` it (the gripe's work item)
+holds it, and so does one `related-to` it that is a plan root (a
+chain), an open ask (`meta.ask`), a hand build (a live `claimed-by:`
+lease or `STATUS:doing`) or a todo-factory build (`factory:build`).
+A plain `related-to` from any other todo does not hold it; link a
+pointer that must not hold it `see-also`.
+The setting `factory.gripe_trust` picks filers: `all` (default) takes
+any filer; `filer` only Claude Code, human or ci_watch filers.
 A `release-waiver:r<N>` gripe is a broken build: minted at once, first.
 A `hold:no-autoclose` gripe never enters a lane. Keep a gripe out with any of `fix:reto`,
 `reto:ask`, `disagreement`, `flood`, or
