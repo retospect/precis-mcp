@@ -84,6 +84,8 @@ def mod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     m = _load_release(tmp_path, monkeypatch)
     root = tmp_path / "repo"
     (root / "deploy" / "inventory").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
     (root / "uv.lock").write_text(LOCK, encoding="utf-8")
     (root / "pyproject.toml").write_text(
         "[project]\ndependencies = []\n"
@@ -106,6 +108,7 @@ def mod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         "PRECIS_DEPLOY_SKIP_CATPATH_WHEEL",
         "PRECIS_DEPLOY_EXTRA_VARS",
         "PRECIS_OVERLAY_DIR",
+        "PRECIS_DEPLOY_FROM_TREE",
     ):
         monkeypatch.delenv(var, raising=False)
     # Fake the ansible probe binaries; FAKE_UNSEEDED_HOSTS makes named hosts
@@ -128,6 +131,30 @@ def mod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setenv("PRECIS_ANSIBLE_BIN_DIR", str(bindir))
     monkeypatch.delenv("FAKE_UNSEEDED_HOSTS", raising=False)
     return m
+
+
+def test_relief_reads_the_pinned_external_overlay(
+    mod: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The empty launch inventory would give relief, but the pinned overlay
+    # has plugin hosts and one is missing its wheel.
+    local = mod.ROOT / "deploy" / "inventory"
+    (local / "hosts.yml").write_text("{}", encoding="utf-8")
+    overlay = tmp_path / "external" / "inventory"
+    overlay.mkdir(parents=True)
+    (overlay.parent / ".vault-pass").write_text("x\n", encoding="utf-8")
+    (overlay / "hosts.yml").write_text(json.dumps(INVENTORY), encoding="utf-8")
+    bindir = tmp_path / "bin"
+    (bindir / "ansible-inventory").write_text(
+        '#!/usr/bin/env bash\ncat "${3:-inventory/hosts.yml}"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(overlay))
+    monkeypatch.setenv("FAKE_UNSEEDED_HOSTS", "node-gpu")
+
+    assert mod.catpath_preflight_relief() is None
+    monkeypatch.delenv("FAKE_UNSEEDED_HOSTS")
+    line = mod.catpath_preflight_relief()
+    assert line is not None and "(node-gateway, node-gpu)" in line
 
 
 def test_lock_pin_reads_sha_and_version(mod: ModuleType) -> None:

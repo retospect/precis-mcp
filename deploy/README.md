@@ -374,7 +374,13 @@ overlay of its own. Set `precis_fix_lane_deploys: true` (with
 
 - the overlay tree (`scripts/deploy` passes its symlink-resolved path as
   `precis_overlay_dir`; `.git/` skipped) into `deploy/inventory/` — real
-  files, dirs 0700, files 0600;
+  files, dirs 0700, files 0600.
+
+  > **gr700433** Factory cut and deploy preflights require the pinned
+  > render's overlay to be a git clone with the `deploy-helper` remote.
+  > Pinned renders use `PRECIS_OVERLAY_DIR` or the main checkout's
+  > `deploy/inventory`, with a sibling `.vault-pass`. See
+  > `docs/runbooks/cluster-overlay-sync.md`.
 - the vault key (the sibling path `scripts/deploy` passes with the overlay) as `deploy/.vault-pass`, 0600;
 - the prod DSN into `~deploy/.secrets/pw/PRECIS_DATABASE_URL`, 0600 (what
   `scripts/round` looks for);

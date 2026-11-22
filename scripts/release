@@ -119,6 +119,16 @@ seed is already done. Anything unproven (a pin below pyproject's floor —
 the gr499104 guard the bypass would skip — a mismatch, an unreadable
 inventory, an unreachable host) changes nothing: the preflight still
 fails loudly.
+
+Factory overlay gate (gr700433): the fix-lane checkout's deploy/inventory
+is provisioned as a `.git`-less file copy, so `round deploy`'s
+overlay-sync preflight skips it silently as a plain directory and a
+factory deploy renders a stale inventory and vault. Under the release
+pass marker (PRECIS_RELEASE_PASS — the env release_deploy's launch
+carries) a deploy here refuses before `round deploy` runs unless the
+resolved overlay is its own git repo carrying the deploy-helper remote;
+the refusal exits 75 with "no host was touched", the pre-rollout refusal
+release_deploy.poll reads.
 """
 
 from __future__ import annotations
@@ -1549,8 +1559,7 @@ def _mark_deploy_failed(branch: str) -> None:
 # changes nothing and the preflight decides as before, so a pin MISMATCH
 # with no wheel source still fails loudly.
 #
-# Probing uses the same overlay inventory scripts/deploy resolves (its own
-# deploy/inventory, else the main checkout's / PRECIS_OVERLAY_DIR) and the
+# Probing uses the pinned deploy's overlay inventory and the
 # same capability map the seed tasks gate on
 # (precis_capabilities.autocatpath_plugin; topology lives in the overlay's
 # group_vars, so ansible-inventory's merged hostvars answer it directly).
@@ -1649,32 +1658,24 @@ def _catpath_checkout_present(root: Path, home: Path | None = None) -> bool:
 
 
 def _overlay_inv_args(root: Path) -> tuple[list[str], Path] | None:
-    """(extra ansible args, the deploy/ dir to run from) replicating
-    scripts/deploy's overlay resolution; None when no usable overlay exists
-    (the deploy dies on that itself, louder, a moment later)."""
-    cluster = root / "deploy"
-    if (cluster / "inventory").is_dir():
-        # ansible.cfg's relative inventory/vault paths resolve from here.
-        return [], cluster
-    cp = _probe_run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=root,
-        env=dict(os.environ),
-    )
-    main = Path(cp.stdout.strip()).parent if cp and cp.returncode == 0 else root
-    overlay = Path(
-        os.environ.get("PRECIS_OVERLAY_DIR", "").strip()
-        or main / "deploy" / "inventory"
-    )
+    """Extra Ansible args and working directory for the inventory probe."""
+    if os.environ.get("PRECIS_DEPLOY_FROM_TREE", "1") == "":
+        cluster = root / (
+            os.environ.get("PRECIS_CLUSTER_DIR") or Path.home() / "work" / "cluster"
+        )
+        return ([], cluster) if cluster.is_dir() else None
+    overlay = _deploy_overlay_dir(root)
+    if overlay is None:
+        return None
     vault = overlay.parent / ".vault-pass"
-    if overlay.is_dir() and vault.is_file():
-        return [
-            "-i",
-            str(overlay / "hosts.yml"),
-            "--vault-password-file",
-            str(vault),
-        ], cluster
-    return None
+    if not (overlay.is_dir() and vault.is_file()):
+        return None
+    return [
+        "-i",
+        str(overlay / "hosts.yml"),
+        "--vault-password-file",
+        str(vault),
+    ], root / "deploy"
 
 
 def _plugin_hosts(
@@ -1824,9 +1825,102 @@ def catpath_preflight_relief() -> str | None:
     )
 
 
+def _deploy_overlay_dir(root: Path) -> Path | None:
+    """Overlay for the detached SHA render in scripts/deploy.
+
+    The detached tree has no private inventory. Keep this resolution in
+    step with release_cut.overlay_refusal and scripts/deploy.
+    """
+    if override := os.environ.get("PRECIS_OVERLAY_DIR"):
+        return root / override
+    cp = _probe_run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=root,
+        env=dict(os.environ),
+    )
+    common = cp.stdout.strip() if cp is not None and cp.returncode == 0 else ""
+    return Path(common).parent / "deploy" / "inventory" if common else None
+
+
+def _factory_overlay_refusal(root: Path) -> str | None:
+    """Why a factory deploy must not run, else ``None`` (gr700433).
+
+    ``release_deploy`` launches ``scripts/release --deploy-only`` with
+    ``PRECIS_RELEASE_PASS`` set; under that marker the resolved overlay
+    must be its own git repo carrying the deploy-helper remote — the two
+    things ``overlay_sync_preflight`` needs before it can reconcile. The
+    lane's copy is provisioned with ``.git/`` skipped, so the preflight
+    passes it silently and the deploy would render an inventory and vault
+    stale since the last provision (gr678654's outage shape). The legacy
+    escape (``PRECIS_DEPLOY_FROM_TREE=``) and the drift override
+    (``PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT``) opt out as they do in
+    ``scripts/deploy``; a hand run without the marker keeps the library's
+    documented plain-directory default."""
+    if not release_pass():
+        return None
+    if os.environ.get("PRECIS_DEPLOY_FROM_TREE", "1") == "":
+        return None
+    overlay = _deploy_overlay_dir(root)
+    if overlay is None:
+        return (
+            "scripts/release: the factory deploy refused — cannot resolve "
+            "the main checkout for the deploy overlay — no host was touched."
+        )
+    vault = overlay.parent / ".vault-pass"
+    if not (overlay.is_dir() and vault.is_file()):
+        return (
+            f"scripts/release: the factory deploy refused — no deploy overlay "
+            f"(needs the inventory dir {overlay} and {vault}). "
+            "See docs/runbooks/cluster-overlay-sync.md — no host was touched."
+        )
+    remote = os.environ.get("PRECIS_OVERLAY_REMOTE") or "deploy-helper"
+    env = dict(os.environ)
+    cp = _probe_run(
+        ["git", "-C", str(overlay), "rev-parse", "--show-toplevel"],
+        cwd=root,
+        env=env,
+    )
+    top = cp.stdout.strip() if cp is not None and cp.returncode == 0 else ""
+    why = ""
+    if not top or os.path.realpath(top) != os.path.realpath(overlay):
+        why = f"{overlay} is a plain directory, not the overlay's own git clone"
+    else:
+        cp = _probe_run(
+            ["git", "-C", str(overlay), "remote", "get-url", remote],
+            cwd=root,
+            env=env,
+        )
+        if cp is None or cp.returncode != 0:
+            why = f"{overlay} has no '{remote}' remote"
+    if not why:
+        return None
+    if os.environ.get("PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT") or os.environ.get(
+        "PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"
+    ):
+        say(
+            f"overlay gate: WARNING: {why} — overlay-sync cannot reconcile "
+            "it; PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT is set — rendering this "
+            "copy as-is"
+        )
+        return None
+    return (
+        f"scripts/release: the factory deploy refused — {why}, so "
+        "overlay-sync's preflight would skip it and the deploy would render "
+        "a stale inventory and vault (gr700433). Make it a clone of the "
+        f"overlay with the '{remote}' remote "
+        "(docs/runbooks/cluster-overlay-sync.md), or set "
+        "PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1 to render this copy as-is — "
+        "no host was touched."
+    )
+
+
 def deploy_and_close(
     args: argparse.Namespace, sha: str, *, finish_pointer: bool = False
 ) -> int:
+    if not finish_pointer and not getattr(args, "dry_run", False):
+        refusal = _factory_overlay_refusal(ROOT)
+        if refusal is not None:
+            return die(DEPLOY_RC_UNTOUCHED, refusal)
     stale_rc = 0 if finish_pointer else _regate_if_stale(args)
     if stale_rc:
         return stale_rc
@@ -2349,6 +2443,10 @@ def deploy_only(args: argparse.Namespace) -> int:
     if args.dry_run:
         say(f"would deploy {want}")
         return 0
+    if refusal := _factory_overlay_refusal(ROOT):
+        # gr700433: refuse before the CI wait too — a lane whose overlay
+        # cannot sync has nothing to wait for.
+        return die(DEPLOY_RC_UNTOUCHED, refusal)
     facts = gate_facts()
     head = str(facts.get("release_head") or "")
     if not (

@@ -49,9 +49,10 @@ detached submit/poll pair under ``ssh_node``:
   now quoting the line.
 
 Before any launch :func:`submit` refuses (:func:`overlay_refusal`,
-gr713351) a checkout with no deploy overlay — ``deploy/inventory`` and its
-``.vault-pass``, resolved as ``scripts/deploy`` does — so a host that cannot
-deploy never cuts. The first cut's host comes from ``release.cut_host``
+gr713351, gr700433) a checkout without the pinned deploy's inventory and
+vault key, or whose overlay clone cannot participate in overlay sync.
+This keeps a host that cannot deploy from stranding a cut. The first
+cut's host comes from ``release.cut_host``
 (plan_dispatch pins it; unset, the cut is held), a re-cut's from
 ``meta.release.host``.
 
@@ -980,49 +981,62 @@ def _handle_tooling(
 
 
 def overlay_refusal(root: Path) -> str | None:
-    """Why a checkout at ``root`` cannot deploy, or ``None`` (gr713351).
+    """Check the detached deploy's overlay before launching a cut.
 
-    The cut's checkout is also the deploy's (``release_deploy`` runs
-    ``scripts/release --deploy-only`` in it), and ``scripts/deploy`` dies
-    "install-from-tree: no overlay" without the private inventory and its
-    ``.vault-pass``. The same resolution as ``scripts/deploy``'s
-    install-from-tree block: ``<root>/deploy/inventory`` when it is a
-    directory, else ``$PRECIS_OVERLAY_DIR`` or the main checkout's
-    ``deploy/inventory`` (the parent of git's common dir) — in both cases
-    with ``.vault-pass`` beside the inventory. Checked before a cut is
-    launched: a cut on a host that cannot deploy it strands the release
-    (r333). ``PRECIS_DEPLOY_FROM_TREE`` set empty is the script's legacy
-    private-checkout escape and skips the check, as it does there."""
+    Keep this in step with scripts/release's factory gate. A local
+    worktree inventory is invisible to the detached SHA render.
+    """
     if os.environ.get("PRECIS_DEPLOY_FROM_TREE", "1") == "":
         return None
-    local = root / "deploy" / "inventory"
-    if local.is_dir():
-        overlay = local
-    else:
-        env = os.environ.get("PRECIS_OVERLAY_DIR", "").strip()
-        if env:
-            overlay = Path(env)
-        else:
-            try:
-                proc = _rs._git(
-                    ["rev-parse", "--path-format=absolute", "--git-common-dir"], root
-                )
-            except (OSError, subprocess.SubprocessError):
-                proc = None
-            common = proc.stdout.strip() if proc and proc.returncode == 0 else ""
-            main = Path(common).parent if common else root
-            overlay = main / "deploy" / "inventory"
-    vault = overlay.parent / ".vault-pass"
-    if overlay.is_dir() and vault.is_file():
-        return None
+
+    def git_output(args: list[str], cwd: Path) -> str:
+        try:
+            proc = _rs._git(args, cwd)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
     node = os.environ.get("PRECIS_NODE", "").strip() or "this node"
+    if override := os.environ.get("PRECIS_OVERLAY_DIR"):
+        overlay = root / override
+    else:
+        common = git_output(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], root
+        )
+        if not common:
+            return (
+                f"{NAME}: {node} cannot deploy — cannot resolve the main checkout "
+                "for the deploy overlay; nothing was cut (gr713351). "
+                "next: check the checkout or set PRECIS_OVERLAY_DIR."
+            )
+        overlay = Path(common).parent / "deploy" / "inventory"
+
+    vault = overlay.parent / ".vault-pass"
+    if not (overlay.is_dir() and vault.is_file()):
+        return (
+            f"{NAME}: {node} cannot deploy — no deploy overlay for the checkout "
+            f"{root} (needs the inventory dir {overlay} and {vault}); nothing "
+            "was cut. next: pin the first cut to a host that holds the overlay "
+            "with release.cut_host (put(kind='job', mode='setting', "
+            "args={'key': 'release.cut_host', 'value': '<host>', "
+            "'reason': '...'})) (gr713351)"
+        )
+    if os.environ.get("PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT") or os.environ.get(
+        "PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"
+    ):
+        return None
+    remote = os.environ.get("PRECIS_OVERLAY_REMOTE") or "deploy-helper"
+    top = git_output(["rev-parse", "--show-toplevel"], overlay)
+    if not top or os.path.realpath(top) != os.path.realpath(overlay):
+        why = f"{overlay} is a plain directory"
+    elif not git_output(["remote", "get-url", remote], overlay):
+        why = f"{overlay} has no '{remote}' remote"
+    else:
+        return None
     return (
-        f"{NAME}: {node} cannot deploy — no deploy overlay for the checkout "
-        f"{root} (needs the inventory dir {overlay} and {vault}); the cut's "
-        "checkout is the deploy's, so nothing was cut. next: pin the first "
-        "cut to a host that holds the overlay with release.cut_host "
-        "(put(kind='job', mode='setting', args={'key': 'release.cut_host', "
-        "'value': '<host>', 'reason': '...'})) (gr713351)"
+        f"{NAME}: {node} cannot deploy — {why}; nothing was cut (gr700433). "
+        f"next: use an overlay clone with the '{remote}' remote "
+        "(docs/runbooks/cluster-overlay-sync.md)."
     )
 
 

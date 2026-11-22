@@ -34,7 +34,6 @@ from tests.test_round_gate import (
     _rel,
     _round_json,
 )
-from tests.test_round_gate import rig as rig
 from tests.test_round_release import _hook, _verdict
 
 pytestmark = pytest.mark.skipif(
@@ -43,6 +42,15 @@ pytestmark = pytest.mark.skipif(
 
 RELEASE = REPO_ROOT / "scripts" / "release"
 FAST = ("--poll", "0.01", "--ci-timeout", "0.02")
+
+
+@pytest.fixture
+def rig(tmp_path: Path) -> Rig:
+    from tests import test_round_gate
+
+    base: Rig = test_round_gate.rig._get_wrapped_function()(tmp_path)
+    base.env.update(_external_overlay(base, git_repo=True, name="default"))
+    return base
 
 
 def _release(rig: Rig, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -1291,6 +1299,101 @@ def test_deploy_only_resume_names_the_release_not_the_round(rig: Rig) -> None:
     assert not any(ln.startswith("RELEASE_DEPLOYED: r3") for ln in lines)
 
 
+# ── gr700433: a factory deploy refuses an unsynced overlay ────────────
+
+
+def _overlay(rig: Rig, *, git_repo: bool = False, remote: bool = True) -> Path:
+    """A `deploy/inventory` overlay in the rig checkout — the `.git`-less
+    file copy the fix-lane provisioning places by default, or an own-repo
+    clone carrying the `deploy-helper` remote."""
+    rig.env.pop("PRECIS_OVERLAY_DIR", None)
+    overlay = rig.root / "deploy" / "inventory"
+    overlay.mkdir(parents=True)
+    (overlay.parent / ".vault-pass").write_text("x\n", encoding="utf-8")
+    (overlay / "hosts.yml").write_text("all:\n  hosts: {}\n", encoding="utf-8")
+    if git_repo:
+        _git(overlay, "init", "-q", "-b", "main")
+        _git(overlay, "add", "hosts.yml")
+        _git(overlay, "commit", "-q", "-m", "init")
+        if remote:
+            _git(overlay, "remote", "add", "deploy-helper", "/nonexistent")
+    return overlay
+
+
+def test_deploy_only_refuses_a_plain_directory_overlay(rig: Rig) -> None:
+    """gr700433: the lane's overlay is a `.git`-less file copy, which
+    overlay-sync's preflight skips silently — under the release pass the
+    deploy refuses before `round deploy`, in the exit-75 no-host-touched
+    shape ``release_deploy.poll`` reads, instead of rendering stale."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig)
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no host was touched" in out.stderr
+    assert "plain directory" in out.stderr
+    assert "deploy-helper" in out.stderr
+    assert rig.deploy_log() == []
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "cut" and "deployment" not in rel
+
+
+def test_deploy_only_refuses_an_overlay_without_the_deploy_helper_remote(
+    rig: Rig,
+) -> None:
+    """A repo without the remote syncs nothing either — same refusal."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig, git_repo=True, remote=False)
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no 'deploy-helper' remote" in out.stderr
+    assert "no host was touched" in out.stderr
+    assert rig.deploy_log() == []
+
+
+def test_deploy_only_a_synced_overlay_clone_deploys(rig: Rig) -> None:
+    """The gripe's first expected shape: an own-repo overlay carrying the
+    `deploy-helper` remote passes the gate and the deploy proceeds."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig, git_repo=True)
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{s} --pinned"]
+
+
+def test_deploy_only_plain_overlay_honours_the_drift_override(rig: Rig) -> None:
+    """PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT renders the copy as-is once, as
+    in scripts/deploy — warned, never silent."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig)
+    out = _release(
+        rig,
+        "--deploy-only",
+        "r1",
+        *FAST,
+        PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT="1",
+        **_green(rig),
+    )
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "rendering this copy as-is" in out.stdout
+    assert rig.deploy_log() == [f"{s} --pinned"]
+
+
+def test_deploy_only_plain_overlay_outside_the_pass_deploys(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal binds under the factory release pass only — a hand run
+    keeps the library's documented plain-directory default."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig)
+    monkeypatch.delitem(rig.env, "PRECIS_RELEASE_PASS")
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{s} --pinned"]
+
+
 def test_deploy_and_close_labels_the_release_record_not_the_round(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1642,6 +1745,7 @@ def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
     monkeypatch.setattr(mod, "marker_path", lambda: tmp_path / ".release-owner")
     # In-process runs stand in for the factory release pass (gr675506).
     monkeypatch.setenv("PRECIS_RELEASE_PASS", "td1")
+    monkeypatch.setenv("PRECIS_DEPLOY_FROM_TREE", "")
     return mod
 
 
@@ -2429,3 +2533,66 @@ def test_sync_to_release_head_fast_forwards_a_checkout_on_the_cut(
     assert mod.sync_to_release_head("release/r9").startswith("checkout moved")
     assert g(work, "rev-parse", "HEAD") == fix
     assert mod.sync_to_release_head("release/r9") == ""
+
+
+def _external_overlay(
+    rig: Rig, *, git_repo: bool, name: str = "ext-overlay"
+) -> dict[str, str]:
+    """An overlay outside the checkout, as ``PRECIS_OVERLAY_DIR`` names it
+    (``.vault-pass`` beside it) — what a pinned deploy renders from."""
+    base = rig.root.parent / name
+    overlay = base / "inventory"
+    overlay.mkdir(parents=True)
+    (base / ".vault-pass").write_text("x\n", encoding="utf-8")
+    (overlay / "hosts.yml").write_text("all:\n  hosts: {}\n", encoding="utf-8")
+    if git_repo:
+        _git(overlay, "init", "-q", "-b", "main")
+        _git(overlay, "add", "hosts.yml")
+        _git(overlay, "commit", "-q", "-m", "init")
+        _git(overlay, "remote", "add", "deploy-helper", "/nonexistent")
+    return {"PRECIS_OVERLAY_DIR": str(overlay)}
+
+
+def test_deploy_only_gate_follows_the_pinned_overlay_not_the_local_copy(
+    rig: Rig,
+) -> None:
+    """gr700433 review: a pinned deploy renders from a worktree without its
+    own inventory, so `$PRECIS_OVERLAY_DIR` wins over the checkout's copy —
+    a valid external clone deploys despite a plain local copy."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig)
+    ext = _external_overlay(rig, git_repo=True)
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig), **ext)
+    assert out.returncode == 3, out.stdout + out.stderr
+
+
+def test_deploy_only_refuses_a_plain_external_overlay_despite_a_local_clone(
+    rig: Rig,
+) -> None:
+    """The mirror case: a plain `$PRECIS_OVERLAY_DIR` is what the deploy
+    renders, so a valid local clone must not let it through."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig, git_repo=True)
+    ext = _external_overlay(rig, git_repo=False)
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig), **ext)
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "plain directory" in out.stderr
+    assert rig.deploy_log() == []
+
+
+@pytest.mark.parametrize("missing", ["inventory", ".vault-pass"])
+def test_deploy_only_refuses_incomplete_override_before_ci(
+    rig: Rig, missing: str
+) -> None:
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _overlay(rig, git_repo=True)
+    env = _external_overlay(rig, git_repo=True)
+    overlay = Path(env["PRECIS_OVERLAY_DIR"])
+    (overlay.parent / missing).rename(overlay.parent / "unavailable")
+
+    out = _release(rig, "--deploy-only", "r1", *FAST, **env)
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no deploy overlay" in out.stderr
+    assert str(overlay) in out.stderr
+    assert "no host was touched" in out.stderr
+    assert rig.deploy_log() == []

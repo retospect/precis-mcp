@@ -17,8 +17,12 @@ gate forbids real node names in tracked `deploy/` files. Deploy mechanics:
 - On the controller (Mac), `deploy/inventory/` is its own git repo with remote
   `deploy-helper` → that agent-host path over ssh.
 - The factory's copy (`precis-fix-repo/deploy/inventory` on the agent host, used by
-  the deploy user's `scripts/release --deploy-only`) is a `.git`-less file
-  copy, refreshed from the controller's overlay by every controller deploy.
+  the deploy user's `scripts/release --deploy-only`) is provisioned as a
+  `.git`-less file copy, refreshed from the controller's overlay by every
+  controller deploy. The factory cut and deploy preflights refuse that copy
+  (gr700433). Set `PRECIS_OVERLAY_DIR` to the clone or place it at the main
+  checkout's `deploy/inventory`. The clone needs the `deploy-helper` remote
+  and a sibling `.vault-pass`.
 - `.vault-pass` is hand-carried once, out of band, to
   `precis-mcp/deploy/.vault-pass` (chmod 600). It sits *beside* `inventory/`,
   never inside the overlay repo, so the key never travels in git. Re-carry only
@@ -45,7 +49,14 @@ ignored. A failed fetch (gateway unreachable) only warns, judges against the
 last fetched state and pushes or merges nothing. `PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1`
 (alias `PRECIS_DEPLOY_ALLOW_STALE_OVERLAY=1`) renders the Mac copy as-is once:
 everything is reported, nothing refused or mutated. A plain-directory overlay (no `.git` of its own, no `deploy-helper`
-remote) is skipped, which is why the factory's copy deploys unhindered.
+remote) is skipped by the preflight — which is why the factory's `.git`-less
+copy deployed unhindered until it went stale (gr700433). Since then
+`scripts/release` applies the same two tests itself when it runs under the
+factory release pass (`PRECIS_RELEASE_PASS`): a resolved overlay that is
+not its own repo with the `deploy-helper` remote **refuses** (exit 75,
+"no host was touched") before the CI wait. A missing selected inventory
+or its sibling vault key also refuses, even when the launch worktree has
+a usable local copy. Hand deploys keep the skip; `PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1` renders the copy as-is once.
 
 ## Editing the overlay (from any session, worktree or not)
 

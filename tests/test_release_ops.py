@@ -1749,17 +1749,42 @@ def test_a_failed_live_ask_leaves_no_marker_and_retries_next_tick(
 # ── release_cut / release_deploy (detached) ─────────────────────────
 
 
+def _init_overlay(overlay: Path, *, remote: bool = True) -> None:
+    overlay.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(overlay)], check=True)
+    if remote:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(overlay),
+                "remote",
+                "add",
+                "deploy-helper",
+                "/nonexistent",
+            ],
+            check=True,
+        )
+
+
 @pytest.fixture
 def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     root = tmp_path / "repo"
     (root / "scripts").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "scripts" / "release").write_text("#!/bin/sh\n", encoding="utf-8")
     # The cut refuses a checkout with no deploy overlay (gr713351); this
     # one has the local overlay, the overlay tests below remove it.
-    (root / "deploy" / "inventory").mkdir(parents=True)
+    _init_overlay(root / "deploy" / "inventory")
     (root / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
     monkeypatch.delenv("PRECIS_OVERLAY_DIR", raising=False)
     monkeypatch.delenv("PRECIS_DEPLOY_FROM_TREE", raising=False)
+    for var in (
+        "PRECIS_OVERLAY_REMOTE",
+        "PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT",
+        "PRECIS_DEPLOY_ALLOW_STALE_OVERLAY",
+    ):
+        monkeypatch.delenv(var, raising=False)
     runs = tmp_path / "runs"
     runs.mkdir()
     seen: dict[str, Any] = {"argv": [], "env": []}
@@ -1899,9 +1924,8 @@ def test_release_cut_overlay_from_precis_overlay_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _strip_overlay(checkout)
     shared = tmp_path / "private"
-    (shared / "inventory").mkdir(parents=True)
+    _init_overlay(shared / "inventory")
     monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(shared / "inventory"))
     # No .vault-pass beside it yet: still refused.
     assert rc.overlay_refusal(checkout["root"]) is not None
@@ -1935,12 +1959,40 @@ def test_release_cut_overlay_from_the_main_checkout(
     ):
         subprocess.run(["git", "-C", str(main), *args], check=True)
     wt = tmp_path / "wt"
+    _init_overlay(wt / "deploy" / "inventory")
+    (wt / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
     assert rc.overlay_refusal(wt) is not None  # main has no overlay yet
-    (main / "deploy" / "inventory").mkdir(parents=True)
+    _init_overlay(main / "deploy" / "inventory")
     assert rc.overlay_refusal(wt) is not None  # the vault key is missing
     (main / "deploy" / ".vault-pass").write_text("x\n", encoding="utf-8")
     assert rc.overlay_refusal(wt) is None
     assert rc.overlay_refusal(main) is None
+
+
+@pytest.mark.parametrize("own_repo", [False, True])
+def test_release_cut_refuses_an_unsyncable_selected_overlay(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    own_repo: bool,
+) -> None:
+    shared = tmp_path / "private"
+    overlay = shared / "inventory"
+    overlay.mkdir(parents=True)
+    (shared / ".vault-pass").write_text("x\n", encoding="utf-8")
+    if own_repo:
+        _init_overlay(overlay, remote=False)
+    monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(overlay))
+
+    ctx = Ctx(store, {})
+    assert rc.submit(ctx, None) is None
+    want = "no 'deploy-helper' remote" if own_repo else "plain directory"
+    assert want in ctx.failures[0]
+    assert checkout["argv"] == []
+
+    monkeypatch.setenv("PRECIS_DEPLOY_ALLOW_STALE_OVERLAY", "1")
+    assert rc.overlay_refusal(checkout["root"]) is None
 
 
 def test_release_cut_overlay_check_honours_the_legacy_escape(
@@ -2383,12 +2435,12 @@ def _fake_ancestry(
     monkeypatch: pytest.MonkeyPatch, contained: set[tuple[str, str]]
 ) -> None:
     """``git merge-base --is-ancestor <older> <newer>`` in the checkout:
-    exit 0 for the pairs in ``contained``, 1 for the rest. Any other git
-    call fails (the fixture's checkout is no repo)."""
+    exit 0 for the pairs in ``contained``, 1 for the rest."""
+    real_git = rs._git
 
     def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         if args[:2] != ["merge-base", "--is-ancestor"]:
-            return subprocess.CompletedProcess(args, 128, stdout="", stderr="")
+            return real_git(args, cwd)
         rc_ = 0 if (args[2], args[3]) in contained else 1
         return subprocess.CompletedProcess(args, rc_, stdout="", stderr="")
 
@@ -3253,7 +3305,7 @@ def stale_checkout(
     # The re-clone dropped the fixture's overlay (gr713351); keep it
     # outside the clone so the tooling tests' tree stays clean.
     shared = tmp_path / "overlay"
-    (shared / "inventory").mkdir(parents=True)
+    _init_overlay(shared / "inventory")
     (shared / ".vault-pass").write_text("x\n", encoding="utf-8")
     monkeypatch.setenv("PRECIS_OVERLAY_DIR", str(shared / "inventory"))
     monkeypatch.setattr(rc, "refresh_tooling", _REAL_REFRESH_TOOLING)
