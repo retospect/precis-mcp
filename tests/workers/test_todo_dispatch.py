@@ -406,7 +406,8 @@ def test_tag_removed_before_mint(store: Store, monkeypatch: pytest.MonkeyPatch) 
     res = _run(store)
     assert res.ok == 0 and res.failed == 0 and res.extra["minted"] == []
     [skip] = [s for s in res.extra["skipped"] if s["todo"] == src]
-    assert FACTORY_BUILD_TAG in skip["reason"]
+    assert skip["reason"] == "mint-refused"
+    assert FACTORY_BUILD_TAG in skip["detail"]
     assert _roots(store, src) == []
 
 
