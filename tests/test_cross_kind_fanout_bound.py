@@ -493,7 +493,16 @@ def test_cancelled_kind_retries_lexical(
         ]
 
     _stub_cancelled_fan_out(monkeypatch, rt, search_hits)
-    out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+    # One worker, memory seeded behind todo: the stub spends the frozen
+    # clock instantly inside memory's leg, and the parallel pool lets
+    # todo's dequeue read the clock either side of that spend — past it,
+    # todo reports TimeoutError next to memory's cancel and the dispatch
+    # raises Internal instead of the errored footer this asserts (r350
+    # gate-fast flake).
+    with _fresh_cost_memory(), ThreadPoolExecutor(max_workers=1) as pool:
+        search_mod._cross_kind_costs["memory"] = search_mod.CROSS_KIND_PER_KIND_S
+        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: pool)
+        out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
 
     assert modes == expected_modes
     recovered = "lexical" in expected_modes and not retry_fails
