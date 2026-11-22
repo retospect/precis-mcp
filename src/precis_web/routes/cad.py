@@ -69,6 +69,7 @@ from precis.cad_resolve import design_resolver
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
+from precis_web.drive_redirects import folded_redirect
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -381,12 +382,12 @@ def _require_ref(store: Store, slug: str) -> Any:
 # ── routes ───────────────────────────────────────────────────────────────
 @router.get("/cad", response_class=HTMLResponse)
 async def cad_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the
-    ``kind=cad`` facet preset (same target as ``_drive_back.html.j2``'s
-    back-link). The workbench (``/cad/{slug}`` and everything under it) is
-    unaffected.
+    """Retired into the unified Drive surface — the ``kind=cad`` facet
+    preset in ``drive_redirects.FOLDED_LIST_TARGETS`` (same target as
+    ``_drive_back.html.j2``'s back-link). The workbench (``/cad/{slug}``
+    and everything under it) is unaffected.
     """
-    return RedirectResponse(url="/drive?k=cad&folder=*&sort=recency")
+    return folded_redirect("/cad")
 
 
 @router.get("/cad/{slug}", response_class=HTMLResponse)

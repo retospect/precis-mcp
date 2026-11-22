@@ -39,6 +39,7 @@ from precis.figure.turn import run_turn
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.utils.text import fmt_num
 from precis_web.deps import get_store, templates
+from precis_web.drive_redirects import folded_redirect
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -89,12 +90,12 @@ def _bindings(store: Store, ref_id: int) -> list[dict[str, Any]]:
 
 @router.get("/figure", response_class=HTMLResponse)
 async def figure_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the
-    ``kind=figure`` facet preset (same target as ``_drive_back.html.j2``'s
-    back-link). The workbench (``/figure/{slug}`` and everything under it)
-    is unaffected.
+    """Retired into the unified Drive surface — the ``kind=figure`` facet
+    preset in ``drive_redirects.FOLDED_LIST_TARGETS`` (same target as
+    ``_drive_back.html.j2``'s back-link). The workbench
+    (``/figure/{slug}`` and everything under it) is unaffected.
     """
-    return RedirectResponse(url="/drive?k=figure&folder=*&sort=recency")
+    return folded_redirect("/figure")
 
 
 @router.get("/figure/{slug}", response_class=HTMLResponse)

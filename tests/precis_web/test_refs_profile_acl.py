@@ -85,9 +85,20 @@ def test_account_page_still_shows_owner_profile(
 def test_refs_consolidated_kinds_profile_lists_nothing(
     authed_client: TestClient, store: Any, who: str
 ) -> None:
+    """``/refs?kinds=profile`` folds to Drive but never pins ``k=profile``
+    (gr490266 + gr664412) — the owner-private kind stays off the
+    unscoped listing's redirect target, and no profile *row* is listed.
+    (The owner's own profile name may still render in Drive's "+ New"
+    poster select — that's the legitimate own-profile affordance, not a
+    listed ref.)"""
     _seed(store)
-    r = authed_client.get("/refs?kinds=profile", headers=_basic(who, "pw"))
-    assert "SecretPalette" not in r.text
+    r = authed_client.get(
+        "/refs?kinds=profile", headers=_basic(who, "pw"), follow_redirects=False
+    )
+    assert r.status_code in (302, 307, 308)
+    assert "k=profile" not in r.headers["location"]
+    landed = authed_client.get("/refs?kinds=profile", headers=_basic(who, "pw"))
+    assert 'href="/refs/profile/' not in landed.text
 
 
 def _seed_path(store: Any) -> tuple[Any, int, int]:

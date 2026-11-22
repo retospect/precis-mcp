@@ -18,7 +18,6 @@ from precis_web.item_view import (
     ItemPresenter,
     JobPresenter,
     MaterialPresenter,
-    MermaidPresenter,
     PcbPresenter,
     SePresenter,
     StructurePresenter,
@@ -510,13 +509,14 @@ def test_figure_presenter_renders_canvas_size_badge() -> None:
     assert any(b["label"] == "256×128" for b in badges)
 
 
-def test_mermaid_presenter_has_no_free_batched_datum_yet() -> None:
-    """Documents the gap rather than fabricating a badge: mermaid's
-    ``bounds_meta_key`` is unused, so ``ref.meta`` carries nothing a row
-    can show beyond the generic default."""
+def test_mermaid_falls_back_to_the_generic_presenter() -> None:
+    """gr664412: ``MermaidPresenter`` added nothing over the generic
+    default (mermaid's ``bounds_meta_key`` is unused, so ``ref.meta``
+    carries nothing a row can show) — the kind resolves to plain
+    :class:`ItemPresenter` now."""
     ref = _ref(kind="mermaid", id=7, slug="flow", meta={"render": "mermaid"})
     p = presenter_for("mermaid")
-    assert isinstance(p, MermaidPresenter)
+    assert type(p) is ItemPresenter
     assert p.state(ref, has_chunks=False) == ItemPresenter("mermaid").state(
         ref, has_chunks=False
     )

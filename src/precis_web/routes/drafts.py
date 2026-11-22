@@ -181,6 +181,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.drive_redirects import search_index_redirect
 from precis_web.linkify import popover_chip
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 
@@ -1027,10 +1028,7 @@ async def index(q: str | None = None) -> Response:
     (``POST /drafts/new``, still fed by :data:`_DOC_TYPES` via
     ``drive.py::_doctypes``) are unaffected.
     """
-    params: list[tuple[str, str]] = [("k", "draft"), ("submitted", "1")]
-    if q and q.strip():
-        params.append(("q", q.strip()))
-    return RedirectResponse(url="/drive?" + urlencode(params))
+    return search_index_redirect("/drafts", q)
 
 
 def _parse_id(body: str) -> int | None:

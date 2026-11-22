@@ -134,6 +134,8 @@
      resubmit would silently drop the doable queue and subtree scope. #}
   {% if queue %}<input type="hidden" name="queue" value="{{ queue }}" />{% endif %}
   {% if focus %}<input type="hidden" name="focus" value="{{ focus }}" />{% endif %}
+  {% if directly_serves is not none %}<input type="hidden" name="directly_serves" value="{{ directly_serves }}" />{% endif %}
+  {% if updated_since %}<input type="hidden" name="updated_since" value="{{ updated_since }}" />{% endif %}
   {% if serves %}<input type="hidden" name="serves" value="{{ serves }}" />{% endif %}
   {# layout=tree (gr664408): the mode pair rides the form too, so a facet
      resubmit keeps the tree + its edge source. #}

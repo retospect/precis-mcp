@@ -10,6 +10,9 @@ the ``[web]`` extra.
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
 
+**Lists.** ``drive_redirects`` preserves filed rows, modification windows
+and direct quest scope when folding refs lists into Drive.
+
 **Ref readers.** ``linkify.linkify_toon`` renders memory Markdown, preserving
 single newlines and literal code while escaping HTML. ``ref_urls`` maps Drive,
 handle resolution and tag pivots. Stored detail supports optional kinds with

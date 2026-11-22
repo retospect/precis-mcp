@@ -4590,6 +4590,7 @@ class RefsMixin:
         unfiled_only: bool = False,
         ref_ids: list[int] | None,
         deleted: bool,
+        updated_since: datetime | None = None,
         viewer: object = None,
     ) -> tuple[list[str], list[Any]]:
         """Shared WHERE clause + params for the ``/drive`` browse — one
@@ -4634,6 +4635,9 @@ class RefsMixin:
             frag, frag_params = profiles.visible_sql("r", login)
             clauses.append(frag)
             params.extend(frag_params)
+        if updated_since is not None:
+            clauses.append("r.updated_at > %s")
+            params.append(updated_since)
         if has_pdf is not None:
             clauses.append(
                 "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
@@ -4694,6 +4698,7 @@ class RefsMixin:
         downloadable_first: bool = False,
         limit: int = 30,
         offset: int = 0,
+        updated_since: datetime | None = None,
         viewer: object = _ACTING_VIEWER,
     ) -> list[Ref]:
         """Most-recently-*edited* refs across a *set* of kinds, newest
@@ -4730,6 +4735,7 @@ class RefsMixin:
         reorders only, row set (and :meth:`count_recent_refs`) unchanged.
         ``created=True`` orders by creation time instead of modification,
         with the ref id as a deterministic tie-break.
+        ``updated_since`` keeps refs modified after the given instant.
         Empty ``kinds`` returns nothing; ``offset`` pages past the first
         window.
         """
@@ -4748,6 +4754,7 @@ class RefsMixin:
             ref_ids=ref_ids,
             deleted=deleted,
             viewer=viewer,
+            updated_since=updated_since,
         )
         # Leading ORDER BY term for the "Stubs (to get)" download queue: rank
         # rows that carry a manual download link (DOI/arXiv → LibKey/arXiv PDF,
@@ -4808,6 +4815,7 @@ class RefsMixin:
         unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
         deleted: bool = False,
+        updated_since: datetime | None = None,
         viewer: object = _ACTING_VIEWER,
     ) -> int:
         """Exact total for the ``/drive`` no-query browse — the "of N"
@@ -4829,6 +4837,7 @@ class RefsMixin:
             ref_ids=ref_ids,
             deleted=deleted,
             viewer=viewer,
+            updated_since=updated_since,
         )
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -5122,6 +5131,8 @@ class RefsMixin:
         kinds: list[str] | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        offset: int = 0,
+        include_ref_ids: list[int] | None = None,
         exclude_tags: list[str] | None = None,
         timeout_ms: int | None = None,
         fence: bool = False,
@@ -5169,6 +5180,9 @@ class RefsMixin:
         if kinds is not None:
             params.append(list(kinds))
             clauses.append("r.kind = ANY(%s)")
+        if include_ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(include_ref_ids)
         if fence:
             # Lazy import: RefsMixin can't see ``self.chunks`` (a Store
             # property), and a module-level import would cycle.
@@ -5188,7 +5202,7 @@ class RefsMixin:
             ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
-        params.append(limit)
+        params.extend((limit, offset))
         sql = (
             f"SELECT {_REFS_COLS_ALIASED}, "
             "       ts_rank_cd(to_tsvector('english', "
@@ -5196,7 +5210,7 @@ class RefsMixin:
             + "), qq.qq) AS rank "
             "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rank DESC LIMIT %s"
+            "ORDER BY rank DESC, r.ref_id DESC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
             if timeout_ms is not None:

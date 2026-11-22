@@ -42,6 +42,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.mermaid.mermaid import MERMAID_LANG, render_pdf, render_png, render_svg
 from precis.mermaid.turn import run_turn
 from precis_web.deps import get_store, templates
+from precis_web.drive_redirects import folded_redirect
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -89,12 +90,12 @@ def _rendered_svg(source: str) -> str:
 
 @router.get("/mermaid", response_class=HTMLResponse)
 async def mermaid_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the
-    ``kind=mermaid`` facet preset (same target as ``_drive_back.html.j2``'s
-    back-link). The workbench (``/mermaid/{slug}`` and everything under it)
-    is unaffected.
+    """Retired into the unified Drive surface — the ``kind=mermaid``
+    facet preset in ``drive_redirects.FOLDED_LIST_TARGETS`` (same target
+    as ``_drive_back.html.j2``'s back-link). The workbench
+    (``/mermaid/{slug}`` and everything under it) is unaffected.
     """
-    return RedirectResponse(url="/drive?k=mermaid&folder=*&sort=recency")
+    return folded_redirect("/mermaid")
 
 
 def _not_found(request: Request, slug: str) -> HTMLResponse:

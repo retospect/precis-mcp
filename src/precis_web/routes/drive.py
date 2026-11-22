@@ -78,6 +78,7 @@ from precis_web.routes.items import (
     _folder_options,
     _parse_date,
     _recent_rows,
+    _rows_for_refs,
     _run_search,
 )
 from precis_web.routes.items import tags_suggest as _tags_suggest
@@ -104,8 +105,6 @@ log = logging.getLogger(__name__)
 #: prints beside it and ``precis stubs --manual --limit N`` has the rest.
 _MANUAL_LIST_SIZE = 50
 
-#: Same autocomplete backend as the legacy ``/items/tags/suggest`` — one
-#: function, two mounted paths (no logic fork).
 router.add_api_route("/tags/suggest", _tags_suggest, methods=["GET"])
 
 #: A ``/word`` still being typed at the end of the query head (gr486407).
@@ -915,6 +914,7 @@ async def index(
     q: str = "",
     sort: str = "relevance",
     since: str = "",
+    updated_since: str = "",
     until: str = "",
     k: list[str] = Query(default_factory=list),
     tag: list[str] = Query(default_factory=list),
@@ -927,6 +927,7 @@ async def index(
     queue: str = "",
     focus: str = "",
     serves: str = "",
+    directly_serves: int | None = None,
     layout: str = "",
     rel: str = "",
     page: int = 1,
@@ -967,7 +968,9 @@ async def index(
     each reload naturally surfaces the next un-attempted batch once "Open
     all downloads" marks the current page tried); ``since=``/``until=``
     bound the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap.
-    With no ``q`` the landing shows the recent list.
+    With no ``q`` the landing shows the recent list, optionally bounded
+    by ``updated_since=`` on modification time. ``directly_serves=<qid>``
+    limits browse and title search to direct incoming quest links.
 
     The todo preset (gr664410 — what the retired dashboard list's nav
     slot points at): ``queue=doable`` swaps the recency list for the
@@ -1078,7 +1081,7 @@ async def index(
     # Other facets (k/state/folder/…) never affect resolution.
     ambiguous_ids: list[int] = []
     unmatched_doi: str | None = None
-    if q:
+    if q and directly_serves is None:
         # A pasted URL/site path that this UI actually serves goes
         # straight there (gr484947) — e.g. a ``/c/<handle>`` or
         # ``/r/<kind>/<id>`` deep link — instead of being fed to the
@@ -1173,20 +1176,22 @@ async def index(
     # free text and surfaces in the page notice.
     qual_tags: list[str] = []
     qual_unknown: list[str] = []
-    if q.startswith("//"):
-        q = q[1:]
-    else:
-        token_kinds, q_rest, token_chunks = _split_kind_tokens(q, all_kind_defs)
-        if token_kinds:
-            selected_kinds = token_kinds
-            if token_chunks:
-                # ``/paper+chunks`` only sets the existing param (gr498598).
-                paper_chunks = "with"
-        q, qual_tags, qual_pc, qual_since, qual_unknown = _peel_qualifiers(q_rest)
-        if qual_pc is not None:
-            paper_chunks = qual_pc
-        if qual_since is not None:
-            since = qual_since
+    # Retinue search keeps literal title text and the selected kind.
+    if directly_serves is None:
+        if q.startswith("//"):
+            q = q[1:]
+        else:
+            token_kinds, q_rest, token_chunks = _split_kind_tokens(q, all_kind_defs)
+            if token_kinds:
+                selected_kinds = token_kinds
+                if token_chunks:
+                    # ``/paper+chunks`` only sets the existing param (gr498598).
+                    paper_chunks = "with"
+            q, qual_tags, qual_pc, qual_since, qual_unknown = _peel_qualifiers(q_rest)
+            if qual_pc is not None:
+                paper_chunks = qual_pc
+            if qual_since is not None:
+                since = qual_since
     # gr664402: the "Other" catch-all must not offer kinds that can never
     # return a row — compute/stateless kinds (calc/random/time/…) and
     # file-backed kinds (skill/python/md/…) are registered, so they land
@@ -1310,7 +1315,7 @@ async def index(
     focus = (focus or "").strip()
     serves = (serves or "").strip()
     scope_roots: list[int] | None = None
-    if not q:
+    if not q and directly_serves is None:
         focus_id = int(focus) if focus.isdigit() else None
         serves_m = _TODO_SERVES_RE.fullmatch(serves) if serves else None
         if focus_id is not None:
@@ -1330,6 +1335,13 @@ async def index(
         if scope_roots is not None
         else None
     )
+    if directly_serves is not None:
+        scope_ids = [
+            int(link.src_ref_id)
+            for link in await asyncio.to_thread(
+                store.links_for, directly_serves, direction="in", relation="serves"
+            )
+        ]
     ref_id_scope: list[int] | None = scope_ids
     if fetch_ref_ids is not None and scope_ids is not None:
         ref_id_scope = sorted(set(fetch_ref_ids) & set(scope_ids))
@@ -1356,7 +1368,9 @@ async def index(
     recent: list[dict[str, Any]] = []
     has_next = False
     # ``tag`` is not a ref kind (gr636493): the ref queries run on the rest.
-    want_tags = "tag" in selected_kinds and not fetch_ref_ids
+    want_tags = (
+        "tag" in selected_kinds and not fetch_ref_ids and directly_serves is None
+    )
     ref_kinds = [kk for kk in selected_kinds if kk != "tag"]
     # Tag-row links and per-row tag chips pin the ref kinds as explicit
     # ``k=`` params (the bare-``?tag=`` link would resolve a saved
@@ -1384,6 +1398,28 @@ async def index(
         )
         (rows if q else recent).extend(tag_rows)
         result_total = offset + len(tag_rows) + (1 if has_next else 0)
+    elif q and directly_serves is not None:
+        # Preserve the retinue's title search for refs that have no chunks.
+        # Scope before ranking and pagination so unrelated titles cannot
+        # crowd out direct servers.
+        hits = await asyncio.to_thread(
+            store.search_refs_lexical,
+            q=q,
+            kinds=[kind for kind in ref_kinds if kind != "profile"],
+            tags=tags or None,
+            include_ref_ids=ref_id_scope,
+            limit=max(1, len(scope_ids or [])) if layout == "tree" else _PAGE_SIZE + 1,
+            offset=0 if layout == "tree" else offset,
+        )
+        has_next = layout != "tree" and len(hits) > _PAGE_SIZE
+        page_hits = hits if layout == "tree" else hits[:_PAGE_SIZE]
+        rows = await asyncio.to_thread(
+            _rows_for_refs,
+            store,
+            [ref for ref, _ in page_hits],
+            tag_kinds=tag_row_kinds,
+        )
+        result_total = offset + len(rows) + int(has_next)
     elif q:
         embedder = getattr(hub, "embedder", None)
         rows, has_next = await asyncio.to_thread(
@@ -1444,6 +1480,7 @@ async def index(
             assert isinstance(result_total, int)
             result_total = max(result_total, offset + len(rows))
     else:
+        updated_since_dt = _parse_date(updated_since)
         # The default top level hides anything filed into a folder — a
         # folder's contents live only inside it (still findable via search,
         # which ignores folders). When a folder *is* selected we show its
@@ -1463,7 +1500,12 @@ async def index(
             and scope_ids is None
             and layout != "tree"
         )
-        if queue == "doable" and "todo" in ref_kinds and not show_deleted:
+        if (
+            queue == "doable"
+            and "todo" in ref_kinds
+            and not show_deleted
+            and directly_serves is None
+        ):
             # The todo preset (gr664410): the doable leaf rotation in its
             # own order, not the recency list — the folder/sort/state
             # browse facets don't apply to a queue that owns its ordering,
@@ -1497,6 +1539,7 @@ async def index(
                 has_external_id=has_external_id,
                 no_oa=no_oa,
                 ref_ids=ref_id_scope,
+                updated_since=updated_since_dt,
                 deleted=show_deleted,
                 oldest=(sort == "oldest"),
                 created=(sort == "created"),
@@ -1536,6 +1579,7 @@ async def index(
                     parent_id=folder_id,
                     unfiled_only=unfiled_only,
                     ref_ids=ref_id_scope,
+                    updated_since=updated_since_dt,
                     deleted=show_deleted,
                     viewer=viewer,
                 )
@@ -1617,6 +1661,10 @@ async def index(
     if q:
         _pager_params.append(("q", q))
     _pager_params.append(("sort", sort))
+    if updated_since:
+        _pager_params.append(("updated_since", updated_since))
+    if directly_serves is not None:
+        _pager_params.append(("directly_serves", str(directly_serves)))
     if since:
         _pager_params.append(("since", since))
     if until:
@@ -1689,6 +1737,12 @@ async def index(
         ("folder", folder_raw, folder_label),
         ("state", state, f"Show: {state}"),
         ("paper_chunks", pc, f"Body: {pc}"),
+        ("updated_since", updated_since, f"Updated since {updated_since}"),
+        (
+            "directly_serves",
+            str(directly_serves) if directly_serves is not None else "",
+            f"Directly serves qu{directly_serves}",
+        ),
         ("since", since, f"Created since {since}"),
         ("until", until, f"Created until {until}"),
         ("cited_by", cited_by, f"Cited by {cited_by}"),
@@ -1714,6 +1768,7 @@ async def index(
                     "queue",
                     "focus",
                     "serves",
+                    "updated_since",
                 )
             ) or (not q and name in ("since", "until")):
                 label += " (browse only)" if q else " (search only)"
@@ -1821,6 +1876,8 @@ async def index(
             "tags": tags,
             "sort": sort,
             "since": since,
+            "updated_since": updated_since,
+            "directly_serves": directly_serves,
             "until": until,
             "state": state,
             "paper_chunks": pc,

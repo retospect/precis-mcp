@@ -1216,11 +1216,10 @@ def test_drive_tag_suggest_endpoint(client) -> None:
     assert {"label": "topic:co2-capture", "tag": "=topic:co2-capture"} in hits
 
 
-def test_items_tags_suggest_alias_still_works(client) -> None:
-    """The legacy ``/items/tags/suggest`` path (same function, two mounted
-    routes) still answers — old callers/bookmarks aren't broken."""
-    hits = client.get("/items/tags/suggest?q=co2").json()
-    assert {"label": "topic:co2-capture", "tag": "=topic:co2-capture"} in hits
+def test_items_tags_suggest_alias_is_gone(client) -> None:
+    """gr664412: the legacy ``/items/tags/suggest`` alias was a duplicate
+    mount with no caller — it no longer routes (404)."""
+    assert client.get("/items/tags/suggest?q=co2").status_code == 404
 
 
 def test_drive_tag_filter_flows_to_search(runtime, client) -> None:
@@ -1732,21 +1731,23 @@ def test_tags_refs_redirect_maps_open_namespace_to_bare_value(client) -> None:
     assert resp.headers["location"].startswith("/drive?tag=read-later")
 
 
-def test_tags_refs_redirect_maps_kind_only(client) -> None:
+def test_tags_refs_kind_only_call_is_a_400(client) -> None:
+    """gr664412: the ``?kind=`` narrowing param retired with the route's
+    last caller — a kind-only call now fails the needs-a-tag gate."""
     resp = client.get("/tags/refs?kind=todo", follow_redirects=False)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == "/drive?k=todo&folder=%2A"
+    assert resp.status_code == 400
 
 
-def test_tags_refs_redirect_maps_tag_and_kind(client) -> None:
+def test_tags_refs_redirect_carries_page(client) -> None:
     resp = client.get(
-        "/tags/refs?namespace=STATUS&value=open&kind=todo&page=2",
+        "/tags/refs?namespace=STATUS&value=open&page=2",
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    assert (
-        resp.headers["location"] == "/drive?tag=STATUS%3Aopen&k=todo&folder=%2A&page=2"
-    )
+    loc = resp.headers["location"]
+    assert loc.startswith("/drive?tag=STATUS%3Aopen")
+    assert "folder=%2A" in loc
+    assert "page=2" in loc
 
 
 def test_tags_refs_redirect_resolves_chip_text(client) -> None:
@@ -3546,16 +3547,47 @@ def test_paper_detail_shows_lookup_path_when_held_but_missing(client) -> None:
 
 
 def test_refs_index_lists(client) -> None:
-    resp = client.get("/refs/memory")
-    assert resp.status_code == 200
-    assert "A decision" in resp.text
-    assert "An idea" in resp.text
+    """gr664412: the per-kind list folds into Drive's kind facet —
+    ``k=<kind>&submitted=1`` so the chip selection can't resolve to the
+    ``items_kinds`` cookie instead."""
+    resp = client.get("/refs/memory", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=memory&folder=%2A&submitted=1"
 
 
 def test_refs_index_search(client) -> None:
-    resp = client.get("/refs/memory", params={"q": "idea"})
-    assert resp.status_code == 200
-    assert "relevance" in resp.text  # search-mode banner
+    """A live ``q`` rides the fold through to Drive's cross-kind search."""
+    resp = client.get("/refs/memory", params={"q": "idea"}, follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=memory&folder=%2A&submitted=1&q=idea"
+
+
+def test_refs_index_fold_maps_filters(client) -> None:
+    """The retired page's filters land on the matching Drive facets:
+    ``tag``/``serves``/``page`` ride through, ``since=<preset>`` becomes
+    a timestamp bound, ``sort`` maps to the nearest facet."""
+    resp = client.get(
+        "/refs/memory",
+        params={
+            "tag": "topic:x",
+            "serves": "97",
+            "since": "7d",
+            "sort": "created_desc",
+            "page": "2",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 307, 308)
+    loc = resp.headers["location"]
+    assert loc.startswith("/drive?k=memory&folder=%2A&submitted=1")
+    for needle in (
+        "tag=topic%3Ax",
+        "directly_serves=97",
+        "sort=created",
+        "page=2",
+        "updated_since=",
+    ):
+        assert needle in loc
 
 
 def test_refs_unknown_kind_rejected(client) -> None:
@@ -3829,15 +3861,19 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
         assert needle in resp.text, f"{needle!r} missing from rendered transcript"
 
 
-def test_refs_nav_tabs_present(client) -> None:
+def test_refs_nav_tab_survives_the_list_fold(client) -> None:
     """After T12.6 the nav collapses memory/conv/gripe/pres into one Refs
-    tab. WS1b folded Oracle/Patents' own Browse-dropdown tabs into Drive
-    kind-facet presets (their per-kind list, not their detail reader) —
-    the consolidated Refs tab stays."""
-    resp = client.get("/refs/memory")
-    assert "/refs" in resp.text  # consolidated browser
-    assert "/refs/oracle" not in resp.text
-    assert "/refs/patent" not in resp.text
+    tab; gr664412 folded that tab's consolidated browser into Drive too,
+    so the nav link itself redirects — no dead ``/refs/<kind>`` list
+    tabs remain."""
+    resp = client.get("/refs", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    drive = client.get("/drive")
+    assert 'href="/refs"' not in drive.text  # no dead consolidated link
+    assert "/refs/oracle" not in drive.text
+    assert "/refs/patent" not in drive.text
+    # …while the surviving specialist route — the quest tree — still links.
+    assert 'href="/refs/quest"' in drive.text
 
 
 def test_refs_oracle_list_redirects_to_drive_kind_facet(client) -> None:
@@ -3845,7 +3881,7 @@ def test_refs_oracle_list_redirects_to_drive_kind_facet(client) -> None:
     preset — the detail reader (``/refs/oracle/{id}``) is unaffected."""
     resp = client.get("/refs/oracle", follow_redirects=False)
     assert resp.status_code in (302, 307, 308)
-    assert resp.headers["location"] == "/drive?k=oracle&submitted=1"
+    assert resp.headers["location"] == "/drive?k=oracle&folder=%2A&submitted=1"
 
 
 def test_refs_patent_list_redirects_to_drive_kind_facet(client) -> None:
@@ -3853,36 +3889,58 @@ def test_refs_patent_list_redirects_to_drive_kind_facet(client) -> None:
     preset — the detail reader (``/refs/patent/{id}``) is unaffected."""
     resp = client.get("/refs/patent", follow_redirects=False)
     assert resp.status_code in (302, 307, 308)
-    assert resp.headers["location"] == "/drive?k=patent&submitted=1"
+    assert resp.headers["location"] == "/drive?k=patent&folder=%2A&submitted=1"
 
 
-def test_refs_consolidated_default_renders(client) -> None:
-    """``GET /refs`` (no args) lights the 4 default kinds and renders."""
-    resp = client.get("/refs")
-    assert resp.status_code == 200
-    # Default-checked kinds shown as checkbox labels.
-    for kind in ("memory", "conv", "gripe", "pres"):
-        assert f'value="{kind}"' in resp.text
-    # The all=1 escape hatch is in the form.
-    assert 'name="all"' in resp.text
+def test_refs_consolidated_default_folds_to_default_kinds(client) -> None:
+    """``GET /refs`` (no args) folds to Drive with the 4 default kinds
+    pinned as explicit ``k=`` chips (gr664412)."""
+    resp = client.get("/refs", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    loc = resp.headers["location"]
+    assert loc == "/drive?k=memory&k=conv&k=gripe&k=pres&folder=%2A&submitted=1"
 
 
 def test_refs_consolidated_all_flag_lights_every_kind(client) -> None:
-    """``?all=1`` selects every browsable kind, regardless of ``kinds``."""
-    resp = client.get("/refs?all=1")
-    assert resp.status_code == 200
-    # Non-default kinds (perplexity-research, paper, etc.) should show
-    # up as checked.
-    assert 'value="paper"' in resp.text
-    assert 'value="patent"' in resp.text
-    assert 'value="perplexity-research"' in resp.text
+    """``?all=1`` selects every browsable kind the old checkbox roster
+    offered (hidden kinds — ``random``/``provenance`` and the Drive-owned
+    ``pcb``/``component``/``material`` — stay out)."""
+    resp = client.get("/refs?all=1", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    loc = resp.headers["location"]
+    for kind in ("paper", "patent", "perplexity-research", "memory"):
+        assert f"k={kind}" in loc
+    for kind in (
+        "random",
+        "provenance",
+        "pcb",
+        "component",
+        "material",
+        "profile",
+        "skill",
+    ):
+        assert f"k={kind}" not in loc
 
 
 def test_refs_consolidated_kinds_param_narrows(client) -> None:
-    resp = client.get("/refs?kinds=memory")
-    assert resp.status_code == 200
-    # All checkboxes render either way; what changes is which are checked.
-    assert 'value="memory"' in resp.text
+    """``?kinds=`` narrows the fold to the requested subset; ``q`` rides
+    through to Drive's cross-kind search."""
+    resp = client.get("/refs?kinds=memory&q=idea", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    assert resp.headers["location"] == "/drive?k=memory&folder=%2A&submitted=1&q=idea"
+
+
+def test_refs_consolidated_unknown_kinds_ride_through(client) -> None:
+    """Unregistered ``kinds=`` entries land as Drive "Other" chips;
+    ``profile`` is still excluded (gr490266 — owner-private, unscoped
+    listing)."""
+    resp = client.get("/refs?kinds=memory,banana,profile,skill", follow_redirects=False)
+    assert resp.status_code in (302, 307, 308)
+    loc = resp.headers["location"]
+    assert "k=memory" in loc
+    assert "k=banana" in loc
+    assert "k=profile" not in loc
+    assert "k=skill" not in loc
 
 
 def test_refs_detail_renders_tag_strip_empty_state(client) -> None:

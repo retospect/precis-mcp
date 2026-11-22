@@ -24,6 +24,8 @@ from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
+from precis_web.drive_redirects import folded_redirect
+
 router = APIRouter(prefix="/papers-needed", tags=["papers-needed"])
 
 _WATCH_PLIST = Path("/Library/LaunchDaemons/com.precis.watch.plist")
@@ -95,8 +97,9 @@ _KIND_DROPZONES: tuple[tuple[str, str, str], ...] = (
 @router.get("", response_class=RedirectResponse)
 @router.get("/", response_class=RedirectResponse)
 async def index() -> RedirectResponse:
-    """Retired into the unified Drive surface (WS1b, decision D3) —
-    redirects to the ``state=stub`` facet (the old ``?awaiting=1``
-    next-pass narrowing has no Drive equivalent and is dropped with the
-    list; the fetcher already works the whole backlog automatically)."""
-    return RedirectResponse(url="/drive?state=stub")
+    """Retired into the unified Drive surface (WS1b, decision D3) — the
+    ``state=stub`` preset in ``drive_redirects.FOLDED_LIST_TARGETS`` (the
+    old ``?awaiting=1`` next-pass narrowing has no Drive equivalent and is
+    dropped with the list; the fetcher already works the whole backlog
+    automatically)."""
+    return folded_redirect("/papers-needed")

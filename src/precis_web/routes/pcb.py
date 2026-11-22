@@ -101,6 +101,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.drive_redirects import folded_redirect
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -137,12 +138,13 @@ def _vitals(store: Store, ref_id: int) -> dict[str, Any]:
 
 @router.get("/pcb", response_class=HTMLResponse)
 async def pcb_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the ``kind=pcb``
-    facet preset (same target as ``_drive_back.html.j2``'s back-link, so the
-    detail page's "back" arrow and this retired index agree). The workbench
-    (``/pcb/{slug}`` and its SVG endpoints below) is unaffected.
+    """Retired into the unified Drive surface — the ``kind=pcb`` facet
+    preset in ``drive_redirects.FOLDED_LIST_TARGETS`` (same target as
+    ``_drive_back.html.j2``'s back-link, so the detail page's "back" arrow
+    and this retired index agree). The workbench (``/pcb/{slug}`` and its
+    SVG endpoints below) is unaffected.
     """
-    return RedirectResponse(url="/drive?k=pcb&folder=*&sort=recency")
+    return folded_redirect("/pcb")
 
 
 #: ``POST /pcb/import``'s upload cap (gr496699): an ``.epro2`` is a zip of

@@ -73,6 +73,7 @@ from precis.structure.probe import coordination, detect_bonds
 from precis.structure.scene import FIX_X, FIX_Y, FIX_Z
 from precis_web import design_chat, design_turn
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
+from precis_web.drive_redirects import folded_redirect
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -1015,12 +1016,12 @@ def _latest_proposal(store: Store, ref_id: int) -> dict[str, Any] | None:
 
 @router.get("/structure", response_class=HTMLResponse)
 async def structure_list() -> RedirectResponse:
-    """Retired into the unified Drive surface — redirects to the
-    ``kind=structure`` facet preset (same target as ``_drive_back.html.j2``'s
-    back-link). The workbench (``/structure/{slug}`` and everything under
-    it) is unaffected.
+    """Retired into the unified Drive surface — the ``kind=structure``
+    facet preset in ``drive_redirects.FOLDED_LIST_TARGETS`` (same target
+    as ``_drive_back.html.j2``'s back-link). The workbench
+    (``/structure/{slug}`` and everything under it) is unaffected.
     """
-    return RedirectResponse(url="/drive?k=structure&folder=*&sort=recency")
+    return folded_redirect("/structure")
 
 
 @router.get("/structure/{slug}", response_class=HTMLResponse)

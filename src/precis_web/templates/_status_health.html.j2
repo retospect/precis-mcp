@@ -116,11 +116,13 @@
     <h2 class="text-sm font-semibold mb-2">Todos by status</h2>
     <ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
       {% for t in todo_status %}
-      {# Click-through → /tags/refs filters refs by tag, scoped to
-         kind=todo and namespace=STATUS for the relevant status. Each
-         count is the population landing on the filtered list. #}
+      {# Click-through → the Drive todo facet filtered to the tag
+         =STATUS:<status>. Each count is the population landing on the
+         filtered list. /tags/refs?kind= folded with the rest of the
+         retired refs lists (gr664412), so this chip builds the Drive
+         URL directly. #}
       <li class="px-4 py-2 flex justify-between text-sm hover:bg-surface-subtle">
-        <a href="/tags/refs?kind=todo&namespace=STATUS&value={{ t.status }}"
+        <a href="/drive?k=todo&tag=STATUS%3A{{ t.status | urlencode }}&folder=*"
            class="flex-1 text-fg-secondary hover:text-success-strong">{{ t.status }}</a>
         <span class="font-semibold">{{ t.count }}</span>
       </li>

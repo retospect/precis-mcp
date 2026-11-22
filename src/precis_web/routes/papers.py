@@ -85,6 +85,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.drive_redirects import search_index_redirect
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
 from precis_web.ref_urls import ref_url
@@ -399,10 +400,7 @@ async def index(q: str | None = None) -> Response:
     own cross-kind search box replaces them); the reader (``/papers/{ident}``
     and everything under it) is unaffected.
     """
-    params: list[tuple[str, str]] = [("k", "paper"), ("submitted", "1")]
-    if q and q.strip():
-        params.append(("q", q.strip()))
-    return RedirectResponse(url="/drive?" + urlencode(params))
+    return search_index_redirect("/papers", q)
 
 
 @router.get("/triage", response_class=HTMLResponse)

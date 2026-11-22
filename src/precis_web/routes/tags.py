@@ -55,8 +55,7 @@ _PROTECTED_NAMESPACES: frozenset[str] = frozenset(
 
 def _refs_drive_url(
     *,
-    tag_filter: str | None,
-    kind: str | None,
+    tag_filter: str,
     ref_kinds: list[str],
     page: int,
 ) -> str:
@@ -66,13 +65,10 @@ def _refs_drive_url(
     folder-agnostic, so the target pins every row-backed kind as an
     explicit ``k=`` (no ``k=`` would resolve the ``items_kinds`` cookie,
     silently dropping kinds) plus ``folder=*`` ("anywhere" — the drive's
-    default top-level filter would hide filed refs). A ``kind=`` call
-    selects just that kind; ``page=`` rides along."""
-    pairs: list[tuple[str, str]] = [("tag", tag_filter)] if tag_filter else []
-    if kind:
-        pairs.append(("k", kind))
-    elif tag_filter:
-        pairs.extend(("k", kk) for kk in ref_kinds)
+    default top-level filter would hide filed refs). ``page=`` rides
+    along."""
+    pairs: list[tuple[str, str]] = [("tag", tag_filter)]
+    pairs.extend(("k", kk) for kk in ref_kinds)
     pairs.append(("folder", "*"))
     if page > 1:
         pairs.append(("page", str(page)))
@@ -151,7 +147,6 @@ async def refs_by_tag(
     request: Request,
     namespace: str | None = None,
     value: str | None = None,
-    kind: str | None = None,
     tag: str | None = None,
     page: int = 1,
 ) -> RedirectResponse:
@@ -164,16 +159,19 @@ async def refs_by_tag(
       so a lowercase axis (``tier:dream`` …) keeps its stored pair as
       ``=ns:value`` instead of flattening to an OPEN/FLAG filter that
       matches nothing.
-    * ``?kind=K`` → ``/drive?k=K``
-    * ``?namespace=…&value=…&kind=K`` → both
     * ``?tag=<chip text>`` → resolves the closed-vs-OPEN split via
       :func:`resolve_tag_chip` first, then the same tag= mapping —
       eye ``[ns:value]`` chips link here verbatim (gr575024).
+
+    The ``?kind=`` narrowing param is gone (gr664412): nothing linked
+    the kind-only call shape, and the one chip that combined it with a
+    tag (the status page's per-STATUS count) now links ``/drive``
+    directly — a kind-scoped tag pivot is ``/drive?tag=<f>&k=<kind>``.
     """
-    if namespace is None and value is None and kind is None and tag is None:
+    if namespace is None and value is None and tag is None:
         raise HTTPException(
             status_code=400,
-            detail="needs ?namespace=NS&value=V, ?tag=T, ?kind=K, or a mix",
+            detail="needs ?namespace=NS&value=V or ?tag=T",
         )
     store = get_store(request)
     if tag is not None and namespace is None and value is None:
@@ -188,17 +186,19 @@ async def refs_by_tag(
             # whole-text the chip most likely renders).
             ns, sep, v = tag.partition(":")
             namespace, value = (ns, v) if sep and ns and ns.isupper() else ("OPEN", tag)
-    has_tag = namespace is not None and value is not None
     page = max(1, page)
-    ref_kinds: list[str] = []
-    if has_tag and not kind:
+    if namespace is not None and value is not None:
         ref_kinds = sorted(await asyncio.to_thread(store.ref_kinds_present))
-    target = _refs_drive_url(
-        tag_filter=(tag_filter_string(str(namespace), str(value)) if has_tag else None),
-        kind=kind,
-        ref_kinds=ref_kinds,
-        page=page,
-    )
+        target = _refs_drive_url(
+            tag_filter=tag_filter_string(str(namespace), str(value)),
+            ref_kinds=ref_kinds,
+            page=page,
+        )
+    else:
+        # A half-given pair (``?namespace=`` without ``value=``, or the
+        # reverse) has no stored tag to pivot on — land on the tag
+        # leaderboard, the nearest Drive equivalent.
+        target = "/drive?k=tag"
     return RedirectResponse(url=target, status_code=302)
 
 

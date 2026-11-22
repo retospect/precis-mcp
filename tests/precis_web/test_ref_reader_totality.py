@@ -99,9 +99,11 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                 assert drive.status_code == 200
                 assert f'href="/refs/{kind}/{ref.id}"' not in drive.text
                 assert f'href="{expected}"' in drive.text
+                # The kind-scoped tag pivot that used to prove the same
+                # no-leak invariant retired with ``/tags/refs?kind=``
+                # (gr664412): the call shape no longer routes.
                 pivot = client.get(f"/tags/refs?kind={kind}")
-                assert pivot.status_code == 200
-                assert f'href="/refs/{kind}/{ref.id}"' not in pivot.text
+                assert pivot.status_code == 400
                 continue
             if kind == "tag":
                 # No per-ref reader and no Drive row either: the kind's
@@ -129,9 +131,10 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
             resolver = client.get(f"/r/{kind}/{ref.id}", follow_redirects=False)
             assert resolver.status_code == 303, (kind, resolver.text[:300])
             assert resolver.headers["location"] == expected
+            # ``/tags/refs?kind=`` retired (gr664412) — the Drive row
+            # check above exercises the same kind-scoped listing now.
             pivot = client.get(f"/tags/refs?kind={kind}")
-            assert pivot.status_code == 200
-            assert f'href="{expected}"' in pivot.text, kind
+            assert pivot.status_code == 400
         # The Other facet only offers kinds that own refs rows (gr664402),
         # so the roster check runs once every kind has a stored row.
         offered = KindInputs()

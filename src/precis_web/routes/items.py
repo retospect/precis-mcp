@@ -25,12 +25,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 from precis.handlers._paper_search import _representative_block_for_ref
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store._tag_filter import tag_filter_string
 from precis_web.deps import get_store
+from precis_web.drive_redirects import folded_redirect
 from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row, tag_display_label
 from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
 
@@ -490,6 +491,7 @@ def _recent_rows(
     created: bool = False,
     untried: bool = False,
     downloadable_first: bool = False,
+    updated_since: datetime | None = None,
     viewer: str | None = None,
     tag_kinds: list[str] | None = None,
     fetch_all: bool = False,
@@ -547,6 +549,7 @@ def _recent_rows(
             ref_ids=ref_ids,
             deleted=deleted,
             viewer=viewer,
+            updated_since=updated_since,
         )
         refs = store.recent_refs(
             kinds,
@@ -565,6 +568,7 @@ def _recent_rows(
             untried=untried,
             downloadable_first=downloadable_first,
             viewer=viewer,
+            updated_since=updated_since,
             limit=max(total, 1),
             offset=0,
         )
@@ -586,6 +590,7 @@ def _recent_rows(
         untried=untried,
         downloadable_first=downloadable_first,
         viewer=viewer,
+        updated_since=updated_since,
         limit=_PAGE_SIZE + 1,
         offset=offset,
     )
@@ -629,13 +634,13 @@ def _folder_options(store: Any) -> list[dict[str, Any]]:
     return out
 
 
-@router.get("/tags/suggest")
 async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
     """Autocomplete backend for the tag-filter chips — substring tag
     matches as JSON ``[{label, tag}]`` (``tag`` is the filter string to
-    submit). Empty/1-char queries return nothing. Kept at both this
-    legacy path and ``/drive/tags/suggest`` (same function, two routes —
-    see ``routes/drive.py``)."""
+    submit). Empty/1-char queries return nothing. Served only at
+    ``/drive/tags/suggest`` (``routes/drive.py`` mounts this function);
+    the legacy ``/items/tags/suggest`` alias had no caller and is gone
+    (gr664412)."""
     q = (q or "").strip()
     if len(q) < 2:
         return JSONResponse([])
@@ -653,7 +658,6 @@ async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
 @router.get("/")
 async def index(request: Request) -> Response:
     """Redirect to ``/drive``, preserving every filter verbatim — the
-    merged Drive surface.
+    merged Drive surface (``drive_redirects.folded_redirect``).
     """
-    suffix = f"?{request.url.query}" if request.url.query else ""
-    return RedirectResponse(url=f"/drive{suffix}")
+    return folded_redirect("/items", query=request.url.query)

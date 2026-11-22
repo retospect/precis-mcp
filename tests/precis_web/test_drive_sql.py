@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from html import unescape
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -722,3 +723,53 @@ def test_short_query_skips_title_lookup(store, monkeypatch):
             offset=0,
         )
     assert calls == []
+
+
+@pytest.mark.parametrize("path", ["/refs/cad", "/refs?kinds=cad"])
+def test_legacy_refs_lists_include_filed_rows(
+    drive_client: TestClient, seeded: dict[str, int], path: str
+) -> None:
+    response = drive_client.get(path)
+    assert response.status_code == 200
+    assert "a bracket" in response.text
+    assert "a loose part" in response.text
+
+
+def test_legacy_refs_date_window_uses_modification_time(
+    drive_client: TestClient, store: Any
+) -> None:
+    recent = store.insert_ref(kind="memory", title="Recently revised record", slug=None)
+    stale = store.insert_ref(kind="memory", title="Stale record", slug=None)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = '2000-01-01' WHERE ref_id = %s",
+            (recent.id,),
+        )
+        conn.execute(
+            "UPDATE refs SET updated_at = '2000-01-01' WHERE ref_id = %s",
+            (stale.id,),
+        )
+    response = drive_client.get("/refs/memory?since=7d")
+    assert response.status_code == 200
+    assert recent.title in response.text
+    assert stale.title not in response.text
+
+
+@pytest.mark.parametrize("query", ["", "&q=compass"])
+def test_legacy_refs_serves_scope_excludes_descendants_and_unrelated_refs(
+    drive_client: TestClient, store: Any, query: str
+) -> None:
+    quest = store.insert_ref(kind="quest", title="Retinue quest", slug=None)
+    direct = store.insert_ref(kind="todo", title="Direct compass", slug=None)
+    child = store.insert_ref(
+        kind="todo", title="Nested compass", slug=None, parent_id=direct.id
+    )
+    unrelated = store.insert_ref(kind="todo", title="Unrelated compass", slug=None)
+    store.add_link(
+        src_ref_id=direct.id, dst_ref_id=quest.id, relation="serves", set_by="system"
+    )
+    response = drive_client.get(f"/refs/todo?serves={quest.id}{query}")
+    assert response.status_code == 200
+    assert direct.title in response.text
+    assert child.title not in response.text
+    assert unrelated.title not in response.text

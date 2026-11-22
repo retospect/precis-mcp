@@ -96,12 +96,14 @@ def test_refs_material_detail_renders_handler_card(kind_client, runtime_with_sto
     assert "Aluminum 6061-T6" in r.text
 
 
-def test_refs_list_route_renders_for_the_newly_browsable_kinds(kind_client):
-    """Making the kinds browsable also opens their ``/refs/<kind>`` list —
-    the quest dashboard's servers-lite chips link it (``_quest_detail``), so
-    it must render rather than 500."""
+def test_refs_list_route_folds_for_the_newly_browsable_kinds(kind_client):
+    """Making the kinds browsable keeps their ``/refs/<kind>`` route live —
+    it folds to the Drive kind facet (gr664412: the quest dashboard's
+    servers-lite chips used to link the now-retired list)."""
     for kind in ("pcb", "component", "material"):
-        assert kind_client.get(f"/refs/{kind}").status_code == 200
+        resp = kind_client.get(f"/refs/{kind}", follow_redirects=False)
+        assert resp.status_code in (302, 307, 308)
+        assert resp.headers["location"] == f"/drive?k={kind}&folder=%2A&submitted=1"
 
 
 def test_drive_kinds_stay_out_of_the_consolidated_browser() -> None:
