@@ -148,7 +148,11 @@ Converted handles recheck the resolved kind against the same policy before
 dispatch rewrites the kind, so redirects cannot bypass it. Pulls and edits remain
 behind the removed write verbs and the callback's ``agent_ro`` database role.
 
-Fresh run_slice claims probe the same fixed CPU/memory footprint as launch.
+Fresh run_slice claims probe the same CPU/memory footprint as launch. The CPU
+side is the code default per work class unless the live
+``claim.footprint.<work>.cpu_milli`` override sizes it, read at claim and at
+spawn; a fractional or otherwise unusable stored value falls back to the
+default, and one above the ceiling clamps to it.
 The probe refunds immediately because detached spawn owns the lifetime hold;
 a race before spawn parks on lane wait without spending an attempt.
 

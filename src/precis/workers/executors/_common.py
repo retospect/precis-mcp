@@ -28,6 +28,7 @@ import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -369,20 +370,24 @@ def footprint_cpu_key(work: str) -> str:
 def parse_footprint_cpu_milli(raw: Any) -> int | None:
     """A stored override as a positive int of millicores, else ``None``.
 
-    Accepts the canonical string the setting door writes (``"1000"``) and
-    an int-valued float string (``"1000.0"``); a bool, zero, a negative, a
-    fraction or garbage is ``None`` — the caller keeps the code default.
-    A value above :data:`FOOTPRINT_CPU_MAX_MILLI` clamps to it.
+    Integrality is checked on the exact decimal value, before any
+    rounding: an int, an int-valued string (``"1000"``) and an exactly
+    integral float or float string (``1000.0``, ``"1000.0"``) pass; a bool,
+    zero, a negative, a fraction (``"1.5"``, ``"0.99999999999999999"``) or
+    garbage is ``None`` — the caller keeps the code default. A value above
+    :data:`FOOTPRINT_CPU_MAX_MILLI` clamps to it.
     """
     if raw is None or isinstance(raw, bool):
         return None
     try:
-        num = float(str(raw).strip())
-    except ValueError:
+        num = Decimal(str(raw).strip())
+    except InvalidOperation:
         return None
-    if not math.isfinite(num) or not num.is_integer() or num <= 0:
+    if not num.is_finite() or num != num.to_integral_value() or num <= 0:
         return None
-    return min(int(num), FOOTPRINT_CPU_MAX_MILLI)
+    if num >= FOOTPRINT_CPU_MAX_MILLI:
+        return FOOTPRINT_CPU_MAX_MILLI
+    return int(num)
 
 
 def footprint_cpu_milli_override(conn: Connection, work: str) -> int | None:

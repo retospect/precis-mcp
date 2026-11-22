@@ -1077,7 +1077,9 @@ def test_slice_claim_reads_the_cpu_override(store: Store) -> None:
     assert _claim(store) == [run]
 
 
-@pytest.mark.parametrize("raw", ["0", "-500", "abc", "1.5", "", "true"])
+@pytest.mark.parametrize(
+    "raw", ["0", "-500", "abc", "1.5", "", "true", "0.99999999999999999"]
+)
 def test_bad_cpu_override_falls_back_to_the_default(
     store: Store,
     raw: str,
@@ -1102,6 +1104,17 @@ def test_cpu_override_parser() -> None:
     assert parse_footprint_cpu_milli(None) is None
     assert parse_footprint_cpu_milli(True) is None
     assert parse_footprint_cpu_milli("nan") is None
+    assert parse_footprint_cpu_milli(750) == 750
+    assert parse_footprint_cpu_milli(1000.0) == 1000
+    assert parse_footprint_cpu_milli("1000.0") == 1000
+    # Integrality is judged before any rounding: a sliver below 1 is not
+    # a 1-millicore reservation (td765418).
+    assert parse_footprint_cpu_milli("0.99999999999999999") is None
+    assert parse_footprint_cpu_milli("1000.00000000000001") is None
+    assert parse_footprint_cpu_milli("1.5") is None
+    assert parse_footprint_cpu_milli(1.5) is None
+    assert parse_footprint_cpu_milli("1e30") == 256_000
+    assert parse_footprint_cpu_milli(1e30) == 256_000
     assert parse_footprint_cpu_milli("inf") is None
     # A row written around the setter clamps to the setter's own bound.
     assert parse_footprint_cpu_milli("256000") == 256_000
