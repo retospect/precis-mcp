@@ -8212,19 +8212,59 @@ def test_preland_review_verdict_is_the_build_job_s_signal(store: Store) -> None:
 
 
 def test_preland_review_signal_follows_the_held_attempt_ref(store: Store) -> None:
-    """The held land's attempt ref names the judged build job — it wins
-    over the newest-build-before-the-review fallback — and a FIX is its
-    failure."""
-    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
-    build = mint.ids["build"]
-    (newest_before, _m) = _jobs_under(store, build)[0]
-    named = _job(store, build, lane="devin")
+    """A review job launched without a ``reviewed_attempt`` record: the
+    held land's attempt ref names the judged build job when that build
+    predates the review — it wins over the newest-build-with-commits
+    fallback — and a FIX is its failure."""
+    mint = _reviewed_pending(store, "")
+    build, review = mint.ids["build"], mint.ids["review"]
+    (named, _m) = _jobs_under(store, build)[0]
+    committed = _job(store, build, lane="devin", commits=["a1b2c3d"])
     held = dict(_meta(store, build)["pending_land"])
     held["ref"] = f"refs/factory/build/{build}/{named}"
     store.stamp_ref_meta(build, {"pending_land": held})
+    _job(store, review, lane="claude-sub")  # the review run, after both builds
+    _todo_comment(store, review, "review: FIX — a.py misses the empty case")
     pd.run_pass(store)
     assert _build_signal(store, named)["review"]["verdict"] == "FIX"
-    assert _build_signal(store, newest_before) == {}
+    assert _build_signal(store, committed) == {}
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+def test_preland_review_signal_never_credits_a_replacement_build(
+    store: Store, recorded: bool
+) -> None:
+    """td763090: a replacement build re-held the land after the review
+    launched, so the held ref names a build the reviewer never read. The
+    verdict goes to the attempt the review's launch recorded
+    (``reviewed_attempt``) — or, for a review job without one, to the
+    newest build before it — never to the replacement."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    (judged, _m) = _jobs_under(store, build)[0]
+    review_job = _jobs_under(store, review)[-1][0]
+    if recorded:
+        store.stamp_ref_meta(
+            review_job,
+            {
+                "reviewed_attempt": {
+                    "todo": build,
+                    "ref": f"refs/factory/build/{build}/{judged}",
+                    "head": "1" * 40,
+                    "job": judged,
+                }
+            },
+        )
+    replacement = _job(store, build, lane="devin", commits=["b2c3d4e"])
+    assert replacement > review_job
+    held = dict(_meta(store, build)["pending_land"])
+    held["ref"] = f"refs/factory/build/{build}/{replacement}"
+    store.stamp_ref_meta(build, {"pending_land": held})
+    pd.run_pass(store)
+    signal = _build_signal(store, judged)
+    assert signal["review"]["verdict"] == "FIX"
+    assert signal["review"]["job"] == review_job
+    assert _build_signal(store, replacement) == {}
 
 
 def test_preland_review_revert_sends_the_branch_back_to_the_builder(

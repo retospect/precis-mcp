@@ -627,6 +627,40 @@ def test_build_runs_scan_is_bounded_on_the_primary_key(store: Any) -> None:
     assert cond, plan
 
 
+def test_build_runs_window_keeps_builds_under_an_older_row_on_a_newer_id(
+    store: Any,
+) -> None:
+    """td763090: ``created_at`` is the transaction's start and the id the
+    insert's draw, so a transaction open across the cutoff leaves a
+    pre-cutoff row on an id above in-window builds. The pruning floor
+    must not take that row and hide them: the window is ``created_at``."""
+    from precis.utils.llm.suitability import build_runs
+
+    tag = uuid4().hex[:8]
+    adapter = f"adapter_{tag}"
+    job = _build(store, f"m-{tag}", adapter=adapter, review="LAND")
+    late = int(store.insert_ref(kind="todo", slug=None, title="late", meta={}).id)
+    assert late > job
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '29 days' WHERE ref_id = %s",
+            (job,),
+        )
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '30 days 1 hour' "
+            "WHERE ref_id = %s",
+            (late,),
+        )
+    try:
+        runs = build_runs(store, window_days=30, adapter=adapter)
+    finally:
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() WHERE ref_id = %s", (late,)
+            )
+    assert [r.outcome for r in runs] == [True]
+
+
 def test_explore_counts_count_tries_without_outcomes(store: Any) -> None:
     """The pick's try bound reads explored runs whether or not they
     yielded an outcome: ten explored runs that ended empty (gates passed,

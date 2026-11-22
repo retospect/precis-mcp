@@ -286,6 +286,15 @@ PRELAND_REVIEW_KEY = "preland_review"
 #: enabled, unparked, not backed off and not metered. A full chosen lane
 #: or a host missing its binary is waited for, as without a fallback.
 REVIEW_FALLBACK_KEY = "review_fallback"
+#: ``meta.reviewed_attempt`` on a pre-land reviewer's ``run_slice`` job
+#: (td763090): what its launch's brief told it to judge — ``{todo, ref,
+#: head, job}``, the held land's target todo, attempt ref, pushed tip and
+#: the build job the ref names (``None`` for a ref naming none).
+#: ``run_slice`` stamps it at each launch; ``plan_dispatch`` credits the
+#: verdict's build signal to ``job``, never to whatever build the held
+#: land names when the verdict is read — a replacement build may hold it
+#: by then.
+REVIEWED_ATTEMPT_KEY = "reviewed_attempt"
 #: ``meta.pending_land`` on a build todo whose land waits on a pre-land
 #: reviewer: the params ``run_slice._mint_land`` would have minted
 #: ``land_slice`` with (todo_id, worktree, branch, lane?, checked?,

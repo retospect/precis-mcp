@@ -4318,7 +4318,7 @@ def _step_reviews(
         record["verdict"] = kind
         # gr761723: the build run(s) the verdict judged, read before the
         # verdict's handling clears the held land that names them.
-        judged_builds = _reviewed_build_jobs(plan, n, newest.id)
+        judged_builds = _reviewed_build_jobs(plan, n, newest)
         marker = _templates.REVIEW_READONLY_MARKER
         pending = _pending_targets(plan, n)
         preland = bool(pending) and len(pending) == len(_review_targets(plan, n))
@@ -4469,24 +4469,40 @@ def _step_reviews(
         res.reviews += 1
 
 
-def _reviewed_build_jobs(plan: _Plan, n: _Node, review_job: int) -> list[int]:
-    """The build job each of ``n``'s targets was judged on (gr761723):
-    the job a held land's attempt ref names
-    (``refs/factory/build/<todo>/<job>``, :func:`outcome.build_job_of_ref`),
-    else the target's newest ``run_slice`` job before the review that
-    left commits (``meta.branch_commits``), else its newest laned one."""
+def _reviewed_build_jobs(plan: _Plan, n: _Node, review: _Node) -> list[int]:
+    """The build job each of ``n``'s targets was judged on (gr761723) by
+    the ``review`` job: the build job of the attempt its launch named
+    (:data:`~precis.plans.templates.REVIEWED_ATTEMPT_KEY`, td763090) —
+    the held land may name a replacement build by the time the verdict
+    is read. Without that record (a job launched before it, a landed
+    squash, a slicer's slices): the job a held land's attempt ref names
+    (``refs/factory/build/<todo>/<job>``, :func:`outcome.build_job_of_ref`)
+    when that build predates the review, else the target's newest
+    ``run_slice`` job before the review that left commits
+    (``meta.branch_commits``), else its newest laned one."""
     from precis.plans import outcome as _outcome
 
+    review_job = review.id
+    seen = (review.meta or {}).get(_templates.REVIEWED_ATTEMPT_KEY)
+    seen = seen if isinstance(seen, dict) else {}
     out: list[int] = []
     for t in _review_targets(plan, n):
         job: int | None = None
-        for key in (_templates.PENDING_LAND_KEY, _templates.PRELAND_HELD_KEY):
-            held = t.meta.get(key)
-            held = held.get("params", held) if isinstance(held, dict) else None
-            if isinstance(held, dict):
-                job = _outcome.build_job_of_ref(held.get("ref"))
-            if job is not None:
-                break
+        if seen.get("todo") == t.id:
+            named = seen.get("job")
+            job = named if isinstance(named, int) and named > 0 else None
+        else:
+            for key in (_templates.PENDING_LAND_KEY, _templates.PRELAND_HELD_KEY):
+                held = t.meta.get(key)
+                held = held.get("params", held) if isinstance(held, dict) else None
+                if isinstance(held, dict):
+                    job = _outcome.build_job_of_ref(held.get("ref"))
+                if job is not None and job >= review_job:
+                    # td763090: a build minted after the review is a
+                    # replacement it never read.
+                    job = None
+                if job is not None:
+                    break
         if job is None:
             builds = [
                 j
