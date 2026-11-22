@@ -1324,6 +1324,7 @@ def _memory_dependency_ids(conn: Any, target: int, garden: dict[str, Any]) -> se
         for child in payload.get("children") or []:
             if not isinstance(child, dict):
                 continue
+            handles.append(child.get("hub"))
             handles.extend(
                 spec.get("target")
                 for spec in child.get("links") or []
@@ -3575,13 +3576,13 @@ def _check_split_scope(payload: dict[str, Any], fresh: dict[str, Any]) -> None:
             > SPLIT_KEEP_MAX_LINES
         ):
             raise BadInput(f"keep_body must be a ≤{SPLIT_KEEP_MAX_LINES}-line summary")
-    hub = payload.get("hub")
-    if hub is not None and not isinstance(hub, int):
-        from precis.utils.handle_registry import parse
+    from precis.utils.handle_registry import parse
 
-        parsed = parse(str(hub))
-        if parsed is None or parsed[:2] != ("memory", False):
-            raise BadInput("split hub must be a memory id or me<N> handle")
+    for hub in (payload.get("hub"), *(child.get("hub") for child in children)):
+        if hub is not None and not isinstance(hub, int):
+            parsed = parse(str(hub))
+            if parsed is None or parsed[:2] != ("memory", False):
+                raise BadInput("split hub must be a memory id or me<N> handle")
 
 
 @dataclass(slots=True)
@@ -3652,7 +3653,9 @@ def _split_hub(
 ) -> int | None:
     """Resolve the children's part-of parent (the hub, never the parent).
 
-    An explicit ``payload.hub`` must be a live memory. Without one the
+    ``payload`` is the split payload, or one child naming its own ``hub``
+    (gr674663: a claim homed under another hub hangs there, not on the
+    container's). An explicit ``hub`` must be a live memory. Without one the
     children hang on the target's ``section:index`` ancestry — a kept hub
     stays its own hub, anything else resolves to the nearest live index
     ancestor. The split parent is never a substitute hub: hanging
@@ -3703,6 +3706,7 @@ def _mint_split_child(
     body: str,
     space_tags: list[str],
     *,
+    hub: int | None,
     actor: str,
     model: str | None,
 ) -> int:
@@ -3721,10 +3725,10 @@ def _mint_split_child(
         },
         default_tags=False,
     )
-    if rec.hub is not None:
+    if hub is not None:
         store.add_link(
             src_ref_id=cid,
-            dst_ref_id=rec.hub,
+            dst_ref_id=hub,
             relation="part-of",
             set_by="agent",
             conn=conn,
@@ -3872,6 +3876,12 @@ def apply_split(
             links=links,
         )
         rec.hub = _split_hub(payload, target, fate, conn=conn)
+        child_hubs = [
+            rec.hub
+            if child.get("hub") is None
+            else _split_hub(child, target, fate, conn=conn)
+            for child in children
+        ]
         _resolve_memory_apply(
             store,
             conn,
@@ -3892,7 +3902,7 @@ def apply_split(
         with revision_context(
             reason, actor=actor, model="", writer=_garden_writer(model)
         ):
-            for child in children:
+            for child, child_hub in zip(children, child_hubs, strict=True):
                 _mint_split_child(
                     store,
                     conn,
@@ -3901,6 +3911,7 @@ def apply_split(
                     child,
                     body_text,
                     space_tags,
+                    hub=child_hub,
                     actor=actor,
                     model=model,
                 )

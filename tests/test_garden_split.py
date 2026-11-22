@@ -635,3 +635,173 @@ def test_cli_dispatches_split_undo(
     assert rec.split_id in capsys.readouterr().out
     assert store.get_ref(kind="memory", id=target) is not None
     assert key_block(store, "ref", target, candidate.key) == "rejected"
+
+
+# ── gr674663: each claim's home rides the evidence ───────────────────────
+
+
+def _home(
+    store: Store, embedder: _StubEmbedder, vector: list[float], *, hub: int
+) -> int:
+    """Another live memory under ``hub`` whose card embeds at ``vector``."""
+    title = "semanticscholar takes the bare DOI, not a doi.org URL"
+    ref = store.insert_ref(kind="memory", slug=None, title=title)
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=f"{title}.\n", meta={"chunk_kind": "memory_body"})],
+    )
+    store.add_tag(ref.id, Tag.open("section:gotchas"), set_by="system")
+    store.add_tag(ref.id, Tag.open("SPACE:repo-dev"), set_by="system")
+    store.add_link(src_ref_id=ref.id, dst_ref_id=hub, relation="part-of")
+    cid = store.chunks.upsert_card_combined(ref.id, title)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, "
+            "attempts) VALUES (%s, %s, %s, 'ok', 1)",
+            (cid, embedder.model, vector),
+        )
+    return int(ref.id)
+
+
+def _part_of(store: Store, child: int) -> set[int]:
+    return {link[3] for link in _links(store, child) if link[5] == "part-of"}
+
+
+def test_span_with_home_links_instead_of_child(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    """A claim another memory owns is named in evidence.homes, so the split
+    links that home and mints no copy of it."""
+    from precis.graph.garden import proposer
+
+    hub, home_hub = _hub(store), _hub(store)
+    _topic_vectors(embedder)
+    home = _home(store, embedder, embedder.vectors[TOPIC_C.rstrip()], hub=home_hub)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    spans = [s["span"] for s in candidate.evidence["sentences"]]
+
+    assert candidate.evidence["homes"] == [
+        {
+            "span": spans[3],
+            "home": f"me{home}",
+            "similarity": 1.0,
+            "hub": f"me{home_hub}",
+        }
+    ]
+    assert f"memory:{home}" in proposer.ref_excerpts(
+        store, proposer._excerpt_ids(candidate)
+    )
+    assert "evidence.homes" in proposer._prompt_for(candidate)
+
+    candidate.payload["children"] = _children(candidate)[:2]
+    candidate.payload["parent_fate"] = "keep"
+    candidate.payload["keep_body"] = f"Two claims; the DOI rule is [me{home}]."
+    review_id = emit_proposal(store, candidate, rationale="me owns the DOI claim.")
+    assert review_id is not None
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+
+    assert len(rec.children) == 2
+    assert all(TOPIC_C.rstrip() not in str(c["body"]) for c in rec.children)
+    assert f"[me{home}]" in _body(store, target)
+
+
+def test_span_without_home_stays_child_of_container(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    """No other memory sits above the similarity floor: no homes, and every
+    child hangs on the container's hub."""
+    hub, other_hub = _hub(store), _hub(store)
+    _topic_vectors(embedder)
+    far = [0.0, 0.0, 0.0, 1.0] + [0.0] * (embedder.dim - 4)
+    _home(store, embedder, far, hub=other_hub)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+
+    assert candidate.evidence["homes"] == []
+
+    review_id = _propose(store, candidate)
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+    assert len(rec.children) == 3
+    for child in rec.children:
+        assert _part_of(store, child["id"]) == {hub}
+
+
+def test_child_hub_parents_a_homed_claim_on_its_home_hub(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    """children[].hub: a claim whose subject lives under another hub is
+    minted part-of that hub, not the container's; undo still retires it."""
+    hub, home_hub = _hub(store), _hub(store)
+    _topic_vectors(embedder)
+    _home(store, embedder, embedder.vectors[TOPIC_C.rstrip()], hub=home_hub)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    children = _children(candidate)
+    children[2]["hub"] = f"me{home_hub}"
+    candidate.payload["children"] = children
+    review_id = emit_proposal(store, candidate, rationale="the DOI claim's hub.")
+    assert review_id is not None
+
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+
+    assert rec.hub == hub
+    assert [_part_of(store, c["id"]) for c in rec.children] == [
+        {hub},
+        {hub},
+        {home_hub},
+    ]
+    counts = doors.undo_split(store, rec.split_id, actor="operator")
+    assert counts["children_deleted"] == 3
+    assert _body(store, target).encode("utf-8") == BODY.encode("utf-8")
+
+
+def test_child_hub_must_be_another_live_memory(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    children = _children(candidate)
+    children[2]["hub"] = f"me{target}"
+    candidate.payload["children"] = children
+    review_id = emit_proposal(store, candidate, rationale="bad child hub")
+    assert review_id is not None
+
+    with pytest.raises(BadInput):
+        doors.apply_split(
+            store, review_id, actor="garden-consumer", model="fixture-reviewer"
+        )
+    assert _body(store, target).encode("utf-8") == BODY.encode("utf-8")
+    assert store.get_ref(kind="memory", id=target) is not None
+
+
+def test_title_leg_candidate_carries_homes_and_needs_the_embedder(
+    store: Store, embedder: _StubEmbedder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title-only candidate has no cluster leg but its spans still get
+    homes; without the embedder it reports not_checked, never a homeless
+    candidate."""
+    hub, home_hub = _hub(store), _hub(store)
+    _topic_vectors(embedder)
+    home = _home(store, embedder, embedder.vectors[TOPIC_C.rstrip()], hub=home_hub)
+    target = _grab_bag(store, TOPIC_A + TOPIC_C, title="ingest/worker notes", hub=hub)
+    found = _candidate(store, target)
+
+    assert found.evidence["clusters"] is None
+    assert [h["home"] for h in found.evidence["homes"]] == [f"me{home}"]
+
+    def _down(*_args: object, **_kwargs: object) -> list[list[float]]:
+        raise RuntimeError("default embedder unavailable")
+
+    monkeypatch.setattr(cand, "_restated_embeddings", _down)
+    unchecked: dict[str, str] = {}
+    assert cand.grab_bag_candidates(store, not_checked=unchecked) == []
+    assert unchecked == {"grab_bag": "embedder_unavailable"}

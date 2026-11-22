@@ -280,9 +280,19 @@ card. Propose action "split" through payload_overrides.children: 2..12
 atomic children, each {"title": <the claim as a sūtra, ≤80 chars>,
 "section": gotchas|reference|rulings|runbooks|workflow (a trap is gotchas,
 a fact reference, a ruling rulings), "spans": [[start,end]…] naming only
-evidence.sentences spans — every span joins exactly one child — plus
+evidence.sentences spans — a span joins at most one child — plus
 optional "links": [{"target": <handle>, "relation": …}] to the subsystem
-refs the claim is about and "qualifies": [<thread handle>…]. parent_fate:
+refs the claim is about and "qualifies": [<thread handle>…].
+evidence.homes names, per span, the nearest other live memory, its
+similarity and its hub: a hint where that claim's subject already lives,
+to check against the home's excerpt, never proof. Condense, do not only
+atomize. A span whose home already states the claim joins no child: the
+home owns it, so name the home's handle in a related child's "links" or
+in keep_body and copy no values. A span whose subject belongs with its
+home but is not stated there becomes a child carrying "hub": <the home's
+hub handle>, part-of that hub instead of the container's. A span without
+a home is the container's own claim and stays a child under the payload
+hub. Reject when a span's ownership is unclear. parent_fate:
 "retire" (default; history sentences drop, the tombstone carries
 meta.split_into and redirects to the hub) or "keep" with keep_body, a
 ≤3-line summary — only when other nodes reference the parent as a whole.
@@ -421,6 +431,13 @@ def _excerpt_ids(candidate: GardenCandidate) -> list[int]:
             for entry in candidate.evidence.get("entities", [])[:8]:
                 if isinstance(entry.get("ref_id"), int):
                     ids.append(int(entry["ref_id"]))
+        if candidate.detector == "grab_bag":
+            # The evaluator reads each home's own text before it links a
+            # claim instead of copying it (bounded like griped's entities).
+            for entry in candidate.evidence.get("homes", [])[:8]:
+                home = parse_handle(str(entry.get("home") or ""))
+                if home is not None and not home[1]:
+                    ids.append(home[2])
         if candidate.detector == "host_facts":
             # The evaluator verifies the claim against the machine ref's
             # own card — its current role fact is the ref's side.

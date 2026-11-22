@@ -73,7 +73,11 @@ no model call (``garden.applied='mention'``, gr564554). ``grab_bag`` flags a
 multi-claim title smell or >=4 top-level items whose sentence embeddings
 cluster into >=3 groups; the reviewed split mints atomic children pinned to
 the detector's sentence spans, then retires the parent
-(``meta.split_into``) or shrinks it to a <=3-line summary.
+(``meta.split_into``) or shrinks it to a <=3-line summary. Its
+``evidence.homes`` names, per span, the nearest other live memory above the
+cluster leg's same-topic bar and that memory's hub: the evaluator links a
+claim its home already states, or parents the child on the home's hub
+(``children[].hub``), instead of copying it under the container (gr674663).
 ``thread_shape`` covers tagged thread children: a missing ``Left:``,
 terminal linked work, or a Left-line sha confirmed on ``origin/prod``
 proposes supersede by the nearest live ancestor with a current ``Left:``,
@@ -2646,6 +2650,9 @@ GRAB_BAG_MAX_DISTANCE = 0.5
 GRAB_BAG_EMBED_SECONDS = 10.0
 #: Bounded bodies scanned per tick — each eligible body costs one embed call.
 GRAB_BAG_SCAN_CAP = 64
+#: A span's home (gr674663) is the nearest other live memory at least this
+#: similar — the cluster leg's same-topic bar, restated as a similarity.
+GRAB_BAG_HOME_MIN_SIMILARITY = 1.0 - GRAB_BAG_MAX_DISTANCE
 _GRAB_BAG_ITEM = re.compile(r"(?:[-*+]|\d+[.)])\s+\S|#{1,6}\s+\S")
 _GRAB_BAG_AND = re.compile(r"\band\b", re.IGNORECASE)
 _GRAB_BAG_TWO = re.compile(r"\btwo\b", re.IGNORECASE)
@@ -2709,6 +2716,60 @@ def _grab_bag_clusters(vectors: list[list[float]]) -> list[list[int]]:
     return sorted(groups.values(), key=lambda g: g[0])
 
 
+def _grab_bag_homes(
+    store: Store,
+    target: int,
+    spans: list[tuple[str, list[int]]],
+    vectors: list[list[float]],
+) -> list[dict[str, Any]]:
+    """Per sentence span, the nearest other live memory above the floor.
+
+    A home is where the claim's subject already lives (gr674663), so the
+    evaluator links it or parents the child on its hub instead of copying
+    the claim under the container. Card and body vectors of every live
+    non-DREAM memory are scanned exactly (no filtered-ANN under-fill); ties
+    break on the lower ref id. ``hub`` is the home's first live ``part-of``
+    memory parent, None for a root.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "WITH vecs AS MATERIALIZED (SELECT r.ref_id, ce.vector FROM refs r "
+            "JOIN chunks c ON c.ref_id = r.ref_id AND c.retired_at IS NULL "
+            "AND c.chunk_kind IN ('card_combined', 'memory_body') "
+            "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "
+            "AND ce.status = 'ok' AND ce.vector IS NOT NULL "
+            "JOIN embedders em ON em.name = ce.embedder AND em.is_default "
+            "WHERE r.kind = 'memory' AND r.retired_at IS NULL "
+            "AND r.ref_id <> %(t)s AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM')) "
+            "SELECT q.o, n.ref_id, n.d FROM unnest(%(vs)s::text[]) "
+            "WITH ORDINALITY AS q(v, o) CROSS JOIN LATERAL ("
+            "SELECT v.ref_id, v.vector <=> q.v::vector AS d FROM vecs v "
+            "ORDER BY d, v.ref_id LIMIT 1) n ORDER BY q.o",
+            {
+                "t": target,
+                # pgvector text form — one text[] binds the whole batch.
+                "vs": ["[" + ",".join(map(str, vec)) + "]" for vec in vectors],
+            },
+        ).fetchall()
+    near = [
+        (int(ordinal) - 1, int(rid), 1.0 - float(dist))
+        for ordinal, rid, dist in rows
+        if 1.0 - float(dist) >= GRAB_BAG_HOME_MIN_SIMILARITY
+    ]
+    hubs = _memory_parents(store, sorted({rid for _, rid, _ in near}))
+    return [
+        {
+            "span": spans[index][1],
+            "home": f"me{rid}",
+            "similarity": round(similarity, 2),
+            "hub": next((f"me{p}" for p in hubs.get(rid, [])), None),
+        }
+        for index, rid, similarity in near
+    ]
+
+
 def grab_bag_candidates(
     store: Store,
     *,
@@ -2726,7 +2787,10 @@ def grab_bag_candidates(
     stored; an unavailable embedder reports ``not_checked`` and resumes the
     scan at the failed body next tick, keeping evidence reproducible.
     ``sentence`` spans pin the exact claim text the evaluator may split —
-    the apply door accepts no span outside this evidence.
+    the apply door accepts no span outside this evidence. ``homes`` names
+    each span's nearest other live memory (:func:`_grab_bag_homes`), so a
+    title-leg candidate with spans embeds too: a split proposed without
+    homes would copy claims another memory owns (gr674663).
     """
     if limit <= 0 or scan_cap <= 0:
         return []
@@ -2755,7 +2819,9 @@ def grab_bag_candidates(
         capped = len(spans) > GRAB_BAG_SENTENCE_CAP
         spans = spans[:GRAB_BAG_SENTENCE_CAP]
         clusters: list[list[int]] | None = None
-        if items >= GRAB_BAG_MIN_ITEMS and len(spans) >= 2:
+        vectors: list[list[float]] | None = None
+        body_leg = items >= GRAB_BAG_MIN_ITEMS and len(spans) >= 2
+        if spans and (body_leg or reasons):
             budget = GRAB_BAG_EMBED_SECONDS
             if (deadline := deadline_at()) is not None:
                 budget = min(budget, max(0.001, deadline - time.monotonic() - 0.1))
@@ -2777,10 +2843,12 @@ def grab_bag_candidates(
                 log.info("garden: grab_bag not_checked (%s)", type(exc).__name__)
                 aborted = True
                 break
-            clusters = _grab_bag_clusters(vectors)
+            if body_leg:
+                clusters = _grab_bag_clusters(vectors)
         evaluated_last = row.ref_id
         if not reasons and len(clusters or ()) < GRAB_BAG_MIN_CLUSTERS:
             continue
+        homes = _grab_bag_homes(store, row.ref_id, spans, vectors) if vectors else []
         out.append(
             GardenCandidate(
                 detector="grab_bag",
@@ -2795,6 +2863,7 @@ def grab_bag_candidates(
                     "clusters": clusters,
                     "sentences": [{"text": text, "span": span} for text, span in spans],
                     "sentences_capped": capped,
+                    "homes": homes,
                     "parents": parents.get(row.ref_id, []),
                     "supporting_shas": {
                         f"me{p}": supporting[f"me{p}"]

@@ -537,9 +537,11 @@ history or restatement, never a still-true claim living nowhere else.
 Per dropped sentence ask: is it history, a restatement, or did it move?
 Reject a plan with any fourth answer, a move into an unrelated node, a
 shell retired without successor, or a keep-summary over three lines.
-An approved split mints the payload's atomic children under the hub and
-retires or shrinks the parent; verify each child title states one claim and
-every span belongs to the detector's evidence. A rejected proposal is closed.
+An approved split mints the payload's atomic children under the hub (a
+child naming its own hub hangs there: its claim's home, per evidence.homes)
+and retires or shrinks the parent; verify each child title states one claim,
+every span belongs to the detector's evidence and no child copies a claim
+its evidence.homes memory already states. A rejected proposal is closed.
 """
 
 
