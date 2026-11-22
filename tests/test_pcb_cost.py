@@ -3,9 +3,9 @@ module in this slice. No DB.
 
 Covers: the admissibility property (coarse <= fine total, generated over
 many random IR states — "nothing else catches the estimator hierarchy
-silently rotting"), the undefined-!=-zero rule, money-sums-vs-margin-max
-aggregation (the 1x99%-vs-500x5% case explicitly), and the required,
-non-empty per-term justification.
+silently rotting"), the undefined-!=-zero rule, money-sums-and-margin-
+sums aggregation (gr689737: both families sum — every graded violation
+is priced), and the required, non-empty per-term justification.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from precis.pcb.cost import (
     Family,
     TermSpec,
     TermValue,
+    _penalty_affine,
     _thermal_rise,
     _via_count,
     aggregate_margin,
@@ -73,7 +74,7 @@ def test_registry_covers_both_families():
     assert families == {Family.MONEY, Family.MARGIN}
 
 
-# ── aggregation: money sums, margin maxes ────────────────────────────
+# ── aggregation: money sums, margin sums (gr689737) ─────────────────
 def test_money_total_sums():
     terms = [
         TermValue("board_area", Family.MONEY, "board", 10.0, "j"),
@@ -83,11 +84,17 @@ def test_money_total_sums():
     assert money_total(terms) == pytest.approx(17.5)
 
 
-def test_margin_aggregates_by_max_not_diluted_by_many_small_values():
-    """The reason the max-not-sum rule exists: one net at 99% of budget
-    is a real problem even sitting beside 500 nets at 5% — and adding
-    MORE quiet nets must not move the signal at all, which is exactly
-    what a sum would get wrong (it grows with the quiet-net count)."""
+def test_margin_aggregates_by_sum_every_violation_is_priced():
+    """gr689737 (approved 2026-11-22): the margin family SUMS. The old
+    max made every non-maximal constraint contribute zero, so any cheap
+    MONEY term was a free tie-breaker able to overrule a real graded
+    violation (measured: a $0.046 money term overruled a
+    courtyard_overlap shortfall). The sum's known cost — 500 quiet nets
+    at 5% add signal the max ignored — is accepted: hardened_penalty's
+    convexity keeps one net at 99% ~40x one net at 5% at any schedule,
+    so the peak still dominates without zeroing every other constraint.
+    This test used to assert the max (risk invariant under quiet-net
+    count); it now pins the sum it was written to warn against."""
     critical = TermValue("gap_capacity", Family.MARGIN, "critical_net", 0.99, "j")
     few_quiet = [
         TermValue("gap_capacity", Family.MARGIN, f"n{i}", 0.05, "j") for i in range(5)
@@ -97,7 +104,10 @@ def test_margin_aggregates_by_max_not_diluted_by_many_small_values():
     ]
 
     weight = _CRITICALITY_WEIGHT[_BY_NAME["gap_capacity"].criticality]
-    expected_peak = weight * hardened_penalty(0.99, 0.0)
+    penalties_all = margin_penalties([critical, *many_quiet], _BY_NAME, schedule=0.0)
+    expected_sum = weight * (
+        hardened_penalty(0.99, 0.0) + 500 * hardened_penalty(0.05, 0.0)
+    )
 
     risk_few = aggregate_margin(
         margin_penalties([critical, *few_quiet], _BY_NAME, schedule=0.0)
@@ -105,20 +115,25 @@ def test_margin_aggregates_by_max_not_diluted_by_many_small_values():
     risk_many = aggregate_margin(
         margin_penalties([critical, *many_quiet], _BY_NAME, schedule=0.0)
     )
-    # max correctly ignores how many quiet nets sit beside the peak
-    assert risk_few == pytest.approx(expected_peak)
-    assert risk_many == pytest.approx(expected_peak)
+    # the sum prices the quiet nets too: risk grows with the quiet-net
+    # count (5 -> 500), tracking EVERY constraint, not just the peak
+    assert risk_few == pytest.approx(
+        weight * (hardened_penalty(0.99, 0.0) + 5 * hardened_penalty(0.05, 0.0))
+    )
+    assert risk_many == pytest.approx(expected_sum)
+    assert risk_many > risk_few
+    assert risk_many == pytest.approx(sum(penalties_all))
 
-    # A naive sum — the aggregation this rule exists to avoid — keeps
-    # growing linearly with the quiet-net count (5 -> 500 is a 100x
-    # jump) instead of tracking the one net that actually matters, which
-    # is exactly what `max` (above) correctly refuses to do.
-    quiet_sum_few = sum(margin_penalties(few_quiet, _BY_NAME, schedule=0.0))
-    quiet_sum_many = sum(margin_penalties(many_quiet, _BY_NAME, schedule=0.0))
-    assert quiet_sum_many == pytest.approx(quiet_sum_few * 100)
+    # the convexity backstop the sum relies on: at any schedule the peak
+    # net costs far more than any single quiet net, so "many small" never
+    # per-quiet-net outweighs "one critical"
+    for schedule in (0.0, 0.5, 1.0):
+        one_quiet = hardened_penalty(0.05, schedule)
+        peak = hardened_penalty(0.99, schedule)
+        assert peak > 10.0 * one_quiet
 
 
-def test_margin_max_ignores_family_leakage_from_money():
+def test_margin_sum_ignores_family_leakage_from_money():
     # money terms must never enter the margin aggregation
     terms = [TermValue("board_area", Family.MONEY, "board", 999.0, "j")]
     penalties = margin_penalties(terms, _BY_NAME, schedule=0.0)
@@ -167,6 +182,24 @@ def test_hardened_penalty_continuous_at_the_budget_boundary():
     assert below == pytest.approx(at, abs=1e-3)
 
 
+def test_penalty_affine_decomposition_matches_hardened_penalty_everywhere():
+    """The incremental optimizer's risk sum decomposes THROUGH
+    ``hardened_penalty`` being ``a + schedule * b`` (see
+    ``_penalty_affine``'s and ``_MarginTable``'s docstrings) — pin that
+    contract across the whole fraction range and beyond-schedule clamps,
+    or the engine's O(1) risk silently diverges from the direct cost."""
+    rng = random.Random(20261122)
+    fractions = [0.0, 1e-9, 0.001, 0.5, 0.999, 1.0, 1.000001, 1.5, 10.0]
+    fractions += [rng.random() * 3.0 for _ in range(200)]
+    schedules = [0.0, 0.25, 0.5, 1.0, -0.5, 2.0]  # clamps too
+    for fraction in fractions:
+        a, b = _penalty_affine(fraction)
+        for schedule in schedules:
+            assert a + max(0.0, min(1.0, schedule)) * b == pytest.approx(
+                hardened_penalty(fraction, schedule), abs=1e-12
+            ), (fraction, schedule)
+
+
 # ── undefined != zero ────────────────────────────────────────────────
 def _two_pin_graph(net_class: str = "signal"):
     return {
@@ -194,7 +227,7 @@ def test_gap_capacity_undefined_is_a_nonzero_admissible_bound():
 
 def test_layer_count_zero_at_l0_is_a_true_bound_not_a_swallowed_signal():
     # contrast with gap_capacity: 0 is fine here because it's a genuine
-    # minimum for a *summed* money term, not a max-aggregated margin term.
+    # minimum for a money term, whose sum just skips a not-yet-known 0.
     ir = from_graph(_two_pin_graph())
     result = evaluate_cost(ir, Level.L0)
     (layer_term,) = [t for t in result.terms if t.name == "layer_count"]

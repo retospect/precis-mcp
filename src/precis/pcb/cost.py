@@ -41,12 +41,30 @@ never literal 0 — 0 tells the optimizer congestion is free. Each such
 estimator's own docstring states its coarse assumption and why it still
 bounds the truth.
 
-**Two families, aggregated differently.** Money terms (board area, layer
-count, via count, part fees) normalize to USD and **sum**. Margin terms
-(clearance, loop inductance, coupling, thermal rise, same-layer
-crossings) normalize to fraction-of-own-budget and aggregate by **max**
-(or a soft p-norm) via :func:`aggregate_margin` — summing would let 500
-nets at 5% drown the one net at 99%.
+**Two families, normalized differently, aggregated the same.** Money
+terms (board area, layer count, via count, part fees) normalize to USD
+and **sum**. Margin terms (clearance, loop inductance, coupling, thermal
+rise, same-layer crossings) normalize to fraction-of-own-budget and also
+**sum** (criticality-weighted, via :func:`aggregate_margin`). The
+families differ by their UNIT, not their aggregation — both are
+per-move decomposable sums.
+
+The margin family used to aggregate by **max**, on the theory that
+summing would let 500 nets at 5% drown the one net at 99%. The max had
+the opposite defect, and it measured worse (gr689737, 2026-11-22): a
+max lets every non-maximal graded constraint contribute ZERO, so any
+cheap MONEY term becomes a free tie-breaker able to overrule a real
+graded violation (a $0.046 money term once overruled a
+``courtyard_overlap`` shortfall — shrinking the money term's weight
+cannot help, because the violation it beat contributed exactly nothing
+while it was not the max). A sum prices every violation; the one-net-
+at-99% case is protected by :func:`hardened_penalty`'s convexity (99%
+of budget costs ~40x one net at 5% at any schedule) and by the
+criticality weight, not by zeroing every other constraint. Both
+aggregates are also the only kind the incremental optimizer can
+maintain per-move (a max of per-weight maxima, or a sum of per-weight
+sums; a soft p-norm is neither — which is why ``CostConfig`` no longer
+carries a ``p_norm`` dial).
 
 **Convexity is the hardening schedule** — one mechanism:
 :func:`hardened_penalty` is superlinear in budget fraction always
@@ -106,12 +124,13 @@ STRtree/spatial index).
 **``alignment`` (2026-09-01) is the first "preference field"**
 (`me569391`'s invariant 3): a
 weak, numerous, purely aesthetic pressure with no hard-rule counterpart
-to relax, which is exactly why it rides :class:`Family.MONEY` (summed)
-rather than :class:`Family.MARGIN` (max) — a max aggregate only ever
-feels the single worst pressure board-wide, so a cosmetic term registered
-there would either vanish under a real risk or, worse, occasionally BE
-the worst term and distort the max. Every later aesthetic pressure this
-board optimizer grows belongs in the same SUMMED family, never MARGIN.
+to relax, which is exactly why it rides :class:`Family.MONEY` (USD)
+rather than :class:`Family.MARGIN` (fraction-of-own-budget): a
+cosmetic pressure registered on the margin family would distort the
+risk scale — its fraction would be measured against a physical budget
+it has no claim on, and summed with real violations. Every later
+aesthetic pressure this board optimizer grows belongs in the same USD
+family, never MARGIN.
 """
 
 from __future__ import annotations
@@ -151,11 +170,12 @@ from precis.pcb.rules import (
 
 
 class Family(Enum):
-    """How a term's raw value is normalized and aggregated. See the module
-    docstring — this split, and only this split, decides sum vs. max."""
+    """How a term's raw value is normalized. See the module docstring —
+    the two families differ by UNIT (USD vs. fraction-of-own-budget);
+    both aggregate by sum."""
 
     MONEY = "money"  # normalized to USD; SUM
-    MARGIN = "margin"  # normalized to fraction-of-budget; MAX / soft-max
+    MARGIN = "margin"  # normalized to fraction-of-budget; SUM (gr689737)
 
 
 class BoundDirection(Enum):
@@ -217,7 +237,6 @@ class CostConfig:
     schedule: float = (
         0.0  # 0 = exploratory .. 1 = hardened barrier (see hardened_penalty)
     )
-    p_norm: float | None = None  # None = exact max; a float = smoother p-norm soft-max
 
     # -- money rates (USD) ----------------------------------------------
     board_area_usd_per_mm2: float = 0.002
@@ -354,19 +373,38 @@ def hardened_penalty(fraction: float, schedule: float) -> float:
     **and** non-decreasing in ``schedule`` for any fixed fraction (needed
     for the schedule to actually harden anything). Continuous at
     ``fraction == 1``.
+
+    **Affine in ``schedule``, by construction** — the penalty is always
+    ``a + schedule * b`` for a per-fraction ``(a, b)`` pair (see
+    :func:`_penalty_affine`). That is not an incidental algebraic fact:
+    the incremental optimizer's risk sum decomposes per move THROUGH it
+    (``_MarginTable`` keeps per-criticality-weight running totals of
+    ``a`` and ``b``, so :meth:`OptimizeEngine.risk` is O(1) at any
+    schedule), and the delta-correctness tests pin the two paths to 1e-9.
+    Changing this function's shape therefore means changing the
+    decomposition contract, not just a formula.
+    """
+    schedule = max(0.0, min(1.0, schedule))
+    a, b = _penalty_affine(fraction)
+    return a + schedule * b
+
+
+def _penalty_affine(fraction: float) -> tuple[float, float]:
+    """``(a, b)`` such that :func:`hardened_penalty`\\ (``fraction``,
+    ``schedule``) == ``a + schedule * b`` for every schedule in [0, 1].
+
+    The below-budget branch is ``fraction**2 * (1 + 4*schedule*fraction**6)``
+    == ``fraction**2 + schedule * 4*fraction**8``; the over-budget branch
+    is ``(1 + 4*schedule) + (fraction-1) * (10 + 90*schedule)``, also
+    affine. ``hardened_penalty`` itself is defined on top of this pair —
+    one formula, two consumers (the direct callers and the optimizer's
+    running sums), so they cannot drift apart algebraically.
     """
     if fraction <= 0.0:
-        return 0.0
-    schedule = max(0.0, min(1.0, schedule))
+        return (0.0, 0.0)
     if fraction < 1.0:
-        return fraction**2 * (1.0 + schedule * 4.0 * fraction**6)
-    # Beyond the budget: continuous with the branch above at fraction==1
-    # (which evaluates to 1 + 4*schedule there), then steepens the
-    # overage slope with schedule so an actual violation must shrink
-    # back to zero as the schedule hardens, rather than being tradeable
-    # away by a cheap enough alternative.
-    at_budget = 1.0 + 4.0 * schedule
-    return at_budget + (fraction - 1.0) * (10.0 + 90.0 * schedule)
+        return (fraction**2, 4.0 * fraction**8)
+    return (1.0 + (fraction - 1.0) * 10.0, 4.0 + (fraction - 1.0) * 90.0)
 
 
 def money_total(terms: list[TermValue]) -> float:
@@ -388,21 +426,18 @@ def margin_penalties(
     return out
 
 
-def aggregate_margin(penalties: list[float], *, p_norm: float | None = None) -> float:
-    """**Max, not sum** — the whole point of splitting the two families
-    (module docstring). ``p_norm`` swaps in a smoother p-norm soft-max
-    (still dominated by the largest term as ``p`` grows) for callers that
-    want a gradient-friendlier signal; ``None`` (the default) is the
-    exact max, which is what the "1 net at 99% vs. 500 at 5%" case in the
-    tests pins down explicitly."""
-    if not penalties:
-        return 0.0
-    if p_norm is None:
-        return max(penalties)
-    m = max(penalties)
-    if m <= 0.0:
-        return 0.0
-    return m * (sum((p / m) ** p_norm for p in penalties)) ** (1.0 / p_norm)
+def aggregate_margin(penalties: list[float]) -> float:
+    """**Sum** — every graded violation is priced (gr689737, approved
+    2026-11-22). The margin family used to max here, which made every
+    non-maximal constraint contribute zero and let any cheap MONEY term
+    overrule a real graded violation as a free tie-breaker. Summing is
+    the same aggregate :func:`money_total` already uses, and — unlike a
+    max or a soft p-norm — it is per-move decomposable, which is what the
+    incremental optimizer's risk running-totals require. The one-net-at-
+    99% protection the max used to provide rides on
+    :func:`hardened_penalty`'s convexity instead (see the module
+    docstring's two-families paragraph)."""
+    return sum(penalties)
 
 
 def evaluate_cost(
@@ -410,14 +445,14 @@ def evaluate_cost(
 ) -> CostResult:
     """The ONE cost function. Evaluates every registered term's estimator
     at ``level`` (fidelity only — see module docstring), sums the money
-    family, max-aggregates the criticality-weighted margin family, and
+    family, sum-aggregates the criticality-weighted margin family, and
     combines them through the single ``risk_to_money`` dial."""
     terms: list[TermValue] = []
     for spec in TERMS:
         terms.extend(spec.estimate(ir, level, config))
     money = money_total(terms)
     penalties = margin_penalties(terms, _BY_NAME, config.schedule)
-    risk = aggregate_margin(penalties, p_norm=config.p_norm)
+    risk = aggregate_margin(penalties)
     return CostResult(
         total=money + config.risk_to_money * risk, money=money, risk=risk, terms=terms
     )
@@ -534,7 +569,8 @@ def _via_count(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     # Zero at L0 is a genuine (not swallowed-signal) lower bound: the via
     # concept doesn't exist before L1, and 0 is the trivially correct
     # minimum for a count-based MONEY term (unlike a MARGIN term, a 0
-    # here can't hide risk from a max-aggregation — it just doesn't add
+    # here can't hide risk the way an undefined MARGIN value could back
+    # when the two families aggregated differently — it just doesn't add
     # to a sum yet, same as any other not-yet-decided money term).
     #
     # **Derived from segment layer assignments, never `ir.n_vias`.**
@@ -621,9 +657,9 @@ def routing_area_term(
 
     **Zero below L3 is a bound, not a measurement.** No instance has a
     position yet, so no area is determined; 0 is the admissible LOWER
-    bound for a MONEY term (a sum, so a not-yet-known 0 cannot mask risk
-    the way a 0 in a MARGIN max would — the same argument
-    :func:`_via_count` makes for its L0 zero). ``is_bound`` says so.
+    bound for a MONEY term (a sum, so a not-yet-known 0 just doesn't add
+    yet — the same argument :func:`_via_count` makes for its L0 zero).
+    ``is_bound`` says so.
     An unplaced endpoint at >= L3 gets the same treatment rather than
     being read as the origin, which would price a phantom run from (0, 0)
     — the "undefined != zero" rule this module follows throughout.
@@ -674,8 +710,8 @@ def gap_capacity_term(
 
     **The flagship undefined-!=-zero example.** Before L4, no gap width
     is known at all — reporting a fraction of 0 (as if the gap were
-    infinitely wide) would erase this term from the margin max whenever
-    something else is nonzero, exactly the failure mode the backlog
+    infinitely wide) would erase this term from the margin sum whenever
+    it applies, exactly the failure mode the backlog
     warns about. Instead the coarse fraction assumes a generously wide
     (but finite, configured) gap: ``pitch / assumed_max_gap`` is small
     but never zero, and is provably <= the true fraction as long as the
@@ -1743,11 +1779,12 @@ _ALIGNMENT_JUSTIFICATION = (
     "ragged placement assembles/inspects worse -- pick-and-place programming and "
     "AOI/visual inspection both read faster off a row or column of parts whose "
     "centres line up than off the same parts scattered by a fraction of a "
-    "millimetre; the first COSMETIC pressure riding the SUMMED MONEY family "
-    "rather than the MAX-aggregated MARGIN one (docs/backlog/pcb-global-codesign-"
-    "north-star.md invariant 3: many weak aesthetic pressures must never contend "
-    "with a real manufacturing risk for the margin max, or a single loud cosmetic "
-    "term could mask a catastrophic one -- see this module's own docstring)"
+    "millimetre; the first COSMETIC pressure riding the MONEY family (USD) "
+    "rather than the MARGIN one (fraction-of-own-budget -- docs/backlog/pcb-"
+    "global-codesign-north-star.md invariant 3: a weak aesthetic pressure must "
+    "never contend with real manufacturing risk on the latter's own scale, or "
+    "its fraction would be measured against a physical budget it has no claim "
+    "on -- see this module's own docstring)"
 )
 
 

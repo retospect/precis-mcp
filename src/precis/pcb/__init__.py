@@ -74,7 +74,9 @@ Map, in pipeline order (design spec ``pcb-guided-place-route`` retired
   (IR↔DB glue for the ``pcb_place`` job).
   A fully placed, legal input stays the incumbent: when the placed
   result's T1+D14 wirelength lands >2% worse than the input's,
-  ``optimize`` restores the input poses (gr504889).
+  ``optimize`` restores the input poses (gr504889). It checks the saved
+  poses for courtyard overlap before restoring them because edge snapping
+  can clear an input overlap before the anneal (gr689737).
 * **Copper** — :mod:`~precis.pcb.realize` (pad geometry, the
   stored-copper model, the gerber-model assembly — the router that drew
   new copper is deleted),

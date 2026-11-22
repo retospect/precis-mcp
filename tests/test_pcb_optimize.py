@@ -1234,11 +1234,17 @@ def test_soft_pin_taz15_headers_clear_the_courtyard_overlap():
 
     assert overlap_mm() == pytest.approx(0.275, abs=1e-3)
 
-    # The frozen arm stays overlapped forever — the fixture's premise.
+    # The frozen arm can no longer ride through the anneal: an overlap no
+    # generated move can produce is rejected at the door (gr689737's
+    # incumbent-legality check). Before that check this optimize()
+    # completed and left J1~J2 overlapped forever — the fixture's old
+    # premise.
     frozen = from_graph(
         _taz15_headers_graph(pin=None, fixed=True), stackup=LEGACY_V1_STACKUP
     )
-    optimize(frozen, OptimizeConfig(seed=0, iters=200))
+    with pytest.raises(ValueError, match="J1~J2"):
+        optimize(frozen, OptimizeConfig(seed=0, iters=200))
+    # The poses are untouched — the refusal happens before the anneal.
     frozen_engine = OptimizeEngine(frozen, OptimizeConfig(seed=0))
     assert not frozen_engine._placement_is_legal(
         [(0, float(frozen.inst_x[0]), float(frozen.inst_y[0]))]
@@ -1494,11 +1500,6 @@ def test_region_cells_cap_long_lists_with_a_count():
     assert _capped_list(keys) == "N0,N1,N2,N3,N4,N5,N6,N7,+1492 more"
     assert _capped_list(("A", "B")) == "A,B"
     assert _capped_list(()) == ""
-
-
-def test_optimize_config_rejects_soft_p_norm():
-    with pytest.raises(ValueError):
-        OptimizeConfig(cost=CostConfig(p_norm=2.0))
 
 
 # ── author-supplied placement measures drive the PRODUCTION anneal ──────
@@ -3017,8 +3018,8 @@ def test_a_part_seeded_on_an_authored_via_is_walked_off_it_and_a_locked_one_is_n
     """Legality gates proposals, never the incumbent, so a part SEEDED on
     a via needs a slope off it: the graded entry is non-zero there and
     the anneal leaves. A locked part gets no entry at all — a generator's
-    own array sits beside its own vias by design, and a constant in the
-    margin MAX would mask every other term."""
+    own array sits beside its own vias by design, and a constant entry in
+    the margin SUM would be priced into every move's delta."""
     ir = _via_ir(lands=_TWO_LANDS, via_xy=(3.0, 0.0))
     engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
     assert any(tv.region == "U0~fixed_via" for tv in engine._margin.values())
@@ -3064,6 +3065,109 @@ def test_a_legal_start_is_not_legalized():
     engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
     assert engine.legalize_start() == ()
     assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (0.0, 0.0)
+
+
+# ── incumbent legality (gr689737): the anneal refuses to start overlapped ──
+
+
+def test_incumbent_conflicts_names_overlapping_pairs_and_exempts_sides():
+    """The check is the instance-vs-instance half of `_placement_is_legal`
+    applied to the current poses: it sees the authored overlap, honors the
+    opposite-side exemption, and ignores non-overlapping neighbours."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 0.4, "y": 0.0},  # overlapping U0
+            {"refdes": "U2", "x": 30.0, "y": 30.0},  # far away, same side
+            {"refdes": "U3", "x": 0.4, "y": 0.0, "layer": "bottom"},  # opposite side
+        ],
+        "nets": [],
+        "unconnected": [
+            {"refdes": r, "pin": str(p)}
+            for r in ("U0", "U1", "U2", "U3")
+            for p in range(1, 3)
+        ],
+    }
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert engine.incumbent_conflicts() == ["U0~U1"]
+
+
+def test_optimize_refuses_to_start_from_an_overlapping_incumbent():
+    """gr689737: legality gates every generated move but never used to
+    gate the incumbent, so an authored overlap (fixed parts — no move can
+    ever repair it) rode through the anneal unchallenged. optimize() now
+    raises, naming the pair, before the anneal touches a pose."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0, "fixed": "both"},
+            {"refdes": "U1", "x": 0.4, "y": 0.0, "fixed": "both"},
+        ],
+        "nets": [],
+        "unconnected": [
+            {"refdes": r, "pin": str(p)} for r in ("U0", "U1") for p in range(1, 3)
+        ],
+    }
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
+    poses_before = (
+        float(ir.inst_x[0]),
+        float(ir.inst_y[0]),
+        float(ir.inst_x[1]),
+        float(ir.inst_y[1]),
+    )
+    with pytest.raises(ValueError, match="U0~U1"):
+        optimize(ir, OptimizeConfig(seed=3, iters=50))
+    assert (
+        float(ir.inst_x[0]),
+        float(ir.inst_y[0]),
+        float(ir.inst_x[1]),
+        float(ir.inst_y[1]),
+    ) == poses_before
+
+
+def test_wirelength_fallback_cannot_restore_overlap_cleared_by_edge_snap() -> None:
+    graph = {
+        "instances": [
+            {"refdes": "J1", "x": 15.0, "y": 20.0, "edge_mate": {"face": "E"}},
+            {"refdes": "U1", "x": 15.4, "y": 20.0, "fixed": "both"},
+        ],
+        "nets": [
+            {
+                "name": "signal",
+                "members": [{"refdes": refdes, "pin": "1"} for refdes in ("J1", "U1")],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
+    ir.outline = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
+    config = OptimizeConfig(seed=3, iters=0)
+    assert OptimizeEngine(ir, config).incumbent_conflicts() == ["J1~U1"]
+
+    result = optimize(ir, config)
+
+    assert result.legalized == ()
+    assert OptimizeEngine(ir, config).incumbent_conflicts() == []
+    assert float(ir.inst_x[0]) < 5.0
+
+
+def test_optimize_hold_path_keeps_a_stored_overlapping_placement():
+    """The route-only hold run must not start failing on a placement a
+    previous job committed — the incumbent check is the placer's gate,
+    and hold_poses skips it (and the anneal) by design."""
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0, "fixed": "both"},
+            {"refdes": "U1", "x": 0.4, "y": 0.0, "fixed": "both"},
+        ],
+        "nets": [],
+        "unconnected": [
+            {"refdes": r, "pin": str(p)} for r in ("U0", "U1") for p in range(1, 3)
+        ],
+    }
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
+    result = optimize(ir, OptimizeConfig(seed=3, iters=0, hold_poses=True))
+    assert (float(ir.inst_x[1]), float(ir.inst_y[1])) == (0.4, 0.0)
+    assert result.legalized == ()
 
 
 def _chamfered_corner_ir():
@@ -3306,10 +3410,10 @@ def test_build_ir_hydrates_authored_vias_and_real_lands_from_the_footprint():
     ]
 
 
-# ── risk() reads per-class maxima, not a full scan ──────────────────────
+# ── risk() reads per-weight running sums, not a full scan ────────────────
 
 
-def test_margin_table_risk_equals_the_full_scan_through_sets_pops_and_compaction():
+def test_margin_table_risk_equals_the_full_scan_through_sets_pops():
     from precis.pcb.cost import (
         _BY_NAME,
         _CRITICALITY_WEIGHT,
@@ -3328,21 +3432,18 @@ def test_margin_table_risk_equals_the_full_scan_through_sets_pops_and_compaction
         else:
             raw = rng.choice([0.0, rng.random(), 1.0 + rng.random()])
             table[key] = TermValue(key[0], _BY_NAME[key[0]].family, "r", raw, "")
-        expected = max(
-            (
+        # the running-total sum must match a from-scratch penalty sum at
+        # ANY schedule, not just the one the table was built under
+        for schedule in (0.0, 0.5, 1.0):
+            expected = sum(
                 _CRITICALITY_WEIGHT[_BY_NAME[n].criticality]
-                * hardened_penalty(tv.raw, 0.5)
+                * hardened_penalty(tv.raw, schedule)
                 for (n, _k), tv in table.items()
-            ),
-            default=0.0,
-        )
-        got = max(
-            (w * hardened_penalty(raw, 0.5) for w, raw in table.max_raw_by_weight()),
-            default=0.0,
-        )
-        assert got == expected, step  # exact: the same float, not approx
-    # 3000 pushes over at most 48 live keys must have compacted the heaps.
-    assert sum(len(h) for h in table._heaps.values()) <= 4 * len(table) + 64 + 1
+            )
+            assert table.risk_sum(schedule) == pytest.approx(expected), (
+                step,
+                schedule,
+            )
     with pytest.raises(TypeError):
         del table[next(iter(table))]
 

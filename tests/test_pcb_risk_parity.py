@@ -1,7 +1,8 @@
-"""Parity: the annealer's ``risk()`` aggregation (per-name peak raw, one
-penalty eval per term name) must equal the original per-entry max, and a
-fixed-seed full anneal must be identical with either implementation —
-same accepted-move sequence, same final placement, same total."""
+"""Parity: the annealer's incremental ``risk()`` (per-criticality-weight
+running totals of ``hardened_penalty``'s schedule-affine coefficients)
+must agree within an absolute tolerance with a from-scratch sum over
+every cached entry. Repeated fixed-seed anneals driven by incremental
+risk must produce identical moves, final positions, and total cost."""
 
 from __future__ import annotations
 
@@ -16,11 +17,11 @@ from precis.pcb.optimize import OptimizeConfig, OptimizeEngine, seed_placement
 from tests.test_pcb_optimize import _board
 
 
-def _old_risk(self: OptimizeEngine) -> float:
-    """The pre-optimisation ``risk()``, copied verbatim."""
-    if not self._margin:
-        return 0.0
-    return max(
+def _scanned_risk(self: OptimizeEngine) -> float:
+    """The from-scratch sum over every cached entry, recomputed at the
+    current schedule — the reference the incremental running totals must
+    match."""
+    return sum(
         opt._CRITICALITY_WEIGHT[opt._BY_NAME[name].criticality]
         * opt.hardened_penalty(tv.raw, self.schedule)
         for (name, _key), tv in self._margin.items()
@@ -41,13 +42,20 @@ def _run(n: int, iters: int, seed: int):
 
 
 @pytest.mark.parametrize("n,iters,seed", [(10, 150, 1), (24, 200, 7)])
-def test_fixed_seed_anneal_identical_to_reference_risk(
+def test_fixed_seed_incremental_anneal_is_deterministic_and_matches_scanned_risk(
     monkeypatch: pytest.MonkeyPatch, n: int, iters: int, seed: int
 ) -> None:
-    new = _run(n, iters, seed)
-    monkeypatch.setattr(OptimizeEngine, "risk", _old_risk)
-    old = _run(n, iters, seed)
-    assert new == old  # exact: total, every position, every move + delta
+    real_risk = OptimizeEngine.risk
+
+    def _checked_risk(self: OptimizeEngine) -> float:
+        incremental = real_risk(self)
+        assert incremental == pytest.approx(_scanned_risk(self), abs=1e-9, rel=0)
+        return incremental
+
+    monkeypatch.setattr(OptimizeEngine, "risk", _checked_risk)
+    total, pos, moves = _run(n, iters, seed)
+    total2, pos2, moves2 = _run(n, iters, seed)
+    assert (total, pos, moves) == (total2, pos2, moves2)
 
 
 def test_risk_matches_reference_at_varied_schedules() -> None:
@@ -57,4 +65,4 @@ def test_risk_matches_reference_at_varied_schedules() -> None:
     engine.anneal(random.Random(3))
     for sched in (0.0, 0.25, 0.5, 0.9, 1.0):
         engine.schedule = sched
-        assert engine.risk() == _old_risk(engine)
+        assert engine.risk() == pytest.approx(_scanned_risk(engine), abs=1e-9, rel=0)

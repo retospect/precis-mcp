@@ -136,10 +136,15 @@ disqualified regardless of cost. This module never calls
   at 0.5 mm, so a ``hard`` align's last sub-step residual is closed by
   :meth:`OptimizeEngine.snap_hard_aligns`, a deterministic post-anneal pass.
 
-**Not claimed local**: :func:`precis.pcb.cost.aggregate_margin`'s max is a
-linear scan over cached per-item penalties, O(cached entries) not
-O(touched) — fine at this slice's scale (hundreds of entries); a
-lazy-deletion max-heap is the production-scale fix, not built.
+**Aggregation is maintained, not scanned**: the margin family's sum
+(:func:`precis.pcb.cost.aggregate_margin`) rides on per-criticality-weight
+running totals inside :class:`_MarginTable` — :meth:`OptimizeEngine.risk`
+is O(1) at any schedule because :func:`~precis.pcb.cost.hardened_penalty`
+is affine in its schedule (its own docstring's decomposition contract),
+so each cached entry contributes an ``(a, b)`` pair the table sums
+incrementally. A full O(cached entries) scan per annealing step — the
+pre-heap state — measured ~118 s of a 2000-iteration route on a real
+board; neither it nor a heap is needed for a sum.
 
 **Constraint hardening is the schedule**: this engine drives
 :func:`precis.pcb.cost.hardened_penalty`'s ``schedule`` linearly 0
@@ -178,7 +183,6 @@ design note is ``docs/backlog/threads/pcb-platform.md``.
 
 from __future__ import annotations
 
-import heapq
 import math
 import random
 from collections.abc import Callable, Sequence
@@ -200,6 +204,7 @@ from precis.pcb.cost import (
     CostConfig,
     Family,
     TermValue,
+    _penalty_affine,
     alignment_pair_term,
     board_area_term,
     board_edge_clearance_term,
@@ -717,11 +722,12 @@ def _total_chord_length_mm(ir: PcbIR) -> float:
 class OptimizeConfig:
     """Every tunable this module needs. ``cost`` is passed straight to the
     per-item ``cost.py`` evaluators; its own ``schedule`` field is ignored
-    here — this engine drives hardening itself (see module docstring) —
-    and its ``p_norm`` must stay ``None`` (exact max), since a soft p-norm
-    is not decomposable into a bounded per-move delta the way a plain max
-    is (a p-norm changes with EVERY cached value's relative weight, not
-    just the peak)."""
+    here — this engine drives hardening itself (see module docstring). The
+    margin aggregate is a sum, maintained incrementally as per-criticality-
+    weight running totals of ``hardened_penalty``'s schedule-affine
+    coefficients (see :class:`_MarginTable`), so no aggregate dial exists
+    here at all — the old ``p_norm`` soft-max left with the max it
+    modified (gr689737)."""
 
     cost: CostConfig = field(default_factory=CostConfig)
     iters: int = 2000
@@ -797,14 +803,6 @@ class OptimizeConfig:
     #: dense board). ``False`` (the default) is bit-for-bit the run the
     #: anneal would otherwise produce.
     support_groups: bool = False
-
-    def __post_init__(self) -> None:
-        if self.cost.p_norm is not None:
-            raise ValueError(
-                "OptimizeConfig.cost.p_norm must be None (exact max) — a "
-                "soft p-norm margin aggregate is not locally decomposable "
-                "(see module docstring)"
-            )
 
 
 # ── digest shapes ────────────────────────────────────────────────────────
@@ -2049,46 +2047,55 @@ MarginKey = int | tuple[int, int] | str
 
 
 class _MarginTable(dict[tuple[str, MarginKey], TermValue]):
-    """The engine's margin cache, which also keeps the largest ``raw`` per
-    criticality weight so :meth:`OptimizeEngine.risk` need not scan it.
+    """The engine's margin cache, which also keeps per-criticality-weight
+    running totals of the schedule-affine penalty coefficients so
+    :meth:`OptimizeEngine.risk` need not scan it.
 
-    ``risk()`` is a MAX over ``weight * hardened_penalty(raw, schedule)``,
-    and the penalty is non-decreasing in ``raw`` (its own docstring's
-    admissibility property), so each weight class's maximum is its largest
-    ``raw`` pushed through the penalty once — the same float the full scan
-    picks, bit for bit. The scan ran on every annealing step over every
-    entry: on a real board it was ~118 s of a 2000-iteration route.
+    ``risk()`` is a SUM over ``weight * hardened_penalty(raw, schedule)``
+    (gr689737: the margin family aggregates by sum, like money), and
+    ``hardened_penalty`` is affine in its schedule — ``a + schedule * b``
+    per raw fraction, via :func:`precis.pcb.cost._penalty_affine`, itself
+    the same formula the direct cost path evaluates. So each weight class
+    needs only two running totals, ``Σa`` and ``Σb``, updated on every
+    set/pop; risk at any schedule is ``Σ weight * (Σa + schedule * Σb)``.
+    This replaces the one-max-heap-per-weight lazy-deletion machinery the
+    max aggregate needed — a sum has no stale-peak problem at all. The
+    scan ran on every annealing step over every entry before the heaps:
+    on a real board it was ~118 s of a 2000-iteration route.
 
-    One max-heap per weight with lazy deletion: a set pushes, a pop or
-    overwrite leaves a stale heap entry that :meth:`max_raw_by_weight`
-    discards when it surfaces (stale = its sequence number is no longer the
-    key's current one). Only ``__setitem__`` and ``pop`` mutate the cache in
-    the engine; every other dict mutator is refused so the heaps cannot go
-    out of step silently."""
+    Only ``__setitem__`` and ``pop`` mutate the cache in
+    the engine; every other dict mutator is refused so the totals cannot
+    go out of step silently."""
 
     def __init__(self) -> None:
         super().__init__()
-        self._seq: dict[tuple[str, MarginKey], int] = {}
-        self._heaps: dict[float, list[tuple[float, int, tuple[str, MarginKey]]]] = {}
-        self._next = 0
+        self._ab: dict[float, list[float]] = {}
+
+    @staticmethod
+    def _weight(key: tuple[str, MarginKey]) -> float:
+        return _CRITICALITY_WEIGHT[_BY_NAME[key[0]].criticality]
+
+    def _add(self, key: tuple[str, MarginKey], raw: float, sign: float) -> None:
+        a, b = _penalty_affine(raw)
+        totals = self._ab.setdefault(self._weight(key), [0.0, 0.0])
+        totals[0] += sign * a
+        totals[1] += sign * b
 
     def __setitem__(self, key: tuple[str, MarginKey], tv: TermValue) -> None:
+        old = self.get(key)
+        if old is not None:
+            self._add(key, old.raw, -1.0)
         super().__setitem__(key, tv)
-        self._next += 1
-        self._seq[key] = self._next
-        heap = self._heaps.setdefault(
-            _CRITICALITY_WEIGHT[_BY_NAME[key[0]].criticality], []
-        )
-        heapq.heappush(heap, (-tv.raw, self._next, key))
-        if len(heap) > 4 * len(self) + 64:
-            self._compact()
+        self._add(key, tv.raw, 1.0)
 
     def pop(self, key: Any, *default: Any) -> Any:
-        self._seq.pop(key, None)
+        old = self.get(key)
+        if old is not None:
+            self._add(key, old.raw, -1.0)
         return super().pop(key, *default)
 
     def __delitem__(self, key: tuple[str, MarginKey]) -> None:
-        raise TypeError("_MarginTable: use pop() so the risk heaps stay in step")
+        raise TypeError("_MarginTable: use pop() so the risk totals stay in step")
 
     def clear(self) -> None:
         raise TypeError("_MarginTable: not clearable — build a new one")
@@ -2100,26 +2107,18 @@ class _MarginTable(dict[tuple[str, MarginKey], TermValue]):
         raise TypeError("_MarginTable: assign keys one at a time")
 
     def popitem(self) -> tuple[tuple[str, MarginKey], TermValue]:
-        raise TypeError("_MarginTable: use pop() so the risk heaps stay in step")
+        raise TypeError("_MarginTable: use pop() so the risk totals stay in step")
 
-    def _compact(self) -> None:
-        heaps: dict[float, list[tuple[float, int, tuple[str, MarginKey]]]] = {}
-        for key, tv in self.items():
-            weight = _CRITICALITY_WEIGHT[_BY_NAME[key[0]].criticality]
-            heaps.setdefault(weight, []).append((-tv.raw, self._seq[key], key))
-        for heap in heaps.values():
-            heapq.heapify(heap)
-        self._heaps = heaps
-
-    def max_raw_by_weight(self) -> list[tuple[float, float]]:
-        """``(weight, largest raw)`` for every weight with a live entry."""
-        out: list[tuple[float, float]] = []
-        for weight, heap in self._heaps.items():
-            while heap and self._seq.get(heap[0][2]) != heap[0][1]:
-                heapq.heappop(heap)
-            if heap:
-                out.append((weight, -heap[0][0]))
-        return out
+    def risk_sum(self, schedule: float) -> float:
+        """The margin aggregate — ``Σ weight * (Σa + schedule * Σb)`` over
+        every live entry's weight class. Equals
+        :func:`precis.pcb.cost.aggregate_margin` over
+        :func:`~precis.pcb.cost.margin_penalties` of the same entries (the
+        delta-correctness tests pin the two to 1e-9); the schedule is
+        clamped exactly where :func:`~precis.pcb.cost.hardened_penalty`
+        clamps it."""
+        s = max(0.0, min(1.0, schedule))
+        return sum(w * (ab[0] + s * ab[1]) for w, ab in self._ab.items())
 
 
 def _pair_key(a: int, b: int) -> tuple[int, int]:
@@ -2259,7 +2258,7 @@ _SEED_EPSILON_MM = 1e-3
 
 class OptimizeEngine:
     """Wraps a :class:`PcbIR`, maintains an incrementally-updated cost
-    decomposition (money sum + margin max, per term/region), and proposes
+    decomposition (money sum + margin sum, per term/region), and proposes
     /accepts/rejects :class:`Move`\\ s via simulated annealing. See the
     module docstring for exactly which terms are touched-only vs. the one
     honestly-whole-board exception (``board_area``).
@@ -4284,7 +4283,14 @@ class OptimizeEngine:
         The search walks square rings of :data:`_LEGALIZE_STEP_MM` around
         the current pose, nearest ring first, keeping each member's own
         rotation. A body with nowhere legal to go is left where it is,
-        and ``on_fixed_vias`` and DRC still report it."""
+        and ``on_fixed_vias`` and DRC still report it.
+
+        This pass repairs only bodies it MAY move; it never touches a
+        fixed one. What legalization cannot repair is caught one level up:
+        :func:`optimize` runs :meth:`incumbent_conflicts` after this pass
+        and refuses to anneal from an overlapping incumbent (gr689737 —
+        legality gated proposals but never the incumbent, so an authored
+        overlap used to ride through the anneal unchallenged)."""
         ir = self.ir
         moved: list[str] = []
         seen: set[int] = set()
@@ -4314,6 +4320,62 @@ class OptimizeEngine:
             self.apply_move(Move(MoveKind.TRANSLATE, members, old_pose, new_pose))
             moved.extend(str(ir.instance_refdes[m]) for m in members)
         return tuple(moved)
+
+    def incumbent_conflicts(
+        self, poses: Sequence[tuple[float, float, float]] | None = None
+    ) -> list[str]:
+        """``"R1~R2"`` for every co-located instance pair at the CURRENT
+        poses — the instance-vs-instance half of
+        :meth:`_placement_is_legal`, applied to the incumbent itself
+        (gr689737). The anneal gates every generated move but used to
+        accept its own starting placement unconditionally, so an authored
+        or seeded overlap (unreachable by any legal move, and unrepairable
+        when either part is fixed) was never rejected; with the margin
+        family's max aggregation a cheap money term could even prefer it.
+        The sum aggregate prices the overlap, and this check refuses to
+        run from it: :func:`optimize` raises when this list is non-empty.
+
+        Same rule as the legality test, nothing re-declared: opposite-side
+        exemption (:meth:`_sides_clear`, through-hole parts included),
+        per-instance keep-out broad phase, then the exact raw-union polygon
+        intersection (:data:`_EXACT_OVERLAP_AREA_MM2`). Scoped to
+        instance-vs-instance overlap deliberately — the via-gap, hole and
+        bounds rules have legitimate authored exceptions (a generator's
+        own array beside its fixed vias, taz zip-tie combs), while two
+        parts occupying the same courtyard has none. Pass saved poses to
+        check a wirelength fallback before restoring it, using the sides
+        that the fallback will retain."""
+        ir = self.ir
+        if poses is None:
+            poses = [
+                (float(x), float(y), float(rot))
+                for x, y, rot in zip(ir.inst_x, ir.inst_y, ir.inst_rot, strict=True)
+            ]
+        keepout = self._keepout_r
+        conflicts: list[str] = []
+        n = ir.n_instances
+        for a in range(n):
+            xa, ya, ra = poses[a]
+            if math.isnan(xa) or math.isnan(ya):
+                continue
+            for b in range(a + 1, n):
+                xb, yb, rb = poses[b]
+                if math.isnan(xb) or math.isnan(yb):
+                    continue
+                if self._sides_clear(a, b):
+                    continue
+                sep = float(keepout[a]) + float(keepout[b])
+                dx, dy = xa - xb, ya - yb
+                if dx * dx + dy * dy >= sep * sep:
+                    continue
+                if (
+                    self._world_courtyard_exact(a, xa, ya, ra)
+                    .intersection(self._world_courtyard_exact(b, xb, yb, rb))
+                    .area
+                    > _EXACT_OVERLAP_AREA_MM2
+                ):
+                    conflicts.append(f"{ir.instance_refdes[a]}~{ir.instance_refdes[b]}")
+        return conflicts
 
     def settle_into_outline(self) -> tuple[str, ...]:
         """Move every movable rigid body whose courtyard overhangs the
@@ -4677,15 +4739,10 @@ class OptimizeEngine:
         )
 
     def risk(self) -> float:
-        # One penalty per criticality weight, not per entry: see
-        # `_MarginTable` for why this equals the max over every entry.
-        return max(
-            (
-                weight * hardened_penalty(raw, self.schedule)
-                for weight, raw in self._margin.max_raw_by_weight()
-            ),
-            default=0.0,
-        )
+        # The margin sum maintained incrementally per criticality weight —
+        # see `_MarginTable` for why this equals
+        # cost.aggregate_margin over margin_penalties of every entry.
+        return self._margin.risk_sum(self.schedule)
 
     def total(self) -> float:
         return self.money() + self.config.cost.risk_to_money * self.risk()
@@ -5603,6 +5660,22 @@ def optimize(
         snap_to_edges(ir)
     engine = OptimizeEngine(ir, config)
     legalized = () if hold else engine.legalize_start()
+    # An incumbent that still overlaps after legalization is unrepairable
+    # (a fixed part is involved, or no legal pose exists): the anneal
+    # would start from a categorical violation no generated move could
+    # ever produce, so reject the run instead (gr689737). The route-only
+    # hold path keeps the stored placement as-is — committing it was a
+    # earlier job's decision, not this run's.
+    if not hold:
+        conflicts = engine.incumbent_conflicts()
+        if conflicts:
+            raise ValueError(
+                "incumbent placement overlaps: "
+                + ", ".join(conflicts)
+                + " — no generated move can produce an overlap, so the "
+                "anneal cannot start from one; move the parts apart (or "
+                "reseed) and retry"
+            )
     # An input repaired off an illegal pose is not a viable incumbent,
     # irrespective of its shorter ratsnest.
     if legalized:
@@ -5658,8 +5731,10 @@ def optimize(
         }
     if input_wire_mm is not None:
         placed_wire_mm = _total_chord_length_mm(ir)
-        if placed_wire_mm > input_wire_mm * (1.0 + _INPUT_WIRELENGTH_WORSEN):
-            assert input_poses is not None
+        assert input_poses is not None
+        if placed_wire_mm > input_wire_mm * (
+            1.0 + _INPUT_WIRELENGTH_WORSEN
+        ) and not engine.incumbent_conflicts(input_poses):
             changed = tuple(
                 i
                 for i, old in enumerate(input_poses)
