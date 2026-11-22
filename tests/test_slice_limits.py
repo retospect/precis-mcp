@@ -20,6 +20,10 @@ import pytest
 from precis.workers.job_types import _slice_limits as sl
 from precis.workers.job_types import run_slice
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only rlimits, systemd scopes"
+)
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
