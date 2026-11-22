@@ -11,7 +11,7 @@ What this module does NOT do:
 * Run ``pdflatex`` (that's Layer 3 / the workspace-level compile
   guard).
 * Edit prose or heading text (the LLM owns content).
-* Guess at bib-key resolutions (that's Layer 2's job).
+* Guess at bib-key resolutions (the author's job).
 
 Return shape from :func:`apply_mechanical_fixes`::
 
@@ -165,8 +165,8 @@ def has_semantic_risk(text: str) -> bool:
     """Quick check whether the input has uncloseable issues Layer 1 can't fix.
 
     Returns True when there's evidence the file has structural problems
-    (unbalanced environments, malformed cite keys) that need either
-    Layer 2 LLM-fix or an author re-tick. Layer 1 doesn't fix these
+    (unbalanced environments, malformed cite keys) that need an
+    author re-tick. Layer 1 doesn't fix these
     but the caller may want to short-circuit and return a hint without
     attempting to write.
     """

@@ -51,7 +51,6 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_BACKFILL_CITATION_RECALL` | Citation-recall backfill | `1` (on) | |
 | `PRECIS_FETCH_MARKUP` | Markup-first fetch leg | `0` | Ships dark; flipping is gated on the PDF-race decision — gr690306 (gr690306). |
 | `PRECIS_PATCH_PDFS` | Patch PDFs on ingest | `1` (on) | |
-| `PRECIS_LAYER2_FIXER` | Layer-2 plaintext fixer | off | Kept dark deliberately — fate: gr693811 (gr693811). |
 | `PRECIS_DIAGRAM_AGENTIC` | Agentic diagram-propose path | off | Explicit override; unset ⇒ auto (agentic when an MCP config is present). Activation: gr690306 (gr690306). |
 | `PRECIS_PYTHON_ALLOW_EXEC` | Allow `python` kind to exec code | off (refuses) | Keep off unless a sandbox is guaranteed. |
 
@@ -131,7 +130,7 @@ code change; env overrides exist for per-host divergence.
 | `PRECIS_IDEA_FEED_ARXIV_CATEGORIES` | Comma-separated arXiv listing-RSS categories the daily `idea_feed` poll fetches (`idea_feed.arxiv_categories`) | `cs.AI,cs.CL,cs.IR,cs.LG,cond-mat.mes-hall,physics.chem-ph` | The picked source set matching the roadmap pillars (gr543714 spec). One feed GET per category per lit fire through the shared `arxiv` limiter row; `rss.arxiv.org/rss/<cat>`. |
 | `PRECIS_LOCAL_SLOT_WAIT_S` | Bounded wait for a free local serving slot before `local_serving.acquire` returns `paused` (which the router turns into the next-rung/cloud overflow) | `10` | Each attempt also spills to every other LAN-routable `served_by` host for the model when the local row is full. `0` restores the pre-2026-10-14 immediate pause. |
 | `PRECIS_MODEL_OPUS` | FRONTIER model id | `claude-opus-5-5` | |
-| `PRECIS_MODEL_SONNET` | BIG model id | `claude-sonnet-5-5` | Minor tier (`tex_llm_fix` + `job` retry only). |
+| `PRECIS_MODEL_SONNET` | BIG model id | `claude-sonnet-5-5` | |
 | `PRECIS_MODEL_HAIKU` | MEDIUM model id | `claude-haiku-5-5` | |
 | `PRECIS_LOCAL_BIG_MODEL` | ~~LOCAL_BIG tier alias~~ **RETIRED** | `qwen-heavy` | ADR 0066 Phase C deleted the `LOCAL_BIG` tier and its `_TIER_MODEL` row — nothing in `src/` reads this var anymore. Safe to drop from any host env. |
 | `PRECIS_SUMMARIZE_MODEL` | Summarize LLM alias | `summarizer` | |

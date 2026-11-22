@@ -38,7 +38,7 @@ Lazy discovery avoids cycles when handle-code plugins import mention consumers.
   edits), sentence/keyword/segmentation helpers (``sentences``, ``rake``,
   ``semantic_keywords``, ``segmentation``, ``abbreviations``), the LaTeX
   hardening/fix layers (``tex_hardening``, ``tex_mechanical_fix``,
-  ``tex_llm_fix``, ``compile_guard``), and the draft helpers (``draft_markup``,
+  ``compile_guard``), and the draft helpers (``draft_markup``,
   ``draft_regex``, ``house_style``, ``wordcount``).
 - *Identity and addressing.* :mod:`~precis.utils.handle_registry` (the single
   source of universal handles), :mod:`~precis.utils.handles` (opaque draft

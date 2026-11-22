@@ -13,7 +13,12 @@ This file only covers the differences introduced by the subclass:
 
 from __future__ import annotations
 
+import importlib.util
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1279,3 +1284,66 @@ def test_toc_still_expands_live_child(handler: TexHandler, tex_root: Path) -> No
     body = handler.get(id="main", view="toc").body
     assert "AliveChild" in body
     assert "(deleted)" not in body
+
+
+# ── the Layer-2 LLM fixer is gone (gr693811) ─────────────────────────
+
+#: The retired opt-in flag. Assembled from two halves so a search for the
+#: name finds no reader in the tree; this test is the only place it is set.
+_RETIRED_FIXER_FLAG = "PRECIS_LAYER2" + "_FIXER"
+
+
+def test_llm_fixer_module_is_gone() -> None:
+    """Reto 2026-11-17: chktex errors in generated tex are a defect of the
+    generator, never something an LLM pass patches on the put path."""
+    assert importlib.util.find_spec("precis.utils.tex_llm_fix") is None
+
+
+def test_put_with_lint_errors_writes_without_an_llm_pass(
+    handler: TexHandler, tex_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tex put spawns neither chktex nor ``claude -p`` and never refuses
+    with a proposed correction, even with the retired flag set, chktex on
+    PATH reporting errors and a model ready to answer."""
+    fake_chktex = "/nonexistent/bin/chktex"
+    real_which = shutil.which
+    real_run = subprocess.run
+    lint_runs: list[Any] = []
+    llm_calls: list[Any] = []
+
+    def fake_which(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        return fake_chktex if cmd == "chktex" else real_which(cmd, *args, **kwargs)
+
+    def fake_run(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(argv, list) and argv[:1] == [fake_chktex]:
+            lint_runs.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="Warning 17 in stdin line 3: unbalanced brace\n"
+            )
+        return real_run(argv, *args, **kwargs)
+
+    def fake_claude(argv: Any, **_kwargs: Any) -> Any:
+        llm_calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="\\section{Hello}\n\nRewritten by a model.\n", stderr=""
+        )
+
+    monkeypatch.setenv(_RETIRED_FIXER_FLAG, "1")
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("precis.utils._claude_subprocess.run_claude", fake_claude)
+    monkeypatch.delitem(sys.modules, "precis.utils.tex_llm_fix", raising=False)
+
+    out = handler.put(
+        id="lint-errors",
+        text=r"\section{Hello}" + "\n\nBody with an unclosed {brace.\n",
+        mode="create",
+    )
+
+    assert "created tex" in out.body
+    assert "proposed correction" not in out.body
+    assert "unclosed {brace" in (tex_root / "lint-errors.tex").read_text(
+        encoding="utf-8"
+    )
+    assert lint_runs == []
+    assert llm_calls == []
