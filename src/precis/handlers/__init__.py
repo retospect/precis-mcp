@@ -49,6 +49,8 @@ slots, discard same-paper hits, or displace ranked papers after
 store-side body preference and diversity caps — so no kind on the
 ``FusedBlockSearch.run`` path promotes. Only ``PaperHandler.search_hits``
 retains title promotion, for the cross-kind merge.
+Paper keyword navigation: stateless matched-chunk facets; ephemeral
+extraction respects no-kwd.
 
 Paper same-search hints preserve scope, mode (including omission) and broad
 arguments to maintain corpus and ranking. Next-page hints preserve page size.

@@ -792,6 +792,9 @@ class FusedBlockSearch:
         has_body: bool | None = None,
         chunk_kinds: list[str] | None = None,
         exclude_tags: list[str] | None = None,
+        # Retrieve up to 1000 matched chunks without a per-paper cap or
+        # title/DOI shortcuts.
+        keyword_pool: bool = False,
         # The spellable cohort echo ``PaperHandler.search`` collects for
         # the trailer hints (gr653528 review) — passed straight through
         # to the result untouched; the renderer re-issues them in
@@ -875,7 +878,8 @@ class FusedBlockSearch:
                 or f"{kind}:{doi_resolved_ref.id}"
             )
             if (
-                page == 1
+                not keyword_pool
+                and page == 1
                 and scope is None
                 and after is None
                 and before is None
@@ -1177,7 +1181,7 @@ class FusedBlockSearch:
         # per-row ``more`` counter (pre-cap pool hits per ref).
         ref_counts: dict[int, int] = {}
         score_is_distance = False
-        if broad or paper_rows:
+        if broad or paper_rows or keyword_pool:
             # Semantic legs embed q + each reformulation + each HyDE
             # answer — in ONE batch call (q is NOT embedded separately;
             # up to 17 serial embed_one round trips collapsed). A missing
@@ -1208,7 +1212,7 @@ class FusedBlockSearch:
                 kind=kind,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
-                limit=page_size + 1,
+                limit=1000 if keyword_pool else page_size + 1,
                 offset=search_offset,
                 max_distance=sem_floor,
                 exclude_ref_ids=exclude_ref_ids or None,
@@ -1217,8 +1221,9 @@ class FusedBlockSearch:
                 year_to=year_to,
                 card_kinds=("card_combined",),
                 has_body=has_body,
-                per_paper=per_paper_cap,
+                per_paper=None if keyword_pool else per_paper_cap,
                 prefer_body=capped_body_search,
+                pool_per_leg=1000 if keyword_pool else 80,
                 chunk_kinds=chunk_kinds,
                 ref_counts_out=ref_counts if paper_rows else None,
                 exclude_tags=exclude_tags,
@@ -1230,7 +1235,7 @@ class FusedBlockSearch:
                 time.monotonic() - _stage_t0,
             )
             broad_has_more = len(probe) > page_size
-            hits = probe[:page_size]
+            hits = probe if keyword_pool else probe[:page_size]
         else:
             # Compute the query embedding for the semantic leg. A missing
             # embedder, or a failing one under hybrid/default, degrades to
@@ -1315,7 +1320,8 @@ class FusedBlockSearch:
         # bar) so an ordinary keyword search is untouched.
         title_matches: list[tuple[str, str]] = []
         if (
-            page == 1
+            not keyword_pool
+            and page == 1
             and scope_ref_id is None
             and year_from is None
             and year_to is None
@@ -2025,6 +2031,14 @@ class PaperSearchResultRenderer:
             more_available = total > len(hits)
         else:
             more_available = result.single_page_has_more
+        if more_available and kind == "paper":
+            nav.append(
+                (
+                    f"search(kind='paper', q={q!r}, view='toc'"
+                    f"{context_suffix}, page_size={result.page_size})",
+                    "navigate keyword clusters in the retrieved pool" + cohort_note,
+                )
+            )
         if more_available and len(hits) != 1:
             # scope by the top hit's paper record handle.
             top_handle = (
@@ -2064,16 +2078,28 @@ class PaperSearchResultRenderer:
                         "see every matching chunk, one row per hit" + cohort_note,
                     )
                 )
-            # Round-2 picky F-9, 2026-05-30: previous wording was
-            # ``q={q!r} + ' <salient term>'`` — Python-flavoured
-            # pseudo-code that a literal-paste agent would send as
-            # the verbatim string ``'cells' + ' <salient term>'``.
-            # Spell the placeholder in pure-string form instead.
+            # Supply a paste-ready query when the top hit has a new keyword.
+            # Otherwise put the placeholder inside the query string.
+            from precis.utils.keyword_toc import clean_keyword
+
+            candidates = [
+                clean_keyword(k)
+                for k in (getattr(hits[0][0] if hits else None, "keywords", None) or [])
+            ]
+            term = next((k for k in candidates if k and k not in q.lower()), None)
+            if term is None:
+                tightened_q = f"{q} <salient term>"
+                tighten_note = (
+                    "tighten the query with a hit-specific token "
+                    "(replace <salient term> with one)"
+                )
+            else:
+                tightened_q = f"{q} {term}"
+                tighten_note = "tighten the query with the top hit's keyword"
             nav.append(
                 (
-                    f"search(kind='{kind}', q='{q} <salient term>'{context_suffix})",
-                    "tighten the query with a hit-specific token "
-                    "(replace <salient term> with one)" + cohort_note,
+                    f"search(kind='{kind}', q={tightened_q!r}{context_suffix})",
+                    tighten_note + cohort_note,
                 )
             )
             # Discoverability: teach the broad / high-recall path

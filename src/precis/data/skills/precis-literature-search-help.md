@@ -85,18 +85,19 @@ background campaign: [[precis-search-help]] → Broad retrieval.
 ## Step 4 — more hits than a page: refine, don't page
 ## What do I do with '12 of 87 papers'?
 
-Treat the result as one page — there is no page 2 in this loop. A
-`Next:` block may still offer a `page=` call; that hint is tracked as
-misleading (gr634204), so narrow instead:
+When the result exceeds one page, use
+`search(kind='paper', q='…', view='toc')` with the same query. Follow
+the keyword-filter calls in `Next:` to browse smaller groups of papers.
+You can also:
 
-- tighten `q=` with a salient term from a `more`-heavy row's keywords;
+- re-issue more specifically with a distinctive keyword, `scope=`, or
+  `args={'exclude': …}`;
+- re-issue less specifically by dropping a term or widening `queries=`;
 - `scope='pa…'` into the promising paper — it flips to one row per
   chunk inside it;
 - open that paper's keyword-labelled TOC
   (`get(id='pa…', view='toc')`) and read only the ranges whose labels
-  match the topic (gr634201);
-- or re-issue the query more specific — or less specific, when your
-  wording was the thing hiding the gold.
+  match the topic.
 
 The dated source search (`sort=` top-level, `since=`/`until=` in
 `args=`) is the one path that genuinely paginates —

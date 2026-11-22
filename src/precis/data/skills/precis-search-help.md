@@ -253,9 +253,10 @@ Rules of thumb:
   search keeps the broad legs and exclusion filter, and
   `args={'page': 2}` walks the fused per-ref list — repeat the same
   knobs on every page.
-- **Refine rather than continuing** — add distinctive terms or narrow
-  `scope=` when the fused list is too broad. There is no page 2 on the
-  default paper path (the dated source search above is the exception).
+- **Refine rather than continuing** — when the set exceeds one page, use
+  `search(kind='paper', q='…', view='toc')` for keyword navigation. Or
+  re-issue more specifically (distinctive term, `scope=`, `exclude`) or
+  less specifically (drop a term, widen `queries=`).
 - The headline shows a returned count with no "of K" total — there's
   no honest lexical total for a fused set.
 
@@ -373,13 +374,21 @@ search(kind="paper", q="photocatalysis water splitting", page_size=20)
 `page_size=` is the result-size spelling (default 10; on paper
 kind 25 for the one-row-per-paper view and 20 for chunk rows, max 100) — *not* a quality cutoff
 despite the name. Search returns a bounded top-N set, not continuation
-pages; a page over 24 kB returns the top rows that fit plus a
+pages. When a paper result set exceeds one page, navigate its keyword TOC:
+`search(kind='paper', q='photocatalysis water splitting', view='toc')`.
+The TOC clusters matched chunks in the retrieved pool; facet counts overlap.
+Follow its stateless `args={'kw': 'keyword'}` calls; a list of keywords
+combines with AND, and `(none)` selects unlabelled papers. A drill over a
+page returns smaller facets; a short set returns paper rows. If no shrinking
+facet exists, refine the query. Keyword navigation refuses under `no-kwd`.
+Alternatively re-issue more specifically (add a distinctive term, `scope=`,
+`exclude`) or less specifically (drop a term, widen `queries=`).
+A page over 24 kB returns the top rows that fit plus a
 `N more matches not shown` line — narrow `q` or lower `page_size`. Add
 distinctive terms, narrow `scope=`, or use
 `args={'exclude': …}` to remove known-irrelevant refs. `k=`/`limit=`
 still read as `page_size=` on an `interpreted:` line; `offset=0` is a
-no-op, `offset>0` and `page=` refuse with a canonical next call —
-there is no page 2.
+no-op, `offset>0` and `page=` refuse with a canonical next call.
 
 The one exception is the source search (`sort=` top-level,
 `since=`/`until=` inside `args=`):
