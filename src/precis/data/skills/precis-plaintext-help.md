@@ -2,7 +2,7 @@
 id: precis-plaintext-help
 family: files
 title: precis — read and edit plaintext files
-summary: plaintext files — txt/log paragraphs and lines, content-slug selectors, raw views
+summary: plaintext files — txt/log paragraphs and lines, content-slug selectors, raw and links views
 answers:
   - how do I point at one paragraph in a .txt or .log file?
   - how do I create or append to a plaintext file?
@@ -39,6 +39,7 @@ get(
 get(kind="plaintext", id="logs/2026-05.txt~opened-laptop-at-0915")  # by content slug
 get(kind="plaintext", id="logs/2026-05.txt~L42-58")  # by line range
 get(kind="plaintext", id="logs/2026-05.txt/raw")  # full source
+get(kind="plaintext", id="logs/2026-05.txt", view="links")  # graph links
 ```
 
 A paragraph's canonical address is its **handle** `lc<chunk_id>` (e.g.
@@ -76,9 +77,17 @@ get(kind="plaintext", id="logs/2026-05.txt")  # overview
 get(
     kind="plaintext", id="logs/2026-05.txt~3"
 )  # one paragraph (output shows handle lc<id>; get(id='lc<id>') works too)
+get(
+    kind="plaintext", id="logs/2026-05.txt", view="links"
+)  # the file's graph links; args={'limit'|'cursor'} pages
 search(kind="plaintext", q="deployment issue")
 search(kind="plaintext", q="deployment issue", scope="logs/2026-05.txt")  # one file
 ```
+
+`/raw` returns the file bytes verbatim. `view="links"` lists the
+file's graph links, with optional `args.limit` and `args.cursor` for
+paging. A path ending in `/links` still addresses a file — pass the
+view as an explicit argument when the id is a path.
 
 ## How do I write a plaintext file?
 ## Create or append to a `.txt`

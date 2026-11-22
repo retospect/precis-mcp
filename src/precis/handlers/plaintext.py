@@ -45,7 +45,7 @@ from precis.handlers._readonly_fs import is_readonly_fs_error
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import MirrorRoot
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.store.types import Tag
@@ -294,10 +294,12 @@ class PlaintextHandler(Handler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        views=("raw",),
+        views=("raw", "links"),
         modes=_SUPPORTED_PUT_MODES,
         edit_modes=_SUPPORTED_EDIT_MODES,
     )
+
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {"get": ArgsSpec({"limit", "cursor"})}
 
     # ── subclass-extensible knobs ───────────────────────────────────
     # Sibling kinds (e.g. ``tex``) reuse the entire paragraph-block
@@ -307,9 +309,7 @@ class PlaintextHandler(Handler):
     _EXTENSIONS: ClassVar[tuple[str, ...]] = (".txt", ".log", ".bib")
     _DEFAULT_EXT: ClassVar[str] = ".txt"
 
-    #: Views accepted by :meth:`get` (in addition to the no-view
-    #: overview / block selector). Subclasses extend this and override
-    #: :meth:`_render_view` to add their own (e.g. tex's ``toc``).
+    #: Legacy view suffixes recognized by the file-ID parser.
     _SUPPORTED_VIEWS: ClassVar[tuple[str, ...]] = ("raw",)
 
     #: ``get(id='<slug>', q='…')`` is find-in-ref (gr486840): the file's
@@ -634,6 +634,7 @@ class PlaintextHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         q: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
@@ -674,20 +675,40 @@ class PlaintextHandler(Handler):
             return self._render_block(ref, sel)
 
         if effective_view is not None:
-            return self._render_view(effective_view, ref, slug=slug)
+            return self._render_view(effective_view, ref, slug=slug, args=args)
 
         return self._render_overview(ref)
 
-    def _render_view(self, view: str, ref: Ref, *, slug: str) -> Response:
+    def _render_view(
+        self,
+        view: str,
+        ref: Ref,
+        *,
+        slug: str,
+        args: dict[str, Any] | None = None,
+    ) -> Response:
         """Dispatch to a per-view renderer.
 
-        Plaintext supports only ``raw``. Subclasses extend
-        :attr:`_SUPPORTED_VIEWS` and override this method to add
-        their own (calling ``super()._render_view(...)`` to fall
-        through to ``raw`` / Unsupported).
+        Plaintext supports ``raw`` and the explicit ``links`` view.
+        Subclasses can add views by overriding this method and
+        advertising them in their kind spec.
         """
         if view == "raw":
             return self._render_raw(ref)
+        if view == "links" and view in self.spec.views:
+            # Same shared links table every Handler-direct kind serves
+            # (``handlers/_links_render.py``); ``args={'limit'|'cursor'}``
+            # pages it exactly like the paper/cad doors.
+            from precis.handlers._links_render import render_links_view
+
+            a = args or {}
+            return render_links_view(
+                self.store,
+                ref,
+                sense=self._KIND,
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
+            )
         nexts = [f"get(kind='{self._KIND}', id='{slug}/raw')"]
         # A very common cause of "unknown view": the caller passed an
         # extensionless *path* (e.g. id='tex/graphene'), which the id
@@ -695,7 +716,7 @@ class PlaintextHandler(Handler):
         # "view" doesn't name a real view, it is almost always a file
         # path. Point at the two addressing forms that actually work:
         # the '--'-encoded slug form, or the path form *with* extension.
-        if view not in self._SUPPORTED_VIEWS:
+        if view not in self.spec.views:
             file_slug = f"{slug}--{view.replace('/', '--').replace('_', '-')}"
             nexts.append(
                 f"if you meant a file, address it by slug "
@@ -705,7 +726,7 @@ class PlaintextHandler(Handler):
             )
         raise Unsupported(
             f"unknown {self._KIND} view {view!r}",
-            options=list(self._SUPPORTED_VIEWS),
+            options=list(self.spec.views),
             next=nexts,
         )
 

@@ -80,6 +80,7 @@ _CFP_VIEWS: tuple[str, ...] = (
     "health",
     "log",
     "abbrevs",
+    "links",
 )
 
 

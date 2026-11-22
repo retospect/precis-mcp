@@ -27,8 +27,13 @@ facts a `pcb` design needs, you don't author it.
 get(kind='datasheet')                            # list ingested
 get(kind='datasheet', id='<slug>')               # one document
 get(kind='datasheet', id='<slug>', view='toc')   # section/keyword TOC
+get(kind='datasheet', id='<slug>', view='links') # graph links to/from the sheet
 search(kind='datasheet', q='I2C address timing', ...)
 ```
+
+`view='links'` renders the datasheet's link graph (the part it
+`datasheet-of`s, evidence memories, and anything else linked), with
+optional `args={'limit'|'cursor'}` paging like a paper's.
 
 Paper addressing applies (`<slug>~N`, `/toc`, per-chunk search). Datasheets
 are scoped out of `search(kind='paper')` and vice-versa. A figure or

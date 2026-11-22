@@ -167,10 +167,17 @@ class TexHandler(PlaintextHandler):
 
     # ── view dispatch ─────────────────────────────────────────────────
 
-    def _render_view(self, view: str, ref: Ref, *, slug: str) -> Response:
+    def _render_view(
+        self,
+        view: str,
+        ref: Ref,
+        *,
+        slug: str,
+        args: dict[str, Any] | None = None,
+    ) -> Response:
         if view == "toc":
             return self._render_toc(ref)
-        return super()._render_view(view, ref, slug=slug)
+        return super()._render_view(view, ref, slug=slug, args=args)
 
     # ── TOC: section tree with \input{} recursion ─────────────────────
 

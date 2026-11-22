@@ -11,14 +11,21 @@ used to live only on ``NumericRefHandler`` (memory/todo/gripe/finding/
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import Unsupported
 from precis.handlers._links_render import render_links_section, render_links_view
 from precis.handlers.cad import CadHandler
+from precis.handlers.cfp import CfpHandler
+from precis.handlers.datasheet import DatasheetHandler
+from precis.handlers.markdown import MarkdownHandler
 from precis.handlers.paper import PaperHandler
 from precis.handlers.patent import PatentHandler
+from precis.handlers.plaintext import PlaintextHandler
+from precis.handlers.tex import TexHandler
 from precis.store import Store
 
 
@@ -264,6 +271,73 @@ class TestPaperLinksView:
         handler = PaperHandler(hub=hub)
         resp = handler.get(id="lonely2020", view="links")
         assert "(no links)" in resp.body
+
+
+# ---------------------------------------------------------------------------
+# view='links' on the paper-subclass and prose-file kinds
+# (datasheet / cfp / markdown / plaintext)
+# ---------------------------------------------------------------------------
+
+
+def test_datasheet_links_view(hub: Hub) -> None:
+    store = hub.live_store
+    d = store.insert_ref(kind="datasheet", slug="lm317-ds", title="LM317 datasheet").id
+    m = store.insert_ref(kind="memory", slug=None, title="a voltage note").id
+    store.add_link(src_ref_id=d, dst_ref_id=m, relation="related-to")
+    resp = DatasheetHandler(hub=hub).get(id="lm317-ds", view="links")
+    assert "a voltage note" in resp.body
+
+
+def test_datasheet_links_view_empty_still_renders(hub: Hub) -> None:
+    store = hub.live_store
+    store.insert_ref(kind="datasheet", slug="lonely-ds", title="Lonely Datasheet")
+    resp = DatasheetHandler(hub=hub).get(id="lonely-ds", view="links")
+    assert "(no links)" in resp.body
+
+
+def test_cfp_links_view(hub: Hub) -> None:
+    store = hub.live_store
+    c = store.insert_ref(kind="cfp", slug="nsf-call", title="NSF call").id
+    m = store.insert_ref(kind="memory", slug=None, title="a deadline note").id
+    store.add_link(src_ref_id=c, dst_ref_id=m, relation="related-to")
+    resp = CfpHandler(hub=hub).get(id="nsf-call", view="links")
+    assert "a deadline note" in resp.body
+
+
+def test_plaintext_links_view(hub: Hub, tmp_path: Path) -> None:
+    store = hub.live_store
+    root = tmp_path / "pt"
+    (root / "notes").mkdir(parents=True)
+    (root / "notes" / "links.txt").write_text("first paragraph\n", encoding="utf-8")
+    handler = PlaintextHandler(hub=hub, root=root)
+    ref = handler.ensure_ingested("notes--links")
+    assert ref is not None
+    m = store.insert_ref(kind="memory", slug=None, title="a plain note").id
+    store.add_link(src_ref_id=ref.id, dst_ref_id=m, relation="related-to")
+    assert "first paragraph" in handler.get(id="notes/links", view="raw").body
+    resp = handler.get(id="notes/links", view="links")
+    assert "a plain note" in resp.body
+
+
+def test_markdown_links_view(hub: Hub, tmp_path: Path) -> None:
+    store = hub.live_store
+    root = tmp_path / "md"
+    root.mkdir()
+    (root / "doc.md").write_text("# Doc\n\nbody\n", encoding="utf-8")
+    handler = MarkdownHandler(hub=hub, root=root)
+    ref = handler.ensure_ingested("doc")
+    assert ref is not None
+    m = store.insert_ref(kind="memory", slug=None, title="a md note").id
+    store.add_link(src_ref_id=ref.id, dst_ref_id=m, relation="related-to")
+    resp = handler.get(id="doc", view="links")
+    assert "a md note" in resp.body
+
+
+def test_tex_rejects_links_view(hub: Hub, tmp_path: Path) -> None:
+    (tmp_path / "doc.tex").write_text(r"\section{Doc}", encoding="utf-8")
+    handler = TexHandler(hub=hub, root=tmp_path)
+    with pytest.raises(Unsupported, match="unknown tex view 'links'"):
+        handler.get(id="doc", view="links")
 
 
 # ---------------------------------------------------------------------------

@@ -69,7 +69,7 @@ class MarkdownHandler(PlaintextHandler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        views=("toc", "raw"),
+        views=("toc", "raw", "links"),
         modes=("create",),
         # edit() is inherited unmodified from PlaintextHandler.
         edit_modes=("find-replace", "append", "insert", "replace"),
@@ -121,11 +121,18 @@ class MarkdownHandler(PlaintextHandler):
 
     # ── view dispatch ────────────────────────────────────────────────
 
-    def _render_view(self, view: str, ref: Ref, *, slug: str) -> Response:
-        """Add the ``/toc`` view on top of plaintext's ``/raw``."""
+    def _render_view(
+        self,
+        view: str,
+        ref: Ref,
+        *,
+        slug: str,
+        args: dict[str, Any] | None = None,
+    ) -> Response:
+        """Render ``/toc`` and delegate ``/raw`` and explicit ``view='links'``."""
         if view == "toc":
             return self._render_toc(ref)
-        return super()._render_view(view, ref, slug=slug)
+        return super()._render_view(view, ref, slug=slug, args=args)
 
     def _render_toc(self, ref: Ref) -> Response:
         """Render a hierarchical heading-TOC for this file.

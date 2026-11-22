@@ -3,6 +3,8 @@
 Handlers register :class:`precis.protocol.KindSpec` with
 :class:`precis.dispatch.Hub` at boot. Shared adapters use underscore-prefixed
 modules (:mod:`precis.handlers._numeric_ref`).
+Plaintext and Markdown take the links view as an explicit argument so paths
+ending in ``/links`` keep addressing files across verbs.
 LLM diagnostics bound call-log scans to recent windows and report the
 effective decide modes through the same memo used by live routing.
 Staged findings retain the URL and verbatim quote without fetching.

@@ -72,6 +72,7 @@ _DATASHEET_VIEWS: tuple[str, ...] = (
     "health",
     "log",
     "abbrevs",
+    "links",
     # gr520326: a datasheet's figure crops / page renders ride the same
     # signed-link door as a paper's — datasheet is the kind that hit the
     # caption-only failure this view exists for.
