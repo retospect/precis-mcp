@@ -2,8 +2,8 @@
 
 An operator debugging a stuck/misbehaving quest otherwise runs five separate
 by-hand queries: the logbook tail, the candidate structures + their measures +
-`ruled-out:*` tags, the sim-job status roll (`struct_relax`/`autocatpath_explore`
-churn under each candidate), the autonomous coordinator loop's own
+`ruled-out:*` tags, the status of compute-lane jobs directly under each
+candidate, the autonomous coordinator loop's own
 `quest_tick` job_event trail, and the per-quest LLM spend/errors from
 `llm_call_log`. This module gathers all five in one pass; the CLI (`precis
 quest status <id>`) is a thin printer over it. Read-only — no writes, no
@@ -15,13 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from precis.quest import SIM_JOB_TYPES
 from precis.quest.logbook import LOG_KIND as _LOG_KIND
 
 if TYPE_CHECKING:
     from precis.store import Store
-
-#: The compute-lane job_types a quest's candidates mint (barrier + stability).
-_SIM_JOB_TYPES = ("struct_relax", "autocatpath_explore")
 
 #: The `job_event` chunk kind every job dispatcher writes its forensics to
 #: (see ``precis.workers.executors._common.JOB_EVENT_KIND``).
@@ -158,7 +156,7 @@ def _candidate_rows(
 def _sim_job_rows(
     store: Store, candidate_ids: list[int], *, limit: int
 ) -> list[SimJobRow]:
-    """The `struct_relax`/`autocatpath_explore` jobs under any of ``candidate_ids``,
+    """Compute-lane jobs directly under any of ``candidate_ids``,
     newest first, with their current STATUS — so cancelled/retried churn (a job
     that keeps getting re-minted or stolen) is visible at a glance."""
     from precis.utils import handle_registry
@@ -175,7 +173,7 @@ def _sim_job_rows(
             "WHERE j.kind = 'job' AND j.retired_at IS NULL "
             "AND j.parent_id = ANY(%s) AND j.meta->>'job_type' = ANY(%s) "
             "ORDER BY j.created_at DESC LIMIT %s",
-            (list(candidate_ids), list(_SIM_JOB_TYPES), limit),
+            (list(candidate_ids), list(SIM_JOB_TYPES), limit),
         ).fetchall()
     out: list[SimJobRow] = []
     for job_id, job_type, parent_id, created_at, status in rows:

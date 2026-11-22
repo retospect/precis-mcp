@@ -8,6 +8,7 @@ answers:
   - how do I list failed jobs or find jobs that need attention?
   - what jobs have run on this gripe / paper / parent?
   - which jobs belong to this quest / todo / board / structure?
+  - why is a quest still awaiting a sim?
   - how many jobs of one type ran, finished or failed in a window?
   - how do I read the status, events and meta of a specific job?
 applies-to: get/search (kind='job')
@@ -178,6 +179,19 @@ search(kind="job", under="qu459585", status="failed", depth=3)
 The answer for "is the queue healthy *here*?" — never raw `refs`/`links`
 SQL. `link=` stays right for jobs pointing AT a ref; `under=` is the
 hierarchy question.
+
+## Why is a quest still awaiting a sim?
+
+```python
+search(kind="job", view="sim-queue", under="qu459585")
+```
+
+Pass the quest as `under=`. The view includes queued, waiting and running
+simulation jobs beneath the quest and its served structures, including jobs
+under nested todos. Rows show the job's type, state, time in that state and
+recorded blocking reason. The header reports when the quest's compute lane
+is off. A row with “no recorded blocker” has no hold identified by this view.
+Use `page_size=` and the returned continuation to see more rows.
 
 ## Jobs of one type — how many ran, finished, failed?
 

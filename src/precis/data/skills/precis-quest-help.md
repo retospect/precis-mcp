@@ -629,8 +629,11 @@ Pareto-ranked separately), and **awaiting a sim** (no measurement at
 all). A `★` marks a graduated candidate (earned the `needs-experiment`
 milestone); `★ would lead` on a provisional row means it would top the
 frontier if its measurement were trusted. The loop dispatches **one
-proposal per tick** and waits for its sims before
-the next.
+proposal per tick** and waits for its sims before the next. When candidates
+stay **awaiting a sim**, call
+`search(kind='job', view='sim-queue', under='qu<N>')` for job states, queue
+ages and recorded blockers. See [[precis-job-find-help]], “Why is a quest
+still awaiting a sim?”
 
 ## Skip the guesswork — opt a quest into a structure search
 

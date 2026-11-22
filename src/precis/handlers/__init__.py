@@ -22,6 +22,8 @@ Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
 Crossref misses leave DOI health unverified because other agencies register DOIs.
 Paper tag batches commit edits with audit events. Numeric-ref tag batches
 accept 300 IDs to support deck moves, and Anki opts in for tag alone.
+Job simulation queues follow the quest's candidate links and nested jobs
+so a freeze or parent hold is visible without inferring it from measurements.
 Abstract checks never queue paper ingest.
 An unheld DOI lookup can queue ingest. Explicit retries bypass the daily
 cap, while batch passage searches keep their per-call mint limit.

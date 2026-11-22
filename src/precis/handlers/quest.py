@@ -125,7 +125,7 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
 #: fix): ``compute_lane`` (the reason-only switch —
-#: :data:`precis.workers.job_types.quest_tick.COMPUTE_LANE_META_KEY`),
+#: :data:`precis.quest.COMPUTE_LANE_META_KEY`),
 #: ``lit_lane`` (the lit-search stage's own switch —
 #: :data:`precis.quest.body.LIT_LANE_META_KEY`, gr500282),
 #: ``quest_body`` (catalyst vs. weave tick routing —

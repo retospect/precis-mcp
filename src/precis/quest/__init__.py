@@ -187,3 +187,29 @@ Package-level invariants (detail lives on the named module):
   ``reaction_config.poisons`` must screen ≥1 species or ``poison_margin``
   is an empty-frontier trap.
 """
+
+#: Sim job_types this quest's compute lane mints (barrier + stability). Their
+#: non-terminal count is the loop's wait set + backpressure signal.
+#:
+#: The barrier lane fans out into ``autocatpath_seed`` (one job per model×seed)
+#: plus an ``autocatpath_aggregate`` rollup — both landed with 47332ad3,
+#: retiring the flat ``autocatpath_explore`` job. That new pair was never added
+#: here, so once the fan-out shipped this wait set saw only the (fast)
+#: ``struct_relax`` lane and went empty the instant the relax finished — blind
+#: to a deep queue of still-running barrier seeds. The loop then proposed a new
+#: batch every slice regardless of how many seeds were queued: the per-quest
+#: backpressure and cross-quest starvation gate were both disconnected, which is
+#: how one catalyst quest piled up 238 seeds. ``autocatpath_explore`` is kept so
+#: any lingering non-terminal legacy job still registers.
+SIM_JOB_TYPES = (
+    "autocatpath_explore",  # legacy flat barrier job (retired by the fan-out)
+    "autocatpath_seed",  # barrier lane — per-(model, seed) compute (the fan-out)
+    "autocatpath_aggregate",  # barrier lane — the rollup that closes the eval
+    "struct_relax",  # stability lane
+    "struct_search",  # search lane — one job mints N candidates
+)
+
+#: Quest meta key holding the compute-lane switch. ``"off"`` makes every
+#: armed tick reason-only (``run_quest_tick(compute=False)``); any other
+#: value — or the key's absence — keeps the compute lane on.
+COMPUTE_LANE_META_KEY = "compute_lane"

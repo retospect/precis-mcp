@@ -1296,7 +1296,7 @@ class SearchMixin(RuntimeShape):
             if resolved == "job" and sort in {"oldest", "newest"}:
                 return False
             if resolved == "job" and (
-                str(args.get("view") or "").strip() == "parked"
+                str(args.get("view") or "").strip() in {"parked", "sim-queue"}
                 or (
                     sort in {"recency", "recent"}
                     and not str(args.get("view") or "").strip()

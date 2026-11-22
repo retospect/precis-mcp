@@ -61,7 +61,9 @@ from precis.store._mappers import (
 )
 from precis.store._refs_ops import FacetSpan, filtered_ref_clauses
 from precis.store._salience import current_background_actor
+from precis.store._todo_sql import parent_gate_exclusion_sql
 from precis.store.types import Ref
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo import guards as todo_guards
 from precis.utils import handle_registry
 from precis.utils.link_tag_ops import resolve_add_link, validate_relation
@@ -98,16 +100,19 @@ from precis.workers.executors._common import (
     CLAIMABLE,
     DEFAULT_SLICE_S,
     FOOTPRINT_CPU_MAX_MILLI,
+    PARENT_GATED_EXECUTORS,
     QUEUED,
     RUNNING,
     SLICE_S_ENV,
     SLICING_ENV,
     STATUS_NAMESPACE,
+    WAITING,
     _claim_order_sql,
     _truthy,
     claim_age_step_s,
     claim_class_age_s,
     claim_class_rank_enabled,
+    job_type_running_caps,
     parse_footprint_cpu_milli,
     queued_build_hold_reasons,
 )
@@ -1199,7 +1204,7 @@ _SETTINGS_PUT_NEXT = (
 
 class JobHandler(NumericRefHandler):
     list_drop_constant_cols = ("remaining_words", "links", "age", "size")
-    extra_search_views = ("parked",)
+    extra_search_views = ("parked", "sim-queue")
 
     def _batch_extra_line(self, ref: Ref, tags: list[tuple[str, str]]) -> str | None:
         if not any(
@@ -6484,6 +6489,25 @@ class JobHandler(NumericRefHandler):
     ) -> Response:
         _require_count_agg_view(agg, view)
         kw["q"] = fold_match_all_q(kw.get("q"))
+        if view == "sim-queue":
+            unsupported = {
+                **kw,
+                "depth": depth,
+                "axis": axis,
+                "status": status,
+                "group_by": group_by,
+                "since": since,
+                "until": until,
+                "job_type": job_type,
+                "include_ref_ids": include_ref_ids,
+                "exclude_ref_ids": exclude_ref_ids,
+            }
+            if extra := sorted(k for k, v in unsupported.items() if v is not None):
+                raise BadInput(
+                    f"view='sim-queue' does not apply {extra!r}",
+                    next="search(kind='job', view='sim-queue', under='<quest>')",
+                )
+            return self._search_sim_queue(under, page, page_size)
         if job_type is not None and not str(job_type).strip():
             raise BadInput(
                 "job_type= must be a non-empty job_type name",
@@ -6670,6 +6694,134 @@ class JobHandler(NumericRefHandler):
             include_ref_ids=include_ref_ids,
             **kw,
         )
+
+    def _search_sim_queue(
+        self, under: str | int | None, page: int, page_size: int
+    ) -> Response:
+        """Read active simulation jobs for the quest and its served structures."""
+        from precis.quest import COMPUTE_LANE_META_KEY, SIM_JOB_TYPES
+
+        retry = "search(kind='job', view='sim-queue', under='<quest>')"
+        if under is None:
+            raise BadInput("view='sim-queue' requires under=<quest>", next=retry)
+        root = self._resolve_under_root(under)
+        if root.kind != "quest":
+            raise BadInput("view='sim-queue' requires a quest", next=retry)
+
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 100))
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                WITH RECURSIVE scope(ref_id) AS (
+                    (SELECT ref_id FROM refs WHERE ref_id = %s
+                     UNION
+                     SELECT s.ref_id FROM links l
+                     JOIN refs s ON s.ref_id = l.src_ref_id
+                     WHERE l.dst_ref_id = %s AND l.relation = 'serves'
+                       AND s.kind = 'structure' AND s.retired_at IS NULL)
+                    UNION
+                    SELECT child.ref_id FROM refs child
+                    JOIN scope p ON p.ref_id = child.parent_id
+                )
+                SELECT j.ref_id, j.title, j.meta, st.value, st.stamped,
+                       j.meta->>'executor' = ANY(%s)
+                           AND {parent_gate_exclusion_sql("j")} AS paused,
+                       (
+                           SELECT a.ref_id FROM refs a
+                            WHERE a.kind = 'alert' AND a.retired_at IS NULL
+                              AND a.resolved_at IS NULL
+                              AND a.alert_source = 'scheduler'
+                              AND a.fingerprint = 'unschedulable:' || j.ref_id
+                            ORDER BY a.ref_id DESC LIMIT 1
+                       ) AS unschedulable_alert
+                  FROM scope JOIN refs j USING (ref_id)
+                  JOIN LATERAL (
+                      SELECT t.value, rt.created_at AS stamped
+                        FROM ref_tags rt JOIN tags t USING (tag_id)
+                       WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                         AND (rt.expires_at IS NULL OR rt.expires_at > now())
+                       ORDER BY rt.created_at DESC, rt.tag_id DESC LIMIT 1
+                  ) st ON st.value = ANY(%s)
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
+                   AND j.meta->>'job_type' = ANY(%s)
+                 ORDER BY st.stamped, j.ref_id
+                 LIMIT %s OFFSET %s
+                """,
+                (
+                    root.id,
+                    root.id,
+                    list(PARENT_GATED_EXECUTORS),
+                    sorted(TERMINAL_TODO_STATUSES),
+                    [*CLAIMABLE, *WAITING, RUNNING],
+                    list(SIM_JOB_TYPES),
+                    page_size + 1,
+                    (page - 1) * page_size,
+                ),
+            ).fetchall()
+            caps = job_type_running_caps(conn)
+
+        suspended = suspended_job_types()
+        label = f"qu{root.id}"
+        lines = [f"# Simulation queue for {label}"]
+        if (root.meta or {}).get(COMPUTE_LANE_META_KEY) == "off":
+            lines.append("Quest simulation dispatch is off (meta.compute_lane).")
+        if held := sorted(suspended.intersection(SIM_JOB_TYPES)):
+            lines.append(
+                f"Types suspended in this server's configuration: {', '.join(held)} "
+                "(workers read their own configuration)."
+            )
+        if not rows:
+            lines.append(
+                "No active simulation jobs." if page == 1 else "No jobs on this page."
+            )
+        now = datetime.now(UTC)
+        for job_id, title, meta, state, stamped, paused, alert_id in rows[:page_size]:
+            job_type = meta["job_type"]
+            reasons: list[str] = []
+            if state in CLAIMABLE:
+                if job_type in suspended:
+                    reasons.append("type suspended in server configuration")
+                if caps.get(job_type) == 0:
+                    reasons.append("running cap is zero")
+                if paused:
+                    reasons.append("parent todo is paused")
+                if alert_id is not None:
+                    reasons.append(
+                        f"no eligible placement (scheduler alert al{alert_id})"
+                    )
+                if (
+                    lease := as_utc(meta.get("lease_until"))
+                ) is not None and lease > now:
+                    reasons.append(f"lease held until {_fmt_utc(lease)}")
+            elif state in WAITING:
+                parked_reason = _parked_reason(meta)
+                reasons.append(
+                    parked_reason if parked_reason != "-" else state.replace("_", " ")
+                )
+            age = _fmt_age(now - stamped)
+            timing = "queued" if state in CLAIMABLE else "in state"
+            reason = ", ".join(reasons) or (
+                "running" if state == RUNNING else "no recorded blocker"
+            )
+            lines.append(
+                f"  job:{job_id} {job_type} [{state}] {timing} {age} "
+                f"(since {_fmt_utc(stamped)}) — {mask_secrets(reason)} — "
+                f"{_COUNT_HEAD_WS.sub(' ', title or '')[:80]}"
+            )
+        if len(rows) > page_size:
+            lines.append(
+                render_next_section(
+                    [
+                        (
+                            f"search(kind='job', view='sim-queue', under='{label}', "
+                            f"page_size={page_size}, args={{'page': {page + 1}}})",
+                            "more active simulation jobs",
+                        )
+                    ]
+                )
+            )
+        return Response(body="\n".join(lines), result_count=min(len(rows), page_size))
 
     def _search_parked_route(
         self,
