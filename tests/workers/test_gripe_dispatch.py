@@ -340,6 +340,70 @@ def test_supported_or_default_project_dispatches(
     assert len(_roots_for(store, gid)) == 1
 
 
+@pytest.mark.parametrize(
+    "project_tags",
+    [
+        ("project:platform",),
+        ("project:memory",),
+        ("project:taproot",),
+        ("project:quests", "project:precis"),
+    ],
+)
+def test_in_repo_area_project_dispatches(
+    store: Store, two_lanes: Any, project_tags: tuple[str, ...]
+) -> None:
+    """gr752647: triage labels areas of this repository with ``project:``."""
+    _light(store)
+    gid = _gripe(store, "platform code bug", tags=("fix:code", *project_tags))
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    assert len(_roots_for(store, gid)) == 1
+    assert not any(c.startswith(gd._PROJECT_SKIP_PREFIX) for c in _comments(store, gid))
+
+
+_ELSEWHERE = (
+    "catpath",
+    "autocatpath",
+    "infra",
+    "cluster",
+    "dft",
+    "local-compute",
+    "ops",
+    "deploy",
+)
+
+
+@pytest.mark.parametrize("project", _ELSEWHERE)
+def test_every_elsewhere_project_is_skipped(
+    store: Store, two_lanes: Any, project: str
+) -> None:
+    _light(store)
+    gid = _gripe(store, "elsewhere", tags=("fix:code", f"project:{project}"))
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0
+    assert _roots_for(store, gid) == []
+    [note] = _comments(store, gid)
+    assert note.startswith(gd._PROJECT_SKIP_PREFIX)
+
+
+def test_elsewhere_set_is_the_decided_one() -> None:
+    assert frozenset(_ELSEWHERE) == gd._ELSEWHERE_PROJECTS
+
+
+def test_earlier_project_skip_comment_does_not_block_a_later_pick(
+    store: Store, two_lanes: Any
+) -> None:
+    """A gripe skipped under the old allow-list carries the skip comment;
+    once its project is no longer elsewhere the pass builds it anyway."""
+    _light(store)
+    gid = _gripe(store, "skipped before", tags=("fix:code", "project:platform"))
+    gd._append_comment(
+        store, gid, f"{gd._PROJECT_SKIP_PREFIX} factory can only land project:precis."
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    assert len(_roots_for(store, gid)) == 1
+
+
 def test_supported_project_does_not_override_an_unsupported_project(
     store: Store, two_lanes: Any
 ) -> None:

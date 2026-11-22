@@ -99,9 +99,12 @@ Each fire:
   lands :data:`precis.workers.job_types.ci_watch.WORKER_PRINCIPAL`, the
   one constant both sides name. Order: ``dispatch_score`` (higher is
   hotter, :mod:`precis.utils.dispatch_score`, gr604593) then oldest.
-  Every ``project:`` tag must name a project in :data:`_LANDABLE_PROJECTS`;
-  no project tag means ``precis``. Unsupported projects receive one skip
-  comment and consume no build slots: the factory cannot land their code.
+  No ``project:`` tag may name a project in :data:`_ELSEWHERE_PROJECTS`
+  (another repository or operations work); any other value, or none, is
+  this repository. Those gripes receive one skip comment and consume no
+  build slots: the factory cannot land their code. A gripe skipped earlier
+  is picked once its project leaves that set (the skip comment only
+  limits the note, never the pick).
 * **Release-waiver gripes** (tag :data:`WAIVER_TAG_PREFIX`
   ``release-waiver:r<N>`` plus ``meta.release_waiver``, filed by
   :mod:`precis.plans.red_waiver` when the release gate deployed past a
@@ -173,10 +176,24 @@ SERVICE_NAME = "gripe_dispatch"
 #: Wait after triage, not filing: an old report may only just have been
 #: classified as code work, and the filer needs time to retract that decision.
 _MIN_AGE_MINUTES = 15
-#: ``project:`` values the factory can land; untagged gripes belong to precis.
-#: ``precis-mcp`` is this repo's own name and ``dark-factory`` its factory
-#: code. catpath/autocatpath is a separate checkout (gr611473).
-_LANDABLE_PROJECTS: frozenset[str] = frozenset({"precis", "precis-mcp", "dark-factory"})
+#: ``project:`` values that live in another repository or are operations
+#: work: the factory does not build them. Triage also labels areas inside
+#: this repository with ``project:`` (platform, memory, quests, ...), so every
+#: other value, and no tag at all, is this repository (gr752647).
+#: catpath/autocatpath is a separate checkout (gr611473). ``taproot`` is not
+#: listed: its code is ``precis.taproot``. ``todo_dispatch`` reads the same set.
+_ELSEWHERE_PROJECTS: frozenset[str] = frozenset(
+    {
+        "catpath",
+        "autocatpath",
+        "infra",
+        "cluster",
+        "dft",
+        "local-compute",
+        "ops",
+        "deploy",
+    }
+)
 _PROJECT_SKIP_PREFIX = "dispatch: skipped unsupported project:"
 #: Gripe tags that mark fixable work: code, skill, docs, web or MCP-surface
 #: changes (Reto 2026-11-10). All of them land through the same
@@ -947,10 +964,10 @@ def _candidate_picks(
            AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags f ON f.tag_id = ft.tag_id
                         WHERE ft.ref_id = r.ref_id AND f.namespace IN ('OPEN', 'FLAG')
                           AND f.value = ANY(%s))
-           AND COALESCE((SELECT bool_and(substr(p.value, 9) = ANY(%s))
-                           FROM ref_tags pt JOIN tags p ON p.tag_id = pt.tag_id
-                          WHERE pt.ref_id = r.ref_id AND p.namespace IN ('OPEN', 'FLAG')
-                            AND p.value LIKE 'project:%%'), %s) = %s
+           AND EXISTS (SELECT 1 FROM ref_tags pt JOIN tags p ON p.tag_id = pt.tag_id
+                        WHERE pt.ref_id = r.ref_id AND p.namespace IN ('OPEN', 'FLAG')
+                          AND p.value LIKE 'project:%%'
+                          AND substr(p.value, 9) = ANY(%s)) = %s
            AND (%s OR NOT EXISTS (
                 SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id
                   AND c.chunk_kind = 'gripe_comment' AND c.text LIKE %s))
@@ -991,9 +1008,8 @@ def _candidate_picks(
                 _HUMAN_ACTOR_PREFIX + "%",
                 _CI_WATCH_PRINCIPAL,
                 fix_tags,
-                sorted(_LANDABLE_PROJECTS),
-                "precis" in _LANDABLE_PROJECTS,
-                supported_projects,
+                sorted(_ELSEWHERE_PROJECTS),
+                not supported_projects,
                 supported_projects,
                 _PROJECT_SKIP_PREFIX + "%",
                 list(HOLD_TAGS),
@@ -1428,14 +1444,15 @@ def _route_to_coordinator(
 
 def _note_unsupported_projects(store: Store) -> None:
     """Bound skip-note work per tick; noted gripes leave this queue."""
-    allowed = ", ".join(f"project:{p}" for p in sorted(_LANDABLE_PROJECTS)) or "none"
+    elsewhere = ", ".join(f"project:{p}" for p in sorted(_ELSEWHERE_PROJECTS))
     for pick in _candidate_picks(store, 100, supported_projects=False):
         try:
             _append_comment(
                 store,
                 pick.gripe_id,
-                f"{_PROJECT_SKIP_PREFIX} factory can only land {allowed}; "
-                "this gripe's project is outside that allowlist. No chain minted.",
+                f"{_PROJECT_SKIP_PREFIX} the precis factory lands only this "
+                f"repository, not {elsewhere}; this gripe names one of them. "
+                "No chain minted.",
                 once_prefix=_PROJECT_SKIP_PREFIX,
             )
         except Exception:

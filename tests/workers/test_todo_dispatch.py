@@ -356,11 +356,14 @@ def test_other_project_is_other_repo(store: Store) -> None:
     assert td.survey(store) == ([], [{"todo": src, "reason": "other-repo"}])
 
 
-def test_default_repo_and_landable_projects_are_eligible(store: Store) -> None:
+def test_default_repo_and_in_repo_projects_are_eligible(store: Store) -> None:
+    """gr752647: a ``project:`` tag names an area of this repository unless
+    it is one the gripe dispatcher knows to live elsewhere."""
     a = _todo(store, "a", tags=(FACTORY_BUILD_TAG, "repo:precis"))
     b = _todo(store, "b", tags=(FACTORY_BUILD_TAG, "project:precis-mcp"))
+    c = _todo(store, "c", tags=(FACTORY_BUILD_TAG, "project:platform"))
     eligible, skipped = td.survey(store)
-    assert {p.todo_id for p in eligible} == {a, b} and skipped == []
+    assert {p.todo_id for p in eligible} == {a, b, c} and skipped == []
 
 
 def test_a_closed_child_does_not_hold_the_source(store: Store) -> None:

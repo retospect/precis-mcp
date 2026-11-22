@@ -75,7 +75,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.blocked import open_blocked_by, undone_blocked_by
 from precis.workers.gripe_dispatch import (
-    _LANDABLE_PROJECTS,
+    _ELSEWHERE_PROJECTS,
     _MIN_AGE_MINUTES,
     HOLD_TAGS,
     chains,
@@ -254,11 +254,12 @@ _SURVEY_SQL = f"""
 def _other_repo(tags: list[str]) -> str | None:
     """Why the todo is not landable where the gripe dispatcher lands, or
     ``None``: a ``repo:`` tag other than the default repository, or a
-    ``project:`` tag outside the gripe dispatcher's allowlist."""
+    ``project:`` tag the gripe dispatcher knows to live elsewhere. Every
+    other ``project:`` value names an area of this repository (gr752647)."""
     for t in tags:
         if t.startswith("repo:") and t[len("repo:") :].strip() != _lanes.DEFAULT_REPO:
             return t
-        if t.startswith("project:") and t[len("project:") :] not in _LANDABLE_PROJECTS:
+        if t.startswith("project:") and t[len("project:") :] in _ELSEWHERE_PROJECTS:
             return t
     return None
 
@@ -387,13 +388,13 @@ def _comment(
 
 
 def _note_other_repo(store: Store, todo_id: int) -> None:
-    allowed = ", ".join(f"project:{p}" for p in sorted(_LANDABLE_PROJECTS))
+    elsewhere = ", ".join(f"project:{p}" for p in sorted(_ELSEWHERE_PROJECTS))
     _comment(
         store,
         todo_id,
         f"{OTHER_REPO_PREFIX} the factory builds only in "
-        f"{_lanes.DEFAULT_REPO} ({allowed}); this todo names another target. "
-        "No chain minted.",
+        f"{_lanes.DEFAULT_REPO}, not {elsewhere} or another repo: tag; "
+        "this todo names one of them. No chain minted.",
         once_prefix=OTHER_REPO_PREFIX,
     )
 
