@@ -445,7 +445,8 @@ def test_youtube_video_shaped_handle_reads_live_ref(
     # A real write stores ``_hash(_canonical_key(video_id))`` — seed that
     # hash so the URL read below hits by request hash. A foreign hash
     # would simulate a different variant under the shared slug, where a
-    # refetch is the correct behaviour (gr:3681).
+    # refetch is the correct behaviour (gr:3681). The foreign hash made the
+    # URL read miss and hit the no-fetch trap (gr753177).
     handler = runtime_with_store.hub.handler_for("youtube")
     assert handler is not None
     _seed_cache(
