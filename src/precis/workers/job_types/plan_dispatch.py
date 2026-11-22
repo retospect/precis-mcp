@@ -5280,7 +5280,9 @@ def _step_verdicts(
     and closed the node, the review ran on the same head, and every
     second round minted another pre-land-stop ask. An older verdict is
     left open with a note, and a ``validated:``/``no-op:`` on a stashed
-    node held by an OPEN coordinator ask neither re-holds nor closes.
+    node held by an OPEN coordinator ask neither re-holds nor closes,
+    and no verdict of any kind acts on a build an open pre-land stop
+    holds (td763175) — each is ignored with a note.
     Nor does one whose stash is the head the last send-back rejected
     (gr762396): the re-hold would release the reviewer onto it in this
     pass, so the node parks on the "unchanged head" stop instead
@@ -5303,7 +5305,7 @@ def _step_verdicts(
             # unblocking the build with no brief — and a ``moot:`` would
             # kill the plan.
             continue
-        if plan.live_job(n) or _preland_stop_open(plan, n):
+        if plan.live_job(n):
             continue
         root = plan.nodes.get(n.root)
         if root is not None and "release-pass" in root.open_tags:
@@ -5394,6 +5396,16 @@ def _step_verdicts(
         if verdict is None or _foreign_verdict(store, n, verdict):
             continue
         kind_, why = verdict
+        if _preland_stop_open(plan, n):
+            # td763175: an open pre-land stop holds the build whatever the
+            # verdict says, even when the ask's blocker edge is missing —
+            # read here, after the verdict, so the ignored verdict stays
+            # visible in the pass notes (gr738860).
+            res.notes.append(
+                f"td{n.id}: `{kind_}:` ignored — held on an open "
+                "coordinator ask (pre-land stop); left open (td763175)"
+            )
+            continue
         if n.meta.get(_templates.PRELAND_DEFER_FAILED_KEY):
             # gr663738: the stamp means the last pre-land defer failed —
             # the branch never reached origin, so a `validated:` "the

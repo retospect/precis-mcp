@@ -23,16 +23,18 @@ from urllib.parse import urlencode
 from fastapi.responses import RedirectResponse
 
 
-def _drive_url(*pairs: tuple[str, str | None]) -> str:
-    """``/drive?`` plus the non-``None`` pairs, order preserved."""
-    return "/drive?" + urlencode([(k, v) for k, v in pairs if v])
+def _drive_url(*pairs: tuple[str, str | None], safe: str = "") -> str:
+    """``/drive?`` plus the non-``None`` pairs, order preserved; ``safe``
+    characters stay literal instead of percent-encoded."""
+    return "/drive?" + urlencode([(k, v) for k, v in pairs if v], safe=safe)
 
 
 def kind_list_url(kind: str) -> str:
     """``/drive?k=<kind>&folder=*&sort=recency`` — the preset the retired
     newest-first kind lists fold into (the detail pages' own
-    ``_drive_back.html.j2`` up-link spells the same target)."""
-    return _drive_url(("k", kind), ("folder", "*"), ("sort", "recency"))
+    ``_drive_back.html.j2`` up-link spells the same target, ``*`` literal
+    rather than ``%2A``, so the two stay byte-identical)."""
+    return _drive_url(("k", kind), ("folder", "*"), ("sort", "recency"), safe="*")
 
 
 #: Retired index path to its Drive preset.

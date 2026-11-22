@@ -1336,6 +1336,7 @@
             </select>
           </label>
           <button type="button" @click="fetchMissingDois()"
+                  title="Look up DOIs for cited papers that lack one"
                   x-show="doiFetching || retraction?.missing_doi?.some(p => p.doi_fetchable)"
                   :disabled="doiFetching || retractionChecking"
                   class="text-fg-subtle underline hover:text-fg disabled:opacity-50">

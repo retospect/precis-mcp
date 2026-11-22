@@ -68,6 +68,8 @@ def _leaks(text: str, w: dict[str, Any]) -> list[str]:
 
 
 # ── /tags/refs ──
+# The kind-only ``?kind=profile`` shape retired with gr664412 (a 400 now);
+# its listing is ``/drive?k=profile``, covered in the /drive section below.
 
 
 @pytest.mark.parametrize(
@@ -75,9 +77,8 @@ def _leaks(text: str, w: dict[str, Any]) -> list[str]:
     [
         {"namespace": "OPEN", "value": "acl-r2"},
         {"namespace": "OPEN", "value": "acl-r2", "kind": "profile"},
-        {"kind": "profile"},
     ],
-    ids=["tag", "tag+kind", "kind-only"],
+    ids=["tag", "tag+kind"],
 )
 def test_tags_refs_hides_foreign_and_deleted_profiles(
     client: TestClient, store: Any, params: dict[str, str]
@@ -90,8 +91,10 @@ def test_tags_refs_hides_foreign_and_deleted_profiles(
 
 
 def test_tags_refs_is_per_viewer(client: TestClient, store: Any) -> None:
+    # The tag pivot, not ``?kind=``: that call shape retired (gr664412) and
+    # is a 400 now — ``test_tags_refs_kind_only_call_is_a_400``.
     _world(store)
-    p = {"kind": "profile"}
+    p = {"namespace": "OPEN", "value": "acl-r2"}
     a = client.get("/tags/refs", params=p, headers=_as("alice"))
     b = client.get("/tags/refs", params=p, headers=_as("bob"))
     assert a.status_code == b.status_code == 200

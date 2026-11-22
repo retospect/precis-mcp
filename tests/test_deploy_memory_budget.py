@@ -24,9 +24,6 @@ import yaml
 _DEPLOY = Path(__file__).resolve().parent.parent / "deploy"
 _ROLES = _DEPLOY / "roles"
 _HARDENING = _ROLES / "hardening"
-_SANDBOX_EXECUTOR = (
-    _DEPLOY.parent / "src" / "precis" / "workers" / "executors" / "claude_docker.py"
-)
 
 # Every inventory group that places a lane or an LLM on a Linux host.
 # agent_sandbox_lane: play 35's dynamic group — declared members plus hosts
@@ -215,12 +212,21 @@ def test_gpu_container_reserve_covers_the_dft_cap() -> None:
     assert _gib(dft) <= _gib(lanes["compute"]["container_reserve"])
 
 
-def test_sandbox_container_reserve_covers_the_executor_default() -> None:
+def test_sandbox_container_reserve_covers_the_executor_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deploy leaves PRECIS_SANDBOX_MEMORY unset, so the executor's own
+    resolution sizes the container. Ask it directly rather than regex its
+    source: since gr595538 the unset-env cap is a branch (8g, or a bumped
+    ``meta.footprint_req``), not one ``or "8g"`` literal. This covers the
+    first-attempt cap; the memory-kill retry's bumped cap and in-flight
+    concurrency are not budgeted yet (gr764816)."""
+    from precis.workers.executors.claude_docker import _cgroup_caps
+
+    monkeypatch.delenv("PRECIS_SANDBOX_MEMORY", raising=False)
     lanes = {lane["lane"]: lane for lane in _defaults()["precis_lane_memory"]}
-    src = _SANDBOX_EXECUTOR.read_text(encoding="utf-8")
-    m = re.search(r'os\.environ\.get\("PRECIS_SANDBOX_MEMORY"\) or "([^"]+)"', src)
-    assert m, "PRECIS_SANDBOX_MEMORY default moved; update this test"
-    assert _gib(m.group(1)) <= _gib(lanes["sandbox"]["container_reserve"])
+    memory = _cgroup_caps(None)[0]
+    assert _gib(memory) <= _gib(lanes["sandbox"]["container_reserve"])
 
 
 def test_lane_plays_run_the_budget_check() -> None:
