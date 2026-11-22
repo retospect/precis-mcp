@@ -8,8 +8,10 @@ carrying a ``soak*`` job — and files ONE gripe per failure signature:
 ``ci:check.yml:<file>::<test>`` (the ``[param]`` suffix stripped; an
 ``ERROR`` node counts the same) for a pytest red, or
 ``ci:check.yml:infra:<job name>`` when a failed, cancelled or timed-out
-job is the signal (a lint gate, a runner kill — tagged ``fix:infra``,
-never ``fix:code``, so it stays out of the build lanes); a fail-fast
+job is the signal (a lint gate, a runner kill — tagged ``fix:code`` like
+a test red, gr762317; a fix that must touch ``.github/**`` is still
+fenced, because ``gripe_dispatch`` routes deny-path work to the
+coordinator itself); a fail-fast
 matrix's cancelled siblings share one infra gripe — the first down job
 files, the rest are named in its body. Soak runs are judged on the
 ``soak*`` jobs only, never the whole run — a non-soak failure on
@@ -78,7 +80,7 @@ tick dark; escapes are stripped in Python on that path. Every ``gh`` runs
 with ``factory_git.git_auth_env()`` (the vault ``PRECIS_FACTORY_GIT_TOKEN``
 as ``GH_TOKEN``), so a service account with no ``gh auth login`` still reads.
 
-Filed gripes carry ``fix:code`` (``fix:infra`` for the infra signature),
+Filed gripes carry ``fix:code`` (the infra signature too),
 ``project:precis``, ``ci:nightly``/``ci:soak``, ``thread:factory``,
 ``size:s``, ``origin:ci-watch``, ``meta.dispatch_score``
 ``auto_gripe.AUTO_SCORE`` and ``meta.ci = {sig, wf}``. The ``meta.ci.sig`` + worker-stamped
@@ -807,9 +809,8 @@ def _insert_gripe(store: Any, conn: Any, title: str, sig: str, wf: str) -> int:
         replace_prefix=True,
         conn=conn,
     )
-    infra = sig.startswith(f"ci:{WORKFLOW_FILE}:infra:")
     for value in (
-        "fix:infra" if infra else "fix:code",
+        "fix:code",
         "project:precis",
         f"ci:{wf}",
         "thread:factory",

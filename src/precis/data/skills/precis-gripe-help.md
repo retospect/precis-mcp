@@ -48,25 +48,26 @@ put(kind="gripe", text="paper lookup hides near matches",
 
 **Which project is it against?** `args={'project': '<slug>'}` sets the
 open `project:<slug>` axis — `precis` by default, but gripes against
-anything can be filed (known slugs today: `precis`, `catpath`,
-`autocatpath`, `hexfold`, `infra`, `memory`; any slug normalises, an unknown one
-is not rejected). Omitted means `precis` — and no `project:` tag is
+anything can be filed (a gripe is against `precis` (default) or
+`autocatpath` (the separate repository); `memory` marks a memory-content
+complaint; an area of this repository is named with `topic:<area>`, not
+`project:`). Omitted means `precis` — and no `project:` tag is
 written, so the triage tick may *correct* a wrong default with a
 `project: precis -> <slug>, because …` comment. A `project:` tag the
 filer set is never overridden.
 
 ```python
 put(kind="gripe", text="catpath import drops unicode filenames",
-    args={"project": "catpath"})
+    args={"project": "autocatpath"})
 # after the fact, same axis:
-tag(kind="gripe", id=42, add=["project:hexfold"])
+tag(kind="gripe", id=42, add=["project:autocatpath"])
 ```
 
 Filter a project cohort — and `project='precis'` also reaches the
 untagged-defaulted gripes (they read as the default):
 
 ```python
-search(kind="gripe", args={"project": "catpath"})
+search(kind="gripe", args={"project": "autocatpath"})
 search(kind="gripe", args={"project": "precis"})
 ```
 

@@ -250,7 +250,7 @@ def test_red_nightly_files_one_gripe_per_signature(
     }
     assert len(res.filed) == 4
     infra = _open_tags(store, gripes[NIGHTLY_INFRA])
-    assert "fix:infra" in infra and "fix:code" not in infra
+    assert "fix:code" in infra and "fix:infra" not in infra
     code = _open_tags(store, gripes[NIGHTLY_ONE])
     assert {"fix:code", "ci:nightly", "origin:ci-watch"} <= code
     for gid in gripes.values():
@@ -671,7 +671,8 @@ def test_timed_out_job_files_an_infra_signature(
     gripes = _gripes(store)
     infra = "nightly red: ci:check.yml:infra:typecheck"
     assert infra in gripes
-    assert "fix:infra" in _open_tags(store, gripes[infra])
+    tags = _open_tags(store, gripes[infra])
+    assert "fix:code" in tags and "fix:infra" not in tags
 
 
 def test_red_run_that_filed_nothing_is_not_marked_seen(

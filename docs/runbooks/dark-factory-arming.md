@@ -654,8 +654,8 @@ main plus the newest 3 completed `release/**` runs carrying a `soak` job
 (`gh api` on the worker's own credentials — no checkout needed; set
 `release.repo` when there is none) and files ONE gripe per failure
 signature: `ci:check.yml:<file>::<test>` (`[param]` stripped) for a
-pytest red, `ci:check.yml:infra:<job name>` (tagged `fix:infra`, not
-`fix:code`) for a failed job with no test node. Dedupe is the exact
+pytest red, `ci:check.yml:infra:<job name>` (also tagged `fix:code`) for a failed
+job with no test node. Dedupe is the exact
 title `nightly red: <sig>` / `soak red: <sig>` and complete run ID. If any
 matching gripe already records that run in its filing body or a
 `seen again:` comment, replay skips the signature even after the gripe
@@ -686,8 +686,9 @@ principal is the key, not the client: a stdio `precis serve` client
 binds no principal, so its writes fall through to
 `worker:<PRECIS_CURRENT_SOURCE|cli>`; only the `job_inproc` tick's own
 bound source (`tick_context(source = spec.name)` in the executor)
-lands `worker:ci_watch`. `fix:infra`
-gripes stay out of the lanes; route them to an operator.
+lands `worker:ci_watch`. A job-level red is `fix:code` like a test
+red; a fix that must touch `.github/**` is still fenced, because
+dispatch routes deny-path work to the coordinator.
 
 ## Todo dispatch (todos tagged factory:build)
 
