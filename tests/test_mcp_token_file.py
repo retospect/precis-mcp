@@ -34,6 +34,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -110,8 +111,47 @@ def test_ensure_config_emits_the_env_reference_not_the_token(
     # replace the header); Claude Code ignores it.
     project = json.loads((REPO / ".mcp.json").read_text(encoding="utf-8"))
     precis = project["mcpServers"]["precis"]
-    assert {k: precis[k] for k in entry} == entry
+    assert {k: precis[k] for k in entry if k != "url"} == {
+        k: v for k, v in entry.items() if k != "url"
+    }
+    assert _expand_default(precis["url"], {}) == entry["url"]
     assert precis["bearerTokenEnvVar"] == "PRECIS_MCP_TOKEN"
+
+
+def _expand_default(text: str, env: dict[str, str]) -> str:
+    """Claude Code's ``${VAR:-default}`` expansion, as used in ``.mcp.json``."""
+    return re.sub(
+        r"\$\{(\w+):-([^}]*)\}",
+        lambda m: env.get(m.group(1)) or m.group(2),
+        text,
+    )
+
+
+def test_project_entry_follows_the_port_override(tmp_path: Path) -> None:
+    """The ensure script builds the user-scope URL from
+    ``PRECIS_MCP_HTTP_PORT``; the checked-in ``.mcp.json`` entry shadows
+    it inside a checkout, so its URL must expand the same variable (default
+    8765) — a hardcoded port would send Claude to 8765 while ``scripts/fleet``
+    confirmed readiness on the configured one."""
+    project = json.loads((REPO / ".mcp.json").read_text(encoding="utf-8"))
+    url = project["mcpServers"]["precis"]["url"]
+    for port in (None, "8811"):
+        env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+        if port:
+            env.update({"PRECIS_MCP_HTTP_PORT": port, "PRECIS_MCP_LIVE": "1"})
+        res = subprocess.run(
+            ["bash", str(ENSURE), "--config"],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        assert res.returncode == 0, res.stderr
+        generated = json.loads(res.stdout.strip().splitlines()[-1])["url"]
+        assert generated == f"http://127.0.0.1:{port or '8765'}/mcp"
+        assert _expand_default(url, {"PRECIS_MCP_HTTP_PORT": port or ""}) == generated
 
 
 # --- scripts/mcp-token-env ---------------------------------------------------

@@ -74,7 +74,27 @@ fi
 # the env-reference change still carry the token inline, and re-adding the
 # placeholder now would lock out sessions launched without mcp-token-env
 # until Reto rotates. Rotation re-adds the entry by hand.
-if "$CLAUDE" mcp get precis >/dev/null 2>&1; then
+#
+# "Present" means present at USER scope. `claude mcp get` resolves local >
+# project > user, and the checked-in .mcp.json carries a live `precis`
+# project entry, so a bare `get` inside a checkout succeeds on that entry
+# while the user-scope one — the only one outside a checkout — is gone
+# (td765424). So the lookup runs from a scratch directory (no .mcp.json in
+# reach, no local-scope project) and, when `get` reports a scope at all,
+# insists on "User". The output is only grepped, never printed: an old
+# inline entry carries the token.
+user_entry_present() {
+    local scratch out rc=0
+    scratch="$(mktemp -d)" || return 1
+    out="$(cd "$scratch" && "$CLAUDE" mcp get precis 2>/dev/null)" || rc=$?
+    rmdir "$scratch" 2>/dev/null || true
+    [ "$rc" = 0 ] || return 1
+    if printf '%s\n' "$out" | grep -qiE '^[[:space:]]*scope:'; then
+        printf '%s\n' "$out" | grep -qiE '^[[:space:]]*scope:[[:space:]]*user'
+    fi
+}
+
+if user_entry_present; then
     if [ "$dry" = 1 ]; then
         echo "mcp-entry-preflight: user-scope precis entry present — nothing to do"
     fi
@@ -105,7 +125,7 @@ fi
 
 if cfg="$("$ensure" --config)" &&
     "$CLAUDE" mcp add-json -s user precis "$cfg" &&
-    "$CLAUDE" mcp get precis >/dev/null 2>&1; then
+    user_entry_present; then
     url="$(printf '%s' "$cfg" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
     if [ "$forhook" = 1 ]; then
         echo "mcp-entry-preflight: precis MCP entry was missing; re-added" \

@@ -331,7 +331,17 @@ says LEGACY) yourself afterwards.
   skips a `url` entry without `type` with a config warning; with it the
   project entry wins over the user-scope one of the same name, so a session
   in a checkout authenticates from its environment only and a missing
-  `PRECIS_MCP_TOKEN` is a 401, not a fallback.
+  `PRECIS_MCP_TOKEN` is a 401, not a fallback. The project URL is
+  `http://127.0.0.1:${PRECIS_MCP_HTTP_PORT:-8765}/mcp`, so the port override
+  that `--config` honours reaches a session in a checkout too, provided the
+  session inherits `PRECIS_MCP_HTTP_PORT` (`scripts/fleet` and the
+  `mcp-token-env` launcher pass their environment through).
+- User-scope entry check: `scripts/mcp-entry-preflight` re-adds the
+  user-scope `precis` entry when it is missing. `claude mcp get` resolves the
+  project entry first inside a checkout, so the check runs from a scratch
+  directory and requires the reported scope to be `User`; the checked-in
+  `.mcp.json` entry never counts as the user one. An existing user entry is
+  never rewritten.
 - Docker's default address pools hold about thirty networks. A machine with
   many compose test stacks can exhaust them ("all predefined address pools have
   been fully subnetted", seen with 30 present); the script then retries with an
