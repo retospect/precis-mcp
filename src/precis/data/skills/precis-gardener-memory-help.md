@@ -133,8 +133,9 @@ close in this order: check `view='links'` for a prior closed review on
 the same memory, record the `kg-review` stamp on the verified SHA
 (the trust edit below), comment what changed, and mark the todo
 `STATUS:done`. Closing without the stamp leaves the review
-unrecorded. Unsettled goes to `waiting-for:reto`
-([[precis-user-queue-help]]). An open review todo suppresses repeat
+unrecorded. Unsettled yields `ask-user:<the open
+question>` on the todo — a mid-task block on a reply is an ask, not a
+queue park ([[precis-user-queue-help]]). An open review todo suppresses repeat
 asks on the same memory. A done review suppresses a repeat for the
 same memory, detector and content SHA. For a complaint, any review todo linked to both the memory and
 the complaint already answers the ask.

@@ -1268,9 +1268,13 @@ When the review is settled:
    `put(kind='todo', id=<this todo>, text=<review comment>, tags=['STATUS:done'])`
    to record the comment and close the todo.
 
-Still unsettled → append your findings to the todo body, then
-`tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
-Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.
+Still unsettled → append your findings to the todo body, then yield
+`tag(kind='todo', id=<this todo>, add=['ask-user:<the open
+question>'])` — the planner's human-input yield: it surfaces the todo
+on the owner's asks list and takes it out of planner dispatch until the
+answer lands back in the todo body (`precis-todo-tree-help`). Not
+`waiting-for:reto`: a mid-task block on a reply is `ask-user`; the
+queue is a standing personal list, not a yield (`precis-user-queue-help`).
 
 ## See also
 
