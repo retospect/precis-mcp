@@ -213,3 +213,104 @@ def test_scrub_leaves_short_cause_text_alone() -> None:
         e.__cause__ = lib
     d.scrub_upstream(e)
     assert e.cause == "host lookup failed for the host"
+
+
+def _upstream_from(exc: BaseException) -> Upstream:
+    """The handler shape: ``raise Upstream(f"... {exc}") from exc``."""
+    try:
+        raise Upstream(f"fetch failed for https://example.org/x: {exc}") from exc
+    except Upstream as e:
+        return e
+
+
+def test_scrub_keeps_vendor_error_status_text() -> None:
+    # gr720044: a publisher refusal read as a bare "VendorError".
+    from precis.utils.http import VendorError
+
+    e = _upstream_from(
+        VendorError(
+            "example.org",
+            "HTTP 403 — auth/permission failure, not retried",
+            status=403,
+        )
+    )
+    d.scrub_upstream(e)
+    assert "HTTP 403" in e.cause and "auth/permission failure" in e.cause
+    assert e.cause.startswith("fetch failed for https://example.org/x: ")
+
+
+def test_scrub_drops_the_vendor_response_body() -> None:
+    # The body is text a third-party server chose: none of it reaches the agent.
+    from precis.utils.http import VendorUnavailable
+
+    key = "sk-ant-" + "aB3x" * 10
+    exc = VendorUnavailable(
+        "example.org",
+        "3 attempts exhausted; last: HTTP 503",
+        status=503,
+        body=f"bad key {key}",
+    )
+    assert "bad key" in str(exc)
+    e = _upstream_from(exc)
+    d.scrub_upstream(e)
+    assert key not in e.cause and "bad key" not in e.cause
+    assert "body=" not in e.cause
+    assert "HTTP 503" in e.cause
+
+
+def test_scrub_drops_the_vendor_url() -> None:
+    from precis.utils.http import VendorUnavailable
+
+    value = "k3y" + "Zq9x" * 6
+    exc = VendorUnavailable(
+        "example.org",
+        "3 attempts exhausted; last: HTTP 503",
+        status=503,
+        url=f"https://vendor.example/w.pdf?api_key={value}&page=1",
+    )
+    assert value in str(exc)
+    e = _upstream_from(exc)
+    d.scrub_upstream(e)
+    assert value not in e.cause and "vendor.example" not in e.cause
+    assert "api_key" not in e.cause
+    assert "HTTP 503" in e.cause
+
+
+def test_scrub_keeps_vendor_code_and_trace_id() -> None:
+    from precis.utils.http import VendorError
+
+    e = _upstream_from(
+        VendorError("example.org", "order refused", code=4031, trace_id="tr-77")
+    )
+    d.scrub_upstream(e)
+    assert "order refused code=4031 trace_id=tr-77" in e.cause
+
+
+def test_scrub_strips_driver_noise_from_kept_vendor_text() -> None:
+    from precis.utils.http import VendorUnavailable
+
+    e = _upstream_from(
+        VendorUnavailable(
+            "example.org",
+            "3 attempts exhausted; last: transport error: "
+            "[Errno 61] Connection refused (_ssl.c:993)",
+        )
+    )
+    d.scrub_upstream(e)
+    assert "_ssl.c" not in e.cause and "Errno" not in e.cause
+    assert "3 attempts exhausted" in e.cause
+
+
+def test_dispatch_renders_vendor_error_status(runtime: PrecisRuntime) -> None:
+    from precis.utils.http import VendorError
+
+    err = _upstream_from(
+        VendorError(
+            "example.org",
+            "HTTP 403 — auth/permission failure, not retried",
+            status=403,
+        )
+    )
+    out = _raise_via_calc(runtime, err)
+    assert "[error:Upstream]" in out and "HTTP 403" in out
+    assert ": VendorError" not in out

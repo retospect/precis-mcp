@@ -340,6 +340,11 @@ class VendorError(Exception):
             message += f" code={code}"
         if trace_id:
             message += f" trace_id={trace_id}"
+        #: What an agent may read (``runtime.dispatch.scrub_upstream``):
+        #: service, detail, vendor code and trace id. Never the response
+        #: body (a third-party server chose that text) or the URL (a vendor
+        #: call can carry a key in the query string).
+        self.agent_text = message
         if url:
             message += f" [{url}]"
         if body:

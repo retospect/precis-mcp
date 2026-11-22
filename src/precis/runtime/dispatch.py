@@ -118,7 +118,9 @@ from precis.utils import handle_registry, search_trace
 from precis.utils.canon import CanonState
 from precis.utils.canon import bind as canon_bind
 from precis.utils.canon import unbind as canon_unbind
+from precis.utils.http import VendorError
 from precis.utils.match_all import fold_match_all_q
+from precis.utils.secret_scan import mask_secrets
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -1711,7 +1713,11 @@ def scrub_upstream(err: PrecisError) -> None:
     Handlers write ``Upstream(f"... {exc}")``. When the error chains to a
     non-precis exception (``from exc``, or raised inside its ``except``),
     any ``str(cause)`` of 8+ characters embedded in the message is replaced
-    by the cause's type name, and driver noise is stripped. A missing
+    by the cause's type name, and driver noise is stripped. A
+    ``VendorError`` cause is replaced by its ``agent_text`` instead,
+    secret-masked: the part precis wrote (service, status, reason, vendor
+    code and trace id), never the response body or the url. Without it a
+    refusal reads as a bare ``VendorError`` (gr720044). A missing
     ``next=`` gets the retry hint only when a library exception is chained
     (transient); otherwise a neutral gripe hint, since a missing key or a
     4xx will not heal on retry. No-op for other classes."""
@@ -1723,7 +1729,12 @@ def scrub_upstream(err: PrecisError) -> None:
     if lib is not None:
         text = str(lib).strip()
         if len(text) >= 8 and text in err.cause:
-            err.cause = err.cause.replace(text, type(lib).__name__)
+            kept = (
+                mask_secrets(lib.agent_text, warn=False)
+                if isinstance(lib, VendorError)
+                else type(lib).__name__
+            )
+            err.cause = err.cause.replace(text, kept)
     err.cause = _LIB_NOISE_RE.sub("", err.cause).strip()
     if err.next is None:
         err.next = (

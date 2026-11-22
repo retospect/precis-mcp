@@ -32,7 +32,10 @@ Origin: the 2026-10-17 misuse audit and gr494831 (umbrella), gr494725.
    `Unsupported` with `options=` (the supported verbs) and a `next=`.
 8. **Library faults are `Upstream` with a retry hint; library text never
    reaches the agent.** The dispatcher maps them (below); handlers do not
-   interpolate `{exc}` of a driver or HTTP exception into a message.
+   interpolate `{exc}` of a driver or HTTP exception into a message. A
+   `VendorError` (`utils/http.py`) is not library text: its service,
+   status, reason, vendor code and trace id reach the agent, secret-masked;
+   never the response body or the url.
 9. **One reading: do it and say so. Two readings: refuse.** An alias, a
    near-miss enum value or an obvious wrong key runs as the canonical
    call, and the reply's first line names the reading
