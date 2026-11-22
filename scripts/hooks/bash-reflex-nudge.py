@@ -38,12 +38,20 @@ Rule E's unquoted glob, and a bare ``timeout`` on macOS.
   included. ``grep -rl``/``rg -l`` prints only matching files. ``rg`` is
   excluded (``rg -c`` already skips zeros); single-file counts stay silent.
 
-- **Rule B (cluster-ops).** The command starts with (or contains, after a
-  leading ``cd``) ``ssh <cluster node>`` (node names come from the
-  gitignored cluster overlay at run time; no overlay, no ssh nudge) or
-  invokes ``scripts/prod-psql`` — nudges toward the read-only ``cluster-ops`` agent
-  (or ``cluster-admin`` for a documented write/runbook step) so raw log/psql
-  dumps land in the sub-agent's cheap context, not the caller's.
+- **Rule B (cluster-ops).** A segment of the command RUNS ``ssh <cluster
+  node>`` (node names come from the gitignored cluster overlay at run time;
+  no overlay, no ssh nudge) or ``scripts/prod-psql`` — nudges toward the
+  read-only ``cluster-ops`` agent (or ``cluster-admin`` for a documented
+  write/runbook step) so raw log/psql dumps land in the sub-agent's cheap
+  context, not the caller's. "Runs" is the segment's command word, after
+  ``VAR=val`` prefixes, with heredoc bodies dropped and quoted spans
+  blanked: a note, a commit message or a path argument (``sed -n 1,20p
+  scripts/prod-psql``) that only names them is silent (gr676954). The
+  heredoc/segment/command-word helpers are ``guard-prod-psql.py``'s, loaded
+  by path, so the nudge and the permission guard read a command the same
+  way. A wrapper that hides the command word (``bash -c "…"``, ``$(…)``,
+  ``gtimeout N …``) is a missed hint, accepted: a nudge that fires on
+  mentions trains agents to ignore the real ones.
 
 - **Rule D (sed -n slice).** A plain ``sed -n 'X,Yp' <file>`` (or ``'Np'``,
   ``'X,Y p'``) reading one file — no pipe, ``&&``, ``;`` or redirect — is
@@ -56,6 +64,9 @@ Rule E's unquoted glob, and a bare ``timeout`` on macOS.
   without quotes is expanded by ZSH against the cwd BEFORE the command
   runs — a non-match aborts the whole line with ``no matches found``, so
   the grep never executed (gr514326). Nudges toward the quoted form.
+  Reads the same reduced text as Rule B (heredoc bodies, quoted spans and
+  comments out): zsh expands none of those (gr676954). Rules A, C, D and F
+  anchor on the start of the command and need no such reduction.
   On top of that note, ``_glob_deny`` DENIES (message carries the quoted
   form) when a tokenizer that understands quotes/escapes proves zsh would
   abort: an unquoted word argument with a ``*``/``?``/``[..]`` that matches
@@ -85,6 +96,7 @@ Wired in .claude/settings.json (PreToolUse, matcher "Bash").
 
 from __future__ import annotations
 
+import functools
 import glob
 import importlib.util
 import json
@@ -105,12 +117,11 @@ from _symbol_heuristic import (
 )
 
 
-def _load_read_dedup():
-    """Sibling ``read-dedup.py`` as a module; None when missing/broken."""
+def _load_sibling(name: str, filename: str):
+    """Sibling hook script as a module; None when missing/broken."""
     try:
         spec = importlib.util.spec_from_file_location(
-            "read_dedup_hook",
-            Path(__file__).resolve().with_name("read-dedup.py"),
+            name, Path(__file__).resolve().with_name(filename)
         )
         if spec is None or spec.loader is None:
             return None
@@ -121,7 +132,68 @@ def _load_read_dedup():
         return None
 
 
-_READ_DEDUP = _load_read_dedup()
+_READ_DEDUP = _load_sibling("read_dedup_hook", "read-dedup.py")
+
+_SHELL_HELPERS = ("_strip_heredocs", "_segments", "_invocation")
+
+
+@functools.lru_cache(maxsize=1)
+def _psql_guard():
+    """``guard-prod-psql.py`` as a module, for its heredoc, segment and
+    command-word helpers — one reading of "this command RUNS prod-psql" for
+    the permission guard and for Rule B. Loaded on first use; None (the
+    rules that need it stay silent) when missing, broken or a helper is gone.
+    """
+    mod = _load_sibling("guard_prod_psql_hook", "guard-prod-psql.py")
+    return mod if all(hasattr(mod, h) for h in _SHELL_HELPERS) else None
+
+
+def _blank_quoted(text: str) -> str:
+    """``text`` with the inside of every ``'…'``/``"…"`` span overwritten by
+    ``_`` and every ``#`` comment dropped. The quotes stay, so a quoted word
+    is still one word. An escaped quote opens nothing, a backslash-newline
+    joins its lines, an unclosed quote blanks to the end."""
+    out: list[str] = []
+    quote = ""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1 : i + 2]
+        if quote:
+            if c == quote:
+                quote = ""
+                out.append(c)
+            elif c == "\\" and quote == '"' and nxt:
+                out.append("__")
+                i += 1
+            else:
+                out.append("_")
+        elif c == "\\" and nxt:
+            out.append("  " if nxt == "\n" else "__" if nxt in "'\"" else c + nxt)
+            i += 1
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _run_text(command: str) -> str:
+    """``command`` reduced to what the shell RUNS: heredoc bodies dropped,
+    quoted spans blanked, comments gone. A rule that asks "is X run?" reads
+    this, so text that only mentions X stays silent (gr676954). Without the
+    guard module the heredoc bodies stay in."""
+    guard = _psql_guard() if "<<" in command else None
+    if guard is not None:
+        command = guard._strip_heredocs(command)
+    return _blank_quoted(command)
+
 
 # A single leading `cd <path> && ` prefix (the one case the spec calls out;
 # deeper segment-walking is deliberately out of scope — stay silent instead).
@@ -201,15 +273,22 @@ def _cluster_hosts() -> list[str]:
     return hosts
 
 
-def _ssh_match(body: str) -> re.Match[str] | None:
-    """An ``ssh [flags] <overlay host>`` invocation, or None (fail open)."""
-    if "ssh" not in body:
+# ``ssh [flags] `` as a segment's command word: optionally through a path
+# and/or after env-var assignments (`FOO=bar ssh ...`), like ``_GREP_CMD``.
+_SSH_CMD = r"\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?ssh\s+(?:-\S+\s+)*"
+
+
+def _ssh_match(segments: list[str]) -> re.Match[str] | None:
+    """The first segment that RUNS ``ssh [flags] <overlay host>``, or None
+    (fail open)."""
+    if not any("ssh" in seg for seg in segments):
         return None
     hosts = _cluster_hosts()
     if not hosts:
         return None
     alt = "|".join(re.escape(h) for h in hosts)
-    return re.search(rf"\bssh\s+(?:-\S+\s+)*({alt})\b", body)
+    pat = re.compile(rf"{_SSH_CMD}({alt})\b")
+    return next((m for seg in segments if (m := pat.match(seg))), None)
 
 
 # A leading ``cd <path>`` segment for the redundant-own-tree check. Tolerates a
@@ -303,9 +382,19 @@ def _rule_a(command: str, cwd: str = "") -> str | None:
     return note
 
 
-def _rule_b(command: str) -> str | None:
-    body = _CD_PREFIX.sub("", command, count=1)
-    ssh = _ssh_match(body)
+def _rule_b(command: str, run_text: str | None = None) -> str | None:
+    """Nudge a segment whose command word is ``ssh <node>`` or prod-psql.
+
+    ``run_text`` is ``_run_text(command)`` when the caller already has it.
+    """
+    if "ssh" not in command and "prod-psql" not in command:
+        return None
+    guard = _psql_guard()
+    if guard is None:
+        return None
+    text = _run_text(command) if run_text is None else run_text
+    segments = [seg for seg, _ in guard._segments(text)]
+    ssh = _ssh_match(segments)
     if ssh:
         host = ssh.group(1)
         return (
@@ -314,7 +403,7 @@ def _rule_b(command: str) -> str | None:
             "agent (haiku) SSHes, reads, and returns a short digest instead; "
             "for a documented write/runbook step, `cluster-admin` (sonnet)."
         )
-    if "scripts/prod-psql" in body:
+    if any(guard._invocation(seg) is not None for seg in segments):
         return (
             "[cluster-ops] `scripts/prod-psql` inline pulls raw prod rows into "
             "the main-loop context. The `cluster-ops` agent (haiku) runs the "
@@ -332,9 +421,13 @@ _GLOB_FLAG_ARG = re.compile(
 )
 
 
-def _rule_e(command: str) -> str | None:
-    """Nudge an UNQUOTED glob flag-arg toward the quoted form."""
-    for m in _GLOB_FLAG_ARG.finditer(command):
+def _rule_e(command: str, run_text: str | None = None) -> str | None:
+    """Nudge an UNQUOTED glob flag-arg toward the quoted form.
+
+    ``run_text`` is ``_run_text(command)`` when the caller already has it.
+    """
+    text = _run_text(command) if run_text is None else run_text
+    for m in _GLOB_FLAG_ARG.finditer(text):
         if m.group("q"):
             continue  # quoted — the tool gets the glob as intended
         flag, sep, val = m.group("flag"), m.group("sep"), m.group("val")
@@ -777,11 +870,12 @@ def main() -> int:
         if reason is not None:
             out = {"permissionDecision": "deny", "permissionDecisionReason": reason}
     if out is None:
+        run_text = _run_text(command)
         note = (
-            _rule_e(command)
+            _rule_e(command, run_text)
             or _rule_f(command, cwd)
             or _rule_a(command, cwd)
-            or _rule_b(command)
+            or _rule_b(command, run_text)
             or _rule_c(command, cwd)
             or _rule_d(command)
         )

@@ -317,6 +317,129 @@ def test_unrelated_command_does_not_fire_rule_b() -> None:
     assert _rule_b("git status") is None
 
 
+# gr676954: Rule B judges each segment's command word, not a mention of the
+# name in a heredoc body, a quoted string or a path argument.
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat >> f <<'EOF'\nrun scripts/prod-psql --ro x\nEOF",
+        "cat >> f <<EOF\nscripts/prod-psql --ro x\nEOF",
+        "cat >> f <<-EOF\n\tssh maple uptime\n\tEOF",
+        "cat > a <<'A' && cat > b <<'B'\nssh maple uptime\nA\nssh birch uptime\nB",
+    ],
+)
+def test_rule_b_ignores_heredoc_body_mention(cmd: str) -> None:
+    assert _rule_b(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "sed -n 1,5p scripts/prod-psql",
+        "grep -n x scripts/prod-psql",
+        "git log --oneline -3 -- ./scripts/prod-psql",
+        "ls -l scripts/prod-psql scripts/db",
+        "scp notes.txt maple:scratch/",
+        "git log --grep ssh maple",
+    ],
+)
+def test_rule_b_ignores_path_argument(cmd: str) -> None:
+    assert _rule_b(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'echo "ssh maple uptime"',
+        "git commit -m 'note: ssh maple was slow; ssh birch too'",
+        'git commit -m "docs: scripts/prod-psql --ro usage"',
+        "echo 'first && scripts/prod-psql --ro x'",
+        "ssh spruce 'ssh maple uptime'",
+    ],
+)
+def test_rule_b_ignores_quoted_ssh_text(cmd: str) -> None:
+    assert _rule_b(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'scripts/prod-psql --ro "SELECT 1"',
+        'PRECIS_PROD_PSQL_OPTS=-At scripts/prod-psql --ro "SELECT 1"',
+        'PRECIS_PROD_PSQL_OPTS="-At -x" scripts/prod-psql --ro "SELECT 1"',
+        './scripts/prod-psql --ro "SELECT 1"',
+        '/repo/scripts/prod-psql "SELECT 1"',
+        'cd /repo && scripts/prod-psql --ro "SELECT 1"',
+        'git status; scripts/prod-psql --ro "SELECT 1" | tail -n 3',
+        "cat > scratch/q.txt <<'EOF'\nnote\nEOF\nscripts/prod-psql --ro 'SELECT 1'",
+    ],
+)
+def test_rule_b_still_fires_on_real_prod_psql(cmd: str) -> None:
+    note = _rule_b(cmd)
+    assert note is not None
+    assert "scripts/prod-psql" in note
+
+
+@pytest.mark.parametrize(
+    ("cmd", "host"),
+    [
+        ("ssh maple uptime", "maple"),
+        ("cd /repo && ssh maple uptime", "maple"),
+        ("git status; ssh -T birch 'uptime'", "birch"),
+        ("LC_ALL=C ssh cedar uptime", "cedar"),
+        ("/usr/bin/ssh cedar uptime", "cedar"),
+        ("ssh maple 'journalctl -n 5' | tail -n 2", "maple"),
+        ('echo "it\'s up" && ssh birch "grep -c x \'scripts/prod-psql\'"', "birch"),
+        ("cat > scratch/n.txt <<'EOF'\nnote\nEOF\nssh maple uptime", "maple"),
+    ],
+)
+def test_rule_b_still_fires_on_real_ssh(cmd: str, host: str) -> None:
+    note = _rule_b(cmd)
+    assert note is not None
+    assert "ssh to" in note and host in note
+
+
+def test_main_silent_on_heredoc_mention(monkeypatch, capsys) -> None:
+    cmd = "cat >> scratch/n.md <<'EOF'\nrun scripts/prod-psql --ro x\nEOF"
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is None
+
+
+def test_rule_b_helpers_load_from_guard() -> None:
+    """Rule B is silent without them: a rename in the guard must fail here."""
+    assert _mod._psql_guard() is not None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "# don't forget: ssh maple uptime\ngit status",
+        "git status # then scripts/prod-psql --ro x",
+        'echo \\"; echo ssh maple uptime\\"',
+    ],
+)
+def test_rule_b_ignores_comment_and_escaped_quote(cmd: str) -> None:
+    assert _rule_b(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "# it's the worker box\nssh maple uptime",
+        "ssh \\\n  -T maple uptime",
+        "echo it\\'s up; ssh maple uptime",
+    ],
+)
+def test_rule_b_fires_past_comment_and_continuation(cmd: str) -> None:
+    note = _rule_b(cmd)
+    assert note is not None
+    assert "maple" in note
+
+
 # ── Rule C: redundant `cd <own-worktree>; …` prefix -> run bare ─────────────
 
 
@@ -483,6 +606,42 @@ def test_unquoted_glob_arg_fires_rule_e(cmd: str) -> None:
 )
 def test_rule_e_silent_shapes(cmd: str) -> None:
     assert _rule_e(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat >> notes.md <<'EOF'\nuse grep -rn --include=*.sql TIER src/\nEOF",
+        'git commit -m "docs: find . -name *.tex aborts in zsh"',
+        "echo 'rg -g *.py Foo src/'",
+        "git status # then find . -name *.tex",
+    ],
+)
+def test_rule_e_ignores_text_zsh_never_expands(cmd: str) -> None:
+    """gr676954: a heredoc body, a quoted span and a comment are not globbed."""
+    assert _rule_e(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat > scratch/n.md <<'EOF'\nnote\nEOF\nfind . -name *.tex",
+        "grep -rn --include=*.sql 'TIER 1' src/",
+        'echo "it\'s here"; find . -name *.tex',
+    ],
+)
+def test_rule_e_still_fires_next_to_quoted_text(cmd: str) -> None:
+    note = _rule_e(cmd)
+    assert note is not None
+    assert "no matches found" in note
+
+
+def test_main_silent_on_heredoc_glob_mention(monkeypatch, capsys) -> None:
+    cmd = "cat >> scratch/n.md <<'EOF'\nuse grep -rn --include=*.sql TIER src/\nEOF"
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+    rc, out = _run_main(monkeypatch, payload, capsys)
+    assert rc == 0
+    assert out is None
 
 
 def test_main_emits_rule_e(monkeypatch, capsys) -> None:
