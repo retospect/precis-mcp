@@ -178,7 +178,7 @@ refines fi<original>` on the sharper one.
 CLI: `precis taproot refine --from fi<sharper> --to fi<original>`
 (`--dry-run` to preview).
 
-### Merge duplicate hubs
+## Merge duplicate hubs
 
 Prevention first: a put that is the same as, a component of, or a
 broader/narrower form of an existing hub is refused at mint time with
@@ -218,10 +218,18 @@ alongside; a re-run answers `already merged` and writes nothing.
 Refusals:
 
 - **Either hub past `candidate`** (reviewed, signed, published, rejected):
-  both modes refuse and name the operator's line, `precis taproot merge
-  --loser fi<dup> --winner fi<survivor> --dry-run`. Put that line in a todo
-  for the operator. Do not repoint links and delete by hand: that skips the
-  publish-state check and the redundant-edge handling.
+  no merge is possible, for anyone: its identity is frozen, so this door
+  and the operator CLI (`precis taproot merge`) both refuse. Supersede
+  instead, and the hub past `candidate` is always the one kept, whichever
+  of `id` / `merge_into` you named; the refusal prints the call:
+  `delete(kind='finding', id='fi<candidate-state dup>',
+  superseded_by='fi<past-candidate hub>', reason='<why they are the same
+  claim>')`. It retires the dup, records the redirect and moves the dup's
+  other links to the kept hub (see `precis-delete-help`). Add
+  `dry_run=True` to preview. If both hubs are past `candidate`, neither
+  can be merged or retired: the refusal prints no call; leave both and
+  report the duplicate to the owner. Do not repoint links and delete by
+  hand.
 - **A link on the dup that the survivor may not hold** (a `disputes`
   link when the survivor is a landscape claim, an `explains` link that
   would close a cycle): both modes refuse, name the link as it stands

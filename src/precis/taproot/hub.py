@@ -2372,6 +2372,11 @@ class MergePlan:
     #: The loser edges :func:`link_claims` would refuse on the winner
     #: (gr754451); each is also part of ``block_reason``.
     blocked_edges: list[MergeBlockedEdge] = field(default_factory=list)
+    #: Which sides carry a ``nanopub_publish`` state past ``'candidate'``
+    #: (the publish-state block); the supersede pointer's direction reads
+    #: these.
+    loser_past_candidate: bool = False
+    winner_past_candidate: bool = False
 
     @property
     def blocked_by_edges_only(self) -> bool:
@@ -2521,8 +2526,10 @@ def _build_merge_plan(
         )
 
     blocked: list[str] = []
+    past_candidate: dict[str, bool] = {}
     for label, ref_id in (("loser", loser_ref_id), ("winner", winner_ref_id)):
         states = _publish_states_past_candidate(conn, ref_id)
+        past_candidate[label] = bool(states)
         if states:
             blocked.append(
                 f"{label} ref_id={ref_id} has nanopub_publish state(s) {states} "
@@ -2654,6 +2661,8 @@ def _build_merge_plan(
         edges=edges,
         cite_rewrites=cite_rewrites,
         blocked_edges=blocked_edges,
+        loser_past_candidate=past_candidate["loser"],
+        winner_past_candidate=past_candidate["winner"],
     )
 
 
@@ -2733,6 +2742,45 @@ def _require_actor(conn: Any, set_by: str) -> None:
     )
 
 
+def supersede_call(duplicate: str, survivor: str) -> str:
+    """The agent call that retires the hub ``duplicate`` and records
+    ``survivor`` as its successor -- the only route for a pair a merge
+    refuses."""
+    return (
+        f"delete(kind='finding', id='{duplicate}', superseded_by='{survivor}', "
+        "reason='<why they are the same claim>')"
+    )
+
+
+def supersede_advice(plan: MergePlan) -> str:
+    """What to do instead of a merge the publish-state block refuses. A
+    supersede retires the duplicate, so the hub past ``'candidate'`` is
+    always the survivor, whichever of loser/winner the caller named; with
+    both past ``'candidate'`` nothing may be retired, so no call is named."""
+    lo, wi = f"fi{plan.loser_ref_id}", f"fi{plan.winner_ref_id}"
+    if plan.loser_past_candidate and plan.winner_past_candidate:
+        return (
+            f"{lo} and {wi} are both past 'candidate', so neither can be merged "
+            "or retired. Leave both as they are and report the duplicate to "
+            "the owner."
+        )
+    keep, dup = (lo, wi) if plan.loser_past_candidate else (wi, lo)
+    return (
+        f"Supersede the duplicate {dup} (still at 'candidate') by {keep} (past "
+        f"'candidate', always the one kept): {supersede_call(dup, keep)}"
+    )
+
+
+def merge_past_candidate_next(plan: MergePlan) -> str:
+    """The ``next=`` for the publish-state block: no actor may merge a hub
+    past ``'candidate'`` (gr754451), so it says what to do instead."""
+    return (
+        "no merge is possible once either hub is past 'candidate' (frozen "
+        "identity: a merge would re-identify a reviewed/signed/published "
+        f"artifact), by the agent door or the operator CLI. {supersede_advice(plan)}"
+    )
+
+
 def merge_hubs(
     store: Store,
     *,
@@ -2801,9 +2849,7 @@ def merge_hubs(
                     "remove the blocked edge(s), then retry: "
                     + "; ".join(e.remove_call for e in plan.blocked_edges)
                     if plan.blocked_by_edges_only
-                    else "a hub past 'candidate' in nanopub_publish has a frozen "
-                    "identity -- merging it would retroactively re-identify "
-                    "a reviewed/signed/published artifact"
+                    else merge_past_candidate_next(plan)
                 ),
             )
         _apply_merge_plan(store, c, plan, set_by=set_by)

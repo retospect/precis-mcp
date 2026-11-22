@@ -15,9 +15,10 @@ Why agents may apply (Reto 2026-11-15): a merge hard-DELETEs redundant
 is re-identified, and the door runs the same :func:`merge_hubs` the CLI and
 the claim page run (publish-state check, redundant-edge drop, draft-cite
 rewrite, ``refines`` collapse record). Past ``'candidate'`` the door refuses
-in both modes and hands over the operator's CLI line. The earlier
-plan-only surface forced every duplicate the dedup sweep found into a
-prod-CLI round trip for the owner.
+in both modes. No actor may merge such a hub (gr754451: its identity is
+frozen), the operator CLI included, so the refusal names the supersede call
+instead. The earlier plan-only surface forced every duplicate the dedup
+sweep found into a prod-CLI round trip for the owner.
 """
 
 from __future__ import annotations
@@ -26,7 +27,12 @@ from precis.errors import BadInput
 from precis.response import Response
 from precis.store import Store
 from precis.taproot.authoring import resolve_hub_ref_id, resolve_merge_loser_ref_id
-from precis.taproot.hub import MERGE_COLLAPSE_RELATION, MergePlan, merge_hubs
+from precis.taproot.hub import (
+    MERGE_COLLAPSE_RELATION,
+    MergePlan,
+    merge_hubs,
+    supersede_advice,
+)
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.secret_scan import mask_secrets
 
@@ -43,13 +49,6 @@ def _door_call(lo: str, wi: str) -> str:
         f"edit(kind='finding', id='{lo}', args={{'merge_into': '{wi}', "
         "'reason': '<why they are the same claim>'})"
     )
-
-
-def _cli_line(lo: str, wi: str) -> str:
-    """The operator hand-off for a pair past ``'candidate'``. ``--dry-run``
-    because the CLI enforces the same publish-state guard: the line shows
-    the operator the blocked plan, it does not force the merge."""
-    return f"precis taproot merge --loser {lo} --winner {wi} --dry-run"
 
 
 def _hub_ref(raw: str | int) -> str | int:
@@ -117,7 +116,7 @@ def merge_door(
     Raises:
         BadInput: no ``id=`` or ``reason``; a winner that is not a live
             claim hub; either side past ``'candidate'`` (both modes, with
-            the operator's CLI line as ``next=``); a draft chunk citing the
+            the supersede call as ``next=``); a draft chunk citing the
             loser that cannot be rewritten (``retire_ref``'s cited-finding
             refusal, which lists it); anything :func:`merge_hubs` refuses
             structurally.
@@ -155,11 +154,11 @@ def merge_door(
                 ],
             )
         raise BadInput(
-            f"cannot merge {lo} into {wi}: {plan.block_reason} - a hub past "
-            "'candidate' is reviewed, signed or published, and merging it "
-            "is operator-only",
+            f"cannot merge {lo} into {wi}: {plan.block_reason} - no merge is "
+            "possible once either hub is past 'candidate': its identity is "
+            "frozen (reviewed, signed or published), for every actor",
             next=[
-                f"hand the operator: {_cli_line(lo, wi)}",
+                supersede_advice(plan),
                 "the blocked plan, read-only: get(kind='finding', "
                 f"id='{wi}', view='merge-plan', args={{'loser': '{lo}'}})",
             ],
@@ -264,9 +263,9 @@ def format_merge_plan(plan: MergePlan, *, door: str = "view") -> str:
         )
     else:
         lines.append(
-            "Past 'candidate' a merge is operator-only; hand the operator: "
-            f"{_cli_line(lo, wi)} (claim page /nanopub/{wi}). This view "
-            "never writes."
+            "No merge is possible once either hub is past 'candidate' (frozen "
+            f"identity), for every actor. {supersede_advice(plan)} "
+            "This view never writes."
         )
     return "\n".join(lines)
 

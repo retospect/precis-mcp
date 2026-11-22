@@ -4,7 +4,7 @@
 
 Ruling (Reto 2026-11-15): agents may merge claim hubs through MCP while both
 hubs are still at ``'candidate'`` — the guard ``precis taproot merge``
-already enforces; past ``'candidate'`` stays operator-only. The door mirrors
+already enforces; past ``'candidate'`` nobody may merge (gr754451). The door mirrors
 the paper fold (``id=`` is the loser that retires, ``merge_into`` the
 survivor) and reuses :func:`precis.taproot.hub.merge_hubs`.
 """
@@ -19,6 +19,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers._finding_merge import format_merge_plan
 from precis.handlers.finding import FindingHandler
 from precis.runtime import PrecisRuntime
 from precis.store.types import ChunkInsert
@@ -353,12 +354,15 @@ class TestRefusals:
     )
     @pytest.mark.parametrize("side", ["loser", "winner"])
     @pytest.mark.parametrize("dry_run", [True, False])
-    def test_past_candidate_is_refused_with_the_cli_line(
+    def test_past_candidate_is_refused_and_keeps_the_past_candidate_hub(
         self, store: Any, side: str, dry_run: bool, state: str
     ) -> None:
+        """Whichever side the caller named, the supersede call retires the
+        candidate-state hub and keeps the one past ``'candidate'``."""
         loser, winner = _pair(store)
         _seed_evidence(store, loser, winner)
-        _mark_publish_state(store, loser if side == "loser" else winner, state)
+        kept, dup = (loser, winner) if side == "loser" else (winner, loser)
+        _mark_publish_state(store, kept, state)
         before = _row_counts(store)
 
         with pytest.raises(BadInput, match="past 'candidate'") as ei:
@@ -369,12 +373,101 @@ class TestRefusals:
                 dry_run=dry_run,
             )
 
-        assert f"precis taproot merge --loser fi{loser} --winner fi{winner}" in str(
-            ei.value.next
-        )
+        supersede = f"delete(kind='finding', id='fi{dup}', superseded_by='fi{kept}'"
+        assert "no merge is possible" in ei.value.cause
+        assert supersede in str(ei.value.next)
+        assert f"id='fi{kept}', superseded_by" not in str(ei.value.next)
+        assert "swap" not in str(ei.value.next)
+        assert "taproot merge" not in ei.value.cause
+        assert "taproot merge" not in str(ei.value.next)
         assert state in ei.value.cause
         assert _row_counts(store) == before
         assert not _is_retired(store, loser)
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_both_past_candidate_prints_no_delete_call(
+        self, store: Any, dry_run: bool
+    ) -> None:
+        loser, winner = _pair(store)
+        _mark_publish_state(store, loser, "reviewed")
+        _mark_publish_state(store, winner, "reviewed")
+        before = _row_counts(store)
+
+        with pytest.raises(BadInput, match="past 'candidate'") as ei:
+            _handler(store).edit(
+                id=f"fi{loser}",
+                merge_into=f"fi{winner}",
+                reason="same claim",
+                dry_run=dry_run,
+            )
+
+        nxt = str(ei.value.next)
+        assert "neither can be merged or retired" in nxt
+        assert "report the duplicate to the owner" in nxt
+        assert "delete(" not in nxt
+        assert "taproot merge" not in nxt
+        assert _row_counts(store) == before
+        assert not _is_retired(store, loser)
+        assert not _is_retired(store, winner)
+
+        plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
+        view = format_merge_plan(plan)
+        assert "neither can be merged or retired" in view
+        assert "delete(" not in view
+        with pytest.raises(BadInput) as hub_err:
+            merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+        assert "neither can be merged or retired" in str(hub_err.value.next)
+        assert "delete(" not in str(hub_err.value.next)
+
+    @pytest.mark.parametrize("past", ["loser", "winner"])
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_past_candidate_refusal_through_merge_hubs_names_supersede(
+        self, store: Any, past: str, dry_run: bool
+    ) -> None:
+        """The operator CLI runs ``merge_hubs``: same refusal, same pointer
+        (the past-candidate hub is kept), no ``precis taproot merge``
+        hand-off to a dead end."""
+        loser, winner = _pair(store)
+        kept, dup = (loser, winner) if past == "loser" else (winner, loser)
+        _mark_publish_state(store, kept, "reviewed")
+        before = _row_counts(store)
+        call = f"delete(kind='finding', id='fi{dup}', superseded_by='fi{kept}'"
+
+        if dry_run:
+            plan = merge_hubs(
+                store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True
+            )
+            assert not plan.can_merge
+            view = format_merge_plan(plan)
+            assert "No merge is possible" in view
+            assert call in view
+            assert "taproot merge" not in view
+            assert "swap" not in view
+        else:
+            with pytest.raises(BadInput) as ei:
+                merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
+            nxt = str(ei.value.next)
+            assert "no merge is possible" in nxt
+            assert call in nxt
+            assert "swap" not in nxt
+        assert _row_counts(store) == before
+        assert not _is_retired(store, loser)
+
+    def test_the_named_supersede_call_works_past_candidate(self, store: Any) -> None:
+        """The pointer must lead somewhere: the printed delete call retires
+        the duplicate and records the survivor even when the survivor is
+        past ``'candidate'``."""
+        loser, winner = _pair(store)
+        _mark_publish_state(store, winner, "reviewed")
+
+        _handler(store).delete(
+            id=loser,
+            superseded_by=f"fi{winner}",
+            reason="same claim",
+        )
+
+        assert _is_retired(store, loser)
+        assert not _is_retired(store, winner)
 
     @pytest.mark.parametrize("shape", ["hypothesis", "chase", "unknown"])
     @pytest.mark.parametrize("dry_run", [True, False])

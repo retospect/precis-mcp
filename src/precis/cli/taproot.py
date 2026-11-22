@@ -981,7 +981,7 @@ def _run_refine(args: argparse.Namespace) -> None:
 
 
 def _print_merge_plan(plan: Any, *, dry_run: bool) -> None:
-    from precis.taproot.hub import MERGE_COLLAPSE_RELATION
+    from precis.taproot.hub import MERGE_COLLAPSE_RELATION, merge_past_candidate_next
 
     tag = "[DRY-RUN] " if dry_run else ""
 
@@ -1037,6 +1037,8 @@ def _print_merge_plan(plan: Any, *, dry_run: bool) -> None:
     else:
         print(f"{tag}publish-state check: BLOCKED -- {plan.block_reason}")
         print(f"{tag}fi{plan.loser_ref_id} stays live -- merge refused")
+        if not plan.blocked_by_edges_only:
+            print(f"{tag}{merge_past_candidate_next(plan)}")
 
 
 def _run_merge(args: argparse.Namespace) -> None:
@@ -1066,6 +1068,8 @@ def _run_merge(args: argparse.Namespace) -> None:
         _print_merge_plan(plan, dry_run=args.dry_run)
     except BadInput as exc:
         print(f"taproot merge: error: {exc.cause}", file=sys.stderr)
+        if isinstance(exc.next, str):
+            print(f"taproot merge: next: {exc.next}", file=sys.stderr)
         sys.exit(1)
     finally:
         store.close()
