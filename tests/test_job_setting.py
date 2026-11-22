@@ -294,6 +294,26 @@ def test_claim_view_flags_an_unusable_footprint_override(
     assert row[:4] == ["slice", "lots", "1000", "1000 (override ignored)"]
 
 
+@pytest.mark.parametrize(
+    ("raw", "effective"),
+    [
+        ("0.99999999999999999", "1000 (override ignored)"),
+        ("1.5", "1000 (override ignored)"),
+        ("1000.0", "1000"),
+        ("750.0", "750"),
+        ("1e30", "256000"),
+    ],
+)
+def test_claim_view_effective_cpu_follows_the_parser(
+    jobs: JobHandler, store: Store, raw: str, effective: str
+) -> None:
+    """td765418: a fractional stored value shows the default as ignored, not
+    a rounded sliver; an int-valued float is accepted; a huge one clamps."""
+    store.set_setting("claim.footprint.slice.cpu_milli", raw)
+    row = _claim_row(jobs.get(id="/claim").body, "slice")
+    assert row[:4] == ["slice", raw, "1000", effective]
+
+
 def test_claim_view_footprint_rows_are_cpu_milli_only(
     jobs: JobHandler, store: Store
 ) -> None:
