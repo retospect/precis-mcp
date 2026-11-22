@@ -109,14 +109,14 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
   embed-lane-stalled) page once via ``alerts.notify_critical_alert``.
   Alert-producer mechanics (``raise_alert``/``resolve_stale_alerts``):
   ``docs/runbooks/alert-ops.md``.
-* ``health_digest`` — the slow-rot sibling (hourly, SQL-only); own
-  docstring for the check/route/push pipeline. Ops: ``docs/runbooks/
-  health-digest-ops.md``.
+* ``health_digest`` — hourly SQL watchdog. Ops guide:
+  ``docs/runbooks/health-digest-ops.md``.
   Taproot edge silence is unhealthy only with chase-eligible work overdue
   beyond 6h: the check mirrors tracing/acquiring eligibility, canonical-hub
   exclusion and waiting backoff. Eligibility age starts at queue entry,
   genuine advance or completed backoff expiry; failed/unknown activity
   cannot erase it (gr346342).
+  MCP silence checks include completed gaps to catch recovery between runs.
 * ``disk_check`` — SQL-free, every node: ``shutil.disk_usage`` over
   ``PRECIS_DISK_WATCH_PATHS``, warn/critical alerts.
 * ``structural`` (5h dedup)/``deep_review`` (144h) — opus reviewers via

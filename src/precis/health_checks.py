@@ -966,7 +966,84 @@ def tool_latency(
     ]
 
 
+#: Endpoint-dark probe (gr633497): the minimum gap, maximum age of its
+#: start, and call/session thresholds for the preceding busy hour.
+ENDPOINT_DARK_WINDOW_S = 1800
+ENDPOINT_DARK_MAX_SILENCE_S = 7200
+ENDPOINT_DARK_MIN_CALLS = 20
+ENDPOINT_DARK_MIN_SESSIONS = 3
+
+
+def endpoint_dark(
+    conn: Any,
+    *,
+    window_s: int = ENDPOINT_DARK_WINDOW_S,
+    max_silence_s: int = ENDPOINT_DARK_MAX_SILENCE_S,
+    min_calls: int = ENDPOINT_DARK_MIN_CALLS,
+    min_sessions: int = ENDPOINT_DARK_MIN_SESSIONS,
+    as_of: datetime | None = None,
+) -> list[str]:
+    """MCP client labels that went silent while the ledger stayed live.
+
+    Examine completed and ongoing gaps between calls from each MCP
+    client name, ignoring its version. A gap must span at least
+    ``window_s`` seconds and start within the last ``max_silence_s``
+    seconds. The hour through the start must meet the call and session
+    minimums, and other traffic must reach the ledger in the final
+    ``window_s`` seconds of the gap.
+
+    On 2026-11-19, two stragglers and then recovery arrived before the
+    hourly evaluations. Keeping completed gaps lets the digest see
+    the silence that preceded those calls.
+    """
+    rows = conn.execute(
+        """
+        WITH clock AS (
+          SELECT COALESCE(%(as_of)s::timestamptz, now()) AS checked_at
+        ), gaps AS (
+          SELECT split_part(client, '/', 1) AS label, ts AS gap_start,
+                 lead(ts, 1, checked_at) OVER (
+                   PARTITION BY split_part(client, '/', 1) ORDER BY ts
+                 ) AS gap_end
+            FROM tool_calls
+            CROSS JOIN clock
+           WHERE ts >= checked_at - make_interval(secs => %(max)s)
+             AND ts <= checked_at
+             AND client IS NOT NULL AND session_id IS NOT NULL
+        )
+        SELECT DISTINCT g.label
+          FROM gaps g
+         WHERE g.gap_end - g.gap_start >= make_interval(secs => %(w)s)
+           AND (SELECT count(*) >= %(n)s
+                  AND count(DISTINCT session_id) >= %(s)s
+                  FROM tool_calls
+                 WHERE split_part(client, '/', 1) = g.label
+                   AND session_id IS NOT NULL
+                   AND ts >= g.gap_start - make_interval(secs => 3600)
+                   AND ts <= g.gap_start)
+           AND EXISTS (SELECT 1 FROM tool_calls
+                        WHERE ts > g.gap_start
+                          AND ts >= g.gap_end - make_interval(secs => %(w)s)
+                          AND ts < g.gap_end
+                          AND split_part(client, '/', 1) IS DISTINCT FROM g.label)
+         ORDER BY g.label
+        """,
+        {
+            "w": window_s,
+            "max": max_silence_s,
+            "n": min_calls,
+            "s": min_sessions,
+            "as_of": as_of,
+        },
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
 __all__ = [
+    "ENDPOINT_DARK_MAX_SILENCE_S",
+    "ENDPOINT_DARK_MIN_CALLS",
+    "ENDPOINT_DARK_MIN_SESSIONS",
+    "ENDPOINT_DARK_WINDOW_S",
     "TOOL_LATENCY_BUDGET_MS",
     "TOOL_LATENCY_BUDGET_OVERRIDES_MS",
     "TOOL_LATENCY_MIN_CALLS",
@@ -977,6 +1054,7 @@ __all__ = [
     "activity_by_handler",
     "backlog_counts",
     "compute_backlog_counts",
+    "endpoint_dark",
     "fetch_freshness_timestamps",
     "idle_lanes",
     "liveness_by_handler",

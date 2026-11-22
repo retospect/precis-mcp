@@ -252,6 +252,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
     ),
     _watchdog(
         "infra",
+        "endpoint_dark",
+        "A busy MCP client label had a recent gap of at least 30 minutes "
+        "while other entry points kept calling.",
+        budget="30min",
+        service=None,
+    ),
+    _watchdog(
+        "infra",
         "tool_latency_regressed",
         "A tool verb/kind's p95 over the last hour more than doubled against the past week.",
         budget="2x trailing-week p95",

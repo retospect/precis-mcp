@@ -36,7 +36,11 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
      ``tool_latency`` / ``tool_latency_regressed`` read the ``tool_calls``
      ledger (:func:`precis.health_checks.tool_latency`, the rollup
      ``precis-status`` shows): a verb/kind p95 over its budget, or more
-     than double its trailing-week p95.
+     than double its trailing-week p95. ``endpoint_dark`` reads the same
+     ledger per client label (:func:`precis.health_checks.endpoint_dark`,
+     gr633497): a gap of at least 30 min following a busy hour while
+     other calls kept landing. The hourly digest also reads completed
+     gaps that started in the last two hours.
    * **Cadence staleness** (:func:`_cadence_staleness_checks`, derived) —
      every ``scheduler_leases`` row overdue past its *live*-resolved
      interval + margin; zero per-cadence config, so a new
@@ -1644,6 +1648,34 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     return [budget, trend]
 
 
+def _endpoint_dark_check(conn: Any) -> CheckResult:
+    """Report recent MCP client traffic gaps while other callers stayed active."""
+    try:
+        dark = health_checks.endpoint_dark(conn)
+    except Exception:
+        log.exception("health_digest: endpoint_dark probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after endpoint_dark failed")
+        return CheckResult(
+            "infra", "endpoint_dark", "unknown", "endpoint dark: probe failed", _WARN
+        )
+    if dark:
+        return CheckResult(
+            "infra",
+            "endpoint_dark",
+            "stale",
+            "MCP client(s) had a traffic gap of at least "
+            f"{health_checks.ENDPOINT_DARK_WINDOW_S // 60} min while other calls "
+            "continued: " + ", ".join(dark),
+            _WARN,
+        )
+    return CheckResult(
+        "infra", "endpoint_dark", "ok", "endpoint dark: no client went silent", _WARN
+    )
+
+
 #: The registry service name gating the role3 classifier (see
 #: ``workers/registry.py``'s ``classify`` :class:`ServiceSpec`) — the name
 #: :func:`_classify_gate_enabled` looks up.
@@ -1906,6 +1938,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_alert_backlog_rot(conn))
         out.append(_check_post_migration_steps(conn))
         out += _tool_latency_checks(conn)
+        out.append(_endpoint_dark_check(conn))
     if not _classify_gate_enabled(store):
         out = [
             _idle_classify_check() if c.name == "chunks_classified" else c for c in out
@@ -2526,6 +2559,7 @@ _PINNED_FINGERPRINTS: dict[tuple[str, str], str] = {
     ("meta", "alert_backlog_rot"): "alert_backlog_rot",
     ("infra", "tool_latency"): "tool_latency",
     ("infra", "tool_latency_regressed"): "tool_latency_regressed",
+    ("infra", "endpoint_dark"): "endpoint_dark",
     ("deploy", "post_migration_steps"): "post_migration_steps",
     # The graph gardener left the lease cadences for a recurring todo;
     # its watchdog keeps the id the derived lease check used to emit.
