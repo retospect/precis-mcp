@@ -244,3 +244,25 @@ def test_nearby_is_bounded_and_retains_effective_budgets(
     defaults = ExecutedClaudeRunner()
     for key in ("case_usd", "run_usd", "timeout_s", "max_turns"):
         assert payload["budgets"][key] == getattr(defaults, key)
+
+
+def test_git_waits_are_bounded_and_a_hang_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr760180: both git seams pass ``timeout=GIT_TIMEOUT_S``; a hung git
+    makes ``_revision`` return ``None`` instead of blocking the review."""
+    import subprocess
+
+    from precis.skill_eval import discovery_review as review
+
+    seen: list[object] = []
+
+    def hang(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 0)
+
+    monkeypatch.setattr(review.subprocess, "run", hang)
+    assert review._revision("HEAD") is None
+    with pytest.raises(subprocess.TimeoutExpired):
+        review.changed_skills_since("2026-01-01")
+    assert seen == [review.GIT_TIMEOUT_S, review.GIT_TIMEOUT_S]
