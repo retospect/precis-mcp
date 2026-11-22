@@ -318,6 +318,14 @@ from fleet_panes import (
 PASTE_MIN = 200
 PREFIXES = ("claude-", "devin-", "codex-", "kimi-")
 
+#: Last line of a --devin launch's prompt, and of no other vendor's
+#: (gr676959): a tmux Devin ended its turn after each output poll and
+#: needed 19 "continue" nudges in one session.
+DEVIN_KEEP_GOING = (
+    "Do not end your turn to wait for a command: run it in the foreground or "
+    "poll it inside this turn; do not send progress-only messages."
+)
+
 #: The wave's context refuse line in % used (gr515267). Brief text alone
 #: did not hold the 70% handoff ceiling — five builders ran to 85-99% on
 #: 2026-10-24. At/above CTX_HARD send-line refuses fresh instructions —
@@ -1570,6 +1578,8 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     )
     _warn_brief_shas(f, brief)
     text = f"{brief}\n{footer}"
+    if a.devin:
+        text = f"{text.rstrip()}\n{DEVIN_KEEP_GOING}\n"
     f.state.mkdir(parents=True, exist_ok=True)
     prompt_file = f.state / f"{win}.prompt"
     prompt_file.write_text(text, encoding="utf-8")

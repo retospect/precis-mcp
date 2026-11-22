@@ -940,6 +940,41 @@ def test_devin_launch_without_a_model_drops_a_stale_record(
     assert not (st / "devin-d-x.model").exists()
 
 
+DEVIN_KEEP_GOING = (
+    "Do not end your turn to wait for a command: run it in the foreground or "
+    "poll it inside this turn; do not send progress-only messages."
+)
+
+
+def test_devin_prompt_has_keep_going_rule(env: dict[str, str], tmp_path: Path) -> None:
+    """gr676959: a tmux Devin ended its turn after each output poll, so the
+    prompt file a ``--devin`` launch hands devin-tree ends with the
+    keep-going rule; a Claude launch's prompt does not carry it."""
+    log = _fake_devin_tree(env, tmp_path)
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _devin_launch_fills(env)
+    proc = _run(env, "launch", "d-x", "--brief", str(brief), "--tier",
+                "qland", "--devin")  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(log.read_text(encoding="utf-8"))
+    prompt_file = Path(argv[argv.index("--prompt-file") + 1])
+    assert prompt_file == Path(env["FLEET_STATE"]) / "devin-d-x.prompt"
+    prompt = prompt_file.read_text(encoding="utf-8")
+    assert prompt.startswith("Task: x.\n") and "\nFinish: " in prompt
+    assert prompt.endswith(f"\n{DEVIN_KEEP_GOING}\n"), prompt[-300:]
+    assert prompt.count(DEVIN_KEEP_GOING) == 1
+
+    proc = _run(env, "launch", "c-x", "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode == 0, proc.stderr
+    other = (Path(env["FLEET_STATE"]) / "claude-c-x.prompt").read_text(encoding="utf-8")
+    assert other.startswith("Task: x.\n") and "\nFinish: " in other
+    assert DEVIN_KEEP_GOING not in other
+    typed = json.loads(Path(env["FAKE_CLAUDE_LOG"]).read_text(encoding="utf-8"))[-1]
+    assert typed == other
+
+
 def test_launch_legacy_footers_behind_env_flag(
     env: dict[str, str], tmp_path: Path
 ) -> None:
