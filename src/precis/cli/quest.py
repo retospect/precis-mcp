@@ -252,6 +252,24 @@ def add_parser(subparsers: Any) -> None:
     )
     bf.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    rs = qsub.add_parser(
+        "restamp-barrier-trust",
+        help="Re-evaluate every candidate's stored barrier verdict "
+        "(barrier_trusted/blocked_by/anchor/network basis) against the "
+        "pathway or neb run that sourced the stored barrier — repairs "
+        "rows a pre-gr592573 barrierless harvest overwrote with foreign "
+        "evidence. Dry run prints the per-structure diff; --apply writes "
+        "the stamps and logs each change to the quest logbook.",
+    )
+    rs.add_argument("id", type=int, help="Quest ref id.")
+    rs.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the restamps and logbook entries (default: dry run, "
+        "prints the read-only diff).",
+    )
+    rs.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     rc = qsub.add_parser(
         "reset-compute",
         help="Surgically wipe the barrier-lane compute history (stale measures, "
@@ -829,6 +847,24 @@ def _cmd_backfill_network_basis(store: Store, args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_restamp_barrier_trust(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.compute import restamp_barrier_trust
+
+    c = restamp_barrier_trust(store, args.id, apply=args.apply)
+    print(
+        f"quest {args.id}: {'APPLIED' if args.apply else 'DRY RUN'} — "
+        f"{c['with_barrier']} candidates with a stored barrier "
+        f"({c['candidates']} candidates); {c['no_source']} no resolvable "
+        f"source; {c['unchanged']} already correct; "
+        f"{'restamped' if args.apply else 'would restamp'} {c['changed']} "
+        f"({c['flips']} verdict flips); written: {c['written']}"
+    )
+    for d in c["diffs"]:
+        print(f"  {d['handle']} ({d['lane']}):")
+        for k, (old, new) in d["changes"].items():
+            print(f"    {k}: {old!r} -> {new!r}")
+
+
 def _cmd_reset_compute(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.compute import reset_compute
 
@@ -896,6 +932,8 @@ def run(args: argparse.Namespace) -> None:
             _cmd_redispatch(store, args)
         elif args.quest_cmd == "backfill-network-basis":
             _cmd_backfill_network_basis(store, args)
+        elif args.quest_cmd == "restamp-barrier-trust":
+            _cmd_restamp_barrier_trust(store, args)
         elif args.quest_cmd == "reset-compute":
             _cmd_reset_compute(store, args)
         elif args.quest_cmd == "status":

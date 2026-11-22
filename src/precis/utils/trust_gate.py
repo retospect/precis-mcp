@@ -34,7 +34,11 @@ import dataclasses
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
-from typing import Any
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from psycopg import Connection
 
 #: Gating checks in display order — autocatpath.trust.CHECKS minus
 #: ``endpoint_identity`` (an input measurement, not a verdict gate).
@@ -443,6 +447,7 @@ def _sibling_metas(
     *,
     meta: dict[str, Any],
     exclude_ref_id: int | None = None,
+    conn: Connection | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """``(engine, ready same-key sibling metas)`` — the one store scan
     behind :func:`sibling_seeds` and :func:`sibling_evidence`. The query
@@ -454,8 +459,8 @@ def _sibling_metas(
     if key is None:
         return "", []
     cand, engine = key[0], key[1]
-    with store.pool.connection() as conn:
-        rows = conn.execute(
+    with nullcontext(conn) if conn is not None else store.pool.connection() as c:
+        rows = c.execute(
             "SELECT ref_id FROM refs WHERE kind = 'pathway' "
             "AND retired_at IS NULL AND meta->>'candidate_ref' = %s "
             "AND meta->>'autocatpath_version' = %s",
@@ -467,7 +472,12 @@ def _sibling_metas(
     if not ids:
         return engine, []
     metas: list[dict[str, Any]] = []
-    for ref in store.fetch_refs_by_ids(ids).values():
+    refs = (
+        store.fetch_refs_by_ids(ids)
+        if conn is None
+        else store.fetch_refs_by_ids(ids, conn=conn)
+    )
+    for ref in refs.values():
         smeta = ref.meta if isinstance(ref.meta, dict) else {}
         if smeta.get("status") != "ready" or sibling_key(smeta) != key:
             continue
@@ -506,6 +516,7 @@ def sibling_evidence(
     *,
     meta: dict[str, Any],
     exclude_ref_id: int | None = None,
+    conn: Connection | None = None,
 ) -> tuple[set[int], list[dict[str, Any]]]:
     """The union material this pathway's READY same-key siblings
     contribute (gr517804 R6 + round-2 R1): ``(pooled seeds, pooled
@@ -514,7 +525,9 @@ def sibling_evidence(
     and is non-stale at the shared engine — the material
     :func:`endpoint_union_blocker` replays agreement over. ``(set(),
     [])`` when this pathway's key can't be formed."""
-    engine, metas = _sibling_metas(store, meta=meta, exclude_ref_id=exclude_ref_id)
+    engine, metas = _sibling_metas(
+        store, meta=meta, exclude_ref_id=exclude_ref_id, conn=conn
+    )
     return _pool_evidence(engine, metas)
 
 

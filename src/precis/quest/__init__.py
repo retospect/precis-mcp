@@ -178,6 +178,8 @@ Package-level invariants (detail lives on the named module):
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
   (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps dispatch/tick; extras
   stay ``hypothesis`` leads until the in-flight one's sims land.
+- **Barrier restamps are audited atomically.** ``restamp_barrier_trust``
+  (gr592669) shares one connection for provenance reads, patches and logbook writes.
 - **Bad energies are part of the score** (catpath >= 0.6.0 scorecard):
   ``selectivity_margin``/``poison_margin`` (max), ``trap_margin``
   (diagnostic) ride the barrier's trust gate; the default rubric ranks on

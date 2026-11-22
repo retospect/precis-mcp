@@ -36,6 +36,7 @@ import math
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -49,8 +50,14 @@ from precis.quest.failure_class import SCIENCE as _FAILURE_SCIENCE
 from precis.quest.failure_class import classify_untrusted as _classify_untrusted
 from precis.quest.failure_class import untrusted_reasons as _untrusted_reasons
 from precis.quest.frontier import _BARRIER_ABSURD_EV, _UNTRUSTED_VALUE_SUFFIX
-from precis.quest.logbook import MEASURED_BY, append_entry
+from precis.quest.logbook import (
+    LOG_KIND,
+    MEASURED_BY,
+    append_entry,
+    link_entry_structures,
+)
 from precis.store import Tag
+from precis.store.types import ChunkInsert
 from precis.structure.canonical import geom_hash_c as _geom_hash_c
 from precis.structure.engine_token import (  # noqa: F401  (re-exported: tests/callers use compute._autocatpath_*)
     _AUTOCATPATH_CACHE_EPOCH,
@@ -66,6 +73,8 @@ from precis.utils import trust_gate
 from precis.workers.executors import suspended_job_types
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store import Store
 
 log = logging.getLogger(__name__)
@@ -3134,6 +3143,7 @@ def _flag_few_independent_seeds(
     *,
     pathway_ref: int,
     measures: dict[str, Any],
+    conn: Connection | None = None,
 ) -> str | None:
     """Untrust a freshly-landed neb-tier barrier backed by fewer than 2
     DISTINCT same-engine seeds pooled across the pathway's sibling set
@@ -3208,7 +3218,7 @@ def _flag_few_independent_seeds(
     results = results if isinstance(results, dict) else {}
     records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
     pooled, pooled_identity = trust_gate.sibling_evidence(
-        store, meta=pw_meta, exclude_ref_id=pathway_ref
+        store, meta=pw_meta, exclude_ref_id=pathway_ref, conn=conn
     )
     run = trust_gate.run_seeds(records, engine=engine, declared=results.get("seeds"))
     measures["barrier_independent_seeds"] = (
@@ -3319,6 +3329,7 @@ def _barrier_anchor(
     tier: str,
     candidate_meta: dict[str, Any],
     measures: dict[str, Any],
+    conn: Connection | None = None,
 ) -> dict[str, Any] | None:
     """The named credit anchor for a harvested pathway barrier
     (gr543165): pathway id + the gate rows that passed + the seed set —
@@ -3336,7 +3347,7 @@ def _barrier_anchor(
     scope = trust_gate.route_scope(results)
     thresholds = trust_gate.thresholds_from(records, pw_meta.get("config"))
     pooled, pooled_identity = trust_gate.sibling_evidence(
-        store, meta=pw_meta, exclude_ref_id=pathway_ref
+        store, meta=pw_meta, exclude_ref_id=pathway_ref, conn=conn
     )
     run = trust_gate.run_seeds(records, engine=engine, declared=results.get("seeds"))
     rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
@@ -3383,7 +3394,7 @@ def _barrier_anchor(
 
 
 def _fresh_autocatpath_jobs(
-    store: Store, structure_ref_id: int, upto: int
+    store: Store, structure_ref_id: int, upto: int, *, conn: Connection | None = None
 ) -> list[tuple[int, dict[str, Any]]]:
     """Completed autocatpath result jobs under a candidate, newer than ``upto``.
 
@@ -3402,8 +3413,8 @@ def _fresh_autocatpath_jobs(
     Returns ``(job_ref_id, meta)`` oldest-first so harvest is deterministic and
     the idempotency bookmark advances monotonically.
     """
-    with store.pool.connection() as conn:
-        rows = conn.execute(
+    with nullcontext(conn) if conn is not None else store.pool.connection() as c:
+        rows = c.execute(
             """
             SELECT j.ref_id, j.meta FROM refs j
              WHERE j.kind = 'job' AND j.retired_at IS NULL AND j.ref_id > %(upto)s
@@ -6663,6 +6674,503 @@ def backfill_network_basis(
             store.stamp_ref_meta(sid, {"network_basis_by_key": {**by_key, **new}})
             counts["candidates_written"] += 1
     return counts
+
+
+#: The barrier-verdict keys :func:`restamp_barrier_trust` recomputes from
+#: the ref that sourced the stored barrier (gr592669): the four the gripe
+#: names (``barrier_trusted``/``barrier_blocked_by``/``barrier_anchor``/
+#: ``network_basis_by_key["barrier"]`` — the basis handled separately, it
+#: lives in a nested map) plus every other barrier-scoped verdict key the
+#: same harvest order could overwrite with a foreign pathway's evidence
+#: (gr592573), so the restamped row is self-consistent, not half-fixed.
+#: A key a lane's recompute legitimately produces no value for is
+#: normalised to an explicit null — never left carrying a stale foreign
+#: stamp — with one exception: ``barrier_anchor`` is DELETED on a lane
+#: that never mints one (a job-kind source predates the anchor era), since
+#: an explicit null on the autocatpath lane reads as a refused credit to
+#: ``frontier._candidate_from_structure``.
+_RESTAMP_BARRIER_KEYS: tuple[str, ...] = (
+    "barrier_trusted",
+    "barrier_blocked_by",
+    "barrier_anchor",
+    "barrier_assurance",
+    "barrier_assurance_reasons",
+    "barrier_seed_blocker",
+    "barrier_independent_seeds",
+    "barrier_neb_failed",
+    "barrier_desorbed",
+    "barrier_wrong_site",
+    "barrier_marginal_count",
+    "barrier_low_confidence",
+    "barrier_trust_note",
+    "barrier_failure_class",
+    "barrier_absurd",
+)
+
+
+def _barrier_stamp_source(
+    store: Store, sid: int, meta: dict[str, Any], *, conn: Connection | None = None
+) -> tuple[int, dict[str, Any], str] | None:
+    """Resolve a stamped source or infer it from harvested legacy results.
+
+    The watermark bounds jobs harvest processed. The barrier's own fidelity
+    identifies its tier even if a later barrierless job advanced the ladder.
+    Trust-first harvest can stash a processed result, so an equal-valued
+    stash or competing sources on a candidate with NEB evidence are ambiguous.
+    """
+    pid = meta.get("barrier_pathway_ref_id")
+    if "barrier_pathway_ref_id" in meta:
+        if type(pid) is not int:
+            return None
+        ref = store.fetch_refs_by_ids({pid}, conn=conn).get(pid)
+        if ref is None or ref.kind not in {"pathway", "job"}:
+            return None
+        return pid, dict(ref.meta or {}), ref.kind
+
+    stored = _num_measure(meta.get("barrier"))
+    upto = meta.get("quest_autocatpath_harvested_upto")
+    tier = meta.get("barrier_fidelity")
+    if (
+        stored is None
+        or type(upto) is not int
+        or upto <= 0
+        or tier not in (_TIER_NEB, _TIER_VERIFY)
+    ):
+        return None
+    stashed = _num_measure(meta.get(f"barrier{_UNTRUSTED_VALUE_SUFFIX}"))
+    if stashed is not None and abs(stashed - stored) <= _BACKFILL_MATCH_TOL:
+        return None
+    trust_first = bool(meta.get("neb_edges")) or stashed is not None
+    pick: tuple[int, dict[str, Any], str] | None = None
+    for job_id, jmeta in reversed(_fresh_autocatpath_jobs(store, sid, 0, conn=conn)):
+        if job_id > upto:
+            continue
+        value = _num_measure(_autocatpath_measures_from_job(jmeta).get("barrier"))
+        if value is None:
+            continue
+        pref = jmeta.get("pathway_ref")
+        ref = (
+            store.fetch_refs_by_ids({pref}, conn=conn).get(pref)
+            if type(pref) is int
+            else None
+        )
+        if ref is None or ref.kind not in {"pathway", "job"}:
+            return None
+        pw_meta = dict(ref.meta or {})
+        if _pathway_tier(pw_meta) != tier:
+            continue
+        if abs(value - stored) > _BACKFILL_MATCH_TOL:
+            if trust_first:
+                continue
+            return None
+        if not trust_first:
+            return ref.id, pw_meta, ref.kind
+        if pick is not None and pick[0] != ref.id:
+            return None
+        pick = ref.id, pw_meta, ref.kind
+    return pick
+
+
+def _recorded_neb_edge(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``meta.neb_edges`` entry that SOURCED the stored barrier —
+    the slot the stored stamp itself names (``neb_run_id`` +
+    ``neb_edge_fs_ref_id``) reproducing the stored value within
+    :data:`_BACKFILL_MATCH_TOL`. Exactly one match resolves; a
+    superseded slot (a newer run rewrote the edge) or an ambiguous
+    value match resolves none — re-SELECTING across the whole table
+    would restamp the stored value with a different edge's verdict and
+    anchor, the same evidence/value split the repair exists to remove.
+    """
+    edges = meta.get("neb_edges")
+    if not isinstance(edges, dict):
+        return None
+    stored = _num_measure(meta.get("barrier"))
+    if stored is None:
+        return None
+    run_id = meta.get("neb_run_id")
+    fs_id = meta.get("neb_edge_fs_ref_id")
+    matches: list[dict[str, Any]] = []
+    for entry in edges.values():
+        if not isinstance(entry, dict):
+            continue
+        if run_id is not None and entry.get("neb_run_id") != run_id:
+            continue
+        if fs_id is not None and entry.get("fs_ref_id") != fs_id:
+            continue
+        v = _num_measure(entry.get("barrier"))
+        if v is None or abs(v - stored) > _BACKFILL_MATCH_TOL:
+            continue
+        matches.append(entry)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _restamped_barrier_stamp(
+    store: Store, sid: int, meta: dict[str, Any], *, conn: Connection | None = None
+) -> tuple[dict[str, Any], dict[str, Any] | None, str] | None:
+    """Recompute the stored barrier's verdict from its OWN source —
+    ``(top-level stamp, network_basis_by_key["barrier"] or None to drop,
+    lane)``. ``None`` when no source resolves.
+
+    The pathway lane replays the harvest's barrier-scoped verdict path
+    over the source pathway's meta — :func:`_pathway_quality`, the
+    absurd-magnitude guard, the seed-independence gate, the credit-anchor
+    rule and the assurance tier, in the harvest's order — so the
+    restamped verdict is exactly what the source's own harvest produces
+    today, not the foreign evidence a later barrierless harvest stamped
+    over it (gr592573/gr592669). The ``struct_neb`` lane replays the
+    RECORDED source edge (:func:`_recorded_neb_edge`) through the
+    selection's own verdict shape — never a re-selection across the
+    table — and drops the pathway basis, as the selection does.
+
+    Two inputs must come from CLEAN barrier evidence, not the stored
+    meta's possibly-foreign verdict keys (td763343): the credit anchor
+    and the failure class read ``meta`` merged into the fresh
+    ``measures``, and a key the fresh evidence never reproduces (a
+    stored ``barrier_absurd``/``barrier_desorbed`` from another
+    pathway's barrier) would otherwise veto a valid anchor or name a
+    science class the source never earned — then the same apply clears
+    the stale key and a second run flips the verdict again. The replay
+    therefore strips every recomputed key off the candidate meta first;
+    ``barrier_twin_disagreement`` survives — its sticky verdict is
+    supposed to bind the recompute.
+    """
+    clean = {k: v for k, v in meta.items() if k not in _RESTAMP_BARRIER_KEYS}
+    neb_lane = (
+        meta.get("barrier_source") == "struct_neb"
+        or meta.get("barrier_fidelity") == "struct_neb"
+    )
+    if neb_lane:
+        edge = _recorded_neb_edge(meta)
+        if edge is None:
+            return None
+        stamp = _neb_candidate_stamp({str(edge.get("fs_ref_id")): edge}, meta)
+        if stamp is None:
+            return None
+        out = {k: stamp.get(k) for k in _RESTAMP_BARRIER_KEYS}
+        out["warnings"] = stamp.get("warnings")
+        return out, None, "struct_neb"
+    src = _barrier_stamp_source(store, sid, meta, conn=conn)
+    if src is None:
+        return None
+    pathway_ref, pw_meta, kind = src
+    pw_is_pathway = kind == "pathway"
+    lane = "pathway" if pw_is_pathway else "job"
+    stored = _num_measure(meta.get("barrier"))
+    measures: dict[str, Any] = {}
+    if stored is not None:
+        measures["barrier"] = stored
+    try:
+        measures.update(_pathway_quality(pw_meta))
+    except Exception:
+        return None
+    _flag_absurd_barrier(measures)
+    if pw_is_pathway:
+        # Mirror the harvest: the seed gate, the anchor rule and the
+        # assurance tier run on the pathway lane only — a job-kind
+        # ``pathway_ref`` (the pre-anchor warnings lane) carries no trust
+        # records to gate on and keeps its own ``_pathway_quality``
+        # verdict.
+        try:
+            _flag_few_independent_seeds(
+                store, pw_meta, pathway_ref=pathway_ref, measures=measures, conn=conn
+            )
+        except Exception:
+            pass
+        anchor = None
+        try:
+            anchor = _barrier_anchor(
+                store,
+                pw_meta,
+                pathway_ref=pathway_ref,
+                tier=_pathway_tier(pw_meta),
+                candidate_meta=clean,
+                measures=measures,
+                conn=conn,
+            )
+        except Exception:
+            pass
+        measures["barrier_anchor"] = anchor
+        if anchor is not None and anchor.get("over"):
+            measures["barrier_trusted"] = True
+            measures["barrier_blocked_by"] = []
+        elif measures.get("barrier_trusted") and anchor is None:
+            measures["barrier_trusted"] = False
+            blocked = list(measures.get("barrier_blocked_by") or [])
+            measures["barrier_blocked_by"] = [*blocked, "anchor:none"]
+        try:
+            _stamp_barrier_assurance(pw_meta, measures)
+        except Exception:
+            pass
+    if meta.get("barrier_twin_disagreement"):
+        # The twin guard's verdict is sticky (neb-s6): two same-crystal
+        # candidates whose barriers disagree keep BOTH untrusted — a
+        # re-evaluated clean stamp must not lift it. Demote BEFORE the
+        # class is stamped so the flag and the class stay consistent.
+        measures["barrier_trusted"] = False
+        measures["barrier_assurance"] = "FAIL"
+        measures["barrier_assurance_reasons"] = ["twin disagreement"]
+    measures["barrier_failure_class"] = (
+        _classify_untrusted({**clean, **measures})
+        if measures.get("barrier_trusted") is False
+        else None
+    )
+    out = {k: measures.get(k) for k in _RESTAMP_BARRIER_KEYS}
+    if not pw_is_pathway:
+        # A job-lane barrier never had a credit anchor — the key must be
+        # ABSENT (the pre-anchor row shape), not null: an explicit null on
+        # this lane reads as a refused credit to the frontier's demotion.
+        out.pop("barrier_anchor")
+    return out, _network_basis(pw_meta), lane
+
+
+def _restamp_diff(
+    meta: dict[str, Any],
+    stamp: dict[str, Any],
+    basis: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[str], bool, dict[str, tuple[Any, Any]]] | None:
+    """The patch a recomputed ``stamp``+``basis`` implies over ``meta`` —
+    ``(top-level updates, key deletes, basis_changed, before→after
+    changes)`` — or ``None`` when nothing differs.
+
+    ``meta.get(k) != v`` treats an absent key and an explicit null alike
+    — they read identically everywhere except ``barrier_anchor``
+    (frontier demotes only a PRESENT null), and a null anchor only ever
+    accompanies an already-untrusted verdict, so a missing key needs no
+    stamp.
+    """
+    updates = {k: v for k, v in stamp.items() if meta.get(k) != v}
+    deletes = [k for k in ("barrier_anchor",) if k in meta and k not in stamp]
+    prior_map = meta.get("network_basis_by_key")
+    prior_basis = prior_map.get("barrier") if isinstance(prior_map, dict) else None
+    basis_changed = prior_basis != basis
+    if not updates and not deletes and not basis_changed:
+        return None
+    changes: dict[str, tuple[Any, Any]] = {
+        k: (meta.get(k), v) for k, v in updates.items()
+    }
+    for k in deletes:
+        changes[k] = (meta.get(k), "<deleted>")
+    if basis_changed:
+        changes["network_basis_by_key['barrier']"] = (prior_basis, basis)
+    return updates, deletes, basis_changed, changes
+
+
+def _apply_barrier_restamp(
+    store: Store,
+    quest_id: int,
+    sid: int,
+    *,
+    handle: str,
+    name: str,
+) -> dict[str, Any]:
+    """One structure's repair, committed with its audit entry (td763343).
+
+    Everything a single repair touches lands in ONE transaction: the
+    candidate row is read ``FOR UPDATE``, the recompute and the
+    keep/repair decision run off that LOCKED meta (never the unlocked
+    snapshot the scan took — a barrier a concurrent harvest just landed
+    is replayed on ITS OWN source, never stamped with verdicts computed
+    for its predecessor), the meta patch + ``barrier_anchor`` delete +
+    the logbook ``result`` entry commit together, so a failed audit
+    append rolls the repair back and a retry still finds the diff. The
+    quest row is locked first (quest→structure order — every other
+    writer takes a structure lock for a single statement and never
+    reaches for the quest row, so no lock cycle); it serializes the
+    entry's ``ord`` against other restamp invocations, and the
+    ``chunks(ref_id, ord)`` unique key backstops it against writers
+    that take no lock — a collision rolls the repair back, loudly.
+    ``{"status": "changed"|"unchanged"|"no_source"|"gone", ...}``.
+    """
+    out: dict[str, Any] = {}
+    with store.tx() as conn:
+        conn.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (quest_id,)
+        ).fetchone()
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
+            (sid,),
+        ).fetchone()
+        if row is None:
+            return {"status": "gone"}
+        meta = dict(row[0] or {})
+        if _num_measure(meta.get("barrier")) is None:
+            return {"status": "no_source"}
+        recomputed = _restamped_barrier_stamp(store, sid, meta, conn=conn)
+        if recomputed is None:
+            return {"status": "no_source"}
+        stamp, basis, lane = recomputed
+        diff = _restamp_diff(meta, stamp, basis)
+        if diff is None:
+            return {"status": "unchanged"}
+        updates, deletes, basis_changed, changes = diff
+        store.stamp_ref_meta_entries(
+            sid,
+            updates,
+            map_key="network_basis_by_key",
+            set_entries={"barrier": basis} if basis is not None else {},
+            drop_entries=() if basis is not None else ("barrier",),
+            conn=conn,
+        )
+        if deletes:
+            store.clear_ref_meta_keys(
+                sid, deletes, source="restamp-barrier-trust", conn=conn
+            )
+        detail = "; ".join(
+            f"{k}: {_restamp_fmt(old)} -> {_restamp_fmt(new)}"
+            for k, (old, new) in changes.items()
+        )
+        text = f"barrier trust restamp for [{handle}] ({name}) ({lane} lane): {detail}"
+        entry_meta = {"chunk_kind": LOG_KIND, "entry_type": "result", "by": MEASURED_BY}
+        pos = len(store.chunks.list_chunks_for_ref(quest_id, conn=conn))
+        store.chunks.insert_chunks(
+            quest_id,
+            [ChunkInsert(ord=pos, text=text, meta=entry_meta)],
+            conn=conn,
+        )
+        out = {
+            "status": "changed",
+            "flipped": meta.get("barrier_trusted") != stamp.get("barrier_trusted"),
+            "diff": {
+                "sid": sid,
+                "handle": handle,
+                "lane": lane,
+                "changes": changes,
+            },
+            "log_pos": pos,
+            "log_text": text,
+        }
+    # Citation extraction mirrors append_entry's post-commit pass —
+    # best-effort per mention, never part of the repair's transaction.
+    link_entry_structures(store, quest_id, out["log_pos"], out["log_text"])
+    return out
+
+
+def restamp_barrier_trust(
+    store: Store, quest_id: int, *, apply: bool = False
+) -> dict[str, Any]:
+    """Re-evaluate stored barrier trust stamps against their own sources
+    (gr592669, S3).
+
+    Rows stamped before the gr592573 fix carry a barrier-scoped verdict a
+    LATER barrierless harvest computed off a different pathway — the
+    stored ``barrier`` value is still the source's, but
+    ``barrier_trusted``/``barrier_blocked_by``/``barrier_anchor``/
+    ``network_basis_by_key["barrier"]`` describe foreign evidence and the
+    code fix alone can't correct them. For every candidate structure of
+    the quest holding a stored barrier, this resolves the ref the barrier
+    came from (:func:`_barrier_stamp_source`: ``barrier_pathway_ref_id``
+    provenance, else a matching harvested job of the recorded tier; a
+    ``struct_neb`` barrier replays its recorded ``neb_edges`` slot),
+    replays that source's own verdict path
+    (:func:`_restamped_barrier_stamp`), and restamps the barrier-scoped
+    keys that differ — explicit nulls where the source produces no
+    stamp, a key delete for ``barrier_anchor`` on the anchorless job
+    lane, ``network_basis_by_key["barrier"]`` under a row lock. A
+    ``barrier_twin_disagreement`` flag keeps its sticky untrusted
+    verdict.
+
+    ``apply=False`` (the default) is a dry run: counts and a per-structure
+    before/after ``diffs`` list, nothing written. With ``apply=True``
+    every changed structure's patch, anchor delete and logbook ``result``
+    entry (each flipped key's before→after) commit in ONE transaction
+    (:func:`_apply_barrier_restamp`), and a summary entry closes the
+    pass. Idempotent: a second run finds no diffs.
+    """
+    from precis.utils import handle_registry
+
+    counts: dict[str, Any] = {
+        "candidates": 0,
+        "with_barrier": 0,
+        "no_source": 0,
+        "unchanged": 0,
+        "changed": 0,
+        "flips": 0,
+        "written": 0,
+        "diffs": [],
+    }
+    sids = _candidate_struct_ids(store, quest_id)
+    refs = store.fetch_refs_by_ids(set(sids))
+    for sid in sorted(sids):
+        ref = refs.get(sid)
+        if ref is None:
+            continue
+        counts["candidates"] += 1
+        meta = dict(ref.meta or {})
+        if (
+            _num_measure(meta.get("barrier")) is None
+            and "barrier_trusted" not in meta
+            and meta.get("barrier_source") is None
+            and "barrier_anchor" not in meta
+        ):
+            continue
+        counts["with_barrier"] += 1
+        handle = handle_registry.try_format("structure", sid) or f"st{sid}"
+        name = (ref.title or "").splitlines()[0] if ref.title else handle
+        if apply:
+            outcome = _apply_barrier_restamp(
+                store, quest_id, sid, handle=handle, name=name
+            )
+            status = outcome["status"]
+            if status == "gone":
+                continue
+            if status == "no_source":
+                counts["no_source"] += 1
+                continue
+            if status == "unchanged":
+                counts["unchanged"] += 1
+                continue
+            counts["changed"] += 1
+            counts["flips"] += int(bool(outcome["flipped"]))
+            counts["written"] += 1
+            counts["diffs"].append(outcome["diff"])
+            continue
+        if _num_measure(meta.get("barrier")) is None:
+            # Verdict stamps with no barrier value have no source to
+            # resolve — nothing to replay against.
+            counts["no_source"] += 1
+            continue
+        recomputed = _restamped_barrier_stamp(store, sid, meta)
+        if recomputed is None:
+            counts["no_source"] += 1
+            continue
+        stamp, basis, lane = recomputed
+        diff = _restamp_diff(meta, stamp, basis)
+        if diff is None:
+            counts["unchanged"] += 1
+            continue
+        _updates, _deletes, _basis_changed, changes = diff
+        counts["changed"] += 1
+        if meta.get("barrier_trusted") != stamp.get("barrier_trusted"):
+            counts["flips"] += 1
+        counts["diffs"].append(
+            {
+                "sid": sid,
+                "handle": handle,
+                "lane": lane,
+                "changes": changes,
+            }
+        )
+    if apply and counts["changed"]:
+        append_entry(
+            store,
+            quest_id,
+            text=(
+                f"barrier trust restamp (gr592669): {counts['with_barrier']} "
+                f"candidates with a stored barrier, {counts['no_source']} "
+                f"with no resolvable source, {counts['changed']} restamped, "
+                f"{counts['flips']} verdict flips"
+            ),
+            entry_type="result",
+            by=MEASURED_BY,
+        )
+    return counts
+
+
+def _restamp_fmt(v: Any) -> str:
+    """One logbook cell of a before/after diff — repr, capped so a wide
+    anchor dict can't flood the entry."""
+    s = repr(v)
+    return s if len(s) <= 120 else s[:117] + "..."
 
 
 def redispatch_candidates(

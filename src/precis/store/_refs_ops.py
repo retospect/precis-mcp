@@ -2318,6 +2318,7 @@ class RefsMixin:
         ref_ids: Iterable[int],
         *,
         include_deleted: bool = True,
+        conn: Connection | None = None,
     ) -> dict[int, Ref]:
         """Bulk-fetch refs by id, ``{id: Ref}``. Used by callers needing
         the full :class:`Ref` for a set of ids — most commonly
@@ -2331,8 +2332,8 @@ class RefsMixin:
         sql = f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = ANY(%s)"
         if not include_deleted:
             sql += " AND retired_at IS NULL"
-        with self.pool.connection() as conn:
-            rows = conn.execute(sql, (ids,)).fetchall()
+        with nullcontext(conn) if conn is not None else self.pool.connection() as c:
+            rows = c.execute(sql, (ids,)).fetchall()
         return {r[0]: _row_to_ref(r) for r in rows}
 
     def _residue_clauses(

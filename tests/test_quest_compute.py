@@ -9432,6 +9432,724 @@ class TestTierLadderHarvest:
         assert c.flags["barrier_fidelity"] == "verify"
 
 
+class TestBarrierTrustRestamp:
+    """gr592669 (S3): ``restamp_barrier_trust`` re-evaluates a stored
+    barrier verdict against the ref that sourced the stored barrier —
+    repairing rows a pre-gr592573 barrierless harvest overwrote with a
+    foreign pathway's evidence. Dry run diffs only; ``apply=True``
+    restamps + logs each change to the quest logbook."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_engine_version(self, monkeypatch: Any) -> None:
+        """Same pin as ``TestAutocatpathHarvest``: fixtures stamp
+        ``0.39.0`` and the real dist pin sits above it (gr518351's
+        stale-engine demotion would otherwise fire on the fixtures)."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.39.0")
+
+    def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    _pw_seq = 0
+
+    def _trust_pathway(
+        self,
+        store: Any,
+        sid: int,
+        *,
+        seeds: list[int],
+        engine: str = "0.39.0",
+        status: str = "ready",
+        reaction_key: str = "rk-shared",
+        slab_sha: str = "slabsha",
+        tier: str = "neb",
+        endpoints: dict[str, dict[int, float]] | None = None,
+    ) -> int:
+        """Same shape as ``TestAutocatpathHarvest._trust_pathway``: clean
+        records so only the seed-independence count decides."""
+        type(self)._pw_seq += 1
+        recs: list[dict[str, Any]] = [
+            {
+                "check": "neb_convergence",
+                "verdict": "pass",
+                "severity": "fatal",
+                "seed": s,
+                "step": "R->A",
+                "evidence": {},
+                "id": f"R->A#s{s}#neb_convergence",
+            }
+            for s in seeds
+        ]
+        for state, per_seed in (endpoints or {}).items():
+            for s, e_ev in per_seed.items():
+                recs.append(
+                    {
+                        "check": "endpoint_identity",
+                        "verdict": "pass",
+                        "severity": "warn",
+                        "seed": s,
+                        "state": state,
+                        "evidence": {"e_eV": e_ev, "fingerprint": "fp"},
+                        "id": f"{state}#s{s}#endpoint_identity",
+                    }
+                )
+        return store.insert_ref(
+            kind="pathway",
+            slug=f"pw-restamp-{type(self)._pw_seq}",
+            title="pw",
+            meta={
+                "status": status,
+                "candidate_ref": sid,
+                "autocatpath_version": engine,
+                "tier": tier,
+                "reaction_key": reaction_key,
+                "config": {"network": "ammonia", "template": "coadsorbed"},
+                "validation_manifest": {"inputs": {"slab_extxyz_sha256": slab_sha}},
+                "results": {
+                    "trust_schema": 2,
+                    "trust": recs,
+                    "seeds": seeds,
+                    "route_steps": ["R->A"],
+                    "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
+                },
+            },
+            parent_id=sid,
+        ).id
+
+    def _refused_pathway(self, store: Any, sid: int) -> int:
+        """A neb-tier pathway whose own ``trust_summary`` refuses the
+        barrier — two clean seeds keep the precis-side seed gate out of
+        the way (same shape as the wrong-binder fixture)."""
+        return store.insert_ref(
+            kind="pathway",
+            slug="pw-restamp-refused",
+            title="pw",
+            meta={
+                "status": "ready",
+                "candidate_ref": sid,
+                "autocatpath_version": "0.39.0",
+                "tier": "neb",
+                "reaction_key": "rk-shared",
+                "config": {"network": "ammonia", "template": "coadsorbed"},
+                "validation_manifest": {"inputs": {"slab_extxyz_sha256": "slabsha"}},
+                "results": {
+                    "trust_schema": 2,
+                    "route_steps": ["R->A"],
+                    "seeds": [0, 1],
+                    "trust": [
+                        {
+                            "id": f"R->A#s{s}#neb_convergence",
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ]
+                    + [
+                        {
+                            "id": f"R->A#s{s}#wrong_binder",
+                            "check": "wrong_binder",
+                            "verdict": "fail",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "state": "R",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ],
+                    "trust_summary": {
+                        "barrier": {
+                            "available": False,
+                            "blocked_by": [
+                                "R->A#s0#wrong_binder",
+                                "R->A#s1#wrong_binder",
+                            ],
+                        },
+                    },
+                },
+            },
+            parent_id=sid,
+        ).id
+
+    def test_restamps_a_foreign_verdict_over_a_refused_barrier(
+        self, store: Any
+    ) -> None:
+        """The qu164903 shape: a refused neb barrier whose stored stamps
+        say TRUSTED — a later barrierless harvest's verdict. The restamp
+        replays the source pathway's own verdict: refused, blockers
+        named, no credit anchor, source's network basis."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 2.83}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == [
+            "R->A#s0#wrong_binder",
+            "R->A#s1#wrong_binder",
+        ]
+        # The corruption: foreign trusted verdict + anchor + basis.
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier_trusted": True,
+                "barrier_blocked_by": [],
+                "barrier_anchor": {
+                    "pathway": "pw_foreign",
+                    "gates": ["x"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [0, 1],
+                },
+                "barrier_assurance": "PASS",
+                "network_basis_by_key": {
+                    "barrier": {"digest": "f", "template": "parked", "version": "9.9.9"}
+                },
+            },
+        )
+        dry = compute_mod.restamp_barrier_trust(store, qid)
+        assert dry["with_barrier"] == 1
+        assert dry["changed"] == 1
+        assert dry["flips"] == 1
+        assert dry["written"] == 0
+        assert dry["diffs"][0]["sid"] == sid
+        assert dry["diffs"][0]["changes"]["barrier_trusted"] == (True, False)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True  # dry run wrote nothing
+
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["changed"] == 1
+        assert out["flips"] == 1
+        assert out["written"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 2.83  # the kept value is untouched
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == [
+            "R->A#s0#wrong_binder",
+            "R->A#s1#wrong_binder",
+        ]
+        assert meta["barrier_anchor"] is None
+        assert meta["barrier_assurance"] == "FAIL"
+        assert meta["network_basis_by_key"]["barrier"]["version"] == "0.39.0"
+        logs = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any(
+            f"barrier trust restamp for [st{sid}]" in t
+            and "barrier_trusted: True -> False" in t
+            for t in logs
+        )
+        assert any("barrier trust restamp (gr592669)" in t for t in logs)
+        # Idempotent: nothing left to restamp.
+        again = compute_mod.restamp_barrier_trust(store, qid)
+        assert again["changed"] == 0
+        assert again["unchanged"] == 1
+
+    def test_restamps_a_foreign_untrusted_over_a_credited_barrier(
+        self, store: Any
+    ) -> None:
+        """The other direction: a credited two-seed barrier whose stamps
+        were flipped untrusted with a foreign anchor — restored to
+        trusted with its own anchor back."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        kept_anchor = meta["barrier_anchor"]
+        assert kept_anchor["seeds"] == [0, 1]
+
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier_trusted": False,
+                "barrier_blocked_by": ["foreign:blocker"],
+                "barrier_anchor": {
+                    "pathway": "pw_foreign",
+                    "gates": ["x"],
+                    "not_run": [],
+                    "over": [],
+                    "seeds": [9],
+                },
+                "barrier_seed_blocker": "seeds:1-independent",
+                "barrier_assurance": "FAIL",
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["flips"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_blocked_by"] == []
+        assert meta["barrier_anchor"] == kept_anchor
+        assert meta["barrier_seed_blocker"] is None
+        assert meta["barrier_independent_seeds"] == 2
+
+    def test_job_lane_source_deletes_the_foreign_anchor(self, store: Any) -> None:
+        """A job-kind ``pathway_ref`` (the pre-anchor warnings lane) never
+        minted a credit anchor — a stored one is foreign and is DELETED,
+        never nulled: an explicit null would read as a refused credit to
+        the frontier's demotion."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        job_pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "warnings": [],
+                "low_confidence": False,
+                "config": {"network": "ammonia", "template": "parked"},
+                "autocatpath_version": "0.22.0",
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": job_pw}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.5,
+                "barrier_pathway_ref_id": job_pw,
+                "barrier_trusted": False,
+                "barrier_blocked_by": ["foreign"],
+                "barrier_anchor": {"pathway": "pw_foreign", "seeds": [9]},
+                "barrier_seed_blocker": "seeds:1-independent",
+                "barrier_assurance": "FAIL",
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["flips"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert "barrier_anchor" not in meta
+        assert meta["barrier_blocked_by"] is None
+        assert meta["barrier_seed_blocker"] is None
+        assert meta["barrier_assurance"] is None
+        assert meta["network_basis_by_key"]["barrier"]["template"] == "parked"
+
+    def test_struct_neb_lane_reselects_and_drops_the_basis(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A ``struct_neb`` barrier's verdict comes from the stored
+        ``neb_edges`` table — the restamp re-runs the selection ruling
+        and drops the foreign pathway basis, as the selection does."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        anchor = {"pathway": "struct_neb:3", "gates": ["x"], "seeds": [0, 1]}
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_source": "struct_neb",
+                "barrier_fidelity": "struct_neb",
+                "neb_run_id": 3,
+                "neb_edge_fs_ref_id": 7,
+                "barrier_trusted": False,
+                "barrier_blocked_by": ["foreign"],
+                "barrier_anchor": None,
+                "network_basis_by_key": {
+                    "barrier": {"version": "9.9.9"},
+                    "U_L": {"version": "9.9.9"},
+                },
+                "neb_edges": {
+                    "7": {
+                        "fs_ref_id": 7,
+                        "neb_run_id": 3,
+                        "engine": "neb-eng-1",
+                        "barrier": 0.4,
+                        "trusted": True,
+                        "barrier_anchor": anchor,
+                    }
+                },
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["flips"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_blocked_by"] is None
+        assert meta["barrier_anchor"] == anchor
+        assert meta["network_basis_by_key"] == {"U_L": {"version": "9.9.9"}}
+
+    def test_stale_stamp_flags_cannot_veto_the_anchor(self, store: Any) -> None:
+        """td763343 review: the replay reads CLEAN barrier evidence — a
+        stored ``barrier_absurd``/``barrier_desorbed`` a foreign pathway
+        stamped must not ride the candidate meta into the anchor's guard
+        rows or the failure class. It would veto a valid anchor, get
+        cleared by the same apply, and flip the verdict back on a rerun."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_pathway_ref_id": pw,
+                "barrier_trusted": False,
+                "barrier_absurd": True,
+                "barrier_desorbed": 1,
+                "barrier_blocked_by": ["foreign"],
+                "barrier_anchor": None,
+                "barrier_assurance": "FAIL",
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["flips"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_anchor"]["seeds"] == [0, 1]
+        assert meta["barrier_absurd"] is None
+        assert meta["barrier_desorbed"] is None
+        # And it STAYS flipped — the first apply left nothing half-clean.
+        again = compute_mod.restamp_barrier_trust(store, qid)
+        assert again["changed"] == 0
+        assert again["unchanged"] == 1
+
+    def test_struct_neb_replays_the_recorded_edge(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """td763343 review: the evidence must describe the stored value.
+        The stored barrier came from the UNTRUSTED edge — re-selecting
+        across the whole table would pick the trusted edge and stamp ITS
+        verdict and anchor over the untrusted run's value."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_source": "struct_neb",
+                "barrier_fidelity": "struct_neb",
+                "neb_run_id": 3,
+                "neb_edge_fs_ref_id": 7,
+                "barrier_trusted": True,  # the foreign corruption
+                "barrier_blocked_by": [],
+                "barrier_anchor": {"pathway": "struct_neb:5", "seeds": [0, 1]},
+                "neb_edges": {
+                    "7": {
+                        "fs_ref_id": 7,
+                        "neb_run_id": 3,
+                        "engine": "neb-eng-1",
+                        "barrier": 0.4,
+                        "trusted": False,
+                        "warnings": [
+                            "multistart: 1 independent same-engine seed(s) "
+                            "across the edge — fewer than 2 (gr517804)"
+                        ],
+                        "barrier_seed_blocker": "seeds:1-independent",
+                        "barrier_assurance": "FAIL",
+                        "barrier_assurance_reasons": ["seeds"],
+                        "barrier_anchor": None,
+                    },
+                    "9": {
+                        "fs_ref_id": 9,
+                        "neb_run_id": 5,
+                        "engine": "neb-eng-1",
+                        "barrier": 0.9,
+                        "trusted": True,
+                        "barrier_anchor": {
+                            "pathway": "struct_neb:5",
+                            "seeds": [0, 1],
+                        },
+                    },
+                },
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["flips"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["neb_run_id"] == 3
+        assert meta["neb_edge_fs_ref_id"] == 7
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_blocked_by"] == ["seeds:1-independent"]
+        assert meta["barrier_anchor"] is None
+        assert meta["barrier_failure_class"] is not None
+
+    def test_struct_neb_superseded_edge_is_no_source(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The recorded slot was rewritten by a newer run — the stored
+        value's evidence is gone. Honest ``no_source``, never a guess at
+        a different edge's verdict."""
+        monkeypatch.setattr(
+            "precis.structure.neb.neb_engine_token", lambda: "neb-eng-1"
+        )
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_source": "struct_neb",
+                "barrier_fidelity": "struct_neb",
+                "neb_run_id": 3,
+                "neb_edge_fs_ref_id": 7,
+                "barrier_trusted": True,
+                "neb_edges": {
+                    "7": {
+                        "fs_ref_id": 7,
+                        "neb_run_id": 5,  # rewritten by a newer run
+                        "engine": "neb-eng-1",
+                        "barrier": 0.9,
+                        "trusted": True,
+                    }
+                },
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["with_barrier"] == 1
+        assert out["no_source"] == 1
+        assert out["changed"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True  # untouched
+
+    def test_apply_rolls_back_when_the_audit_append_fails(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """td763343 review: patch, anchor delete and logbook entry commit
+        in ONE transaction — a failed append rolls the repair back, and
+        a retry still finds the diff."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 2.83}, "pathway_ref": pw}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {"barrier": 2.83, "barrier_pathway_ref_id": pw, "barrier_trusted": True},
+        )
+
+        def boom(*a: Any, **k: Any) -> Any:
+            raise RuntimeError("logbook write failed")
+
+        monkeypatch.setattr(store.chunks, "insert_chunks", boom)
+        with pytest.raises(RuntimeError):
+            compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True  # the repair rolled back
+        monkeypatch.undo()
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["changed"] == 1  # the retry still found the diff
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+
+    def test_no_resolvable_source_is_counted_not_touched(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.5,
+                "barrier_pathway_ref_id": 99999999,
+                "barrier_trusted": True,
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["with_barrier"] == 1
+        assert out["no_source"] == 1
+        assert out["changed"] == 0
+        assert out["written"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+
+    def test_legacy_source_respects_the_watermark_and_barrier_tier(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        old_pw = self._refused_pathway(store, sid)
+        source = self._trust_pathway(store, sid, seeds=[0, 1])
+        other_tier = self._trust_pathway(store, sid, seeds=[0, 1], tier="verify")
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": old_pw}
+        )
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": source}
+        )
+        self._autocatpath_job(
+            store, sid, {"result": {"U_L": -0.2}, "pathway_ref": other_tier}
+        )
+        compute_mod.harvest_measures(store, qid)
+        store.clear_ref_meta_keys(
+            sid, ["barrier_pathway_ref_id"], source="test_legacy_source"
+        )
+        self._autocatpath_job(store, sid, {})  # Holds the watermark.
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": old_pw}
+        )
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_fidelity"] == "neb"
+        assert meta["tier"] == "verify"
+        store.stamp_ref_meta(sid, {"barrier_trusted": False})
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["flips"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_anchor"]["pathway"] == f"pw{source}"
+
+    def test_legacy_source_rejects_a_value_match_from_another_tier(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[0, 1], tier="verify")
+        upto = self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_fidelity": "neb",
+                "quest_autocatpath_harvested_upto": upto,
+            },
+        )
+        assert compute_mod.restamp_barrier_trust(store, qid)["no_source"] == 1
+
+    def test_legacy_equal_value_stash_is_unresolved(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        source = self._trust_pathway(store, sid, seeds=[0, 1])
+        refused = self._refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": source}
+        )
+        upto = self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": refused}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_fidelity": "neb",
+                "quest_autocatpath_harvested_upto": upto,
+                "barrier_trusted": True,
+                "barrier_untrusted_value": 0.4,
+            },
+        )
+        out = compute_mod.restamp_barrier_trust(store, qid, apply=True)
+        assert out["no_source"] == 1
+        assert out["written"] == 0
+        assert store.fetch_refs_by_ids({sid})[sid].meta["barrier_trusted"] is True
+
+    def test_legacy_match_without_harvest_evidence_is_unresolved(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+        store.stamp_ref_meta(sid, {"barrier": 0.4, "barrier_fidelity": "neb"})
+        out = compute_mod.restamp_barrier_trust(store, qid)
+        assert out["no_source"] == 1
+        assert out["diffs"] == []
+
+    def test_apply_reuses_one_connection_for_source_and_siblings(
+        self, store: Any
+    ) -> None:
+        from precis.store import Store
+        from tests.conftest import _active_dsn
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        source = self._trust_pathway(store, sid, seeds=[0, 1])
+        self._trust_pathway(store, sid, seeds=[2])
+        upto = self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": source}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_fidelity": "neb",
+                "quest_autocatpath_harvested_upto": upto,
+                "barrier_trusted": False,
+            },
+        )
+        single = Store.connect(_active_dsn(), min_size=1, max_size=1)
+        try:
+            dry = compute_mod.restamp_barrier_trust(single, qid)
+            applied = compute_mod.restamp_barrier_trust(single, qid, apply=True)
+        finally:
+            single.close()
+
+        assert applied["diffs"] == dry["diffs"]
+        assert applied["written"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_independent_seeds"] == 3
+        assert meta["barrier_anchor"]["seeds"] == [0, 1, 2]
+
+    def test_cli_dry_run_prints_the_diff_and_apply_writes(
+        self, store: Any, capsys: Any
+    ) -> None:
+        import argparse
+
+        from precis.cli.quest import _cmd_restamp_barrier_trust
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._refused_pathway(store, sid)
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 2.83}, "pathway_ref": pw}
+        )
+        store.stamp_ref_meta(
+            sid,
+            {"barrier": 2.83, "barrier_pathway_ref_id": pw, "barrier_trusted": True},
+        )
+
+        _cmd_restamp_barrier_trust(store, argparse.Namespace(id=qid, apply=False))
+        out = capsys.readouterr().out
+        assert f"quest {qid}: DRY RUN" in out
+        assert "would restamp 1 (1 verdict flips)" in out
+        assert "barrier_trusted: True -> False" in out
+
+        _cmd_restamp_barrier_trust(store, argparse.Namespace(id=qid, apply=True))
+        out = capsys.readouterr().out
+        assert f"quest {qid}: APPLIED" in out
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+
+
 class TestTierLadderRefinesLink:
     """A landed verify(coadsorbed)-tier pathway wires `refines` back to its
     parked(neb)-tier sibling on the same candidate — a higher-fidelity
