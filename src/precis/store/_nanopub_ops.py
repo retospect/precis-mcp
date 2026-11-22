@@ -59,6 +59,58 @@ class PublishRow:
 
 
 @dataclass(frozen=True, slots=True)
+class RetireRow:
+    """One ``nanopub_publish`` row as the hub retirement procedure reads it
+    (gr760607): its state, the identifiers a signed or published artifact
+    leaves behind, and any retirement already recorded on it."""
+
+    id: int
+    state: str
+    trusty_uri: str | None
+    aida_uri: str | None
+    registry_url: str | None
+    published_at: datetime | None
+    batch_id: int | None
+    artifact_id: int | None
+    retired_reason: str | None
+    retired_successor_ref_id: int | None
+    updated_at: datetime
+
+    @property
+    def external(self) -> bool:
+        """True iff an artifact for this row exists outside the working
+        row: signed (a trusty URI), OTS-anchored (a batch) or published."""
+        return bool(
+            self.trusty_uri
+            or self.batch_id is not None
+            or self.registry_url
+            or self.published_at is not None
+        )
+
+
+_RETIRE_COLS = (
+    "id, state, trusty_uri, aida_uri, registry_url, published_at, batch_id, "
+    "artifact_id, retired_reason, retired_successor_ref_id, updated_at"
+)
+
+
+def _row_to_retire(row: tuple[Any, ...]) -> RetireRow:
+    return RetireRow(
+        id=int(row[0]),
+        state=str(row[1]),
+        trusty_uri=row[2],
+        aida_uri=row[3],
+        registry_url=row[4],
+        published_at=row[5],
+        batch_id=int(row[6]) if row[6] is not None else None,
+        artifact_id=int(row[7]) if row[7] is not None else None,
+        retired_reason=row[8],
+        retired_successor_ref_id=int(row[9]) if row[9] is not None else None,
+        updated_at=row[10],
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactRow:
     """One append-only ``nanopub_artifacts`` row. ``trig_bytes`` is the
     authority; every other column is a rebuildable extract."""
@@ -368,6 +420,52 @@ class NanopubMixin:
                 (old.id, new[0]),
             )
         return _row_to_publish(new)
+
+    def nanopub_retire_rows(self, claim_ref_id: int, *, conn: Any) -> list[RetireRow]:
+        """Every publish row of the hub, oldest first, locked ``FOR UPDATE``
+        on the caller's transaction — the hub retirement procedure's read
+        (gr760607). The caller holds the hub's ``refs`` row lock."""
+        rows = conn.execute(
+            f"SELECT {_RETIRE_COLS} FROM nanopub_publish "
+            "WHERE claim_ref_id = %s ORDER BY id FOR UPDATE",
+            (claim_ref_id,),
+        ).fetchall()
+        return [_row_to_retire(r) for r in rows]
+
+    def nanopub_record_retirement(
+        self,
+        row_id: int,
+        *,
+        to_state: str,
+        expect: str,
+        reason: str,
+        successor_ref_id: int | None,
+        conn: Any,
+    ) -> bool:
+        """CAS: record the hub retirement on one publish row, moving it from
+        ``expect`` to ``to_state`` (equal for a row already terminal, which
+        keeps its state). Legality is
+        :func:`precis.nanopub.state.check_retirement` — call that first.
+        The row is kept, never deleted; ``False`` = it moved meanwhile."""
+        cur = conn.execute(
+            "UPDATE nanopub_publish SET state = %s, retired_reason = %s, "
+            "retired_successor_ref_id = %s, updated_at = now() "
+            "WHERE id = %s AND state = %s",
+            (to_state, reason, successor_ref_id, row_id, expect),
+        )
+        return cur.rowcount == 1
+
+    def nanopub_retirement(self, claim_ref_id: int) -> RetireRow | None:
+        """The newest publish row of the hub carrying a recorded retirement
+        (``retired_reason`` set), or ``None`` — the tombstone read."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_RETIRE_COLS} FROM nanopub_publish "
+                "WHERE claim_ref_id = %s AND retired_reason IS NOT NULL "
+                "ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (claim_ref_id,),
+            ).fetchone()
+        return _row_to_retire(row) if row else None
 
     def nanopub_predecessor_artifact(self, successor_id: int) -> ArtifactRow | None:
         """Resolve server-owned version provenance, never a payload-supplied URI."""

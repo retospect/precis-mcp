@@ -51,7 +51,10 @@ prose mentions; see the memory recipe below. Findings accept the same
 `delete(kind='finding', id='fi42', dry_run=True, superseded_by='fi77')`
 previews retirement without writing; repeat without `dry_run` to retire and
 record the successor redirect. This retires a duplicate finding; claim-hub
-merging still uses the Taproot merge door.
+merging still uses the Taproot merge door. A claim hub past `candidate`
+(reviewed, signed, published) refuses here and retires only with
+`args={'retire_published': True}` and a `reason=`, which keeps its publish
+record: see `precis-taproot-hub-edit-help` "Retire a hub past candidate".
 
 Pass `reason=` to say why — it lands as an
 `agent/deleted` row on the ref's `ref_events` log, the audit line a

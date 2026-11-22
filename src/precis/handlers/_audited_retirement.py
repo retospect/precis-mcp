@@ -41,6 +41,32 @@ class AuditedRetirementHandler(NumericRefHandler):
             id, reason=reason, dry_run=dry_run, superseded_by=superseded_by, force=force
         )
 
+    def _retire_guard(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection,
+        successor: int | None,
+        successor_handle: str | None,
+        successor_kind: str | None,
+        reason: str | None,
+        options: dict[str, Any],
+    ) -> Any:
+        """Kind-specific refusal inside the retire transaction, before any
+        write (dry run included). Returns a plan for :meth:`_retire_apply`,
+        or ``None`` when the kind adds nothing. ``options`` carries the
+        kind's own delete flags."""
+        return None
+
+    def _retire_preview(self, plan: Any) -> list[str]:
+        """Dry-run lines for a plan :meth:`_retire_guard` returned."""
+        return []
+
+    def _retire_apply(self, plan: Any, *, conn: Connection) -> list[str]:
+        """Write a :meth:`_retire_guard` plan on the retire transaction,
+        after the links moved and before the ref retires; receipt lines."""
+        return []
+
     def _retire_successor(
         self, raw: str, ref_id: int, *, conn: Connection
     ) -> tuple[str, int | None, str]:
@@ -170,6 +196,7 @@ class AuditedRetirementHandler(NumericRefHandler):
         dry_run: bool = False,
         superseded_by: str | None = None,
         force: bool = False,
+        options: dict[str, Any] | None = None,
     ) -> Response:
         """Scan, guard, record the redirect and retire atomically; preview writes nothing."""
         from precis.handlers._memory_retire import scan_mentions
@@ -207,6 +234,15 @@ class AuditedRetirementHandler(NumericRefHandler):
                 superseded_by=superseded_by,
                 reason=reason,
             )
+            plan = self._retire_guard(
+                ref_id,
+                conn=conn,
+                successor=successor,
+                successor_handle=successor_handle,
+                successor_kind=successor_kind,
+                reason=reason,
+                options=options or {},
+            )
             report = scan_mentions(conn, ref_id, kind=self.kind)
             receipt = report.render(
                 handle_registry.format_handle(self.kind, ref_id),
@@ -223,10 +259,17 @@ class AuditedRetirementHandler(NumericRefHandler):
                 replacement = (
                     f"; successor {successor_handle}" if successor_handle else ""
                 )
+                extra = (
+                    "".join(
+                        f"on apply: {line}\n" for line in self._retire_preview(plan)
+                    )
+                    if plan is not None
+                    else ""
+                )
                 return Response(
                     body=(
                         f"dry run: {verdict} {self.kind} id={ref_id}"
-                        f"{replacement}\n{receipt}\n\n"
+                        f"{replacement}\n{extra}{receipt}\n\n"
                         + dependants_block(
                             self.store,
                             kind=self.kind,
@@ -289,6 +332,7 @@ class AuditedRetirementHandler(NumericRefHandler):
                     (ref_id, ref_id, ref_id),
                 )
                 removed = int(cur.rowcount or 0)
+            applied = self._retire_apply(plan, conn=conn) if plan is not None else []
             self._record_delete_reason(ref_id, reason, conn=conn)
             self.store.retire_ref(ref_id, conn=conn)
         if successor is not None:
@@ -308,9 +352,10 @@ class AuditedRetirementHandler(NumericRefHandler):
                 if (n_in or n_out or removed or n_sup)
                 else "no links to remove"
             )
+        extra = "".join(f"{line}\n" for line in applied)
         return Response(
             body=(
-                f"deleted {self._sense()} id={ref_id} — {detail}\n{receipt}\n"
+                f"deleted {self._sense()} id={ref_id} — {detail}\n{extra}{receipt}\n"
                 + dependants_summary(self.store, ref_id=ref_id, page=deps)
             )
         )

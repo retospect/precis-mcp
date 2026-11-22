@@ -385,13 +385,20 @@ class TestRefusals:
         assert not _is_retired(store, loser)
 
     @pytest.mark.parametrize("dry_run", [True, False])
-    def test_both_past_candidate_prints_no_delete_call(
+    def test_both_past_candidate_names_the_retirement_procedure(
         self, store: Any, dry_run: bool
     ) -> None:
+        """gr760607: the pair a merge refuses on both sides retires the
+        named loser through the retirement procedure, never by hand."""
         loser, winner = _pair(store)
         _mark_publish_state(store, loser, "reviewed")
         _mark_publish_state(store, winner, "reviewed")
         before = _row_counts(store)
+        call = (
+            f"delete(kind='finding', id='fi{loser}', superseded_by='fi{winner}', "
+            "reason='<why they are the same claim>', "
+            "args={'retire_published': True})"
+        )
 
         with pytest.raises(BadInput, match="past 'candidate'") as ei:
             _handler(store).edit(
@@ -402,22 +409,36 @@ class TestRefusals:
             )
 
         nxt = str(ei.value.next)
-        assert "neither can be merged or retired" in nxt
-        assert "report the duplicate to the owner" in nxt
-        assert "delete(" not in nxt
+        assert "neither can be merged" in nxt
+        assert "report the duplicate to the owner" not in nxt
+        assert call in nxt
         assert "taproot merge" not in nxt
         assert _row_counts(store) == before
         assert not _is_retired(store, loser)
         assert not _is_retired(store, winner)
 
         plan = merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner, dry_run=True)
-        view = format_merge_plan(plan)
-        assert "neither can be merged or retired" in view
-        assert "delete(" not in view
+        assert call in format_merge_plan(plan)
         with pytest.raises(BadInput) as hub_err:
             merge_hubs(store, loser_ref_id=loser, winner_ref_id=winner)
-        assert "neither can be merged or retired" in str(hub_err.value.next)
-        assert "delete(" not in str(hub_err.value.next)
+        assert call in str(hub_err.value.next)
+
+    def test_the_named_retirement_call_works_both_past_candidate(
+        self, store: Any
+    ) -> None:
+        loser, winner = _pair(store)
+        _mark_publish_state(store, loser, "reviewed")
+        _mark_publish_state(store, winner, "reviewed")
+
+        _handler(store).delete(
+            id=loser,
+            superseded_by=f"fi{winner}",
+            reason="same claim",
+            retire_published=True,
+        )
+
+        assert _is_retired(store, loser)
+        assert not _is_retired(store, winner)
 
     @pytest.mark.parametrize("past", ["loser", "winner"])
     @pytest.mark.parametrize("dry_run", [True, False])

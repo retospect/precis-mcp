@@ -41,6 +41,9 @@ This handler owns the **write door** for findings:
 - ``search(q, status=..., trust=...)`` filters by status (default
   ``STATUS:established``) and falls through to the base full-text
   + ANN hybrid; see :meth:`FindingHandler.search`.
+- ``delete(id, superseded_by, reason)`` is the audited retirement; a hub
+  past ``'candidate'`` retires only through the retirement procedure,
+  ``args={'retire_published': True}`` (:mod:`._finding_retire`, gr760607).
 - ``cite(...)`` is **explicitly not supported** — findings are
   internal certainty records; they never appear in ``\\cite{}``.
   The chase-time placeholder is the finding's ``pub_id`` which
@@ -1296,11 +1299,16 @@ class FindingHandler(AuditedRetirementHandler):
                 for t in self.store.tags_for(ref_id)
                 if str(t).startswith("STATUS:")
             ]
+            from precis.handlers._finding_retire import tombstone_line
+
+            # The retirement procedure's record (gr760607): why, and by what.
+            retired = tombstone_line(self.store, ref_id)
             return Response(
                 body="\n".join(
                     [
                         f"finding id={ref_id} [soft-deleted, read-only]",
                         f"title: {tombstone.title}",
+                        *([retired] if retired else []),
                         f"last status: {', '.join(statuses) or '(none)'}",
                         "This retired claim is not live evidence. Do not retry this id.",
                         f"next: {exc.next}",
@@ -2522,6 +2530,69 @@ class FindingHandler(AuditedRetirementHandler):
                 "lease is standing (retry after the cooldown)"
             )
         return Response(body=f"refine fi{hub_id}: {body}{note}")
+
+    # ──────────────────────────────────────────────────────────────────
+    # delete — audited retirement plus the publish-state guard
+    # ──────────────────────────────────────────────────────────────────
+
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        reason: str | None = None,
+        dry_run: bool = False,
+        superseded_by: str | None = None,
+        force: bool = False,
+        # ``args={'retire_published': True}``: the hub retirement procedure
+        # for a hub past 'candidate' (gr760607; :mod:`._finding_retire`).
+        retire_published: bool = False,
+        **_kw: Any,
+    ) -> Response:
+        """The audited retirement; a hub past ``'candidate'`` retires only
+        through the retirement procedure (``retire_published=True``), which
+        records the retirement on its publish record (gr760607)."""
+        return self._delete(
+            id,
+            reason=reason,
+            dry_run=dry_run,
+            superseded_by=superseded_by,
+            force=force,
+            options={"retire_published": bool(retire_published)},
+        )
+
+    def _retire_guard(
+        self,
+        ref_id: int,
+        *,
+        conn: Any,
+        successor: int | None,
+        successor_handle: str | None,
+        successor_kind: str | None,
+        reason: str | None,
+        options: dict[str, Any],
+    ) -> Any:
+        """Refuse a past-candidate hub on the plain door; plan the
+        retirement procedure under ``retire_published`` (gr760607)."""
+        from precis.handlers import _finding_retire
+
+        return _finding_retire.guard(
+            self.store,
+            conn,
+            ref_id,
+            retire_published=bool(options.get("retire_published")),
+            successor_ref_id=successor,
+            successor_handle=successor_handle,
+            successor_kind=successor_kind,
+            reason=reason,
+        )
+
+    def _retire_preview(self, plan: Any) -> list[str]:
+        return list(plan.summary())
+
+    def _retire_apply(self, plan: Any, *, conn: Any) -> list[str]:
+        from precis.handlers import _finding_retire
+
+        return _finding_retire.apply(self.store, conn, plan)
 
     # ──────────────────────────────────────────────────────────────────
     # cite — explicitly not supported

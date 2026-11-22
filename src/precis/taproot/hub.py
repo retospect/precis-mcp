@@ -2318,6 +2318,36 @@ def _plan_cite_rewrites(
     ]
 
 
+def plan_cite_rewrites(
+    conn: Any, *, old_ref_id: int, new_ref_id: int
+) -> list[MergeCiteRewrite]:
+    """Every live draft chunk citing ``[fi<old_ref_id>]`` and its text with
+    the cite moved to ``fi<new_ref_id>`` — the merge's plan, shared with the
+    hub retirement procedure (gr760607)."""
+    return _plan_cite_rewrites(conn, loser_ref_id=old_ref_id, winner_ref_id=new_ref_id)
+
+
+def apply_cite_rewrites(
+    store: Store,
+    conn: Any,
+    rewrites: list[MergeCiteRewrite],
+    *,
+    source: dict[str, Any],
+) -> None:
+    """Write planned cite rewrites on ``conn`` through the draft store's
+    edit primitive: sha bump, ``edited`` chunk_event, derived rows
+    re-derive on the sha change. A chunk edited since the plan read it
+    fails the write rather than being overwritten."""
+    for rw in rewrites:
+        store.drafts.edit_text_in_tx(
+            conn,
+            rw.handle,
+            rw.new_text,
+            base_sha=content_sha(rw.old_text),
+            source=source,
+        )
+
+
 @dataclass(frozen=True)
 class MergeBlockedEdge:
     """One loser edge :func:`link_claims` would refuse on the winner, named
@@ -2694,20 +2724,16 @@ def _apply_merge_plan(
             conn.execute("DELETE FROM links WHERE link_id = %s", (edge.link_id,))
 
     # Re-point live draft prose citing the loser BEFORE the retire below
-    # (whose cited-finding guard would otherwise refuse). Goes through the
-    # draft store's edit primitive on this transaction: sha bump, `edited`
-    # chunk_event, derived rows re-derive on the sha change.
-    for rw in plan.cite_rewrites:
-        store.drafts.edit_text_in_tx(
-            conn,
-            rw.handle,
-            rw.new_text,
-            base_sha=content_sha(rw.old_text),
-            source={
-                "tool": "taproot-merge",
-                "merged": f"fi{plan.loser_ref_id}->fi{plan.winner_ref_id}",
-            },
-        )
+    # (whose cited-finding guard would otherwise refuse).
+    apply_cite_rewrites(
+        store,
+        conn,
+        plan.cite_rewrites,
+        source={
+            "tool": "taproot-merge",
+            "merged": f"fi{plan.loser_ref_id}->fi{plan.winner_ref_id}",
+        },
+    )
 
     # Record the collapse BEFORE retiring the loser: link_claims requires
     # both endpoints to be live TAPROOT:claim hubs, which the loser still
@@ -2752,17 +2778,37 @@ def supersede_call(duplicate: str, survivor: str) -> str:
     )
 
 
+#: The ``delete(kind='finding', args={...})`` key that opts into the hub
+#: retirement procedure for a hub past ``'candidate'`` (gr760607).
+RETIRE_PUBLISHED_ARG = "retire_published"
+
+
+def retire_published_call(hub: str, successor: str | None, reason: str) -> str:
+    """The agent call of the hub retirement procedure: retire the hub past
+    ``'candidate'`` named ``hub``, superseded by ``successor`` (or retracted
+    when ``None``), with the publish record kept (gr760607)."""
+    sup = f"superseded_by='{successor}', " if successor else ""
+    return (
+        f"delete(kind='finding', id='{hub}', {sup}reason='{reason}', "
+        f"args={{'{RETIRE_PUBLISHED_ARG}': True}})"
+    )
+
+
 def supersede_advice(plan: MergePlan) -> str:
     """What to do instead of a merge the publish-state block refuses. A
     supersede retires the duplicate, so the hub past ``'candidate'`` is
     always the survivor, whichever of loser/winner the caller named; with
-    both past ``'candidate'`` nothing may be retired, so no call is named."""
+    both past ``'candidate'`` the named loser retires through the hub
+    retirement procedure instead (gr760607)."""
     lo, wi = f"fi{plan.loser_ref_id}", f"fi{plan.winner_ref_id}"
     if plan.loser_past_candidate and plan.winner_past_candidate:
         return (
             f"{lo} and {wi} are both past 'candidate', so neither can be merged "
-            "or retired. Leave both as they are and report the duplicate to "
-            "the owner."
+            "and the plain delete door refuses both. Retire the duplicate "
+            "through the retirement procedure, which keeps its publish record "
+            "as 'superseded' and files the owner todo for any signed or "
+            "published artifact: "
+            f"{retire_published_call(lo, wi, '<why they are the same claim>')}"
         )
     keep, dup = (lo, wi) if plan.loser_past_candidate else (wi, lo)
     return (

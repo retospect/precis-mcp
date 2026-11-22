@@ -9,6 +9,7 @@ answers:
   - how do I reword a claim hub without minting a duplicate?
   - how do I sharpen a claim without losing the original wording?
   - what's the difference between rewording, refining, and merging a hub?
+  - how do I retire a claim hub that is already reviewed, signed or published?
 applies-to: link/edit(kind='finding') hub-editing doors; precis taproot refine (CLI equivalent)
 status: active
 tags: workflow, design
@@ -226,10 +227,9 @@ Refusals:
   superseded_by='fi<past-candidate hub>', reason='<why they are the same
   claim>')`. It retires the dup, records the redirect and moves the dup's
   other links to the kept hub (see `precis-delete-help`). Add
-  `dry_run=True` to preview. If both hubs are past `candidate`, neither
-  can be merged or retired: the refusal prints no call; leave both and
-  report the duplicate to the owner. Do not repoint links and delete by
-  hand.
+  `dry_run=True` to preview. If both hubs are past `candidate`, the
+  refusal prints the retirement procedure call for the dup instead (next
+  section). Do not repoint links and delete by hand.
 - **A link on the dup that the survivor may not hold** (a `disputes`
   link when the survivor is a landscape claim, an `explains` link that
   would close a cycle): both modes refuse, name the link as it stands
@@ -248,6 +248,42 @@ refusing):
 ```python
 get(kind="finding", id="fi<survivor>", view="merge-plan", args={"loser": "fi<dup>"})
 ```
+
+## Retire a hub past candidate
+
+The plain `delete(kind='finding', ...)` refuses a hub past `candidate`
+(reviewed, signed, anchored, published, or any terminal publish row): its
+identity is frozen. It retires only through the retirement procedure, an
+explicit flag on the same door:
+
+```python
+# a duplicate: superseded by another finding hub
+delete(kind="finding", id="fi<N>", superseded_by="fi<M>",
+       reason="same claim as fi<M>", args={"retire_published": True})
+# withdrawn, no successor: retracted
+delete(kind="finding", id="fi<N>", reason="the source retracted the value",
+       args={"retire_published": True})
+```
+
+`reason` is required and `superseded_by` must name a live finding. Add
+`dry_run=True` to preview. One transaction:
+
+- The hub's publish row becomes `superseded` (successor named) or
+  `retracted` (none) and records the reason and successor. The row is
+  kept. A `publishing` row refuses until the registry POST resolves; a hub
+  whose rows are all terminal keeps their state and gets the retirement
+  recorded.
+- Links move to the successor and draft `[fi<N>]` cites become
+  `[fi<M>]`. Without a successor a live draft cite refuses: remove it
+  first.
+- `get(kind='finding', id=<N>)` reads a tombstone line, `retired:
+  superseded by fi<M> — <reason>` or `retracted: <reason>`; a superseded
+  hub's `fi<N>` handle redirects to `fi<M>`.
+- A hub that was signed, anchored or published gets one owner todo
+  (`ask-user`) listing the artifact's identifiers: a retraction or erratum
+  is owed outside precis. The procedure does not withdraw the artifact.
+
+The flag on a hub still at `candidate` refuses: use the plain door.
 
 ## See also
 

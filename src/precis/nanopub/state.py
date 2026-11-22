@@ -20,7 +20,9 @@ check :func:`check_transition` first, and the CAS's ``expect`` list keeps
 a racing writer honest. Two legal targets are nonetheless refused by the
 generic CAS because they carry side obligations: ``publishing`` (claim /
 release / record_published) and ``superseded`` (``store.nanopub_supersede``,
-which also writes the ``nanopub_supersessions`` row — gr482220).
+which also writes the ``nanopub_supersessions`` row — gr482220). Retiring
+the claim hub itself is a separate door with its own legality,
+:func:`check_retirement` (``store.nanopub_retire_hub``, gr760607).
 """
 
 from __future__ import annotations
@@ -57,6 +59,31 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 }
 
 TERMINAL = ("superseded", "retracted", "rejected")
+
+#: The hub retirement procedure's own door (gr760607): a claim hub past
+#: ``candidate`` retired as a duplicate (``superseded`` by another hub) or
+#: withdrawn (``retracted``). It is not an artifact transition, so it sits
+#: beside :data:`TRANSITIONS` the way ``nanopub_supersede`` does: the
+#: hub's live row terminalizes from any state but ``publishing`` (a
+#: registry POST is in flight; reconcile first). A signed or published
+#: artifact is not withdrawn by this; the procedure files the owner todo
+#: for the retraction or erratum it owes.
+RETIRE_STATES = ("superseded", "retracted")
+RETIRE_FROM = ("candidate", "reviewed", "signed", "anchored", "published")
+
+
+def check_retirement(from_state: str, to_state: str) -> None:
+    """Raise ``ValueError`` unless the retirement procedure may move a live
+    row in ``from_state`` to ``to_state``; silent when allowed."""
+    if to_state not in RETIRE_STATES:
+        raise ValueError(
+            f"hub retirement records {' or '.join(RETIRE_STATES)}, not {to_state!r}"
+        )
+    if from_state not in RETIRE_FROM:
+        raise ValueError(
+            f"hub retirement cannot move a {from_state!r} publish row "
+            f"(allowed from: {', '.join(RETIRE_FROM)})"
+        )
 
 
 def check_transition(from_state: str, to_state: str) -> None:
