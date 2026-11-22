@@ -8,6 +8,7 @@ Handler tests run against real PG (the ``store`` fixture) so they exercise the
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -768,9 +769,10 @@ class TestCoverage:
         reviewed = _mk(store, "cov reviewed")
         _mk(store, "cov unreviewed")
         _created_memory(store, "cov memory")
-        self._consider(
-            store, reviewed, reason="kg-review:claude-opus-5-5:2026-10-22:ok"
-        )
+        # Stamp today: a fixed date falls out of the 30-day window (it did on
+        # 2026-11-21 with 2026-10-22).
+        today = datetime.now(UTC).date().isoformat()
+        self._consider(store, reviewed, reason=f"kg-review:claude-opus-5-5:{today}:ok")
         body = _handler(store).get(id="/coverage").body
         assert "30 day(s)" in body
         taxon_row = next(l for l in body.splitlines() if l.startswith("taxon"))
