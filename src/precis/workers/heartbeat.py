@@ -1080,6 +1080,20 @@ def _report_resource_slots(store: object, host: str) -> str:
             log.warning("heartbeat: reclaimed %d settled job's spawn hold(s)", n)
     except Exception:
         log.warning("heartbeat: settled-job hold reclaim failed", exc_info=True)
+    # Job-owned spawn holds on THIS host whose child process group is gone,
+    # whatever the job's status (gr763200): a launcher SIGKILLed with its
+    # child, the job reclaimed to queued and claimed elsewhere, leaves a
+    # hold no poll tends and the settled sweep skips. Host-local by nature
+    # (a pgid means nothing on another host), so `local_host()`, never the
+    # heartbeat's `host` override. Separate try, same reasoning as above.
+    try:
+        from precis.workers.admission import reap_gone_job_child_holds
+
+        n = reap_gone_job_child_holds(store)
+        if n:
+            log.warning("heartbeat: reclaimed %d gone child's spawn hold(s)", n)
+    except Exception:
+        log.warning("heartbeat: gone-child hold reclaim failed", exc_info=True)
     # Advertise this host's local llama-swap models as served_by cards + llm: slots
     # so the router routes to them directly (self-gating: no local server ⇒ no-op).
     # Best-effort + separate try so a catalog blip never fails the heartbeat.

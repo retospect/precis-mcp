@@ -41,18 +41,23 @@ epoch reclaim on restart is correct there.
 
 **A job's spawn holds follow the job (gr762788).** A launch made for a
 job (``spawn(job_id=…)``) is held as :func:`job_holder` —
-``job:<job_id>``, then ``job:<job_id>:<pgid>`` once the child exists —
-never the launching worker's ``host:pid``, so the worker-exit hook
-(``local_serving.release_process_holds``) cannot refund a footprint
-whose child still runs. Whichever worker polls the job on this host
-(the launcher, or the one that re-adopted it after a restart) calls
+``job:<job_id>``, then ``job:<job_id>:<pgid>:<ttl_s>`` once the child
+exists — never the launching worker's ``host:pid``, so the worker-exit
+hook (``local_serving.release_process_holds``) cannot refund a
+footprint whose child still runs. Whichever worker polls the job on this
+host (the launcher, or the one that re-adopted it after a restart) calls
 :func:`tend_job_holds` each pass: a hold whose child group is gone is
-released at once, a live one renewed while the job runs. A terminal
-job's remaining holds — a child that may still be exiting — wait out
-the orphan reaper's grace (``_common.ORPHAN_REAP_GRACE_S``), then the
-heartbeat's :func:`reclaim_settled_job_holds` refunds them, along with
-holds of jobs terminalized by paths no poll saw or of jobs gone. The
-babysit stays the fast path while the launcher lives; every release
+released at once, a live one renewed to its footprint's own TTL while
+the job runs. A terminal job's remaining holds — a child that may still
+be exiting — wait out the orphan reaper's grace
+(``_common.ORPHAN_REAP_GRACE_S``), then the heartbeat's
+:func:`reclaim_settled_job_holds` refunds them, along with holds of jobs
+terminalized by paths no poll saw or of jobs gone. A job that left
+``running`` without going terminal (reclaimed to ``queued`` after its
+launcher died, then claimed elsewhere) is polled on this host by no one:
+the heartbeat's :func:`reap_gone_job_child_holds` refunds every hold on
+this host whose named child group is gone, whatever the job's status
+(gr763200). The babysit stays the fast path while the launcher lives; every release
 deletes by row, so whichever lands second finds nothing and refunds
 nothing. A :func:`spawn` with a pooled store but no ``job_id`` warns
 once per caller: its holds stay the worker's.
@@ -98,6 +103,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 import signal
 import socket
@@ -143,20 +149,47 @@ TTL_MARGIN_S = 60.0
 JOB_HOLDER_PREFIX = "job:"
 
 
-def job_holder(job_id: int, pgid: int | None = None) -> str:
+def job_holder(job_id: int, pgid: int | None = None, ttl_s: float | None = None) -> str:
     """The holder string of ``job_id``'s spawn holds: ``job:<job_id>`` at
-    admission, ``job:<job_id>:<pgid>`` once the child's process group is
-    known — what :func:`tend_job_holds` checks for liveness."""
+    admission, ``job:<job_id>:<pgid>[:<ttl_s>]`` once the child's process
+    group is known — the pgid is what :func:`tend_job_holds` and
+    :func:`reap_gone_job_child_holds` check for liveness, ``ttl_s`` (whole
+    seconds, rounded up; only with a pgid) the footprint's own hold TTL
+    :func:`tend_job_holds` renews to (gr763200). The holder is the one
+    place a hold row can carry it: ``expires_at - acquired_at`` stops
+    being the TTL at the first renewal."""
     bare = f"{JOB_HOLDER_PREFIX}{int(job_id)}"
-    return bare if pgid is None else f"{bare}:{int(pgid)}"
+    if pgid is None:
+        return bare
+    named = f"{bare}:{int(pgid)}"
+    return named if ttl_s is None else f"{named}:{math.ceil(ttl_s)}"
+
+
+def _holder_fields(holder: str) -> list[str] | None:
+    """The numeric fields after ``job:`` of a :func:`job_holder` string
+    (``[job_id]``, ``[job_id, pgid]`` or ``[job_id, pgid, ttl_s]``), else
+    ``None``."""
+    parts = holder.split(":")
+    if parts[0] + ":" != JOB_HOLDER_PREFIX or not 2 <= len(parts) <= 4:
+        return None
+    if not all(p.isdigit() for p in parts[1:]):
+        return None
+    return parts[1:]
 
 
 def _holder_pgid(holder: str) -> int | None:
     """The child pgid a :func:`job_holder` string names, else ``None``."""
-    parts = holder.split(":")
-    if len(parts) == 3 and parts[2].isdigit():
-        return int(parts[2])
-    return None
+    fields = _holder_fields(holder)
+    return int(fields[1]) if fields is not None and len(fields) >= 2 else None
+
+
+def _holder_ttl_s(holder: str) -> float | None:
+    """The footprint hold TTL a :func:`job_holder` string carries, else
+    ``None`` (a bare holder, or one stamped before gr763200)."""
+    fields = _holder_fields(holder)
+    if fields is None or len(fields) != 3 or int(fields[2]) <= 0:
+        return None
+    return float(fields[2])
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,10 +466,13 @@ def _release_quietly(store: Any, adm: Admission) -> None:
 
 
 def _name_child(store: Any, adm: Admission, holder: str) -> Admission:
-    """Stamp the child's pgid on a job launch's holds (``holder`` from
-    :func:`job_holder`) — best-effort: a miss leaves the bare
-    ``job:<id>`` holder, which :func:`tend_job_holds` renews while the
-    job runs and the terminal release still closes."""
+    """Stamp the child's pgid and the footprint's hold TTL on a job
+    launch's holds (``holder`` from :func:`job_holder`) — best-effort: a
+    miss leaves the bare ``job:<id>`` holder, which :func:`tend_job_holds`
+    renews (to its ``ttl_s`` fallback) while the job runs. Having no pgid
+    to judge, no pass can prove its child gone: once the job is terminal
+    it is left to :func:`reclaim_settled_job_holds` after the orphan
+    reaper's grace, else to the TTL."""
     try:
         with store.pool.connection() as conn:
             with conn.transaction():
@@ -475,14 +511,17 @@ def tend_job_holds(
     """Keep a job's spawn holds on ``host`` (default this one) honest from
     its poll (gr762788): release each hold whose named child group is
     gone, and (``renew``, the job still running) push the rest out to
-    ``ttl_s`` from now. A hold with no pgid named (the stamp missed)
-    counts as live. A terminal job's poll passes ``renew=False``: a gone
-    child's hold is refunded at once, a possibly-live one is left to
-    :func:`reclaim_settled_job_holds` after the orphan reaper's grace.
-    The poll runs on the job's own host, so a worker that re-adopted the
-    job after a restart does what the dead launcher's babysit no longer
-    can. Returns ``(renewed, released)``; a store fault returns ``(0, 0)``
-    and leaves the TTL as the backstop."""
+    their footprint's own hold TTL from now — the one its holder carries
+    (:func:`job_holder`), so dep_check's 1860 s backstop stays 1860 s
+    (gr763200); ``ttl_s`` only for a holder that carries none (bare, or
+    stamped before the TTL rode the holder). A hold with no pgid named
+    (the stamp missed) counts as live. A terminal job's poll passes
+    ``renew=False``: a gone child's hold is refunded at once, a
+    possibly-live one is left to :func:`reclaim_settled_job_holds` after
+    the orphan reaper's grace. The poll runs on the job's own host, so a
+    worker that re-adopted the job after a restart does what the dead
+    launcher's babysit no longer can. Returns ``(renewed, released)``; a
+    store fault returns ``(0, 0)`` and leaves the TTL as the backstop."""
     if not job_id or getattr(store, "pool", None) is None:
         return 0, 0
     where = host or local_host()
@@ -496,9 +535,16 @@ def tend_job_holds(
                     if (pgid := _holder_pgid(holder)) is not None
                     and not _group_alive(pgid)
                 ]
-                live = [hold_id for hold_id, _ in held if hold_id not in dead]
                 released = _ops.delete_job_slot_holds(conn, job_id, dead)
-                renewed = _ops.renew_slot_holds(conn, live, ttl_s) if renew else 0
+                renewed = 0
+                if renew:
+                    by_ttl: dict[float, list[int]] = {}
+                    for hold_id, holder in held:
+                        if hold_id not in dead:
+                            own = _holder_ttl_s(holder)
+                            by_ttl.setdefault(own or ttl_s, []).append(hold_id)
+                    for own_ttl, ids in by_ttl.items():
+                        renewed += _ops.renew_slot_holds(conn, ids, own_ttl)
     except Exception:
         log.warning(
             "admission: tending job %s's holds failed; the TTL sweep is the backstop",
@@ -527,6 +573,40 @@ def reclaim_settled_job_holds(store: Any) -> int:
             return _ops.reclaim_settled_job_holds(
                 conn, list(TERMINAL), ORPHAN_REAP_GRACE_S
             )
+
+
+def reap_gone_job_child_holds(store: Any, *, host: str | None = None) -> int:
+    """Refund every ``job:<id>:<pgid>`` hold on ``host`` (default this
+    one) whose process group is gone, whatever its job's status
+    (gr763200). Closes the leak no job-scoped path sees: a launcher
+    SIGKILLed with its child, the job reclaimed to ``queued`` and claimed
+    on another host — that host's poll tends only its own holds, and the
+    settled-job sweep skips a job that is not terminal. Liveness is
+    :func:`_group_alive`'s (a group this process cannot judge reads as
+    alive, so the hold stays); a bare ``job:<id>`` holder names no group
+    and is not touched. Deletes by row, so a racing poll, babysit or
+    sweep that closed a hold first leaves nothing to refund twice. The
+    heartbeat's pass; must run on the host whose holds it judges, since
+    the pgid means nothing elsewhere. Returns holds deleted, 0 for a
+    store without a pool. Raises on a store fault (the heartbeat logs and
+    moves on)."""
+    if getattr(store, "pool", None) is None:
+        return 0
+    where = host or local_host()
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            held = _ops.job_child_slot_holds(conn, where)
+            alive: dict[int, bool] = {}
+            dead = []
+            for hold_id, holder in held:
+                pgid = _holder_pgid(holder)
+                if pgid is None:
+                    continue
+                if pgid not in alive:
+                    alive[pgid] = _group_alive(pgid)
+                if not alive[pgid]:
+                    dead.append(hold_id)
+            return _ops.delete_job_child_slot_holds(conn, where, dead)
 
 
 #: Call sites already warned about a jobless pooled :func:`spawn` — one
@@ -626,9 +706,9 @@ def spawn(
     a caller dead between ``spawn`` returning and the caller persisting
     the handle it built (gr708457); ``None`` writes it to ``/dev/null``.
     ``job_id`` (a launch made for a job) replaces ``holder`` with
-    :func:`job_holder` and, once the child exists, stamps its pgid on the
-    holds, so the job's poll owns them past this worker's life (gr762788;
-    module docstring); a pooled store without one warns once per call
+    :func:`job_holder` and, once the child exists, stamps its pgid and the
+    footprint's hold TTL on the holds, so the job's poll owns them past
+    this worker's life (gr762788, gr763200; module docstring); a pooled store without one warns once per call
     site, naming it. Returns the process group pid. ``popen`` is the
     test seam for the fake child.
     """
@@ -669,9 +749,9 @@ def spawn(
             _release_quietly(store, adm)
         raise
     if adm is not None:
-        if job_id:
-            adm = _name_child(store, adm, job_holder(job_id, int(proc.pid)))
         ttl = footprint.hold_ttl_s()
+        if job_id:
+            adm = _name_child(store, adm, job_holder(job_id, int(proc.pid), ttl))
         try:
             threading.Thread(
                 target=_babysit,
@@ -740,6 +820,7 @@ __all__ = [
     "job_holder",
     "launch_fits",
     "local_host",
+    "reap_gone_job_child_holds",
     "reclaim_settled_job_holds",
     "release",
     "spawn",

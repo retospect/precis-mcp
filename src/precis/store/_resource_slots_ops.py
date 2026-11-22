@@ -330,10 +330,11 @@ def delete_slot_holds_for_holder(
 # ── Job-owned holds (gr762788) ────────────────────────────────────────────
 #
 # A detached launch made on a job's behalf (``admission.spawn(job_id=…)``)
-# stamps ``holder = 'job:<job_id>'``, then ``'job:<job_id>:<pgid>'`` once
-# the child exists. The worker-exit hook matches ``host:pid`` and the
-# hold's NULL identity columns, so it can never refund these; the job's
-# poll path and the settled-job sweep below own them instead.
+# stamps ``holder = 'job:<job_id>'``, then ``'job:<job_id>:<pgid>:<ttl_s>'``
+# once the child exists (``':<pgid>'`` alone before gr763200). The
+# worker-exit hook matches ``host:pid`` and the hold's NULL identity
+# columns, so it can never refund these; the job's poll path, the
+# settled-job sweep and the host-local gone-child pass below own them.
 
 #: One job's holds: the bare launch-time holder or any ``:<pgid>`` child.
 _JOB_HOLDS_WHERE = "(holder = %(bare)s OR holder LIKE %(child)s)"
@@ -408,7 +409,7 @@ def delete_job_slot_holds(
 #: A ``job:`` holder's job id; the CASE keeps the cast off any holder the
 #: regex rejects (WHERE clauses carry no evaluation order).
 _HOLD_JOB_ID = (
-    "CASE WHEN h.holder ~ '^job:[0-9]{1,18}(:[0-9]+)?$' "
+    "CASE WHEN h.holder ~ '^job:[0-9]{1,18}(:[0-9]+){0,2}$' "
     "THEN split_part(h.holder, ':', 2)::bigint END"
 )
 
@@ -455,6 +456,61 @@ def reclaim_settled_job_holds(
     deleted."""
     row = conn.execute(
         _RECLAIM_SETTLED_JOB_HOLDS, (list(terminal_statuses), float(grace_s))
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+#: A job hold that names its child's process group: ``job:<id>:<pgid>``,
+#: optionally ``:<ttl_s>`` — what the host-local gone-child pass judges.
+_JOB_CHILD_HOLDER_RE = "^job:[0-9]{1,18}:[0-9]+(:[0-9]+)?$"
+
+
+def job_child_slot_holds(conn: Connection, host: str) -> list[tuple[int, str]]:
+    """``(hold_id, holder)`` of every live job hold on ``host`` that names
+    its child's process group, whatever job owns it (gr763200)."""
+    rows = conn.execute(
+        "SELECT id, holder FROM resource_slot_holds "
+        "WHERE host = %s AND holder ~ %s ORDER BY id",
+        (host, _JOB_CHILD_HOLDER_RE),
+    ).fetchall()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+
+# Same delete + grouped capped-refund discipline as `_DELETE_JOB_HOLDS`,
+# keyed on hold ids, re-checked against `host` and the child-holder shape so
+# a stale id list can never close another host's or a non-job hold.
+_DELETE_JOB_CHILD_HOLDS = (
+    "WITH doomed AS ("
+    "  DELETE FROM resource_slot_holds "
+    "  WHERE id = ANY(%(ids)s::bigint[]) AND host = %(host)s "
+    "    AND holder ~ %(shape)s "
+    "  RETURNING host, resource, units"
+    "), grouped AS ("
+    "  SELECT host, resource, SUM(units) AS units_sum FROM doomed "
+    "  GROUP BY host, resource"
+    "), refunded AS ("
+    "  UPDATE resource_slots s SET free = LEAST(s.capacity, s.free + g.units_sum) "
+    "  FROM grouped g "
+    "  WHERE s.host = g.host AND s.resource = g.resource "
+    "  RETURNING s.host"
+    ") "
+    "SELECT (SELECT COUNT(*) FROM doomed), (SELECT COUNT(*) FROM refunded)"
+)
+
+
+def delete_job_child_slot_holds(
+    conn: Connection, host: str, hold_ids: list[int]
+) -> int:
+    """Close the listed job-child holds on ``host`` and refund their units,
+    capped at capacity. Only rows this statement deletes are refunded: a
+    hold a poll, babysit or sweep already closed has no row left, so a
+    repeated or racing release never double-refunds. Returns holds closed."""
+    ids = [int(h) for h in hold_ids]
+    if not ids:
+        return 0
+    row = conn.execute(
+        _DELETE_JOB_CHILD_HOLDS,
+        {"ids": ids, "host": host, "shape": _JOB_CHILD_HOLDER_RE},
     ).fetchone()
     return int(row[0]) if row is not None else 0
 
@@ -668,10 +724,12 @@ class ResourceSlotsMixin:
 __all__ = [
     "ResourceSlot",
     "ResourceSlotsMixin",
+    "delete_job_child_slot_holds",
     "delete_job_slot_holds",
     "delete_slot_hold",
     "delete_slot_holds_for_holder",
     "insert_slot_hold",
+    "job_child_slot_holds",
     "job_slot_holds",
     "reclaim_expired_slot_holds",
     "reclaim_settled_job_holds",

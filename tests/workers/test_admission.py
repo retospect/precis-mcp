@@ -1287,6 +1287,7 @@ def _launch_for_job(
     monkeypatch: pytest.MonkeyPatch,
     *,
     babysit: bool,
+    work_class: str = "slice",
 ) -> int:
     """Launch ``argv`` through run_slice's real detached launcher for job
     ``rid``. ``babysit=False`` stands in for a launching worker that died
@@ -1303,7 +1304,7 @@ def _launch_for_job(
         exit_file=tmp_path / f"job{rid}.exit",
         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
         store=store,
-        work_class="slice",
+        work_class=work_class,
         job_id=rid,
     )
 
@@ -1383,8 +1384,8 @@ def test_job_spawn_holds_name_the_job_and_its_child(
     )
     try:
         assert _job_holds(store, host) == [
-            ("cpu_milli", 2000, f"job:{rid}:{pid}"),
-            ("mem_mb", 4096, f"job:{rid}:{pid}"),
+            ("cpu_milli", 2000, f"job:{rid}:{pid}:3600"),
+            ("mem_mb", 4096, f"job:{rid}:{pid}:3600"),
         ]
     finally:
         _kill_group(pid)
@@ -1454,8 +1455,8 @@ def test_worker_exit_hook_keeps_a_running_jobs_holds(
         assert local_serving.release_process_holds() == 1
         assert own not in _hold_ids(store, host)
         assert _job_holds(store, host) == [
-            ("cpu_milli", 2000, f"job:{rid}:{pid}"),
-            ("mem_mb", 4096, f"job:{rid}:{pid}"),
+            ("cpu_milli", 2000, f"job:{rid}:{pid}:3600"),
+            ("mem_mb", 4096, f"job:{rid}:{pid}:3600"),
         ]
     finally:
         _kill_group(pid)
@@ -1609,6 +1610,94 @@ def test_job_hold_release_is_idempotent_with_the_babysit(
         ("cpu_milli", 1000, "t:other"),
         ("mem_mb", 1024, "t:other"),
     ]
+
+
+def test_gone_child_pass_refunds_a_requeued_jobs_hold_in_one_pass(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr763200: the launcher was SIGKILLed with its child and epoch reclaim
+    moved the job back to ``queued`` (claimed elsewhere, so no poll here
+    tends it, and the settled sweep skips a job that is not terminal). The
+    host-local pass refunds the gone child's hold in one pass; a live
+    child's hold, a bare holder and another host's hold stay, and a repeat
+    refunds nothing more."""
+    host, other_host = "jh10", "jh10-other"
+    _seed_job_host(store, monkeypatch, host)
+    store.sync_host_resource_slots(other_host, {"mem_mb": 16384, "cpu_milli": 8000})
+    requeued = _job(store, status="queued")
+    live_job = _job(store, status="queued")
+    bare_job = _job(store, status="queued")
+    dead = _launch_for_job(
+        store, requeued, ["true"], tmp_path, monkeypatch, babysit=False
+    )
+    _group_gone(dead)
+    live = _launch_for_job(
+        store, live_job, ["sleep", "30"], tmp_path, monkeypatch, babysit=False
+    )
+    try:
+        fp = Footprint(cpu_milli=1000, mem_mb=1024)
+        assert _admit(store, host, fp, admission.job_holder(bare_job)) is not None
+        # Another host's hold naming the same (here gone) pgid: not ours to judge.
+        elsewhere = admission.job_holder(requeued, dead, 3600)
+        assert _admit(store, other_host, fp, elsewhere) is not None
+        assert _free(store, host) == {"cpu_milli": 3000, "mem_mb": 7168}
+        # Neither job-scoped path sees it: the job is not terminal.
+        assert admission.reclaim_settled_job_holds(store) == 0
+
+        assert admission.reap_gone_job_child_holds(store) == 2
+
+        assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 11264}
+        assert sorted({h for _r, _u, h in _job_holds(store, host)}) == sorted(
+            [admission.job_holder(bare_job), f"job:{live_job}:{live}:3600"]
+        )
+        assert _job_holds(store, other_host) == [
+            ("cpu_milli", 1000, elsewhere),
+            ("mem_mb", 1024, elsewhere),
+        ]
+        assert _free(store, other_host) == {"cpu_milli": 7000, "mem_mb": 15360}
+
+        assert admission.reap_gone_job_child_holds(store) == 0
+        assert _free(store, host) == {"cpu_milli": 5000, "mem_mb": 11264}
+    finally:
+        _kill_group(live)
+
+
+def test_tend_renews_to_the_footprints_own_ttl(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr763200: a running job's poll renews its holds to the footprint's
+    hold TTL the holder carries — dep_check's 1860 s (``wall_s`` 1800 +
+    margin) — not the hour-long ``DEFAULT_TTL_S`` that would stretch the
+    backstop of a launch whose launcher died."""
+    host = "jh11"
+    _seed_job_host(store, monkeypatch, host)
+    rid = _job(store)
+    pid = _launch_for_job(
+        store,
+        rid,
+        ["sleep", "30"],
+        tmp_path,
+        monkeypatch,
+        babysit=False,
+        work_class="dep_check",
+    )
+    try:
+        assert {h for _r, _u, h in _job_holds(store, host)} == {f"job:{rid}:{pid}:1860"}
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE resource_slot_holds "
+                "SET expires_at = now() + interval '5 seconds' WHERE host = %s",
+                (host,),
+            )
+            conn.commit()
+
+        assert admission.tend_job_holds(store, rid) == (2, 0)
+
+        left = _ttl_left_s(store, host)
+        assert len(left) == 2
+        assert all(1860 - 30 < s <= 1860 for s in left), left
+    finally:
+        _kill_group(pid)
 
 
 def test_jobless_pooled_spawn_warns_once_naming_the_caller(
