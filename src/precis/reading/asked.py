@@ -278,7 +278,7 @@ def queue_asked_term(
             if highlight and match:
                 base_definition = str(match[3].get("definition") or "")
             ref = store.insert_ref(
-                kind=kind,
+                kind="concept",
                 slug=None,
                 title=name.strip(),
                 meta=initial_concept_meta(name, base_definition, extra=extra),

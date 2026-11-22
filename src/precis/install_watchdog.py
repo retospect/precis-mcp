@@ -824,8 +824,8 @@ def install_drain_signal(
         # The served-sha stamp stays: the quiet deferral and the drain
         # still serve sessions, so the release confirm must keep counting
         # this instance — drain_then_exit drops the key itself just before
-        # os._exit, and a SIGKILL before then leaves it to age out, the
-        # safe direction (gr762430).
+        # the hard exit, and a SIGKILL before then leaves it to age out,
+        # the safe direction (gr762430).
         threading.Thread(
             target=drain_then_exit,
             kwargs={

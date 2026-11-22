@@ -115,6 +115,19 @@ def test_chunk_focus_up_link_targets_its_record(client: TestClient, store: Any) 
     assert 'data-key="U ArrowUp"' in page.text
 
 
+def _assert_focuses_the_entry(page: str, entry_id: int, other_text: str) -> None:
+    """A quest-log chunk takes the document eye (gr703057): the selected
+    entry is the one verbatim focus, and another entry shows at most as a
+    collapsed summary row — never as, or in place of, the focus."""
+    lines = page.splitlines()
+    focus = [i for i, ln in enumerate(lines) if ln.lstrip().startswith("▸ ")]
+    assert len(focus) == 1, page
+    assert f">ql{entry_id}</a>" in lines[focus[0]]
+    assert "because its exposed site may bind nitrogen." in lines[focus[0] + 1]
+    others = [ln for ln in lines if other_text in ln]
+    assert all(ln.lstrip().startswith("· ") for ln in others), others
+
+
 def test_structure_log_entry_link_opens_the_quest_entry(
     client: TestClient, runtime_with_store: Any, store: Any
 ) -> None:
@@ -139,14 +152,12 @@ def test_structure_log_entry_link_opens_the_quest_entry(
     assert target is not None, page.text
     entry_page = client.get(target.group(1))
     assert entry_page.status_code == 200, entry_page.text
-    assert "because its exposed site may bind nitrogen." in entry_page.text
-    assert other_text not in entry_page.text
+    _assert_focuses_the_entry(entry_page.text, entry.id, other_text)
     assert f'data-zoom-out="qu{quest.id}"' in entry_page.text
     assert "[error:" not in entry_page.text
     ordinal_page = client.get(f"/eye/qu{quest.id}~1")
     assert ordinal_page.status_code == 200, ordinal_page.text
-    assert "because its exposed site may bind nitrogen." in ordinal_page.text
-    assert other_text not in ordinal_page.text
+    _assert_focuses_the_entry(ordinal_page.text, entry.id, other_text)
 
     body, error = runtime_with_store.dispatch_with_status(
         "get", {"kind": "quest", "id": quest.id, "extent": "fisheye+1hop"}
