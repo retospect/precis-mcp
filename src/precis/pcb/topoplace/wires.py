@@ -1065,6 +1065,22 @@ def _chord_crossed(chord: tuple[float, float, float, float], p: _V2, q: _V2) -> 
     return False
 
 
+def _chord_pair_crossed(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> bool:
+    """Whether two stored chords cross, ``a`` tested against ``b``'s
+    step or ``b`` against ``a``'s. The single-direction
+    :func:`_chord_crossed` is asymmetric on collinear chords: a short
+    chord strictly inside a longer one lands interior endpoint hits
+    only when it plays the step, so a directional tally scores the
+    same pair differently by which record arrived last. The negotiated
+    ledger prices the pair once in either order (gr600680)."""
+    return _chord_crossed(a, (b[0], b[1]), (b[2], b[3])) or _chord_crossed(
+        b, (a[0], a[1]), (a[2], a[3])
+    )
+
+
 def _chord_ok(cs: Iterable[tuple[float, float, float, float]], p: _V2, q: _V2) -> bool:
     """Both ends of the step ``p→q`` on the same side of every chord in
     ``cs`` — a point on the chord's line is a touch, never a crossing
@@ -1081,8 +1097,11 @@ def _chords_crossed_n(
     cs: Iterable[tuple[float, float, float, float]], p: _V2, q: _V2
 ) -> int:
     """How many chords the step ``p→q`` crosses — the negotiated
-    passes' present-overuse count for the chord resource."""
-    return sum(1 for c in cs if _chord_crossed(c, p, q))
+    passes' present-overuse count for the chord resource. The step
+    plays the record ``_Occupancy.add`` would append, so the count
+    uses the ledger's direction-free pair rule: the price the search
+    pays is the tally a commit folds in (gr600680)."""
+    return sum(1 for c in cs if _chord_pair_crossed(c, (*p, *q)))
 
 
 def _taut_pts(
@@ -3795,7 +3814,9 @@ class _OccView:
     chords: dict[tuple[int, int], list[tuple[float, float, float, float]]] | None = None
     #: (edge, layer) -> earlier wires' crossing parameters, sorted.
     splits: dict[tuple[int, int], list[float]] | None = None
-    #: negotiated pass: crossings/capacity priced, not forbidden.
+    #: negotiated pass: crossings/capacity priced, not forbidden. Also
+    #: set on a negotiation build's shove repair views — the same-net
+    #: hole-to-hole wall only, no ``neg_*`` tables (gr600680).
     neg: bool = False
     neg_soft: bool = False
     neg_p: float = 0.0
@@ -5138,17 +5159,17 @@ class _Occupancy:
         self.tri_used = np.zeros((len(mesh.tris), n_layers))
         # negotiated passes: same-layer chord crossings the committed
         # wires still carry per (tri, layer) — the chord resource's
-        # present overuse (td569540)
+        # present overuse (td569540). Each pair counts once under the
+        # direction-free :func:`_chord_pair_crossed`, whichever record
+        # — the chord's own (tri, layer) or a mirror on a neighbouring
+        # triangle — arrived last, so the tally is insertion-order
+        # canonical and a discard+add scores the same ledger as a
+        # route-order rebuild (gr600680)
         self.cross_used = np.zeros((len(mesh.tris), n_layers))
         # G2h: every earlier wire's chord inside each corridor triangle
         # per layer, and the crossing parameters splitting each edge —
         # the search's legality, not a price
         self.chords: dict[tuple[int, int], list[tuple[float, float, float, float]]] = {}
-        #: parallel to ``chords``: whether each record was appended as
-        #  the chord's own (tri, layer) — ``cross_used`` counts a
-        #  crossing pair only when its later-arriving record is one —
-        #  or mirrored onto a neighbouring triangle (td598636)
-        self._chord_prim: dict[tuple[int, int], list[bool]] = {}
         self.splits: dict[tuple[int, int], list[float]] = {}
         # incremental re-grow bookkeeping (td598636): what each net
         # folded in — its builts, the chord/split records ``add``
@@ -5242,7 +5263,6 @@ class _Occupancy:
         new.tri_used = self.tri_used.copy()
         new.cross_used = self.cross_used.copy()
         new.chords = {key: list(val) for key, val in self.chords.items()}
-        new._chord_prim = {key: list(val) for key, val in self._chord_prim.items()}
         new.splits = {key: list(val) for key, val in self.splits.items()}
         new._added = {key: list(val) for key, val in self._added.items()}
         new._contrib_chords = {
@@ -5521,20 +5541,22 @@ class _Occupancy:
                 else edge_xy(self.mesh, int(b.edges[i]), float(b.t[i]))
             )
             if math.hypot(q_[0] - p_[0], q_[1] - p_[1]) > 1e-9:
+                chord = (*p_, *q_)
+                # negotiated passes price this (tri, layer)'s chord
+                # crossings by how many the committed wires carry: the
+                # new record counts the pairs it completes against the
+                # earlier ones there — whether it lands as the chord's
+                # own (tri, layer) or mirrored onto a neighbour. The
+                # pair test is direction-free, so a pair counts once
+                # whichever record arrived last and a discard+add
+                # agrees with a route-order rebuild (gr600680)
                 cs_key = (int(tr), int(lays[i]))
                 cs = self.chords.get(cs_key)
-                chord = (*p_, *q_)
                 if cs:
-                    # negotiated passes price this (tri, layer)'s chord
-                    # crossings by how many the committed wires carry —
-                    # count the new chord's crossings of the earlier ones
-                    # (the mirrored record below is the same physical
-                    # segment and is not counted twice)
                     self.cross_used[int(tr), int(lays[i])] += sum(
-                        1 for c in cs if _chord_crossed(c, p_, q_)
+                        1 for c in cs if _chord_pair_crossed(c, chord)
                     )
                 self.chords.setdefault(cs_key, []).append(chord)
-                self._chord_prim.setdefault(cs_key, []).append(True)
                 contrib_c.append((cs_key, chord))
                 # a chord lying along one of the tri's own edges (every
                 # fan spoke through a wrapped vertex leaves along the
@@ -5551,9 +5573,16 @@ class _Occupancy:
                     t2a, t2b = c.ctx.edge_tris[e_]
                     t2 = t2a if t2a != int(tr) else t2b
                     if t2 >= 0:
-                        m_key = (t2, int(lays[i]))
+                        m_key = (int(t2), int(lays[i]))
+                        ms = self.chords.get(m_key)
+                        if ms:
+                            # the same physical segment as the primary
+                            # record, on a different (tri, layer) — its
+                            # pairs count there, once, on arrival
+                            self.cross_used[int(t2), int(lays[i])] += sum(
+                                1 for mc in ms if _chord_pair_crossed(mc, chord)
+                            )
                         self.chords.setdefault(m_key, []).append(chord)
-                        self._chord_prim.setdefault(m_key, []).append(False)
                         contrib_c.append((m_key, chord))
                     break
         for i, e in enumerate(b.edges):
@@ -5576,8 +5605,10 @@ class _Occupancy:
         counterpart of :meth:`rebuild` for a re-grown net (td598636):
         the ledger keeps every OTHER net's wires in place instead of
         replaying them all. ``cross_used`` is recomputed per touched
-        (tri, layer) as the crossing pairs among the chords left, the
-        same set the adds counted."""
+        (tri, layer) as the crossing pairs among the chords left —
+        each pair once under the same direction-free rule the adds
+        apply, whichever record arrived last — so the ledger scores
+        the crossings a route-order :meth:`rebuild` would (gr600680)."""
         k = int(k)
         bl = self._added.pop(k, ())
         if not bl:
@@ -5627,28 +5658,24 @@ class _Occupancy:
         for key, chord in self._contrib_chords.pop(k, ()):
             cl = self.chords.get(key)
             if cl:
-                pl = self._chord_prim[key]
                 for i_, cx_ in enumerate(cl):
                     if cx_ is chord or cx_ == chord:
                         del cl[i_]
-                        del pl[i_]
                         break
                 if not cl:
                     del self.chords[key]
-                    del self._chord_prim[key]
             touched.add(key)
         for tr, ly in touched:
             key = (tr, ly)
             cs = self.chords.get(key, ())
-            prim = self._chord_prim.get(key, ())
+            # count each surviving pair once under the direction-free
+            # rule — primary or mirror, whichever record arrived last —
+            # the same tally ``add`` accumulates in any order (gr600680)
             self.cross_used[tr, ly] = sum(
                 1
                 for b_ in range(len(cs))
-                if prim[b_]
                 for a_ in range(b_)
-                if _chord_crossed(
-                    cs[a_], (cs[b_][0], cs[b_][1]), (cs[b_][2], cs[b_][3])
-                )
+                if _chord_pair_crossed(cs[a_], cs[b_])
             )
 
 
@@ -5994,8 +6021,11 @@ def _grow_net(
     # rule tuple carries no drill, so estimate it at the house
     # proportion (drill ≈ dia/2 — JLC 0.6/0.3); where vias are
     # real-sized the barrel term still dominates and nothing changes.
-    # The wall binds only on negotiated passes (``view.neg``): pass 0
-    # is the pre-negotiation router exactly (td598636).
+    # The wall binds on negotiated passes (``view.neg``): pass 0 is the
+    # pre-negotiation router exactly (td598636). A negotiation build's
+    # shove repairs set the flag on their hard views too, so a net the
+    # wall repaired in a negotiated pass cannot regress inside a shove
+    # grow (gr600680).
     drill_k = float(rule[3] if len(rule) > 3 and rule[3] else rule[2] * 0.5)
     hh_wall = view.neg
     hh_need = drill_k + JLC_VIA_HOLE_TO_HOLE_MM if hh_wall else 0.0
@@ -6546,6 +6576,7 @@ class _Shove:
         seeds: int | None = None,
         seed: int = 0,
         budget: int | None = None,
+        hh_wall: bool = False,
     ) -> None:
         from precis.pcb.rules import NetRules
 
@@ -6556,6 +6587,12 @@ class _Shove:
         self.rules = rules
         self.masks = masks
         self.hv_weight = hv_weight
+        # gr600680: a negotiation build's shove repairs must keep the
+        # same-net hole-to-hole wall the negotiated passes enforced —
+        # ``_grow`` sets it on its hard views' ``neg`` flag, which is all
+        # ``_grow_net`` reads for the wall. A single-pass build keeps
+        # the pre-negotiation router exactly (td598636).
+        self.hh_wall = bool(hh_wall)
         # Per-state memos (the state object is held so its id stays unique):
         # every candidate of one ``_tries`` call re-judges the same unchanged
         # state, and replanning it dominates the shove phase.
@@ -6622,6 +6659,13 @@ class _Shove:
             return None
         used = self.corridor.used_of(branches)
         view = occupancy.view(k)
+        if self.hh_wall:
+            # the negotiation build's hole-to-hole wall binds in repair
+            # grows too — a net the wall repaired in a negotiated pass
+            # may not regress inside the shove (gr600680's x2/rev
+            # VBAT_UV/DEC3 case). Only ``neg`` is set: no ``neg_*``
+            # price tables ride a hard repair view.
+            view = dataclasses.replace(view, neg=True)
         if probe:
             view = dataclasses.replace(view, chords=None, splits=None)
         att = _grow_net(
@@ -7362,6 +7406,7 @@ def build_wires(
         seeds=shove_seeds,
         seed=shove_seed,
         budget=shove_budget,
+        hh_wall=int(negotiate) > 1,
     )
 
     def preserves_retry(

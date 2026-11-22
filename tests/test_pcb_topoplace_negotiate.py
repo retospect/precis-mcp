@@ -658,23 +658,11 @@ def test_a_hard_view_builds_no_exempt_array() -> None:
     assert int(view.closed[5]) == 0, "the one-pad sliver stays open"
 
 
-def test_discard_plus_regrow_leaves_the_rebuild_ledger() -> None:
-    """``_Occupancy.discard`` is ``rebuild``'s incremental twin
-    (td598636): ripping a net out and re-growing it under the
-    post-discard view must leave every field — slots, tri and chord
-    crossing counts, splits and their refcounts, via reaches, chords
-    and their primary/mirror marks — equal to replaying the kept nets
-    plus the new wires on a fresh ledger. The mirrored chord record is
-    the same physical segment: it starts no crossing pair of its own
-    (``_chord_prim``), and a plain recount scored it.
-
-    The grow order is the sanity board's route order under a
-    fixed-seed shuffle (the invariant file's TAZ boards are absent
-    locally). The ledger also carries one fabricated crossing pair:
-    a legal grow can never commit crossing chords (chord legality
-    refuses them) so ``cross_used`` only goes nonzero on negotiated
-    passes or on a real board's committed crossings — the pair stands
-    in for both."""
+def _sanity_ledger():
+    """The sanity board's routing context — design, mesh, corridor and
+    an empty ``_Occupancy`` — for the ledger tests that fold grown and
+    fabricated wires in (the invariant file's TAZ boards are absent
+    locally)."""
     from precis.pcb import topoplace as topo
     from tests.test_pcb_topoplace_invariant import _board as _ledger_board
 
@@ -702,9 +690,38 @@ def test_discard_plus_regrow_leaves_the_rebuild_ledger() -> None:
         pose,
         net_clearance=tuple(r[1] for r in rules),
     )
+    return d, mesh, n_layers, pose, ctx, rules, corridor, occupancy
+
+
+def test_discard_plus_regrow_leaves_the_rebuild_ledger() -> None:
+    """``_Occupancy.discard`` is ``rebuild``'s incremental twin
+    (td598636): ripping a net out and re-growing it under the
+    post-discard view must leave every field — slots, tri and chord
+    crossing counts, splits and their refcounts, via reaches and
+    chords — equal to replaying the kept nets plus the new wires on a
+    fresh ledger, in either order.
+
+    ``cross_used`` counts each crossing pair once, whichever chord
+    record arrived last — the chord's own (tri, layer) or a mirror on a
+    neighbouring triangle — so the post-discard ledger (the re-grown
+    net sits last) must also score the pairs a canonical route-order
+    replay scores: gr600680 closes reviewer finding 3 with that
+    discard+add == rebuild-in-route-order assert.
+
+    The grow order is the sanity board's route order under a
+    fixed-seed shuffle (the invariant file's TAZ boards are absent
+    locally). The ledger also carries one fabricated crossing pair:
+    a legal grow can never commit crossing chords (chord legality
+    refuses them) so ``cross_used`` only goes nonzero on negotiated
+    passes or on a real board's committed crossings — the pair stands
+    in for both."""
+    d, mesh, n_layers, _pose, ctx, rules, corridor, occupancy = _sanity_ledger()
     used = np.zeros(len(mesh.edges))
     pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
     order = list(wm._net_order(mesh, d, n_layers))
+    # the canonical route order, taken BEFORE the grow-order shuffle —
+    # the replay ``fresh_route`` below sorts the kept nets by it
+    pos = {kk: i for i, kk in enumerate(order)}
     random.Random(0).shuffle(order)
     order = order[:4]
     pairs: list[tuple[int, wm._Built]] = []
@@ -784,19 +801,15 @@ def test_discard_plus_regrow_leaves_the_rebuild_ledger() -> None:
         "the regrown net landed on different chords"
     )
     assert occupancy.cross_used.any(), "the fabricated crossing pair stands"
-    assert any(
-        not prim for prims in occupancy._chord_prim.values() for prim in prims
-    ), "a mirrored chord record stands"
-    # the comparison replay runs in the POST-DISCARD order (k last);
-    # a canonical route-order rebuild may legitimately differ in
-    # ``cross_used`` for mirrored chords — reviewer finding 3, filed
-    # separately, not fixed here
+    flat_chords = [c for lst in occupancy.chords.values() for c in lst]
+    assert len(set(flat_chords)) < len(flat_chords), "a mirrored chord record stands"
+    # the comparison replay runs in the POST-DISCARD order (k last) —
+    # every order-sensitive field must match it exactly
     fresh = occupancy.rebuild([*kept, *((k, b) for b in att2.built)])
 
     def fields(o: wm._Occupancy) -> dict:
         return {
             "chords": o.chords,
-            "prim": o._chord_prim,
             "splits": o.splits,
             "split_rc": o._split_rc,
             "lines": [(b, ln.wkb, g) for b, ln, g, _lays in o.lines],
@@ -820,3 +833,157 @@ def test_discard_plus_regrow_leaves_the_rebuild_ledger() -> None:
             getattr(occupancy, name), getattr(fresh, name), strict=True
         ):
             np.testing.assert_allclose(a_v, b_v, atol=1e-9)
+    # gr600680: the canonical tally is insertion-order independent, so
+    # the incremental ledger must also score the crossings of a replay
+    # in canonical route order (the order the order loop commits)
+    fresh_route = occupancy.rebuild(
+        sorted(
+            [*kept, *((k, b) for b in att2.built)],
+            key=lambda jb: pos[jb[0]],
+        )
+    )
+    for name in ("used", "tri_used", "cross_used", "via_close", "via_clear"):
+        np.testing.assert_allclose(
+            getattr(occupancy, name), getattr(fresh_route, name), atol=1e-9
+        )
+
+
+def test_a_contained_chord_pair_scores_once_in_either_order() -> None:
+    """``_chord_crossed`` is directional: with a short chord strictly
+    inside a longer collinear one, the SHORT chord's endpoints land
+    interior hits on the long record while the long chord's endpoints
+    sit past the short one's ends — a directional tally scores the pair
+    only when the shorter record arrives last (gr600680 reviewer
+    finding). The ledger's pair rule is direction-free, so ``add``, the
+    ``discard`` recount and a ``rebuild`` replay must all score the pair
+    once whichever record arrived last. Six spare vertices pin the
+    chords — real pins almost never sit exactly collinear."""
+    _d, mesh, n_layers, pose, _ctx, rules, corridor, _o = _sanity_ledger()
+    tri = 340
+    extra = np.asarray(
+        [
+            (-20.0, 3.7),
+            (-12.0, 3.7),  # the long chord
+            (-18.0, 3.7),
+            (-14.0, 3.7),  # strictly inside it
+            (-20.0, 7.1),
+            (-12.0, 7.1),  # a parallel third record
+        ]
+    )
+    n_v, n_p = len(mesh.verts), len(mesh.pin_vertex)
+    mesh2 = dataclasses.replace(
+        mesh,
+        verts=np.vstack([mesh.verts, extra]),
+        pin_vertex=np.concatenate(
+            [mesh.pin_vertex, np.arange(n_v, n_v + len(extra), dtype=np.int32)]
+        ),
+    )
+    base = wm._Occupancy(
+        corridor,
+        mesh2,
+        n_layers,
+        pose,
+        net_clearance=tuple(r[1] for r in rules),
+    )
+
+    def fab(k: int, pa: int, pb: int):
+        p = tuple(float(x) for x in mesh2.verts[int(mesh2.pin_vertex[pa])])
+        q = tuple(float(x) for x in mesh2.verts[int(mesh2.pin_vertex[pb])])
+        return SimpleNamespace(
+            branch=SimpleNamespace(
+                net=k,
+                points=[p, q],
+                vias=[],
+                tris=[tri],
+                edges=[],
+                t=[],
+                layers=(0,),
+                pin_a=pa,
+                pin_b=pb,
+            )
+        )
+
+    long_w = fab(0, n_p, n_p + 1)
+    short_w = fab(1, n_p + 2, n_p + 3)
+    clear_w = fab(2, n_p + 4, n_p + 5)
+    for first, second in ((long_w, short_w), (short_w, long_w)):
+        occupancy = base.rebuild(())
+        ka, kb = int(first.branch.net), int(second.branch.net)
+        occupancy.add(ka, first)
+        occupancy.add(kb, second)
+        occupancy.add(2, clear_w)
+        assert occupancy.cross_used[tri, 0] == 1.0, (
+            "the contained pair scores once whichever record arrived last"
+        )
+        # the discard recount re-derives the surviving pair set under
+        # the same rule — a foreign record leaving the key must not
+        # change the pair's tally
+        occupancy.discard(2)
+        assert occupancy.cross_used[tri, 0] == 1.0
+        occupancy.add(2, clear_w)
+        # and a replay scores it in either order
+        for pairs in (
+            [(ka, first), (kb, second), (2, clear_w)],
+            [(kb, second), (ka, first), (2, clear_w)],
+        ):
+            fresh = occupancy.rebuild(pairs)
+            assert fresh.cross_used[tri, 0] == 1.0
+
+
+def _capture_shove(monkeypatch: pytest.MonkeyPatch, negotiate: int):
+    """Run ``build_wires`` with ``_Shove.run`` replaced by a capture —
+    the shove the emit would be handed, its grows never run."""
+    d, mesh = _fixture()
+    captured = []
+
+    def capture(shove, st):
+        captured.append((shove, st))
+        return st
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wm._Shove, "run", capture)
+        wm.build_wires(mesh, d, 4, (_NOVIA,) * 3, negotiate=negotiate)
+    return captured[0]
+
+
+@pytest.mark.parametrize("negotiate,wall", [(1, False), (3, True)])
+def test_the_shove_wall_follows_the_negotiation_build(
+    monkeypatch: pytest.MonkeyPatch, negotiate: int, wall: bool
+) -> None:
+    """The same-net hole-to-hole wall is gated on ``view.neg``, which a
+    shove's hard views never set — so a net the negotiated passes'
+    wall repaired could regress inside ``_Shove`` (gr600680's x2/rev
+    VBAT_UV/DEC3 case). ``build_wires`` now passes the wall into the
+    shove when the surrounding build is a negotiation build; a
+    single-pass build stays the pre-negotiation router exactly."""
+    shove, _st = _capture_shove(monkeypatch, negotiate)
+    assert shove.hh_wall is wall
+
+
+def test_a_wall_shoves_grow_hands_the_neg_view_to_the_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag reaches the search: a negotiation build's ``_Shove._grow``
+    builds its hard view with ``neg`` on (no ``neg_*`` price tables), so
+    ``_grow_net``'s same-net hole-to-hole wall binds in repair grows; a
+    single-pass build's shove hands the pre-negotiation view, wall off."""
+    for negotiate, wall in ((1, False), (3, True)):
+        shove, st = _capture_shove(monkeypatch, negotiate)
+        seen: list[wm._OccView] = []
+
+        class _Stop(Exception):
+            pass
+
+        def capture_grow_net(*args, _seen=seen, **_kw):
+            _seen.append(args[9])  # the view _grow hands _grow_net
+            raise _Stop
+
+        with monkeypatch.context() as patch:
+            patch.setattr(wm, "_grow_net", capture_grow_net)
+            with pytest.raises(_Stop):
+                shove._grow(1, st.occupancy, [], shove.budget)
+        assert len(seen) == 1
+        assert seen[0].neg is wall
+        assert seen[0].neg_soft is False, (
+            "a repair view carries the wall flag only — no soft pricing"
+        )
