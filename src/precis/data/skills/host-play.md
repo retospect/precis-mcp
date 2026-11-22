@@ -20,7 +20,11 @@ tags: [troubleshooting, workflow]
 `scripts/deploy` renders and runs only `redeploy-precis.yml`. Every other
 play — backups, monitoring, pgbouncer, constraints, a single worker play —
 is applied by hand, and each carries a trap that only bites when a human
-runs it. This skill is the fixed checklist. Host coordinates live in the
+runs it. Those roles still read the overlay inventory: a deploy after an
+overlay change warns that they are not re-rendered, so apply the touched
+play by hand. The inbox watcher (`28-precis-watch.yml`) is the exception:
+`redeploy-precis.yml` imports it, so it is no longer a hand-run play.
+This skill is the fixed checklist. Host coordinates live in the
 gitignored overlay and repo-dev memory; every host below is a placeholder.
 
 ## Run every play through the pinned wrapper
