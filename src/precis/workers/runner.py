@@ -318,6 +318,28 @@ class BoundedPass:
         return self._fn(batch_size)
 
 
+def inner_result_payload(result: BatchResult) -> dict[str, Any]:
+    """The ``worker_logs.payload`` row for a pass that ran inside another
+    pass's fire — ``gripe_dispatch`` inside the ``gripe_dispatch`` cadence,
+    ``todo_dispatch`` inside the same fire. Same shape
+    :func:`_result_payload` mints minus ``duration_ms``: the enclosing
+    pass's own handler row already attributes the wall time, and a second
+    row with the key would double-count in ``loop_utilisation`` (the
+    cadence liveness row's rule, gr551641). Attached to the pass's own
+    summary line it lands under its own ``pass`` name, so
+    ``precis logs --pass <name> --payload`` and the ``/logs`` view's
+    ``handler=`` filter both read the newest pass report (gr751763).
+    """
+    return {
+        **result.extra,
+        "handler": result.handler,
+        "claimed": result.claimed,
+        "ok": result.ok,
+        "failed": result.failed,
+        "report_only": result.report_only,
+    }
+
+
 def _result_payload(result: BatchResult, t0: float) -> dict[str, Any]:
     """The ``extra={'payload': …}`` digest dict for one BatchResult row.
 
@@ -327,12 +349,7 @@ def _result_payload(result: BatchResult, t0: float) -> dict[str, Any]:
     up on (gr514422).
     """
     return {
-        **result.extra,
-        "handler": result.handler,
-        "claimed": result.claimed,
-        "ok": result.ok,
-        "failed": result.failed,
-        "report_only": result.report_only,
+        **inner_result_payload(result),
         "duration_ms": int((time.monotonic() - t0) * 1000),
     }
 
@@ -780,4 +797,11 @@ def run_loop(
                 slept += tick
 
 
-__all__ = ["BatchResult", "BoundedPass", "RefPass", "run_handler_once", "run_loop"]
+__all__ = [
+    "BatchResult",
+    "BoundedPass",
+    "RefPass",
+    "inner_result_payload",
+    "run_handler_once",
+    "run_loop",
+]

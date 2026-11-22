@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -157,6 +158,42 @@ def test_dark_without_service_config(store: Store, two_lanes: Any) -> None:
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok, res.failed) == (0, 0, 0)
     assert not gd.gripe_dispatch_enabled(store, host="h1")
+
+
+def _payload_rows(
+    caplog: pytest.LogCaptureFixture, handler: str
+) -> list[dict[str, Any]]:
+    """The ``extra={'payload': …}`` rows a pass logged under ``handler``."""
+    return [
+        p
+        for r in caplog.records
+        if (p := getattr(r, "payload", None)) is not None
+        and p.get("handler") == handler
+    ]
+
+
+def test_the_pass_report_lands_as_a_worker_logs_payload_row(
+    store: Store, caplog: pytest.LogCaptureFixture, two_lanes: Any
+) -> None:
+    """gr751763: the pass runs inside a cadence fire whose own outcome row
+    carries only claimed/ok/failed — the pass's summary line now carries
+    the full report as ``extra={'payload': …}`` so ``precis logs --pass
+    gripe_dispatch --payload`` and ``/logs`` read the figures."""
+    _light(store)
+    gid = _gripe(store, "leaks")
+    with caplog.at_level(logging.INFO, logger="precis.workers.gripe_dispatch"):
+        res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    rows = _payload_rows(caplog, "gripe_dispatch")
+    assert rows
+    payload = rows[-1]
+    assert payload["minted"] == res.extra["minted"]
+    assert payload["minted"][0]["gripe"] == gid
+    for key in ("slots", "parked_full", "picked", "open_chains", "parked"):
+        assert key in payload
+    assert (payload["claimed"], payload["ok"], payload["failed"]) == (1, 1, 0)
+    # The enclosing cadence's own row attributes the wall time already.
+    assert "duration_ms" not in payload
 
 
 def test_lane_capacity_sums_enabled_code_fit_caps(two_lanes: Any) -> None:

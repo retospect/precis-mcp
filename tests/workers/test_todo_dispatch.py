@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 import pytest
 from psycopg import Connection
 
 from precis import settings as psettings
+from precis.cli import logs as cli_logs
+from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.job import JobHandler
 from precis.plans import governs as _governs
 from precis.plans import route as _route
 from precis.plans import templates as T
@@ -28,10 +33,12 @@ from precis.plans.todo_chain import (
 )
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.utils.db_log_handler import BufferedDBLogHandler
 from precis.workers import gripe_dispatch as gd
 from precis.workers import scheduler
 from precis.workers import todo_dispatch as td
 from precis.workers.runner import BatchResult
+from tests.conftest import _active_dsn
 
 _ASK = {"kind": "ruling", "options": ["ok"], "blocks": "nothing", "context": "x"}
 
@@ -417,6 +424,9 @@ def test_base_cap_with_eligible_gripes(store: Store) -> None:
     again = td.run_todo_dispatch_pass(store, offer=offer)
     assert again.extra["open_todo"] == 2 and again.extra["budget"] == 0
     assert again.extra["minted"] == []
+    assert {
+        item["todo"] for item in again.extra["skipped"] if item["reason"] == "budget"
+    } == set(srcs[2:])
     assert sum(len(_roots(store, s)) for s in srcs) == 2
 
 
@@ -450,10 +460,12 @@ def test_no_growth_when_gripe_pass_had_no_slots(store: Store) -> None:
 
 def test_mint_batch_cap(store: Store) -> None:
     _on(store, base=10)
-    for i in range(5):
-        _todo(store, f"t{i}")
+    srcs = [_todo(store, f"t{i}") for i in range(5)]
     res = _run(store)
     assert res.extra["budget"] == 10 and len(res.extra["minted"]) == td._MINT_BATCH == 3
+    assert res.extra["skipped"] == [
+        {"todo": src, "reason": "batch-cap"} for src in srcs[3:]
+    ]
     res = _run(store)
     assert len(res.extra["minted"]) == 2
 
@@ -1232,8 +1244,118 @@ def test_a_refused_mint_is_a_skip_not_a_failure(
     res = _run(store)
     assert (res.ok, res.failed) == (0, 0)
     assert res.extra["skipped"] == [
-        {"todo": src, "reason": "todo-build: td1 already has a live chain (td2)"}
+        {
+            "todo": src,
+            "reason": "mint-refused",
+            "detail": "todo-build: td1 already has a live chain (td2)",
+        }
     ]
+
+
+# -- the pass report in worker_logs -------------------------------------------
+
+
+def _payload_rows(
+    caplog: pytest.LogCaptureFixture, handler: str
+) -> list[dict[str, Any]]:
+    """The ``extra={'payload': …}`` rows a pass logged under ``handler``."""
+    return [
+        p
+        for r in caplog.records
+        if (p := getattr(r, "payload", None)) is not None
+        and p.get("handler") == handler
+    ]
+
+
+def test_the_pass_report_lands_as_a_worker_logs_payload_row(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr751763: the per-todo result reads off the host — the pass's
+    summary line carries the BatchResult as ``extra={'payload': …}``, so
+    ``precis logs --pass todo_dispatch --payload`` and ``/logs`` show why
+    a tagged todo was skipped."""
+    _on(store)
+    skipped = _todo(store, "not open", status="doing")
+    minted = _todo(store)
+    with caplog.at_level(logging.INFO, logger="precis.workers.todo_dispatch"):
+        res = _run(store)
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    [payload] = _payload_rows(caplog, "todo_dispatch")
+    assert payload["skipped"] == [{"todo": skipped, "reason": "not-open"}]
+    assert payload["skipped_total"] == 1
+    assert payload["minted"] == res.extra["minted"]
+    assert payload["minted"][0]["todo"] == minted
+    for key in (
+        "base",
+        "free",
+        "open_todo",
+        "budget",
+        "refused",
+        "refusals_applied",
+        "released",
+        "closed",
+    ):
+        assert key in payload
+    # The enclosing cadence's own row attributes the wall time already.
+    assert "duration_ms" not in payload
+
+
+def test_a_no_op_outcome_lands_a_payload_row_too(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A pass that did nothing still says why in the same place."""
+    _on(store)
+    with caplog.at_level(logging.INFO, logger="precis.workers.todo_dispatch"):
+        _run(store, lit=False)
+    [payload] = _payload_rows(caplog, "todo_dispatch")
+    assert payload["enabled"] is True and payload["gripe_pass"] == "not lit"
+    assert (payload["claimed"], payload["ok"], payload["failed"]) == (0, 0, 0)
+
+
+def test_readers_show_skip_beyond_first_fifty(
+    store: Store,
+    hub: Hub,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _on(store, base=0)
+    for i in range(51):
+        _todo(store, f"in progress {i}", status="doing")
+    target = _todo(store)
+    handler = BufferedDBLogHandler(
+        _active_dsn(), host_name="dispatch-report-test", process_name="test-runner"
+    )
+    td.log.addHandler(handler)
+    try:
+        with caplog.at_level(logging.INFO, logger=td.log.name):
+            _run(store, lit=False)
+            _run(store)
+    finally:
+        td.log.removeHandler(handler)
+        handler.close()
+
+    jobs = JobHandler(hub=hub)
+    view = jobs.get(id=f"/logs?todo=td{target}&host=dispatch-report-test").body
+    expected = {"todo": target, "reason": "budget"}
+    assert f"payload={json.dumps({'skipped': expected})}" in view
+    assert "1 rows shown of 2 matching" in view
+    absent = jobs.get(id="/logs?todo=td99999999&host=dispatch-report-test").body
+    assert "no recorded decision in this report" in absent
+
+    rows = cli_logs._query_logs(
+        store,
+        since_interval="1 hour",
+        since_iso=None,
+        host="dispatch-report-test",
+        process=None,
+        pass_name="todo_dispatch",
+        level="INFO",
+        limit=1,
+    )
+    cli_logs._render(rows, format="json", with_payload=True)
+    [row] = json.loads(capsys.readouterr().out)
+    assert row["payload"]["skipped_total"] == 52
+    assert row["payload"]["skipped"][-1] == expected
 
 
 # -- the scheduler call -------------------------------------------------------

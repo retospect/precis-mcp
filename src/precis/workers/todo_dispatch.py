@@ -83,7 +83,7 @@ from precis.workers.gripe_dispatch import (
 from precis.workers.gripe_dispatch import (
     SERVICE_NAME as GRIPE_SERVICE,
 )
-from precis.workers.runner import BatchResult
+from precis.workers.runner import BatchResult, inner_result_payload
 
 log = logging.getLogger(__name__)
 
@@ -95,8 +95,6 @@ DEFAULT_MAX_OPEN = 3
 #: free offer ramps over several passes (the brief sessions share one
 #: three-slot lane with gripe reviews).
 _MINT_BATCH = 3
-#: Entries of the pass report's ``skipped`` list; the rest is counted.
-_REPORT_CAP = 50
 #: The one comment a todo bound for another repository gets.
 OTHER_REPO_PREFIX = "dispatch: skipped other repository:"
 #: What :func:`precis.plans.route.coordinator_route` opens with for graph-only
@@ -747,31 +745,46 @@ def run_todo_dispatch_pass(
     ended chains, the completion backstop, split sources), survey, budget, then one
     todo-build chain per pick (at most :data:`_MINT_BATCH`). ``claimed`` is
     the number of picks tried, ``ok`` the chains minted. With the switch off
-    nothing is read beyond the setting and nothing is written."""
+    nothing is read beyond the setting and nothing is written.
+
+    Every outcome line carries the result as ``extra={'payload': …}`` so
+    the report — per-todo skip reasons included — lands in ``worker_logs``
+    and reads without a shell on the host. See the Todo dispatch
+    section in ``docs/runbooks/dark-factory-arming.md``.
+    """
     del host
     if not todo_dispatch_enabled(store):
         return BatchResult(handler=NAME, claimed=0, ok=0, failed=0)
     if not offer.lit:
-        log.info("todo_dispatch: the gripe pass is not lit — nothing to do")
-        return BatchResult(
+        result = BatchResult(
             handler=NAME,
             claimed=0,
             ok=0,
             failed=0,
             extra={"enabled": True, "gripe_pass": "not lit"},
         )
+        log.info(
+            "todo_dispatch: the gripe pass is not lit — nothing to do",
+            extra={"payload": inner_result_payload(result)},
+        )
+        return result
     from precis.workers.job_types.plan_dispatch import enqueue_roots, read_only_reason
 
     reason = read_only_reason(store)
     if reason is not None:
-        log.info("todo_dispatch: read-only (%s) — minting nothing", reason)
-        return BatchResult(
+        result = BatchResult(
             handler=NAME,
             claimed=0,
             ok=0,
             failed=0,
             extra={"enabled": True, "read_only": reason},
         )
+        log.info(
+            "todo_dispatch: read-only (%s) — minting nothing",
+            reason,
+            extra={"payload": inner_result_payload(result)},
+        )
+        return result
     # Each sweep fails on its own: none may stop the others or the mint.
     applied: list[dict[str, Any]] = []
     released: list[int] = []
@@ -808,6 +821,13 @@ def run_todo_dispatch_pass(
     open_todo = sum(1 for c in chains(store) if c.todo_ids)
     allowed = budget(base, offer, open_todo)
     picks = eligible[: min(allowed, _MINT_BATCH)]
+    for position, pick in enumerate(eligible[len(picks) :], start=len(picks)):
+        skipped.append(
+            {
+                "todo": pick.todo_id,
+                "reason": "budget" if position >= allowed else "batch-cap",
+            }
+        )
     minted: list[dict[str, int]] = []
     refused: list[dict[str, Any]] = []
     failed = 0
@@ -819,6 +839,7 @@ def run_todo_dispatch_pass(
                 ask = refuse_source(store, None, pick.todo_id, why_reason, why)
             except Exception:
                 failed += 1
+                skipped.append({"todo": pick.todo_id, "reason": "refusal-failed"})
                 log.warning(
                     "todo_dispatch: refusing td%d failed", pick.todo_id, exc_info=True
                 )
@@ -834,10 +855,13 @@ def run_todo_dispatch_pass(
         try:
             mint = mint_todo_build(store, todo_id=pick.todo_id)
         except BadInput as exc:
-            skipped.append({"todo": pick.todo_id, "reason": str(exc)})
+            skipped.append(
+                {"todo": pick.todo_id, "reason": "mint-refused", "detail": str(exc)}
+            )
             continue
         except Exception:
             failed += 1
+            skipped.append({"todo": pick.todo_id, "reason": "mint-failed"})
             log.warning(
                 "todo_dispatch: mint for td%d failed", pick.todo_id, exc_info=True
             )
@@ -855,7 +879,7 @@ def run_todo_dispatch_pass(
         "open_todo": open_todo,
         "budget": allowed,
         "minted": minted,
-        "skipped": skipped[:_REPORT_CAP],
+        "skipped": skipped,
         "skipped_total": len(skipped),
         "refused": refused,
         "refusals_applied": applied,
@@ -863,6 +887,9 @@ def run_todo_dispatch_pass(
         "closed": closed,
         "split_closed": split_closed,
     }
+    result = BatchResult(
+        handler=NAME, claimed=len(picks), ok=len(minted), failed=failed, extra=extra
+    )
     log.info(
         "todo_dispatch: base=%d free=%d open=%d budget=%d minted=%d refused=%d "
         "failed=%d",
@@ -873,10 +900,9 @@ def run_todo_dispatch_pass(
         len(minted),
         len(refused),
         failed,
+        extra={"payload": inner_result_payload(result)},
     )
-    return BatchResult(
-        handler=NAME, claimed=len(picks), ok=len(minted), failed=failed, extra=extra
-    )
+    return result
 
 
 __all__ = [

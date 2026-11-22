@@ -167,7 +167,7 @@ from precis.todo.blocked import open_blocked_by
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
-from precis.workers.runner import BatchResult
+from precis.workers.runner import BatchResult, inner_result_payload
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 
 log = logging.getLogger(__name__)
@@ -1122,22 +1122,34 @@ def build_queue_supply(
 
 def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchResult:
     """One fire: queue deficit → candidates → one chain each. ``claimed`` is
-    the number of gripes the tick tried, ``ok`` the chains minted."""
+    the number of gripes the tick tried, ``ok`` the chains minted. Every
+    outcome line carries the result as ``extra={'payload': …}`` so the
+    report lands in ``worker_logs`` — the pass runs inside a cadence fire,
+    so without it the figures would be dropped (gr751763)."""
     if not gripe_dispatch_enabled(store, host=host):
-        log.info("gripe_dispatch: dark — no live service_config row; no-op")
-        return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0)
+        result = BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0)
+        log.info(
+            "gripe_dispatch: dark — no live service_config row; no-op",
+            extra={"payload": inner_result_payload(result)},
+        )
+        return result
     from precis.workers.job_types.plan_dispatch import read_only_reason
 
     reason = read_only_reason(store)
     if reason is not None:
-        log.info("gripe_dispatch: read-only (%s) — minting nothing", reason)
-        return BatchResult(
+        result = BatchResult(
             handler=SERVICE_NAME,
             claimed=0,
             ok=0,
             failed=0,
             extra={"read_only": reason},
         )
+        log.info(
+            "gripe_dispatch: read-only (%s) — minting nothing",
+            reason,
+            extra={"payload": inner_result_payload(result)},
+        )
+        return result
     # Cause-based breaker first: a lane or host whose newest builds all died
     # of one engine cause stops taking builds (its ask is the only record),
     # before the capacity below is read.
@@ -1297,6 +1309,9 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
                 "gripe_dispatch: comment on gr%d failed", c.gripe_id, exc_info=True
             )
     enqueue_roots(store, [m["root"] for m in extra["minted"]])
+    result = BatchResult(
+        handler=SERVICE_NAME, claimed=len(picks), ok=ok, failed=failed, extra=extra
+    )
     log.info(
         "gripe_dispatch: capacity=%d open=%d parked=%d queued=%d slots=%d minted=%d failed=%d",
         capacity,
@@ -1306,10 +1321,9 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         slots,
         ok,
         failed,
+        extra={"payload": inner_result_payload(result)},
     )
-    return BatchResult(
-        handler=SERVICE_NAME, claimed=len(picks), ok=ok, failed=failed, extra=extra
-    )
+    return result
 
 
 def _run_breaker(store: Store) -> list[dict[str, Any]]:

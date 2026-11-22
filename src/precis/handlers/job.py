@@ -3025,7 +3025,8 @@ class JobHandler(NumericRefHandler):
 
         The page and full-match tallies share the same bound filters.
         ``counts=1`` adds level and handler tallies, and ``payload=1`` adds
-        scrubbed, bounded JSON to each row.
+        scrubbed, bounded JSON to each row. ``todo=td123`` projects that todo's
+        outcome from the latest todo-dispatch report in the filtered window.
 
         ``handler=`` matches the logger-derived ``pass`` column (the short
         worker-pass name, e.g. ``'dispatch'``), the raw ``logger`` column
@@ -3046,14 +3047,26 @@ class JobHandler(NumericRefHandler):
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
 
-        level = (params.get("level") or _LOGS_DEFAULT_LEVEL).strip().upper()
+        todo_raw = params.get("todo")
+        todo_id: int | None = None
+        if todo_raw is not None:
+            todo_id = _parse_logs_int(
+                todo_raw.strip().removeprefix("td"),
+                default=0,
+                field="todo",
+                example="todo=td123",
+            )
+            if todo_id <= 0:
+                raise BadInput("todo must be a positive todo ID", next="todo=td123")
+
+        default_level = "INFO" if todo_id is not None else _LOGS_DEFAULT_LEVEL
+        level = (params.get("level") or default_level).strip().upper()
         if level not in _LOG_LEVEL_RANK:
             raise BadInput(
                 f"level={params.get('level')!r} is not a known level",
                 options=list(_LOG_LEVELS),
                 next=(
-                    f"level={_LOGS_DEFAULT_LEVEL!r} (default) or one of "
-                    f"{list(_LOG_LEVELS)}"
+                    f"level={default_level!r} (default) or one of {list(_LOG_LEVELS)}"
                 ),
             )
         allowed_levels = list(_LOG_LEVELS[_LOG_LEVEL_RANK[level] :])
@@ -3074,7 +3087,7 @@ class JobHandler(NumericRefHandler):
             )
         since_minutes = min(since_minutes, _LOGS_MAX_SINCE_HOURS * 60)
         show_counts = params.get("counts") == "1"
-        show_payload = params.get("payload") == "1"
+        show_payload = params.get("payload") == "1" or todo_id is not None
 
         # Canonical slice name is ``page_size`` (gr514469); ``limit``
         # stays accepted for one release and announces itself on the
@@ -3111,6 +3124,14 @@ class JobHandler(NumericRefHandler):
         limit = min(limit, _LOGS_MAX_LIMIT)
 
         handler = (params.get("handler") or "").strip() or None
+        if todo_id is not None:
+            if handler not in (None, "todo_dispatch", "precis.workers.todo_dispatch"):
+                raise BadInput(
+                    "todo requires a todo_dispatch report",
+                    next="get(kind='job', id='/logs?todo=td123')",
+                )
+            handler = "todo_dispatch"
+            limit = 1
         host = (params.get("host") or "").strip() or None
         process = (params.get("process") or "").strip() or None
         q = (params.get("q") or "").strip() or None
@@ -3143,6 +3164,10 @@ class JobHandler(NumericRefHandler):
                 "OR payload->>'handler' = %(handler)s)"
             )
             sql_params["handler"] = handler
+        if todo_id is not None:
+            # Select the report before looking for the todo, so a missing
+            # outcome cannot silently fall back to an older decision.
+            where.append("pass = 'todo_dispatch' AND payload->>'enabled' = 'true'")
         if host:
             where.append("host = %(host)s")
             sql_params["host"] = host
@@ -3191,7 +3216,8 @@ class JobHandler(NumericRefHandler):
             payload_expr = "payload" if show_payload else "NULL"
             rows = conn.execute(
                 f"SELECT ts, host, {handler_expr}, level, message, {payload_expr} "
-                f"FROM worker_logs WHERE {where_sql} ORDER BY ts DESC LIMIT %(limit)s",
+                f"FROM worker_logs WHERE {where_sql} "
+                "ORDER BY ts DESC, log_id DESC LIMIT %(limit)s",
                 {**sql_params, "limit": limit},
             ).fetchall()
 
@@ -3214,6 +3240,8 @@ class JobHandler(NumericRefHandler):
             ]
         if handler:
             filter_bits.append(f"handler={handler!r}")
+        if todo_id is not None:
+            filter_bits.append(f"todo=td{todo_id}, latest report")
         if host:
             filter_bits.append(f"host={host!r}")
         if process:
@@ -3259,9 +3287,25 @@ class JobHandler(NumericRefHandler):
             )
             line = f"{ts_str} {host_val} {handler_val} {level_val} {msg}"
             if payload is not None:
+                if todo_id is not None:
+                    payload = {
+                        **{
+                            key: payload[key]
+                            for key in ("gripe_pass", "read_only")
+                            if key in payload
+                        },
+                        **{
+                            key: entry
+                            for key in ("skipped", "minted", "refused")
+                            for entry in payload.get(key, [])
+                            if entry["todo"] == todo_id
+                        },
+                    }
+                    if not payload:
+                        payload = {"outcome": "no recorded decision in this report"}
                 # Scrub historical rows before the display cutoff can split a credential.
                 rendered = mask_secrets(json.dumps(payload), warn=False)
-                if len(rendered) > _LOGS_PAYLOAD_TRUNC:
+                if todo_id is None and len(rendered) > _LOGS_PAYLOAD_TRUNC:
                     rendered = rendered[: _LOGS_PAYLOAD_TRUNC - 1] + "…"
                 line += f" payload={rendered}"
             lines.append(line)

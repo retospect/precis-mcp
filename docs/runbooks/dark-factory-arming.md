@@ -698,16 +698,30 @@ its brief step or stalled included. A pass where the gripe pass had free
 build slots and found no eligible gripe may grow past it into those
 slots; at most 3 new chains per pass, none ever cancelled.
 
-Read a pass in the worker log of the lit host:
+For one todo, read the latest pass report with
+`get(kind='job', id='/logs?todo=td123')`. It shows that todo's decision
+or the pass-wide reason the survey did not run. The default window is
+24 hours. Use `since=168` to widen the window to a week.
+
+For the full report, run `precis logs --pass todo_dispatch --payload
+--format json` and read the newest row with `payload.enabled=true`.
+JSON output preserves the full payload. It carries
+`minted`, `skipped` (all entries, plus `skipped_total`), `refused`,
+`refusals_applied`, `released`, `closed`, `split_closed` and `open_todo`,
+plus `base` / `free` / `budget`. In the worker log the pass still prints
+its one summary line:
 `todo_dispatch: base=… free=… open=… budget=… minted=… refused=… failed=…`.
-The pass result also carries `minted`, `skipped` (first 50, plus
-`skipped_total`), `refused`, `refusals_applied`, `released`, `closed`,
-`split_closed` and `open_todo`; the scheduler logs only the line and the
-claimed / ok / failed counts. Reason words in `skipped`: `not-open`, `plan-node`, `ask`,
+The gripe pass's own report (`slots`, `held`, `routed`, `minted`, …)
+lands the same way under `pass='gripe_dispatch'`. Read it with
+`precis logs --pass gripe_dispatch --payload --format json`.
+Reason words in `skipped`: `not-open`, `plan-node`, `ask`,
 `hold-tag`, `needs-spec`, `skip-tag`, `open-child`, `blocked`, `chained`
 (live chain), `closing` (landed, source not yet closed), `other-repo`
 (a `repo:` / `project:` tag the factory does not land; one comment),
-`settling` (changed in the last 15 minutes). `factory:skip` (set by the
+`settling` (changed in the last 15 minutes), `budget` (outside the available
+slots), `batch-cap` (within budget, beyond this pass's mint cap),
+`mint-refused` (details in `detail`), `mint-failed`, and `refusal-failed`.
+`factory:skip` (set by the
 todo triage session for "other lane or fenced") wins over `factory:build`.
 
 Stop conditions:

@@ -233,7 +233,7 @@ def _query_logs(
         "SELECT ts, host, process, pass, level, logger, message, payload "
         "FROM worker_logs"
         f"{where_sql} "
-        "ORDER BY ts DESC LIMIT %s"
+        "ORDER BY ts DESC, log_id DESC LIMIT %s"
     )
     params.append(limit)
     with store.pool.connection() as conn:
