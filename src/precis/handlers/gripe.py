@@ -162,7 +162,7 @@ from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert, Ref
-from precis.utils import gripe_order
+from precis.utils import gripe_order, record_frame
 from precis.utils.db_retry import retry_locked
 from precis.utils.idem import idem_lock_key, normalize_key, ref_id_for_key
 from precis.utils.secret_scan import mask_secrets
@@ -2259,9 +2259,9 @@ class GripeHandler(NumericRefHandler):
             f"{self._sense()} id={ref_id} [soft-deleted, read-only]",
             f"title: {ref.title}",
             f"last status: {', '.join(statuses) or '(none)'}",
-            f"last comment: {last.text if last else '(none)'}",
+            f"last comment: {record_frame.neutralize(last.text) if last else '(none)'}",
         ]
-        return Response(body="\n".join(lines))
+        return self._frame_response(ref, Response(body="\n".join(lines)))
 
     # ── create: ref + body chunk + default tags + (optional) link ──
 
@@ -3134,7 +3134,9 @@ class GripeHandler(NumericRefHandler):
             tags = self.store.tags_for(ref.id)
             state = gf.fix_state(self.store, ref, tags)
             head = "\n".join(self._header_lines(ref, tags))
-            return Response(body=gf.render_fix_view(ref, state, head))
+            return self._frame_response(
+                ref, Response(body=gf.render_fix_view(ref, state, head))
+            )
         if isinstance(id, list):
             if raw_view in {"list", "ids", "titles"}:
                 # Shared batch views: use the pre-fold view because
@@ -3210,27 +3212,33 @@ class GripeHandler(NumericRefHandler):
             ledger_rows = gs.ledger(self.store.chunks.list_chunks_for_ref(ref.id))
             head = "\n".join(self._header_lines(ref, self.store.tags_for(ref.id)))
             return interpreted(
-                Response(body=gs.render_summary_view(ref, head, ledger_rows)),
+                self._frame_response(
+                    ref,
+                    Response(body=gs.render_summary_view(ref, head, ledger_rows)),
+                ),
                 readings,
             )
         if view in ("comments", "body", "full"):
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(
-                Response(
-                    body=self._render_ref_view(
-                        ref,
-                        self.store.tags_for(ref.id),
-                        view=view,
-                        comment=comment,
-                        comments=comments,
-                    ),
-                    # When the transport fold still cuts (one comment or
-                    # the body alone over the budget), name the windowed
-                    # reads that reach the rest without a cursor.
-                    result_budget_hint=(
-                        f"get(kind='gripe', id={ref.id}, view='comments', "
-                        "args={'comments': '<A>-<B>'}) reads the timeline "
-                        "in windows; view='body' reads the body uncapped"
+                self._frame_response(
+                    ref,
+                    Response(
+                        body=self._render_ref_view(
+                            ref,
+                            self.store.tags_for(ref.id),
+                            view=view,
+                            comment=comment,
+                            comments=comments,
+                        ),
+                        # When the transport fold still cuts (one comment or
+                        # the body alone over the budget), name the windowed
+                        # reads that reach the rest without a cursor.
+                        result_budget_hint=(
+                            f"get(kind='gripe', id={ref.id}, view='comments', "
+                            "args={'comments': '<A>-<B>'}) reads the timeline "
+                            "in windows; view='body' reads the body uncapped"
+                        ),
                     ),
                 ),
                 readings,
@@ -3326,7 +3334,7 @@ class GripeHandler(NumericRefHandler):
             reads = f"{reads} · all: view='full'"
         lines = [
             *self._header_lines(ref, tags),
-            f"title: {title}",
+            f"title: {record_frame.neutralize(title)}",
             *self._dup_lines(ref),
             # gr595551: the mutable current-state summary rides on top
             # of the ledger, marked stale when comments moved past it.
@@ -3382,10 +3390,12 @@ class GripeHandler(NumericRefHandler):
             )
         lines += [
             "",
-            tl.clip_middle(
-                body,
-                _BODY_HEAD_CHARS,
-                f"get(kind='gripe', id={ref.id}, view='body')",
+            record_frame.fence_body(
+                tl.clip_middle(
+                    body,
+                    _BODY_HEAD_CHARS,
+                    f"get(kind='gripe', id={ref.id}, view='body')",
+                )
             ),
         ]
         return "\n".join(lines)
@@ -3570,7 +3580,7 @@ class GripeHandler(NumericRefHandler):
             dropped = len(cblocks) - len(kept)
             cblocks = kept
         if view == "body":
-            return f"{head}\n\n{body}"
+            return f"{head}\n\n{record_frame.fence_body(body)}"
         if uncapped and view == "full":
             # The batch/cohort block (gr676097): whole body, every comment
             # whole — no clip, no elision; the packer pages whole blocks.
@@ -3588,7 +3598,7 @@ class GripeHandler(NumericRefHandler):
             if rulings:
                 note = f"{dropped} comments hidden (rulings filter)"
                 section = f"{section}\n\n{note}" if section else note
-            top = f"{head}\n\n{body}"
+            top = f"{head}\n\n{record_frame.fence_body(body)}"
             return top + (f"\n\n{section}" if section else "")
         if view == "full":
             # The bounded complete read (gr514350): the body clips
@@ -3624,9 +3634,9 @@ class GripeHandler(NumericRefHandler):
                 )
             summary = "\n".join(gs.card_lines(ref, cblocks)).strip("\n")
             top = (
-                f"{head}\n\n{summary}\n\n{body_shown}"
+                f"{head}\n\n{summary}\n\n{record_frame.fence_body(body_shown)}"
                 if summary
-                else f"{head}\n\n{body_shown}"
+                else f"{head}\n\n{record_frame.fence_body(body_shown)}"
             )
             return top + (f"\n\n{section}" if section else "")
         # view == "comments"

@@ -256,11 +256,16 @@ def eye_response(
     ref."""
     handle = eye_handle(store, kind=kind, id=id, stores_cache=stores_cache)
     try:
-        return Response(body=render_eye(store, handle, extent, q=q, ring=ring))
+        body = render_eye(store, handle, extent, q=q, ring=ring)
     except BadInput:
         raise
     except ValueError as e:
         raise BadInput(str(e), next=EYE_NEXT) from e
+    # gr739333: the eye renders one record's neighbourhood — frame it as
+    # that record (a handle with no live ref renders unframed).
+    from precis.utils import record_frame
+
+    return Response(body=record_frame.frame_eye_read(store, handle, body))
 
 
 def eye_body(

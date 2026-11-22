@@ -90,7 +90,7 @@ from precis.store._draft_ops import (
     content_sha,
     own_content_sha,
 )
-from precis.utils import draft_regex, handle_registry
+from precis.utils import draft_regex, handle_registry, record_frame
 from precis.utils.authors import author_names, to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
@@ -995,7 +995,11 @@ class DraftHandler(Handler):
                     f"an eye focuses one node, not a window ({s!r})",
                     next="drop the -B..A suffix, or omit extent= to read the window",
                 )
-            return Response(body=eye_body(self.store, s, extent, q=q, ring=ring))
+            return Response(
+                body=record_frame.frame_eye_read(
+                    self.store, s, eye_body(self.store, s, extent, q=q, ring=ring)
+                )
+            )
         return super().eye(id=s or id, extent=extent, q=q, ring=ring)
 
     def find_in_ref(
@@ -8396,7 +8400,13 @@ class DraftHandler(Handler):
         # Plain list handles expand to their items too. Every chunk read must
         # use the same whole-chunk fitter, including single chunks with large
         # recovery/children footers; the generic line fitter loses their tails.
-        return Response(body=body, budget_fit=fit)
+        # gr739333: a draft-chunk window frames as the draft's record
+        # (tier (a) — an authored record read); the budget-fit page
+        # frames identically.
+        frame = lambda text: record_frame.frame_eye_read(  # noqa: E731
+            self.store, window[0].dc, text
+        )
+        return Response(body=frame(body), budget_fit=lambda cap: frame(fit(cap)))
 
     def _retirement_notice(self, chunk: DraftChunk) -> str:
         """Show the retirement event and a recipe for copying the lost text."""

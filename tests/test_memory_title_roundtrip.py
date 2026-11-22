@@ -50,9 +50,15 @@ def _displayed_body(handler: MemoryHandler, store: Store, ref_id: int) -> str:
     ref = store.get_ref(kind="memory", id=ref_id)
     assert ref is not None
     rendered = handler.get(id=ref_id).body
+    # gr739333: the card sits inside <record …>…</record …>, the authored
+    # body inside a <body>…</body> fence.
+    assert rendered.startswith(f"<record me{ref_id} "), rendered
+    inner = rendered.split("\n", 1)[1].rsplit("\n</record ", 1)[0]
     header = f"# memory {ref_id}: {ref.title}"
-    assert rendered.startswith(header + "\n\n"), rendered
-    return rendered[len(header) + 2 :].split("\n\ntags: ", 1)[0]
+    assert inner.startswith(header + "\n\n"), rendered
+    body = inner[len(header) + 2 :]
+    assert body.startswith("<body>\n"), rendered
+    return body[len("<body>\n") :].split("\n</body>", 1)[0]
 
 
 def _eye_body(out: str) -> str:
@@ -60,6 +66,9 @@ def _eye_body(out: str) -> str:
     lines (``under review:``, ``grounding:`` — gr634490 carries the audit
     coverage line on every note-eye rung) are skipped, so the remainder
     starts with the body's first line."""
+    # gr739333: the eye renders inside <record …>…</record …>.
+    if out.startswith("<record "):
+        out = out.split("\n", 1)[1].rsplit("\n</record ", 1)[0]
     body = out.split("\n", 1)[1]
     while body.startswith(("under review:", "grounding:")):
         body = body.split("\n", 1)[1]
@@ -166,8 +175,10 @@ def test_explicit_rewrite_keeps_a_submitted_lead_equal_to_title(
     assert _displayed_body(handler, store, ref_id) == replacement
     section = handler.get(id=f"{ref_id}~body").body
     prefix = f"# memory {ref_id}~body\n\n"
-    assert section.startswith(prefix)
-    assert section[len(prefix) :].split("\nNext:\n", 1)[0] == replacement
+    # the record frame's open tag leads the section read (gr739333)
+    assert section.split("\n", 1)[1].startswith(prefix)
+    inner = section.split("\n", 1)[1]
+    assert inner[len(prefix) :].split("\nNext:\n", 1)[0] == replacement
     handler.edit(id=ref_id, title="Later header")
     assert _displayed_body(handler, store, ref_id) == replacement
 

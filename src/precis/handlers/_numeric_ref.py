@@ -99,7 +99,7 @@ from precis.store._search_cut import (
     semantic_fold_distance,
 )
 from precis.store.types import _KIND_STATUS_VALUES
-from precis.utils import handle_registry, search_trace, tag_chips
+from precis.utils import handle_registry, record_frame, search_trace, tag_chips
 from precis.utils.embed_query import query_vec_for
 from precis.utils.eye_batch import EyeFocus
 from precis.utils.idem import (
@@ -1172,7 +1172,7 @@ class NumericRefHandler(Handler):
         ref = self._find_resolve_ref(id)
         chunks = self.store.chunks.list_chunks_for_ref(ref.id)
         display = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
-        return find_response(
+        resp = find_response(
             kind=self.kind,
             display=display,
             chunks=chunks,
@@ -1180,6 +1180,7 @@ class NumericRefHandler(Handler):
             context=context,
             ref_id=ref.id,
         )
+        return self._frame_response(ref, resp)
 
     def _find_resolve_ref(self, id: Any) -> Ref:
         """``id`` → live ref for :meth:`find_in_ref` — ``_coerce_id`` +
@@ -1441,7 +1442,7 @@ class NumericRefHandler(Handler):
                     walk_args["limit"] = limit
                 if cursor is not None:
                     walk_args["cursor"] = cursor
-                return render_dependants_view(
+                resp = render_dependants_view(
                     self.store,
                     kind=self.kind,
                     sense=self._sense(),
@@ -1449,7 +1450,7 @@ class NumericRefHandler(Handler):
                     id_arg=str(ref.id),
                     args=walk_args,
                 )
-            if view == "links":
+            elif view == "links":
                 if rel is not None:
                     rel = validate_relation(str(rel), store=self.store)
                 if direction is not None and direction not in ("out", "in", "both"):
@@ -1461,10 +1462,10 @@ class NumericRefHandler(Handler):
                             "view='links', args={'direction': 'out'})"
                         ),
                     )
-                return self._render_links_view(
+                resp = self._render_links_view(
                     ref, of_kind=of_kind, rel=rel, direction=direction
                 )
-            if view == "log":
+            elif view == "log":
                 from precis.handlers._event_log_render import render_event_log
 
                 # Per-kind source filter: chase-driven kinds (finding)
@@ -1472,29 +1473,47 @@ class NumericRefHandler(Handler):
                 # decision trail rather than every event ever logged
                 # against the ref. Subclasses override
                 # ``_event_log_source()`` to customise.
-                return render_event_log(
+                resp = render_event_log(
                     self.store, ref.id, source=self._event_log_source()
                 )
-            if view == "raw":
-                return Response(
+            elif view == "raw":
+                resp = Response(
                     body=self._render_raw(
                         ref, self.store.tags_for(ref.id), meta_key=meta_key
                     ),
                     result_count=1,
                 )
-            if view == "history":
+            elif view == "history":
                 from precis.handlers._revision_view import render_revision_history
 
-                return render_revision_history(self.store, ref)
-            if view == "diff":
+                resp = render_revision_history(self.store, ref)
+            elif view == "diff":
                 from precis.handlers._revision_view import render_revision_diff
 
-                return render_revision_diff(self.store, ref, since)
-            if view == "meta":
-                return Response(body=self._render_meta_view(ref), result_count=1)
-            if view == "tags":
-                return Response(body=self._render_tags_view(ref), result_count=1)
-        return self._render_default_get(ref)
+                resp = render_revision_diff(self.store, ref, since)
+            elif view == "meta":
+                resp = Response(body=self._render_meta_view(ref), result_count=1)
+            elif view == "tags":
+                resp = Response(body=self._render_tags_view(ref), result_count=1)
+            else:
+                resp = self._render_default_get(ref)
+        else:
+            resp = self._render_default_get(ref)
+        return self._frame_response(ref, resp)
+
+    def _frame_response(self, ref: Ref, resp: Response) -> Response:
+        """Wrap a resolved single-ref read in its gr739333 record frame.
+
+        The frame is idempotent — a renderer that already framed its own
+        body (the tombstone ``view='retired'``, which carries the
+        re-point target the base frame can't see) passes through
+        unchanged, so every single-ref view gets exactly one pair.
+        """
+        if resp.body.startswith("<record "):
+            return resp
+        return dataclasses.replace(
+            resp, body=record_frame.frame_record(self.store, ref, resp.body)
+        )
 
     def _render_default_get(self, ref: Ref) -> Response:
         """Render the bare and ``full`` reads after shared selector validation.
@@ -5539,7 +5558,11 @@ class NumericRefHandler(Handler):
                 block_offset=block_offset,
             )
 
-        blocks = [self._read_batch_block(rid, view, kw) for rid in ref_ids]
+        # One response nonce shared by every record frame in the batch —
+        # the MIME-boundary role: same marker spelling, unforgeable
+        # close tags (gr739333).
+        with record_frame.nonce_scope():
+            blocks = [self._read_batch_block(rid, view, kw) for rid in ref_ids]
         shown: list[str] = []
         used = 0
         for block in blocks:
@@ -5590,13 +5613,14 @@ class NumericRefHandler(Handler):
         """Pack whole UTF-8 blocks; re-fit with the actual cap and runtime suffix."""
         blocks: list[str] = []
         used = 0
-        for rid in ids:
-            block = self._read_batch_block(rid, view, selectors)
-            size = body_bytes(block)
-            if blocks and used + size > GRIPE_EXPORT_PAGE_BYTES:
-                break
-            blocks.append(block)
-            used += size + 2
+        with record_frame.nonce_scope():
+            for rid in ids:
+                block = self._read_batch_block(rid, view, selectors)
+                size = body_bytes(block)
+                if blocks and used + size > GRIPE_EXPORT_PAGE_BYTES:
+                    break
+                blocks.append(block)
+                used += size + 2
         start = block_offset or 0
 
         def page(count: int, payload: str, extra: str = "") -> str:
@@ -5867,16 +5891,20 @@ class NumericRefHandler(Handler):
                 lines += ["", f"(no links to kind {of_kind!r})"]
                 return Response(body="\n".join(lines), result_count=0)
 
+        statuses = record_frame.status_cells(
+            self.store,
+            {lk.dst_ref_id for lk in out_links} | {lk.src_ref_id for lk in in_links},
+        )
         if out_links:
             lines.append("")
             lines.append("## outbound")
             for link in out_links:
-                lines.append(self._format_link_line(link, endpoints, "→"))
+                lines.append(self._format_link_line(link, endpoints, "→", statuses))
         if in_links:
             lines.append("")
             lines.append("## inbound")
             for link in in_links:
-                lines.append(self._format_link_line(link, endpoints, "←"))
+                lines.append(self._format_link_line(link, endpoints, "←", statuses))
         return Response(
             body="\n".join(lines), result_count=len(out_links) + len(in_links)
         )
@@ -5897,6 +5925,7 @@ class NumericRefHandler(Handler):
         link: Link,
         endpoints: dict[int, Ref],
         arrow: str,
+        statuses: dict[int, str] | None = None,
     ) -> str:
         """Format one link row as ``arrow kind:id[~pos]  (relation)``.
 
@@ -5941,7 +5970,11 @@ class NumericRefHandler(Handler):
         # gr626896: the edge's own why renders after the relation —
         # ``meta.reason='.'`` (reviewed-obvious) prints as a bare period;
         # a ``considered`` edge prints its verdict line (gr662069).
-        return f"{arrow} {target}  ({link.relation}){link_why_suffix(link.meta)}"
+        # gr739333: a lifecycle endpoint carries its status token on the
+        # row — a done todo in a link table must not read as live work.
+        status = (statuses or {}).get(other_id)
+        token = f" [{status}]" if status else ""
+        return f"{arrow} {target}{token}  ({link.relation}){link_why_suffix(link.meta)}"
 
     # F8 rel-name → inbound-passive-form mapping (``_INVERSE_REL``) moved
     # to ``precis.handlers._links_render`` alongside the rest of
@@ -6090,7 +6123,11 @@ class NumericRefHandler(Handler):
 
         Subclasses with a richer body shape override.
         """
-        out = [f"# {self._sense()} {ref.id}", "", ref.title]
+        out = [
+            f"# {self._sense()} {ref.id}",
+            "",
+            record_frame.neutralize(ref.title),
+        ]
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))

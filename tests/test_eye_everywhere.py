@@ -75,7 +75,7 @@ class TestTheDoor:
         # The head's read chip legitimately differs: the first call's own
         # bump shows on the second (gr524009). Strip it before comparing.
         chip = re.compile(r"  \[created [^\]]*\]")
-        assert chip.sub("", via_extent) == chip.sub("", via_view)
+        assert _frame_norm(via_extent) == _frame_norm(via_view)
         assert "— linked (1 hop) —" in via_extent
         assert f"related-to: me{memo.id} — Why the eye is one door" in via_extent
 
@@ -180,8 +180,8 @@ class TestMemoryBatchEye:
         )
         assert not err
         chip = re.compile(r"  \[created [^\]]*\]")
-        assert chip.sub("", batch).split("\n\n", 1)[1] == "\n\n".join(
-            chip.sub("", body) for body in singles
+        assert _frame_norm(batch).split("\n\n", 1)[1] == "\n\n".join(
+            _frame_norm(body) for body in singles
         )
         assert "Neighbor of First" in batch and "Neighbor of Second" in batch
 
@@ -267,7 +267,7 @@ class TestMemoryBatchEye:
             return f"BEGIN {handle}\n" + "x" * 150 + f"\nEND {handle}"
 
         monkeypatch.setattr(eye_mod, "render_eye", render)
-        monkeypatch.setattr(memory_mod, "BATCH_VIEW_PAGE_CHARS", 250)
+        monkeypatch.setattr(memory_mod, "BATCH_VIEW_PAGE_CHARS", 400)
         out, err = _get(
             runtime_with_store,
             kind="memory",
@@ -325,7 +325,10 @@ class TestMemoryBatchEye:
             q="Notes & links",
             ring={"kinds": "memory"},
         )
-        assert scalar.body == oversized
+        # gr739333: the scalar eye carries its record frame around the
+        # render — the monkeypatched body is the frame's inner text.
+        assert oversized in scalar.body
+        assert scalar.body.startswith(f"<record me{first.id} ")
         selectors = ", q='Notes & links', args={'ring': {'kinds': 'memory'}}"
         members = f"get(kind='memory', id={first.id}, view='members')"
         whole_read = (
@@ -349,13 +352,26 @@ class TestMemoryBatchEye:
         assert len(out) <= BATCH_VIEW_PAGE_CHARS + len(continuation)
         block = out.removesuffix(continuation).split("\n\n", 1)[1]
         lines = block.splitlines()
-        assert lines[-1] == f"… cut — full read: {whole_read}"
-        assert lines[:-1] == oversized.splitlines()[: len(lines) - 1]
+        # gr739333: the cut trailer sits inside the record frame, just
+        # above the close tag.
+        assert lines[-2] == f"… cut — full read: {whole_read}"
+        assert lines[-1].startswith("</record ")
+        # Inner lines (frame tags + cut trailer excluded) are the
+        # oversized render's leading whole lines.
+        assert lines[1:-2] == oversized.splitlines()[: len(lines) - 3]
         assert f"BEGIN me{second.id}" not in out
 
 
 #: The read chip on a head line counts reads, so it differs between calls.
 _CHIP = re.compile(r"  \[created [^\]]*\]")
+
+#: The record frame's per-response nonce (gr739333) is minted per call —
+#: two renders of the same record legitimately differ in ``b=`` alone.
+_NONCE = re.compile(r"b=[A-Z2-9]{4}")
+
+
+def _frame_norm(body: str) -> str:
+    return _NONCE.sub("b=NONCE", _CHIP.sub("", body))
 
 
 class TestBatchEye:
@@ -519,7 +535,7 @@ class TestBatchEye:
             runtime_with_store, kind="finding", id=[focus.id], extent="fisheye+1hop"
         )
         assert not err, listed
-        assert _CHIP.sub("", listed) == _CHIP.sub("", scalar)
+        assert _frame_norm(listed) == _frame_norm(scalar)
 
     def test_q_has_no_batch_meaning_and_refuses(
         self, runtime_with_store: Any, store: Any

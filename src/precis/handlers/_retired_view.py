@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.response import Response
-from precis.utils import handle_registry
+from precis.utils import handle_registry, record_frame
 from precis.utils.next_block import render_next_section
 from precis.utils.timeutil import as_utc
 
@@ -209,6 +209,10 @@ def render_retired_ref(store: Store, ref: Ref) -> Response:
                 ),
             ]
         )
+    # gr739333: a tombstone reads framed like every record — the banner
+    # names the survivor it re-pointed to.
+    redirect = _handle(sup_ref.kind, sup_ref.id) if sup_ref is not None else None
+    rendered = record_frame.frame_record(store, ref, rendered, redirect_to=redirect)
     return Response(body=rendered, result_count=1)
 
 

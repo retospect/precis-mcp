@@ -28,6 +28,12 @@ def _id_of(body: str) -> int:
     return id_of(body)
 
 
+def _denonce(body: str) -> str:
+    from tests.conftest import denonce
+
+    return denonce(body)
+
+
 # ── view='roots' ──────────────────────────────────────────────────
 
 
@@ -664,8 +670,10 @@ def test_get_view_full_reads_as_default(handler: TodoHandler) -> None:
     rid = _id_of(r.body)
     plain = handler.get(id=rid)
     full = handler.get(id=rid, view="full")
+    # denonce: the record frame's per-response nonce differs per read (gr739333)
     assert (
-        full.body == f"interpreted: view='full' read as the default view\n{plain.body}"
+        _denonce(full.body) == f"interpreted: view='full' read as the default view\n"
+        f"{_denonce(plain.body)}"
     )
     assert "finish the report" in full.body
 
@@ -962,8 +970,8 @@ def test_get_view_status_reads_as_the_card(handler: TodoHandler) -> None:
     plain = handler.get(id=todo_id)
     assert "STATUS:doing" in plain.body
     status = handler.get(id=todo_id, view="status")
-    assert status.body == (
-        "interpreted: view='status' read as the default view\n" + plain.body
+    assert _denonce(status.body) == (
+        "interpreted: view='status' read as the default view\n" + _denonce(plain.body)
     )
 
 
@@ -975,8 +983,8 @@ def test_get_view_card_reads_as_the_default(handler: TodoHandler) -> None:
     todo_id = _id_of(handler.put(text="Card alias todo.", tags=["project:x"]).body)
     plain = handler.get(id=todo_id)
     out = handler.get(id=todo_id, view="card")
-    assert out.body == (
-        "interpreted: view='card' read as the default view\n" + plain.body
+    assert _denonce(out.body) == (
+        "interpreted: view='card' read as the default view\n" + _denonce(plain.body)
     )
 
 

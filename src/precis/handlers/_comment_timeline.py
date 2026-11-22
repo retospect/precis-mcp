@@ -50,6 +50,7 @@ from precis.errors import BadInput, Upstream
 from precis.response import Response
 from precis.store.revision_context import current_revision_context
 from precis.store.types import ChunkInsert, ChunkRow, Ref
+from precis.utils import record_frame
 from precis.utils.idem import idem_lock_key, normalize_key
 
 #: Comments rendered in full on a bare ``get`` (the default policy).
@@ -163,7 +164,7 @@ def _stamp(chunk: ChunkRow) -> str:
 
 
 def _one_liner(chunk: ChunkRow, number: int) -> str:
-    gist = " ".join(chunk.text.split())
+    gist = " ".join(record_frame.neutralize(chunk.text).split())
     if len(gist) > ONE_LINER_CHARS:
         gist = gist[:ONE_LINER_CHARS].rstrip() + "…"
     return f"comment {number} · {_stamp(chunk)} · {gist}"
@@ -194,7 +195,7 @@ def render_comments(
     if full:
         parts = [
             f"## comment {num(c)} · {_stamp(c)}"
-            f"{' [hidden]' if num(c) in hidden else ''}\n{c.text}"
+            f"{' [hidden]' if num(c) in hidden else ''}\n{record_frame.fence_body(c.text)}"
             for c in ordered
         ]
         return "\n\n".join(parts)
@@ -208,13 +209,15 @@ def render_comments(
     )
     parts = [
         f"## comment {num(c)} · {_stamp(c)}\n"
-        + clip_middle(
-            c.text,
-            None
-            if kind == "todo" and c.text.startswith(("spec:", "brief:"))
-            else policy.full_chars,
-            f"get(kind={kind!r}, id={ref.id}, view='comments', "
-            f"args={{'comment': {num(c)}}})",
+        + record_frame.fence_body(
+            clip_middle(
+                c.text,
+                None
+                if kind == "todo" and c.text.startswith(("spec:", "brief:"))
+                else policy.full_chars,
+                f"get(kind={kind!r}, id={ref.id}, view='comments', "
+                f"args={{'comment': {num(c)}}})",
+            )
         )
         for c in newest
     ]
@@ -262,7 +265,7 @@ def _selector_footer(ref: Ref, kind: str, note: str) -> str:
 
 def _comment_piece(c: ChunkRow, hidden: set[int], number: int) -> str:
     mark = " [hidden]" if number in hidden else ""
-    return f"## comment {number} · {_stamp(c)}{mark}\n{c.text}"
+    return f"## comment {number} · {_stamp(c)}{mark}\n{record_frame.fence_body(c.text)}"
 
 
 def render_comment_view(

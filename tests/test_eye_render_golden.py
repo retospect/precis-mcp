@@ -362,6 +362,12 @@ def _norm(out: str, **refs: Any) -> str:
     # pin ring structure — normalise the volatile dressing out.
     out = re.sub(r" +\[created -[^\]]*\]", "", out)
     out = re.sub(r" · -\d+[a-z]+(?=\n|  \[|$)", "", out)
+    # gr739333: handler-level reads carry the record frame; these
+    # goldens pin the eye render inside it. Strip the tag pair (the
+    # nonce is per-response, never pinned).
+    lines = out.splitlines()
+    if lines and lines[0].startswith("<record ") and lines[-1].startswith("</record "):
+        out = "\n".join(lines[1:-1])
     return out
 
 

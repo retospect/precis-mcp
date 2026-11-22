@@ -29,7 +29,7 @@ from precis.response import Response
 from precis.runtime import PrecisRuntime
 from precis.store import Store, as_dream_actor
 from precis.utils import db_retry
-from tests.conftest import id_of
+from tests.conftest import denonce, id_of
 
 # ---------------------------------------------------------------------------
 # Handler-level tests (skip MCP, skip dispatch)
@@ -197,8 +197,10 @@ def test_get_view_full_reads_as_default(handler: MemoryHandler) -> None:
     new_id = id_of(handler.put(text="a complete node").body)
     plain = handler.get(id=new_id)
     full = handler.get(id=new_id, view="full")
+    # denonce: the record frame's per-response nonce differs per read (gr739333)
     assert (
-        full.body == f"interpreted: view='full' read as the default view\n{plain.body}"
+        denonce(full.body)
+        == f"interpreted: view='full' read as the default view\n{denonce(plain.body)}"
     )
     assert "a complete node" in full.body
 
@@ -209,8 +211,8 @@ def test_get_view_body_reads_the_body_section(handler: MemoryHandler) -> None:
     new_id = id_of(handler.put(text="body is the node", title="t").body)
     tilde = handler.get(id=f"{new_id}~body")
     r = handler.get(id=new_id, view="body")
-    assert r.body == (
-        f"interpreted: view='body' read as id='me{new_id}~body'\n{tilde.body}"
+    assert denonce(r.body) == (
+        f"interpreted: view='body' read as id='me{new_id}~body'\n{denonce(tilde.body)}"
     )
     assert "body is the node" in r.body
     assert "## outbound" not in r.body
@@ -1076,14 +1078,16 @@ def test_get_and_put_ack_show_expiry(handler: MemoryHandler, store: Store) -> No
     store.add_link(src_ref_id=memory_id, dst_ref_id=linked_id, relation="related-to")
     got = handler.get(id=memory_id).body
     assert "Links" in got
-    assert got.rstrip().endswith("expires: 2030-12-01 (set by writer)")
+    # the record close tag now trails the card's last fact line (gr739333)
+    assert got.rstrip().splitlines()[-2] == "expires: 2030-12-01 (set by writer)"
 
     ack2 = handler.put(text="thread body text", tags=["section:threads"])
     thread = store.fetch_refs_by_ids([id_of(ack2.body)])[id_of(ack2.body)]
     expected = (thread.updated_at + timedelta(days=14)).strftime("%Y-%m-%d")
     line2 = f"expires: {expected} (default: thread 14d from last edit)"
     assert line2 in ack2.body
-    assert handler.get(id=id_of(ack2.body)).body.rstrip().endswith(line2)
+    # same close-tag trail as the first card (gr739333)
+    assert handler.get(id=id_of(ack2.body)).body.rstrip().splitlines()[-2] == line2
 
     ack3 = handler.put(text="a durable standing fact")
     assert "expires:" not in ack3.body
@@ -2881,7 +2885,10 @@ def test_fisheye_1hop_renders_rings_with_filenames(
 ) -> None:
     focus, section, sib, _far = _walk_fixture(hub)
     out = handler.get(id=focus, view="fisheye+1hop").body
-    assert out.startswith(f"me{focus} (worker_busy.md) [memory] Worker busy")
+    # the record frame opens the response (gr739333); the focus line follows
+    assert out.splitlines()[1].startswith(
+        f"me{focus} (worker_busy.md) [memory] Worker busy"
+    )
     parts = out.split("Parts:")[1].split("Notes & links:")[0]
     assert f"me{section} (worker_section.md) — Worker section" in parts
     notes = out.split("Notes & links:")[1]

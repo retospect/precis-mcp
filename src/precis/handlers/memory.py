@@ -230,7 +230,7 @@ from precis.store._links_ops import MACHINE_EDGE_META_KEYS, canonical_relation
 from precis.store._search_cut import semantic_fold_distance
 from precis.store._secret_scope import secret_fence
 from precis.store.types import ActorSlug, ChunkInsert, Ref
-from precis.utils import handle_registry, search_trace
+from precis.utils import handle_registry, record_frame, search_trace
 from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
@@ -1716,11 +1716,33 @@ class MemoryHandler(AuditedRetirementHandler):
             selectors += f", args={{'ring': {ring!r}}}"
         blocks: list[str] = []
         used = len(header)
-        for rid in ref_ids:
-            try:
-                resp = self.eye(id=rid, extent=extent, q=q, ring=ring)
-                block = resp.body
-                if len(block) > block_budget:
+        with record_frame.nonce_scope():
+            for rid in ref_ids:
+                try:
+                    resp = self.eye(id=rid, extent=extent, q=q, ring=ring)
+                    block = resp.body
+                except NotFound:
+                    block = f"me{rid}  not found"
+                except Gone:
+                    block = f"me{rid}  deleted"
+                # The record frame is boundary structure — the page cut
+                # measures the inner render, keeping the tag pair whole
+                # (gr739333).
+                blines = block.splitlines()
+                open_tag = close_tag = ""
+                if (
+                    len(blines) > 2
+                    and blines[0].startswith("<record ")
+                    and blines[-1].startswith("</record ")
+                ):
+                    open_tag, close_tag = blines[0], blines[-1]
+                    inner = "\n".join(blines[1:-1])
+                else:
+                    inner = block
+                inner_budget = block_budget - (
+                    len(open_tag) + len(close_tag) + 2 if open_tag else 0
+                )
+                if len(inner) > inner_budget:
                     # The scalar read, not a hub's members hint: the cut text
                     # can be the body, which view='members' does not show.
                     whole_read = (
@@ -1729,20 +1751,19 @@ class MemoryHandler(AuditedRetirementHandler):
                     trailer = f"… cut — full read: {whole_read}"
                     lines: list[str] = []
                     size = len(trailer)
-                    for line in block.splitlines():
+                    for line in inner.splitlines():
                         size += len(line) + 1
-                        if size > block_budget:
+                        if size > inner_budget:
                             break
                         lines.append(line)
-                    block = "\n".join([*lines, trailer])
-            except NotFound:
-                block = f"me{rid}  not found"
-            except Gone:
-                block = f"me{rid}  deleted"
-            if blocks and used + len(block) > BATCH_VIEW_PAGE_CHARS:
-                break
-            blocks.append(block)
-            used += len(block) + 2
+                    inner = "\n".join([*lines, trailer])
+                    block = inner
+                    if open_tag:
+                        block = f"{open_tag}\n{inner}\n{close_tag}"
+                if blocks and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+                    break
+                blocks.append(block)
+                used += len(block) + 2
         body = header + "\n\n".join(blocks)
         rest = ref_ids[len(blocks) :]
         if rest:
@@ -1934,7 +1955,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 next=f"get(kind='memory', id='{handle}~{legal[0]}')",
             )
         slug, title, text = match
-        out = f"# memory {ref.id}~{slug} — {title}\n\n{text}"
+        out = f"# memory {ref.id}~{slug} — {title}\n\n{record_frame.neutralize(text)}"
         out += render_next_section(
             [
                 (f"get(kind='memory', id={ref.id})", "the whole node"),
@@ -1944,7 +1965,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 ),
             ]
         )
-        return Response(body=out)
+        return self._frame_response(ref, Response(body=out))
 
     def _body_page_call(self, ref_id: int, offset: int | None = None) -> str:
         """The paging call the ~body clip footer names (gr685357)."""
@@ -1962,7 +1983,9 @@ class MemoryHandler(AuditedRetirementHandler):
         so following the footers reassembles the whole body. An offset
         at or past the end refuses, naming the body's character count.
         """
-        text = self._display_body(ref, self._body_text(ref))
+        # Marker lookalikes are escaped before the offsets count — a
+        # paged read stays self-consistent (gr739333).
+        text = record_frame.neutralize(self._display_body(ref, self._body_text(ref)))
         total = len(text)
         start = 0
         if offset is not None:
@@ -1999,21 +2022,27 @@ class MemoryHandler(AuditedRetirementHandler):
             return page
 
         if offset is not None:
-            return Response(
-                body=(
-                    f"# memory {ref.id}~body (chars {start}..{total} of {total})"
-                    f"\n\n{sliced}"
+            return self._frame_response(
+                ref,
+                Response(
+                    body=(
+                        f"# memory {ref.id}~body (chars {start}..{total} of {total})"
+                        f"\n\n{sliced}"
+                    ),
+                    result_budget_hint=self._body_page_call(ref.id, start),
+                    budget_fit=_fit_page,
                 ),
-                result_budget_hint=self._body_page_call(ref.id, start),
-                budget_fit=_fit_page,
             )
-        return Response(
-            body=f"# memory {ref.id}~body\n\n{text}"
-            + render_next_section(
-                [(f"get(kind='memory', id={ref.id})", "header + links too")]
+        return self._frame_response(
+            ref,
+            Response(
+                body=f"# memory {ref.id}~body\n\n{text}"
+                + render_next_section(
+                    [(f"get(kind='memory', id={ref.id})", "header + links too")]
+                ),
+                result_budget_hint=self._body_page_call(ref.id),
+                budget_fit=_fit_page,
             ),
-            result_budget_hint=self._body_page_call(ref.id),
-            budget_fit=_fit_page,
         )
 
     def _with_budget_outline(self, resp: Response, id: Any) -> Response:
@@ -4829,7 +4858,7 @@ class MemoryHandler(AuditedRetirementHandler):
         )
         from precis.utils.eye_render import _NEIGHBOR_GROUP_CAP
 
-        title = ref.title or ""
+        title = record_frame.neutralize(ref.title or "")
         header = f"# {self._sense()} {ref.id}"
         if title:
             header += f": {title}"
@@ -4837,7 +4866,9 @@ class MemoryHandler(AuditedRetirementHandler):
         raw_body = self._body_text(ref)
         body = self._display_body(ref, raw_body)
         if body:
-            out += ["", body]
+            # <body> fence: the author's stored text, apart from the
+            # courtesy/meta/tag system lines (gr739333).
+            out += ["", record_frame.fence_body(body)]
         handles = entity_handles(raw_body)
         courtesy = courtesy_lines(
             handles, safe_entity_states(self.store, handles), cap=_NEIGHBOR_GROUP_CAP

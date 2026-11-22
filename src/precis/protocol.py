@@ -587,8 +587,15 @@ class Handler(ABC):
         from precis.handlers._eye import eye_body
 
         focus = self.eye_focus(id=id)
-        body = eye_body(self._eye_store(), focus.handle, extent, q=q, ring=ring)
-        return Response(body=focus.header + body)
+        store = self._eye_store()
+        body = eye_body(store, focus.handle, extent, q=q, ring=ring)
+        # gr739333: a fisheye read frames as the focus's record — the
+        # closed/retired banners ride the same channel.
+        from precis.utils import record_frame
+
+        return Response(
+            body=record_frame.frame_eye_read(store, focus.handle, focus.header + body)
+        )
 
     def _eye_store(self) -> Any:
         """The store the eye renders from, or ``Unsupported``."""

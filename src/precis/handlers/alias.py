@@ -326,9 +326,12 @@ class AliasHandler(NumericRefHandler):
             self._check_list_id_view("/recent", view)
             return self._recent()
         if isinstance(id, list):
-            return Response(
-                body="\n\n".join(self.get(id=one, scope=scope).body for one in id)
-            )
+            from precis.utils import record_frame
+
+            with record_frame.nonce_scope():
+                return Response(
+                    body="\n\n".join(self.get(id=one, scope=scope).body for one in id)
+                )
         s = str(id).strip()
         if s == "/stale":
             self._check_list_id_view("/stale", view)
@@ -337,13 +340,15 @@ class AliasHandler(NumericRefHandler):
             ref = self._resolve_ref(s)
             if view not in (None, "raw"):
                 return super().get(id=ref.id, view=view, **_kw)
-            return self._render_default_get(ref)
+            return self._frame_response(ref, self._render_default_get(ref))
         hits = self.lookup(s, scope=scope)
         if not hits and s.isdigit():
             # The universal ``as<N>`` route reaches here with the bare pk.
             pk_ref = self.store.get_ref(kind=self.kind, id=int(s))
             if pk_ref is not None:
-                return self._render_default_get(self._resolve_live_ref(pk_ref.id))
+                return self._frame_response(
+                    pk_ref, self._render_default_get(self._resolve_live_ref(pk_ref.id))
+                )
         if not hits:
             body = f"no live alias for {_short(s)!r}"
             body += render_next_section(

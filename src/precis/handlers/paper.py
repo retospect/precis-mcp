@@ -132,7 +132,7 @@ from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from precis.store._tag_filter import build_tag_filter
 from precis.store._venue_ops import ISSN_NORMALISE_SQL, VenueMetrics
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ChunkRow
-from precis.utils import handle_registry
+from precis.utils import handle_registry, record_frame
 from precis.utils.authors import (
     author_display,
     author_links,
@@ -12305,6 +12305,9 @@ class PaperHandler(Handler):
                 ]
 
         body = "\n".join(lines).rstrip() + trailer
+        # gr739333 tier (c): a run of source chunks gets one <run>
+        # wrapper — the one-line chunk heads inside stay unchanged.
+        body = record_frame.frame_run(body, label=_pa(ref))
         return Response(body=body)
 
     def _render_sentences_view(

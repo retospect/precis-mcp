@@ -22,6 +22,7 @@ from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.utils import db_retry
+from tests.conftest import denonce
 
 
 def _search(pattern: str, text: str) -> re.Match[str]:
@@ -866,7 +867,8 @@ class TestGetByPubId:
 
         by_pub_id = h.get(id=pub_id).body
         by_ref_id = h.get(id=hub_id).body
-        assert by_pub_id == by_ref_id
+        # denonce: the record frame's per-response nonce differs per read (gr739333)
+        assert denonce(by_pub_id) == denonce(by_ref_id)
         assert f"finding {hub_id}" in by_pub_id
 
     def test_get_by_pub_id_resolves_plain_finding(self, store) -> None:
@@ -883,7 +885,7 @@ class TestGetByPubId:
 
         by_pub_id = h.get(id=pub_id).body
         by_ref_id = h.get(id=ref_id).body
-        assert by_pub_id == by_ref_id
+        assert denonce(by_pub_id) == denonce(by_ref_id)
 
     def test_get_by_unknown_pub_id_raises_not_found(self, store) -> None:
         from precis.errors import NotFound

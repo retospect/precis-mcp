@@ -1733,6 +1733,19 @@ def id_of(body: str) -> int:
     )
 
 
+_FRAME_NONCE = re.compile(r"b=[A-Z2-9]{4}")
+
+
+def denonce(body: str) -> str:
+    """Normalise the record frame's per-response nonce (gr739333).
+
+    ``<record … b=XXXX>`` mints a fresh nonce per response, so two reads
+    of the same record legitimately differ in ``b=`` alone. Tests that
+    compare two responses for equality run both through this first.
+    """
+    return _FRAME_NONCE.sub("b=NONCE", body)
+
+
 def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:
     """The universal record handle (e.g. ``pa123``) for a
     slug-addressed ref — the form output now emits for the record itself."""

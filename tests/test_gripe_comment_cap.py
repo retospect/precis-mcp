@@ -22,7 +22,11 @@ from precis.store import Tag
 from precis.store.types import ChunkInsert
 
 
-@pytest.mark.parametrize("count", [0, 3, 8, 55])
+# 40 short comments stay under COMMENT_PAGE_CHARS even with the
+# per-comment <body> fence (gr739333); 55 tipped the page into the
+# elided-window path, which test_comments_view_pages_whole_comments_never_cut
+# already covers.
+@pytest.mark.parametrize("count", [0, 3, 8, 40])
 def test_comment_timeline_default_and_full(hub: Hub, count: int) -> None:
     handler = GripeHandler(hub=hub)
     handler.put(text="Synthetic timeline body")

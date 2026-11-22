@@ -258,7 +258,7 @@ from precis.todo import (
     views,
     work_view,
 )
-from precis.utils import handle_registry
+from precis.utils import handle_registry, record_frame
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -916,10 +916,13 @@ class TodoHandler(NumericRefHandler):
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(
-                Response(
-                    body=self._render_comments_view(
-                        ref, comment=comment, comments=comments, last=last
-                    )
+                self._frame_response(
+                    ref,
+                    Response(
+                        body=self._render_comments_view(
+                            ref, comment=comment, comments=comments, last=last
+                        )
+                    ),
                 ),
                 readings,
             )
@@ -930,12 +933,15 @@ class TodoHandler(NumericRefHandler):
             # can't fit (the bare get that produced the cut was no
             # route to the rest).
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_body_view(ref, self.store.tags_for(ref.id)),
-                result_count=1,
-                result_budget_hint=(
-                    f"get(kind='todo', id={ref.id}, q='<terms>') reads "
-                    "matching passages when the body alone is over budget"
+            return self._frame_response(
+                ref,
+                Response(
+                    body=self._render_body_view(ref, self.store.tags_for(ref.id)),
+                    result_count=1,
+                    result_budget_hint=(
+                        f"get(kind='todo', id={ref.id}, q='<terms>') reads "
+                        "matching passages when the body alone is over budget"
+                    ),
                 ),
             )
         if view == "scratch":
@@ -3545,12 +3551,17 @@ class TodoHandler(NumericRefHandler):
             out.append(f"prio: {prio_display(ref.prio)}")
         if ref.parent_id is not None or ref.prio is not None:
             out.append("")
-        out.append(ref.title)
+        # Titles are authored text too — a stored marker lookalike
+        # must not forge a boundary inside the frame (gr739333).
+        out.append(record_frame.neutralize(ref.title))
         # Optional details body (todo_body chunk), when the todo has one.
+        # The <body> fence marks it as the author's stored text — apart
+        # from system metadata — and neutralises marker lookalikes
+        # inside it (gr739333).
         body = self._body_text(ref)
         if body:
             out.append("")
-            out.append(body)
+            out.append(record_frame.fence_body(body))
         if tags:
             out.append("")
             out.append("tags: " + " ".join(str(t) for t in tags))

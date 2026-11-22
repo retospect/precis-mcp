@@ -41,7 +41,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from precis._result_budget import size_cell
-from precis.utils import handle_registry
+from precis.utils import handle_registry, record_frame
 from precis.utils.entity_courtesy import safe_entity_states
 from precis.utils.eye_render import (
     _CACHE_EYE_KINDS,
@@ -141,8 +141,14 @@ def render_eye_batch(
             continue
         target = _target(store, item.handle)
         if target is None:
+            # The shared render does not own this handle's eye — keep the
+            # whole single eye, framed as its own record (gr739333).
             slots.append(
-                item.header + render_eye(store, item.handle, extent, ring=ring)
+                record_frame.frame_eye_read(
+                    store,
+                    item.handle,
+                    item.header + render_eye(store, item.handle, extent, ring=ring),
+                )
             )
             continue
         kind, ref, ord_ = target
@@ -157,10 +163,17 @@ def render_eye_batch(
             group.whole = True
         else:
             group.chunk_ords.append(ord_)
-    sections = [
-        slot if isinstance(slot, str) else _group_block(store, slot, ext, recall)
-        for slot in slots
-    ]
+    # One nonce for every record frame this combined response emits
+    # (gr739333: batch records share the per-response boundary nonce).
+    with record_frame.nonce_scope():
+        sections = [
+            slot
+            if isinstance(slot, str)
+            else record_frame.frame_record(
+                store, slot.ref, _group_block(store, slot, ext, recall)
+            )
+            for slot in slots
+        ]
     live = list(groups.values())
     if live and ext >= Extent.HOP1:
         sections.extend(_merged_rings(store, live, ext, ring=filt))

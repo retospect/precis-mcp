@@ -14,6 +14,7 @@ from precis.draft import lint as _draft_lint
 from precis.errors import BadInput, Gone, NotFound, ResultBudgetExceeded, Unsupported
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
+from tests.conftest import denonce
 from tests.factories import insert_gist
 
 
@@ -22,6 +23,9 @@ def _dc(body: str) -> str:
     m = re.search(r"dc\d+", body)
     assert m is not None, f"no dc handle in {body!r}"
     return m.group(0)
+
+
+_denonce = denonce
 
 
 @pytest.fixture
@@ -343,8 +347,9 @@ def test_get_accepts_draft_tilde_chunk_selector(draft: DraftHandler, hub: Hub) -
     dc = _order(hub, "selt")[1].dc
     plain = draft.get(id=dc).body
     assert "Introduction" in plain
-    assert draft.get(id=f"selt~{dc}").body == plain
-    assert draft.get(id=f"dr{ref.id}~{dc}").body == plain
+    # the record frame's per-response nonce (gr739333) differs per call
+    assert _denonce(draft.get(id=f"selt~{dc}").body) == _denonce(plain)
+    assert _denonce(draft.get(id=f"dr{ref.id}~{dc}").body) == _denonce(plain)
     with pytest.raises(BadInput):
         draft.get(id="selt~nonsense")
     with pytest.raises(NotFound):
@@ -1145,10 +1150,12 @@ def test_heading_selector_resolves_to_its_chunk(draft: DraftHandler, hub: Hub) -
     assert ref is not None
 
     got = draft.get(id="nt~Statement on AI Use").body
-    assert got == draft.get(id=dc).body
+    assert _denonce(got) == _denonce(draft.get(id=dc).body)
     # case-insensitive, and a dr<N> head works too
-    assert draft.get(id="nt~statement on ai use").body == got
-    assert draft.get(id=f"dr{ref.id}~Statement on AI Use").body == got
+    assert _denonce(draft.get(id="nt~statement on ai use").body) == _denonce(got)
+    assert _denonce(draft.get(id=f"dr{ref.id}~Statement on AI Use").body) == _denonce(
+        got
+    )
 
     with pytest.raises(BadInput, match="no live heading") as ei:
         draft.get(id="nt~No Such Heading")

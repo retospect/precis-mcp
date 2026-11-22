@@ -167,6 +167,8 @@ def test_body_read_over_cap_pages_to_end(
         page = out.split("\n\n", 1)[1]
         if "\n\n… showing" in page:
             page = page.rsplit("\n\n… showing", 1)[0]
+        # the record frame's close tag trails the final page (gr739333)
+        page = re.sub(r"</record [^\n]*>\s*$", "", page)
         parts.append(page)
         if "rest: " not in out:
             break

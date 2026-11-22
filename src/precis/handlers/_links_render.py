@@ -32,7 +32,7 @@ from precis._result_budget import body_bytes, row_size_cell
 from precis.errors import BadInput, ResultBudgetExceeded
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
-from precis.utils import handle_registry
+from precis.utils import handle_registry, record_frame
 from precis.utils.link_tag_ops import link_why_suffix
 from precis.utils.surface_scope import masked_ref_placeholder
 
@@ -184,6 +184,7 @@ def render_links_section(
     ordered = sorted(
         combined, key=_priority_sort_key if priority else lambda pair: pair[0].id
     )
+    statuses = record_frame.status_cells(store, set(endpoints))
     folded: dict[tuple[int, str, str], tuple[dict[str, str], list[str], bool]] = {}
     for lnk, direction in ordered:
         row = _link_row(
@@ -193,6 +194,7 @@ def render_links_section(
             endpoints=endpoints,
             ref_sizes=ref_sizes,
             chunk_sizes=chunk_sizes,
+            statuses=statuses,
         )
         outbound = direction == "out"
         other_id = lnk.dst_ref_id if outbound else lnk.src_ref_id
@@ -222,6 +224,8 @@ def render_links_section(
         schema = ["related to", "keywords", "size [kB] (default 1kB)"]
         if any(needs_call for _row, _markers, needs_call in selected):
             schema.insert(2, "how to get")
+        if any(row["status"] for row in rows):
+            schema.insert(1, "status")
         truncated = len(selected) < total
 
         from precis.format import render_agent_table
@@ -325,6 +329,7 @@ def _link_row(
     endpoints: dict[int, Ref],
     ref_sizes: dict[int, int],
     chunk_sizes: dict[int, int],
+    statuses: dict[int, str] | None = None,
 ) -> dict[str, str]:
     """One ``{related to, keywords, how to get, size [kB] (default 1kB)}``
     table row.
@@ -353,6 +358,7 @@ def _link_row(
     if placeholder is not None:
         return {
             "related to": f"{rel_marker} {placeholder}".strip(),
+            "status": "",
             "keywords": "",
             "how to get": "",
             "size [kB] (default 1kB)": "",
@@ -376,6 +382,7 @@ def _link_row(
             f"{_via_suffix(ref, own_chunk_id, own_ord)}"
             f"{link_why_suffix(link.meta)}"
         ).strip(),
+        "status": (statuses or {}).get(other_id, ""),
         "keywords": teaser,
         "how to get": get_call,
         # Every row names a size — sub-kB bodies report decimal
@@ -489,6 +496,7 @@ def render_links_view(
     page_size = _links_page_size(limit, ref)
     start = _links_page_start(ordered, cursor, ref)
     page = ordered[start : start + page_size]
+    statuses = record_frame.status_cells(store, set(endpoints))
     rows = [
         _link_row(
             lnk,
@@ -497,6 +505,7 @@ def render_links_view(
             endpoints=endpoints,
             ref_sizes=ref_sizes,
             chunk_sizes=chunk_sizes,
+            statuses=statuses,
         )
         for lnk, d in page
     ]
@@ -517,10 +526,10 @@ def render_links_view(
             "Links:" if start == 0 and end == total else f"Links ({shown} of {total}):"
         )
         out = f"# {noun} {self_id} - links{filt}\n\n{table_head}\n"
-        out += render_agent_table(
-            rows[:shown],
-            schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
-        )
+        schema = ["related to", "keywords", "how to get", "size [kB] (default 1kB)"]
+        if any(r["status"] for r in rows[:shown]):
+            schema.insert(1, "status")
+        out += render_agent_table(rows[:shown], schema=schema)
         if end < total:
             next_args: dict[str, Any] = {
                 "cursor": f"{page[shown - 1][1]}:{page[shown - 1][0].id}"
@@ -702,8 +711,8 @@ def _teaser_for(ref: Ref | None) -> str:
         return ""
     title = ref.title.strip().replace("\n", " ")
     if len(title) > 60:
-        return title[:60].rstrip() + "…"
-    return title
+        title = title[:60].rstrip() + "…"
+    return record_frame.neutralize(title)
 
 
 #: Kinds whose chunks are addressed in ``get`` by their universal handles chunk

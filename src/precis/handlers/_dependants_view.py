@@ -29,7 +29,7 @@ from precis.store._dependants import (
     DependantRow,
     DependantsPage,
 )
-from precis.utils import handle_registry
+from precis.utils import handle_registry, record_frame
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -92,9 +92,11 @@ def _parse_walk_args(
     return depth, limit, (str(cursor) if cursor is not None else None)
 
 
-def _row_line(row: DependantRow) -> str:
+def _row_line(row: DependantRow, statuses: dict[int, str] | None = None) -> str:
+    status = (statuses or {}).get(row.ref_id)
+    token = f" [{status}]" if status else ""
     return (
-        f"- d{row.depth} {_handle(row.kind, row.ref_id)} ({row.relation}) "
+        f"- d{row.depth} {_handle(row.kind, row.ref_id)}{token} ({row.relation}) "
         f"via {_handle(row.via_kind, row.via_ref_id)}"
     )
 
@@ -140,9 +142,10 @@ def render_dependants_view(
     numeric id for numeric kinds, ``pa<N>``/slug for papers)."""
     depth, limit, cursor = _parse_walk_args(args, kind=kind, id_arg=id_arg)
     page = store.dependants(ref_id, depth=depth, limit=limit, cursor=cursor)
+    statuses = record_frame.status_cells(store, {r.ref_id for r in page.rows})
     lines = [f"# {sense} {id_arg} — dependants"]
     if page.rows:
-        lines += ["", *(_row_line(r) for r in page.rows)]
+        lines += ["", *(_row_line(r, statuses) for r in page.rows)]
     else:
         lines += [
             "",
@@ -177,7 +180,8 @@ def dependants_block(
         "## Dependants — "
         + _footer(page, kind=kind, id_arg=id_arg, depth=2, limit=_PREVIEW_ROWS)
     ]
-    lines += [_row_line(r) for r in page.rows] or ["(no dependants seen)"]
+    statuses = record_frame.status_cells(store, {r.ref_id for r in page.rows})
+    lines += [_row_line(r, statuses) for r in page.rows] or ["(no dependants seen)"]
     if not page.complete:
         lines.append(f"continue: get(kind={kind!r}, id={id_arg!r}, view='dependants')")
     else:
