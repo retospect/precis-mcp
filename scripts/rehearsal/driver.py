@@ -203,6 +203,40 @@ class Driver:
 
     host = "rehearsal-host"
 
+    def slot_holds(self, resources: tuple[str, ...]) -> list[dict[str, Any]]:
+        """The ``resource_slot_holds`` rows of ``resources`` (oldest first):
+        ``{id, holder, host, resource, units, acquired_at}``."""
+        rows = self._q(
+            "SELECT id, holder, host, resource, units, acquired_at "
+            "FROM resource_slot_holds WHERE resource = ANY(%s) "
+            "ORDER BY acquired_at, id",
+            (list(resources),),
+        )
+        return [
+            {
+                "id": int(hold_id),
+                "holder": str(h),
+                "host": str(host),
+                "resource": str(res),
+                "units": int(units),
+                "acquired_at": at,
+            }
+            for hold_id, h, host, res, units, at in rows
+        ]
+
+    def slot_rows(self, resources: tuple[str, ...]) -> list[dict[str, Any]]:
+        """``resource_slots`` rows of ``resources``: ``{host, resource,
+        capacity, free}``."""
+        rows = self._q(
+            "SELECT host, resource, capacity, free FROM resource_slots "
+            "WHERE resource = ANY(%s) ORDER BY host, resource",
+            (list(resources),),
+        )
+        return [
+            {"host": str(h), "resource": str(r), "capacity": int(c), "free": int(f)}
+            for h, r, c, f in rows
+        ]
+
     # ── sessions (written by the shim) ──────────────────────────────
 
     def sessions(self, todo: int) -> list[dict[str, Any]]:

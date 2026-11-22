@@ -1350,6 +1350,31 @@ def test_procguard_finds_and_ends_only_the_runs_groups(tmp_path: Path) -> None:
                 p.wait(timeout=20)
 
 
+def test_end_run_processes_spares_the_excluded_group(tmp_path: Path) -> None:
+    from rehearsal import procguard
+
+    run_dir = tmp_path / "run-3"
+    spared = _sleeper(f"{run_dir}/worker")  # stands in for the worker's group
+    ended = _sleeper(f"{run_dir}/host/ship")
+    try:
+        time.sleep(0.5)
+        assert {spared.pid, ended.pid} <= procguard.run_groups(run_dir)
+        assert procguard.run_groups(run_dir, exclude=(spared.pid,)) >= {ended.pid}
+        assert spared.pid not in procguard.run_groups(run_dir, exclude=(spared.pid,))
+        signalled = procguard.end_run_processes(
+            run_dir, grace=0.5, exclude=(spared.pid,)
+        )
+        assert signalled == [ended.pid]
+        ended.wait(timeout=20)
+        assert spared.poll() is None, "the excluded group was signalled"
+        assert procguard.run_groups(run_dir) == {spared.pid}
+    finally:
+        for p in (spared, ended):
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=20)
+
+
 def test_credential_free_scripts_only() -> None:
     """The scenario scripts the shim runs are JSON the driver writes at run
     time; nothing credential-shaped is checked in anywhere under scripts/rehearsal."""
@@ -1603,6 +1628,374 @@ def test_settle_folders_waits_for_the_worker_pass_not_a_launch(tmp_path: Path) -
     assert ctx.settle_folders(5, timeout=0.3) == ["slice-td5-j9"]
     ctx.expect.kept.add("slice-td5-j9")
     assert ctx.settle_folders(timeout=0.3) == []
+
+
+def _job(job_id: int, status: str, job_type: str = "land_slice", **meta: Any) -> Any:
+    return {"id": job_id, "type": job_type, "status": status, "meta": meta}
+
+
+def test_gate_skips_an_attempt_free_deferral_and_trips_on_a_red_land() -> None:
+    from types import SimpleNamespace
+
+    from rehearsal import gate as rgate
+    from rehearsal.ctx import Ctx
+    from rehearsal.driver import Plan
+
+    jobs = {
+        2: [
+            # The ship launch refused for capacity, and a ship already busy:
+            # the engine re-mints the land, so neither is a failure.
+            _job(10, "failed", attempt_free="infra-land", red_class="admission"),
+            _job(11, "failed", attempt_free="infra-land", red_class="ship-busy"),
+            _job(12, "failed", attempt_free="admission"),
+            # The same shape of infra red outside the deferral classes stays one.
+            _job(13, "failed", attempt_free="infra-land", red_class="gate-killed"),
+            # A red land: no attempt_free stamp. red_class alone is no deferral.
+            _job(14, "failed", red_class="admission"),
+            _job(15, "failed"),
+            _job(16, "succeeded", attempt_free="infra-land", red_class="admission"),
+        ],
+        3: [],
+    }
+    driver = SimpleNamespace(
+        jobs=lambda todo: jobs[todo],
+        describe=lambda *t: "described",
+    )
+    ctx = Ctx(
+        world=cast(Any, SimpleNamespace()),
+        driver=cast(Any, driver),
+        health=lambda: None,
+    )
+    assert [j["id"] for j in rgate.failed_jobs(ctx, 2, 3)] == [13, 14, 15]
+    assert [j["id"] for j in rgate.failed_jobs(ctx, 2, 3, allow=(13, 14))] == [15]
+    plan = Plan(root=1, build=2, review=3)
+    with pytest.raises(AssertionError, match=r"jo13 land_slice failed unexpectedly"):
+        rgate.fail_fast(ctx, plan)
+    # Only deferrals: nothing trips.
+    jobs[2] = jobs[2][:3]
+    assert rgate.failed_jobs(ctx, 2, 3) == []
+    rgate.fail_fast(ctx, plan)
+    # A red land after the deferrals still trips it.
+    jobs[2].append(_job(20, "failed"))
+    with pytest.raises(AssertionError, match=r"jo20 land_slice failed unexpectedly"):
+        rgate.fail_fast(ctx, plan)
+
+
+def test_slot_hold_invariant_names_each_leftover_hold() -> None:
+    import datetime
+    from types import SimpleNamespace
+
+    from rehearsal import invariants as inv
+
+    at = datetime.datetime(2026, 11, 22, 9, 30, tzinfo=datetime.UTC)
+    state: dict[str, Any] = {"holds": [], "rows": []}
+    driver = SimpleNamespace(
+        slot_holds=lambda resources: state["holds"],
+        slot_rows=lambda resources: state["rows"],
+    )
+    quiet = [
+        {"host": "h", "resource": "cpu_milli", "capacity": 8000, "free": 8000},
+        {"host": "h", "resource": "mem_mb", "capacity": 4096, "free": 4096},
+    ]
+    state["rows"] = quiet
+    assert inv.check_slot_holds(cast(Any, driver), grace=0) == []
+    # A SIGKILLed worker's spawn never releases: its hold and the shortfall.
+    state["holds"] = [
+        {
+            "id": 1,
+            "holder": "spawn:run_slice:td7",
+            "host": "h",
+            "resource": "cpu_milli",
+            "units": 1000,
+            "acquired_at": at,
+        },
+        {
+            "id": 2,
+            "holder": "spawn:run_slice:td7",
+            "host": "h",
+            "resource": "mem_mb",
+            "units": 2048,
+            "acquired_at": at,
+        },
+    ]
+    state["rows"] = [
+        {"host": "h", "resource": "cpu_milli", "capacity": 8000, "free": 7000},
+        quiet[1] | {"free": 2048},
+    ]
+    v = inv.check_slot_holds(cast(Any, driver), grace=0)
+    assert len(v) == 3 and all(x.startswith("9:") for x in v), v
+    assert "2 resource_slot_hold(s)" in v[0], v[0]
+    for needle in (
+        "holder=spawn:run_slice:td7",
+        "cpu_milli=1000",
+        "mem_mb=2048",
+        f"acquired_at={at}",
+    ):
+        assert needle in v[0], v[0]
+    assert "cpu_milli free 7000 != capacity 8000" in v[1], v
+    assert "mem_mb free 2048 != capacity 4096" in v[2], v
+    # Against a baseline taken at the scenario's start, only what is new counts:
+    # hold 1 and a 1000-unit cpu shortfall were already there.
+    base = inv.SlotBaseline(
+        holds=frozenset({1}),
+        short={("h", "cpu_milli"): 1000},
+    )
+    v = inv.check_slot_holds(cast(Any, driver), baseline=base, grace=0)
+    assert len(v) == 2, v
+    assert "1 resource_slot_hold(s)" in v[0] and "mem_mb=2048" in v[0], v[0]
+    assert "cpu_milli=1000" not in v[0], v[0]  # hold 1 is the baseline's
+    assert "mem_mb free 2048" in v[1], v
+    full = inv.SlotBaseline(holds=frozenset({1, 2}), short={("h", "cpu_milli"): 1000})
+    full.short[("h", "mem_mb")] = 2048
+    assert inv.check_slot_holds(cast(Any, driver), baseline=full, grace=0) == []
+
+
+def test_slot_baseline_reads_only_the_launch_resources() -> None:
+    from types import SimpleNamespace
+
+    from rehearsal import invariants as inv
+
+    asked: list[tuple[str, ...]] = []
+
+    def holds(resources: tuple[str, ...]) -> list[dict[str, Any]]:
+        asked.append(resources)
+        return [{"id": 4}, {"id": 9}]
+
+    driver = SimpleNamespace(
+        slot_holds=holds,
+        slot_rows=lambda resources: [
+            {"host": "h", "resource": "mem_mb", "capacity": 10, "free": 4}
+        ],
+    )
+    got = inv.slot_baseline(cast(Any, driver))
+    assert got.holds == {4, 9} and got.short == {("h", "mem_mb"): 6}
+    assert asked == [("cpu_milli", "mem_mb")]
+
+
+def test_check_runs_rule_9_with_the_scenarios_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rehearsal import invariants as inv
+
+    seen: list[Any] = []
+    for name in (
+        "check_folders",
+        "check_hub",
+        "check_host",
+        "check_remote",
+        "check_secrets",
+        "check_database",
+        "check_central",
+        "check_landed",
+    ):
+        monkeypatch.setattr(
+            inv,
+            name,
+            lambda *a, _n=name, **k: ([], []) if _n == "check_folders" else [],
+        )
+
+    def rule9(driver: Any, *, baseline: Any = None, **_: Any) -> list[str]:
+        seen.append(baseline)
+        return ["9: leaked"]
+
+    monkeypatch.setattr(inv, "check_slot_holds", rule9)
+    base = inv.SlotBaseline(holds=frozenset({3}))
+    violations, _ = inv.check(
+        cast(Any, None), cast(Any, None), inv.Expect(), baseline=base
+    )
+    assert violations == ["9: leaked"] and seen == [base]
+
+
+def test_run_scenario_takes_the_baseline_before_the_scenario_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from rehearsal import invariants as inv
+    from rehearsal.ctx import Ctx
+
+    order: list[str] = []
+    marker = inv.SlotBaseline(holds=frozenset({7}))
+
+    def take(driver: Any) -> Any:
+        order.append("baseline")
+        return marker
+
+    def check(
+        world: Any, driver: Any, expect: Any, baseline: Any = None
+    ) -> tuple[list[str], list[str]]:
+        order.append(f"check:{baseline is marker}")
+        return [], []
+
+    def scenario(c: Any) -> str:
+        order.append("run")
+        return "ok"
+
+    monkeypatch.setattr(inv, "slot_baseline", take)
+    monkeypatch.setattr(inv, "check", check)
+    ctx = Ctx(
+        world=cast(Any, SimpleNamespace()),
+        driver=cast(Any, SimpleNamespace(events=[])),
+        health=lambda: None,
+    )
+    monkeypatch.setattr(ctx, "settle_folders", lambda *a, **k: [])
+    status, _, _ = runner.run_scenario(ctx, rscenarios.Scenario("s", "s", scenario))
+    assert status == "PASS"
+    assert order == ["baseline", "run", "check:True"]
+
+
+def test_quiesce_retires_open_plans_and_waits_for_their_jobs(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from rehearsal.ctx import Ctx
+    from rehearsal.driver import Plan
+
+    w = rworld.World(run_dir=tmp_path, repo_root=tmp_path)
+    w.folders.mkdir(parents=True)
+    retired: list[int] = []
+    live = {"jobs": [_job(5, "running", "run_slice"), _job(6, "succeeded")]}
+
+    def wait_until(pred: Any, *, timeout: float, **_: Any) -> Any:
+        live["jobs"][0]["status"] = "failed"  # the stopped session's job ends
+        assert pred()
+        return True
+
+    def retire(root: int) -> int:
+        retired.append(root)
+        return 2
+
+    driver = SimpleNamespace(
+        store=SimpleNamespace(retire_todo_subtree=retire),
+        status=lambda todo: "done" if todo == 20 else "open",
+        jobs=lambda *a: live["jobs"],
+        wait_until=wait_until,
+        folders=lambda todo: [],
+    )
+    ctx = Ctx(world=w, driver=cast(Any, driver), health=lambda: None)
+    ctx.register(Plan(root=1, build=2, review=3))
+    ctx.register(Plan(root=10, build=20, review=30))  # landed: left alone
+    notes = runner.quiesce(ctx, timeout=5)
+    assert retired == [1], retired
+    assert any("retired open plan td1" in n for n in notes), notes
+    assert not any("still live" in n or "failed" in n for n in notes), notes
+
+
+def _quiesce_ctx(
+    tmp_path: Path, worker: Any, *, jobs: list[Any] | None = None
+) -> tuple[Any, list[int]]:
+    from types import SimpleNamespace
+
+    from rehearsal.ctx import Ctx
+    from rehearsal.driver import Plan
+
+    w = rworld.World(run_dir=tmp_path, repo_root=tmp_path)
+    w.folders.mkdir(parents=True)
+    retired: list[int] = []
+
+    def retire(root: int) -> int:
+        retired.append(root)
+        return 0
+
+    def wait_until(pred: Any, *, what: str, **_: Any) -> Any:
+        if not pred():
+            raise AssertionError(f"timed out waiting for {what}")
+        return True
+
+    driver = SimpleNamespace(
+        store=SimpleNamespace(retire_todo_subtree=retire),
+        status=lambda todo: "open",
+        jobs=lambda *a: jobs or [],
+        wait_until=wait_until,
+        folders=lambda todo: [],
+    )
+    ctx = Ctx(world=w, driver=cast(Any, driver), health=lambda: None, worker=worker)
+    ctx.register(Plan(root=1, build=2, review=3))
+    return ctx, retired
+
+
+def test_quiesce_never_signals_the_workers_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from rehearsal import procguard
+
+    seen: list[dict[str, Any]] = []
+
+    def end(run_dir: Path, **kw: Any) -> list[int]:
+        seen.append({"run_dir": run_dir, **kw})
+        return []
+
+    monkeypatch.setattr(procguard, "end_run_processes", end)
+    worker = SimpleNamespace(alive=lambda: True, proc=SimpleNamespace(pid=4321))
+    ctx, retired = _quiesce_ctx(tmp_path, worker)
+    runner.quiesce(ctx, timeout=1)
+    assert seen == [{"run_dir": tmp_path, "exclude": (4321,)}], seen
+    assert retired == [1]
+
+
+def test_quiesce_still_retires_stops_and_waits_when_the_restart_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from rehearsal import procguard
+
+    stopped: list[Any] = []
+
+    def end(run_dir: Path, **kw: Any) -> list[int]:
+        stopped.append(kw)
+        return []
+
+    monkeypatch.setattr(procguard, "end_run_processes", end)
+
+    def boom() -> float:
+        raise RuntimeError("no host came back")
+
+    worker = SimpleNamespace(alive=lambda: False, proc=SimpleNamespace(pid=77))
+    ctx, retired = _quiesce_ctx(tmp_path, worker, jobs=[_job(5, "running")])
+    monkeypatch.setattr(ctx, "restart_worker", boom)
+    notes = runner.quiesce(ctx, timeout=1)
+    assert any("worker restart failed" in n and "no host came back" in n for n in notes)
+    assert retired == [1] and stopped == [{"exclude": (77,)}]
+    assert any("still live: [5]" in n for n in notes), notes
+
+
+def test_main_loop_quiesces_after_a_fail_only_when_another_scenario_follows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    order: list[str] = []
+    outcome = {"a": "FAIL", "b": "PASS", "c": "FAIL"}
+    ran = rscenarios.Scenario("x", "s", lambda c: "ok")
+    monkeypatch.setattr(runner, "REGISTRY", {n: ran for n in outcome})
+
+    todo = iter(outcome)
+
+    def run_scenario(ctx: Any, scenario: Any) -> tuple[str, str, list[str]]:
+        name = next(todo)
+        order.append(name)
+        return outcome[name], "d", []
+
+    monkeypatch.setattr(runner, "run_scenario", run_scenario)
+
+    def quiesce(ctx: Any) -> list[str]:
+        order.append("q")
+        return []
+
+    monkeypatch.setattr(runner, "quiesce", quiesce)
+    results: list[tuple[str, str, str]] = []
+    failed = runner.run_named(
+        cast(Any, SimpleNamespace()),
+        ["a", "b", "c"],
+        explicit=True,
+        non_gating=[],
+        results=results,
+    )
+    # a FAILed with b after it: quiesce. b passed. c FAILed last: no quiesce.
+    assert order == ["a", "q", "b", "c"], order
+    assert failed and [s for s, _, _ in results] == ["FAIL", "PASS", "FAIL"]
 
 
 def test_a_tick_runs_the_wake_pass_before_the_dispatcher(

@@ -85,11 +85,12 @@ def happy_path(ctx: Ctx) -> str:
     path = f"docs/rehearsal/td{plan.build}.md"
 
     def landed() -> bool:
-        for job in d.jobs(plan.build):
-            if job["status"] == "failed":
-                raise AssertionError(
-                    f"jo{job['id']} {job['type']} failed\n{d.describe(plan.build, plan.review)}"
-                )
+        # An attempt-free admission / ship-busy deferral is the engine
+        # waiting, not a failure: the tick re-mints the land.
+        for job in gate.failed_jobs(ctx, plan.build):
+            raise AssertionError(
+                f"jo{job['id']} {job['type']} failed\n{d.describe(plan.build, plan.review)}"
+            )
         return any(j["status"] == "succeeded" for j in d.jobs(plan.build, "land_slice"))
 
     try:

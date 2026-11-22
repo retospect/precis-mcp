@@ -70,15 +70,18 @@ def signal_group(pgid: int, sig: int, run_dir: Path) -> bool:
     return True
 
 
-def end_run_processes(run_dir: Path, *, grace: float = 4.0) -> list[int]:
-    """TERM, then after ``grace`` seconds KILL, every group of the run.
+def end_run_processes(
+    run_dir: Path, *, grace: float = 4.0, exclude: tuple[int, ...] = ()
+) -> list[int]:
+    """TERM, then after ``grace`` seconds KILL, every group of the run except
+    the ``exclude`` ones (the worker's, when only its launches are to end).
     Returns the group ids that were signalled."""
-    groups = sorted(run_groups(run_dir))
+    groups = sorted(run_groups(run_dir, exclude=exclude))
     for pgid in groups:
         signal_group(pgid, signal.SIGTERM, run_dir)
     deadline = time.monotonic() + grace
-    while time.monotonic() < deadline and run_groups(run_dir):
+    while time.monotonic() < deadline and run_groups(run_dir, exclude=exclude):
         time.sleep(0.2)
-    for pgid in sorted(run_groups(run_dir)):
+    for pgid in sorted(run_groups(run_dir, exclude=exclude)):
         signal_group(pgid, signal.SIGKILL, run_dir)
     return groups

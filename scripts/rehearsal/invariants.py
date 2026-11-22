@@ -16,6 +16,7 @@ notes are reported (counts).
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,12 @@ KEEP_PREFIX = "refs/factory-keep/"
 _LANDED = re.compile(r"^\s*landed:\s*([0-9a-f]{7,40})", re.IGNORECASE)
 _SUBJECT_TODO = re.compile(r"\(td(\d+)\)")
 _TRACEBACK = re.compile(r"^Traceback \(most recent call last\)", re.MULTILINE)
+
+#: The multi-unit host rows a launch's footprint reserves (``admission``).
+SLOT_RESOURCES = ("cpu_milli", "mem_mb")
+#: Seconds a just-ended launch may take to release its holds before a hold
+#: reads as leaked (the release runs after the child's exit, not with it).
+HOLD_GRACE_SECONDS = 15.0
 
 
 @dataclass
@@ -325,8 +332,96 @@ def check_central(world: World, driver: Driver, expect: Expect) -> list[str]:
     return v
 
 
-def check(world: World, driver: Driver, expect: Expect) -> tuple[list[str], list[str]]:
-    """All seven invariants. Returns ``(violations, notes)``."""
+def describe_holds(holds: list[dict[str, Any]]) -> list[str]:
+    """One line per holder and acquisition time: the holder, its cpu_milli
+    and mem_mb units, its acquired_at."""
+    grouped: dict[tuple[str, Any], dict[str, int]] = {}
+    for h in holds:
+        slot = grouped.setdefault((h["holder"], h["acquired_at"]), {})
+        slot[h["resource"]] = slot.get(h["resource"], 0) + int(h["units"])
+    return [
+        f"holder={holder} cpu_milli={units.get('cpu_milli', 0)} "
+        f"mem_mb={units.get('mem_mb', 0)} acquired_at={at}"
+        for (holder, at), units in grouped.items()
+    ]
+
+
+@dataclass(frozen=True)
+class SlotBaseline:
+    """The slot state at a scenario's start: the holds already there (ids) and
+    each row's shortfall (capacity - free), so rule 9 reports only what the
+    scenario itself leaked."""
+
+    holds: frozenset[int] = frozenset()
+    short: dict[tuple[str, str], int] = field(default_factory=dict)
+
+
+def slot_baseline(driver: Driver) -> SlotBaseline:
+    return SlotBaseline(
+        holds=frozenset(int(h["id"]) for h in driver.slot_holds(SLOT_RESOURCES)),
+        short={
+            (r["host"], r["resource"]): r["capacity"] - r["free"]
+            for r in driver.slot_rows(SLOT_RESOURCES)
+        },
+    )
+
+
+def check_slot_holds(
+    driver: Driver,
+    *,
+    baseline: SlotBaseline | None = None,
+    grace: float = HOLD_GRACE_SECONDS,
+) -> list[str]:
+    """Rule 9: at a scenario's end, with no live launch, no cpu_milli or
+    mem_mb hold is left that the scenario's start did not have, and
+    ``free == capacity`` for those rows beyond their start shortfall.
+    Whatever is still held was not released by its launch, as when a
+    SIGKILLed worker's spawn never ran its release (gr762788). Against the
+    baseline one leak fails only the scenario that caused it; without one
+    every hold counts. Polls up to ``grace`` seconds for a release in
+    flight."""
+    base = baseline or SlotBaseline()
+    deadline = time.monotonic() + grace
+
+    def leftover() -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], int]]]:
+        holds = [
+            h for h in driver.slot_holds(SLOT_RESOURCES) if h["id"] not in base.holds
+        ]
+        short = []
+        for r in driver.slot_rows(SLOT_RESOURCES):
+            was = base.short.get((r["host"], r["resource"]), 0)
+            extra = (r["capacity"] - r["free"]) - was
+            if extra > 0:
+                short.append((r, extra))
+        return holds, short
+
+    holds, short = leftover()
+    while (holds or short) and time.monotonic() < deadline:
+        time.sleep(1.0)
+        holds, short = leftover()
+    v: list[str] = []
+    if holds:
+        v.append(
+            f"9: {len(holds)} resource_slot_hold(s) left with no launch live "
+            "(a launch did not release its footprint): "
+            + "; ".join(describe_holds(holds))
+        )
+    for r, extra in short:
+        v.append(
+            f"9: {r['host']} {r['resource']} free {r['free']} != capacity "
+            f"{r['capacity']} with no launch live ({extra} unit(s) not returned)"
+        )
+    return v
+
+
+def check(
+    world: World,
+    driver: Driver,
+    expect: Expect,
+    baseline: SlotBaseline | None = None,
+) -> tuple[list[str], list[str]]:
+    """All nine invariants (rule 9 against ``baseline``, the slot state at the
+    scenario's start). Returns ``(violations, notes)``."""
     violations: list[str] = []
     f_v, notes = check_folders(world, expect)
     violations += f_v
@@ -337,6 +432,7 @@ def check(world: World, driver: Driver, expect: Expect) -> tuple[list[str], list
     violations += check_database(world, driver, expect)
     violations += check_central(world, driver, expect)
     violations += check_landed(world, driver, expect)
+    violations += check_slot_holds(driver, baseline=baseline)
     return violations, notes
 
 

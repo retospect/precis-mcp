@@ -13,6 +13,7 @@ from .gate import (
     brief_has,
     fail_fast,
     first_job_ended,
+    is_deferral,
     main_file,
     run_jobs,
     session_for_job,
@@ -167,13 +168,18 @@ def rebase_conflict(ctx: Ctx) -> str:
         f"meta.conflict.base_tip {conflict.get('base_tip')} != {moved}"
     )
     assert conflict.get("at"), f"meta.conflict lacks at: {conflict}"
+
     # The stamp is written before the job's own status flips.
-    ctx.wait(
-        "the conflicted land to end red",
-        lambda: [j for j in d.jobs(b, "land_slice") if j["status"] == "failed"],
-        tick_every=None,
-    )
-    reds = [j for j in d.jobs(b, "land_slice") if j["status"] == "failed"]
+    def red_lands() -> list[dict[str, Any]]:
+        # A deferred land (admission, ship-busy) is attempt-free, not a red.
+        return [
+            j
+            for j in d.jobs(b, "land_slice")
+            if j["status"] == "failed" and not is_deferral(j)
+        ]
+
+    ctx.wait("the conflicted land to end red", red_lands, tick_every=None)
+    reds = red_lands()
     assert len(reds) == 1, f"expected one red land, found {[j['id'] for j in reds]}"
     ctx.note(f"land jo{reds[0]['id']} red on the conflict in {conflict['files']}")
 

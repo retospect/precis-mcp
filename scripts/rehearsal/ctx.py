@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .driver import Driver, Plan, Timeout
-from .invariants import Expect
+from .invariants import Expect, SlotBaseline
 from .worker import Worker
 from .world import World
 
@@ -34,6 +34,11 @@ class Ctx:
     #: The lane whose shim builds in this run.
     builder_lane: str = "claude-sub"
     expect: Expect = field(default_factory=Expect)
+    #: Every plan a scenario registered (the failed ones are retired by the
+    #: runner's quiesce, so they do not run into the next scenario).
+    plans: list[Plan] = field(default_factory=list)
+    #: The slot state when the running scenario began (rule 9's baseline).
+    slot_baseline: SlotBaseline | None = None
     #: Facts a scenario wants in its result line or the report.
     facts: list[str] = field(default_factory=list)
 
@@ -89,6 +94,7 @@ class Ctx:
 
     def register(self, plan: Plan) -> Plan:
         """Declare a plan's build task: its files are checked (rule 7)."""
+        self.plans.append(plan)
         self.expect.tasks.add(plan.build)
         self.expect.reviews[plan.build] = plan.review
         return plan

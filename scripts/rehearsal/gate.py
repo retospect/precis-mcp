@@ -20,8 +20,29 @@ from .worker import NODE
 
 TERMINAL = ("succeeded", "failed", "cancelled")
 
+#: ``land_slice`` outcomes that are a wait, not a red (``land_slice._fail`` with
+#: ``attempt_free``): the host could not admit the ship or a probe launch
+#: (``red_class = "admission"``), or a ship already owns the worktree
+#: (``"ship-busy"``). The job ends ``failed`` with ``meta.attempt_free`` set,
+#: the todo goes back to open and the tick re-mints the land. Restated here:
+#: the harness reads job meta, it does not import the engine's constants.
+DEFERRAL_CLASSES = ("admission", "ship-busy")
+
 
 # ── shared helpers ─────────────────────────────────────────────────
+
+
+def is_deferral(job: dict[str, Any]) -> bool:
+    """A failed job that is an attempt-free capacity/ship-busy deferral: the
+    engine working as designed, not a failure of the scenario. Needs the
+    ``attempt_free`` stamp, so a red land never reads as one."""
+    meta = job.get("meta") or {}
+    if not meta.get("attempt_free"):
+        return False
+    return (
+        meta.get("red_class") in DEFERRAL_CLASSES
+        or meta.get("attempt_free") in DEFERRAL_CLASSES
+    )
 
 
 def failed_jobs(
@@ -30,6 +51,8 @@ def failed_jobs(
     allow: tuple[int, ...] = (),
     allow_types: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
+    """Failed jobs of ``todos`` the scenario did not expect. Attempt-free
+    deferrals (:func:`is_deferral`) are not failures."""
     out = []
     for todo in todos:
         for job in ctx.driver.jobs(todo):
@@ -37,6 +60,7 @@ def failed_jobs(
                 job["status"] == "failed"
                 and job["id"] not in allow
                 and job["type"] not in allow_types
+                and not is_deferral(job)
             ):
                 out.append(job)
     return out

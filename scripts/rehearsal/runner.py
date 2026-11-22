@@ -227,6 +227,9 @@ def run_scenario(ctx: Ctx, scenario: Scenario) -> tuple[str, str, list[str]]:
     started = time.monotonic()
     ctx.facts.clear()
     extra: list[str] = []
+    if scenario.invariants:
+        # Rule 9 reports only the holds this scenario leaves.
+        ctx.slot_baseline = inv.slot_baseline(ctx.driver)
     try:
         detail = scenario.run(ctx)
     except (AssertionError, RuntimeError) as exc:
@@ -242,7 +245,9 @@ def run_scenario(ctx: Ctx, scenario: Scenario) -> tuple[str, str, list[str]]:
     notes: list[str] = []
     if scenario.invariants:
         ctx.settle_folders()  # a violation of rule 1 is reported by the checker
-        violations, notes = inv.check(ctx.world, ctx.driver, ctx.expect)
+        violations, notes = inv.check(
+            ctx.world, ctx.driver, ctx.expect, ctx.slot_baseline
+        )
         if violations:
             return (
                 "FAIL",
@@ -253,6 +258,127 @@ def run_scenario(ctx: Ctx, scenario: Scenario) -> tuple[str, str, list[str]]:
     extra += [f"note: {n}" for n in notes]
     extra += [f"fact: {f}" for f in ctx.facts]
     return "PASS", f"{detail} ({time.monotonic() - started:.0f}s)", extra
+
+
+#: Seconds the jobs of a failed scenario get to end once their plans are
+#: retired and their processes stopped.
+QUIESCE_SECONDS = 120.0
+
+
+def quiesce(ctx: Ctx, *, timeout: float = QUIESCE_SECONDS) -> list[str]:
+    """Bring the shared world to rest after a failed scenario, so what it left
+    running does not run into the next one (refused-push and host-lost each
+    pass alone and failed only behind an aborted scenario). Within the sealed
+    world only: restart the worker when the scenario left it dead, retire
+    every open plan of the run (each plan any scenario registered whose build
+    is not done; the dispatcher mints nothing more for them), stop the
+    scripted sessions and ships still running (never the worker's own group:
+    :mod:`.procguard` signals only this run's groups), then wait until every
+    job is over and the attempt folders settled. A step that fails is noted
+    and the rest still run. Returns note lines; never raises."""
+    notes: list[str] = []
+    d = ctx.driver
+
+    def restart() -> None:
+        if ctx.worker is not None and not ctx.worker.alive():
+            notes.append(
+                f"quiesce: worker was dead, restarted in {ctx.restart_worker():.0f}s"
+            )
+
+    def retire() -> None:
+        from precis.errors import NotFound
+
+        for plan in ctx.plans:
+            if d.status(plan.build) == "done":
+                continue
+            try:
+                nodes = d.store.retire_todo_subtree(plan.root)
+                notes.append(
+                    f"quiesce: retired open plan td{plan.root} (+{nodes} nodes)"
+                )
+            except NotFound:
+                pass
+
+    def stop() -> None:
+        keep: tuple[int, ...] = ()
+        if ctx.worker is not None and ctx.worker.proc is not None:
+            keep = (ctx.worker.proc.pid,)
+        ended = procguard.end_run_processes(ctx.world.run_dir, exclude=keep)
+        if ended:
+            notes.append(f"quiesce: stopped process group(s) {ended}")
+
+    def live() -> list[int]:
+        return [
+            j["id"]
+            for j in d.jobs()
+            if j["type"] != "plan_dispatch"
+            and (
+                j["status"] in ("queued", "running", "yielded", "paused")
+                or not j["status"]
+            )
+        ]
+
+    def wait() -> None:
+        try:
+            d.wait_until(
+                lambda: not live(),
+                timeout=timeout,
+                what="the jobs of the failed scenario to end",
+                tick_every=None,
+                health=ctx.health,
+            )
+        except (AssertionError, RuntimeError) as exc:  # a timeout, a dead worker
+            notes.append(f"quiesce: {str(exc).splitlines()[0]}; still live: {live()}")
+        left = ctx.settle_folders(timeout=timeout)
+        if left:
+            notes.append(f"quiesce: attempt folder(s) still there: {left}")
+
+    # Each step is tried whatever the one before it did.
+    for label, step in (
+        ("worker restart", restart),
+        ("plan retirement", retire),
+        ("process stop", stop),
+        ("job wait", wait),
+    ):
+        try:
+            step()
+        except Exception as exc:  # the next scenario reports what this left
+            notes.append(f"quiesce: {label} failed: {type(exc).__name__}: {exc}")
+    for line in notes:
+        note(line)
+    return notes
+
+
+def run_named(
+    ctx: Ctx,
+    names: list[str],
+    *,
+    explicit: bool,
+    non_gating: list[str],
+    results: list[tuple[str, str, str]],
+) -> bool:
+    """Run the named scenarios in order, appending to ``results``; after a FAIL
+    that another scenario follows, :func:`quiesce` the world first. Returns
+    whether any failed."""
+    failed = False
+    for index, name in enumerate(names):
+        scenario = REGISTRY[name]
+        if scenario.run is None:
+            status = "FAIL" if explicit else "SKIP"
+            failed = failed or explicit
+            results.append((status, name, "not yet implemented"))
+            say(f"{status} {name} - not yet implemented")
+            continue
+        status, detail, extra = run_scenario(ctx, scenario)
+        failed = failed or status == "FAIL"
+        results.append((status, name, detail))
+        tag = " [non-gating]" if non_gating and status == "PASS" else ""
+        say(f"{status} {name} - {detail.splitlines()[0] if detail else ''}{tag}")
+        for line in extra:
+            print(f"     {line}", file=sys.stderr)
+        if status == "FAIL" and index < len(names) - 1:
+            quiesce(ctx)
+    return failed
 
 
 def main(argv: list[str]) -> int:
@@ -362,21 +488,12 @@ def main(argv: list[str]) -> int:
             worker=worker,
             builder_lane=args.builder_lane,
         )
-        for name in names:
-            scenario = REGISTRY[name]
-            if scenario.run is None:
-                status = "FAIL" if explicit else "SKIP"
-                failed = failed or explicit
-                results.append((status, name, "not yet implemented"))
-                say(f"{status} {name} - not yet implemented")
-                continue
-            status, detail, extra = run_scenario(ctx, scenario)
-            failed = failed or status == "FAIL"
-            results.append((status, name, detail))
-            tag = " [non-gating]" if non_gating and status == "PASS" else ""
-            say(f"{status} {name} - {detail.splitlines()[0] if detail else ''}{tag}")
-            for line in extra:
-                print(f"     {line}", file=sys.stderr)
+        failed = (
+            run_named(
+                ctx, names, explicit=explicit, non_gating=non_gating, results=results
+            )
+            or failed
+        )
     except (Refused, WorldError, RuntimeError) as exc:
         failed = True
         say(
