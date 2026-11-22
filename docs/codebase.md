@@ -254,6 +254,7 @@ memory reads expose backlinks to the checklist definition.
 | **Storage / model** | `Store`, handlers, `migrations/` | refs + chunks + derived cascade |
 | **Supplier stock / sources** | `src/precis/supply/`, `component` handler | identity-only supplier links; single-component MCP reads live, bulk/stored reads offline; manufacturer datasheet evidence acquired by guarded worker |
 | **Workers** | `src/precis/workers/` | derived-queue passes; `system` profile (every node) + `agent` profile (the agent host only, `claude_inproc`) |
+| **DFT relax projections** | `src/precis/workers/job_types/struct_relax.py::_record_run` | a converged container result with a `written` projection envelope is eligible for job artifact storage; `struct_runs.params.projections.artifact` links the retained dump to its run and records its byte count and hash. Dispatch stages files by job and clears prior outputs on retry. Older images without the envelope still record their run. |
 | **Discovery / search** | search verbs, F20 layer | keywords, `toc`, hybrid retrieval |
 | **Todo tree / factory** | `todo` handler, planner, jobs | intent vs compute lanes, dispatch |
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |

@@ -1549,7 +1549,7 @@ class TestFidelityRouting:
         ctx, _ = _fake_ctx(structure.store, params)
         struct_relax._dispatch(ctx, struct_relax.SPEC)
 
-        in_dir, _ = _stage(tmp_path, params["structure_ref_id"])
+        in_dir, _ = _stage(tmp_path, ctx.ref_id)
         staged = json.loads(Path(in_dir, "params.json").read_text(encoding="utf-8"))
         assert staged["max_steps"] == 37 and staged["steps"] == 37
 
@@ -1931,7 +1931,7 @@ class TestFmax:
         ctx, _ = _fake_ctx(structure.store, params)
         struct_relax._dispatch(ctx, struct_relax.SPEC)
 
-        in_dir, _ = _stage(tmp_path, params["structure_ref_id"])
+        in_dir, _ = _stage(tmp_path, ctx.ref_id)
         staged = json.loads(Path(in_dir, "params.json").read_text(encoding="utf-8"))
         assert staged["fmax_ev_per_angstrom"] == 0.01
 
@@ -2019,3 +2019,194 @@ def _stage(tmp_path, ref_id: int) -> tuple[str, str]:
     (base / "in").mkdir(parents=True, exist_ok=True)
     (base / "out").mkdir(parents=True, exist_ok=True)
     return str(base / "in"), str(base / "out")
+
+
+def _fake_ctx_for(
+    store, ref_id: int, params: dict[str, Any]
+) -> tuple[DispatchContext, list]:
+    """``_fake_ctx`` with a caller-chosen ref_id — a real refs row, so the
+    job-artifact store's ``meta.artifacts`` append actually lands (in
+    production ``ctx.ref_id`` is the job ref; a structure's row plays that
+    part here)."""
+    events: list[tuple[str, Any]] = []
+    ctx = DispatchContext(
+        store=store,
+        ref_id=ref_id,
+        title="relax",
+        meta={"params": params},
+        set_status=lambda s: events.append(("status", s)),
+        append_chunk=lambda k, t: events.append((k, t)),
+        set_meta=lambda **kw: events.append(("meta", kw)),
+        record_failure=lambda r, **kw: events.append(("fail", {"reason": r, **kw})),
+        is_cancel_requested=lambda: False,
+    )
+    return ctx, events
+
+
+def _artifact_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A sentinel-marked artifact root + empty spool for the job-artifact
+    store (the same env shape ops renders on a compute node)."""
+    from precis.store import job_artifacts
+
+    root = tmp_path / "artifact-root"
+    root.mkdir()
+    (root / job_artifacts.SENTINEL).write_text("", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_JOB_ARTIFACT_ROOT", str(root))
+    monkeypatch.setenv("PRECIS_JOB_ARTIFACT_SPOOL", str(tmp_path / "spool"))
+    return root
+
+
+def _runner_with_projections(structure, *, converged: bool, gpw: bytes):
+    """A RUNNER that leaves a container-contract ``projections.gpw``
+    dump beside its ``result.json``."""
+
+    def runner(argv, *, node, in_dir, out_dir, timeout=None):
+        result = {
+            "ok": True,
+            "scalars": {
+                "E_tot": -3.21,
+                "max_force": 0.04,
+                "n_steps": 7,
+                "converged": converged,
+            },
+            "relaxed_poscar": _relaxed_poscar(structure, "pd_pair", 0.24),
+            "curve": [0.5, 0.1, 0.04],
+            "projections": (
+                {
+                    "status": "written",
+                    "file": struct_relax._PROJECTIONS_FILE,
+                    "mode": "all",
+                    "bytes": len(gpw),
+                }
+                if converged
+                else {"status": "skipped", "reason": "relax did not converge"}
+            ),
+        }
+        Path(out_dir, "result.json").write_text(json.dumps(result), encoding="utf-8")
+        if converged:
+            Path(out_dir, struct_relax._PROJECTIONS_FILE).write_bytes(gpw)
+        return 0, "SCF converged\n"
+
+    return runner
+
+
+def test_converged_container_run_keeps_the_projections_artifact(
+    structure, tmp_path, monkeypatch
+):
+    """gr739540: a converged relax's projections dump lands in the job
+    artifact store, and the run row's ``params.projections`` points at the
+    recorded entry — the artifact's provenance is the run itself."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair")
+    root = _artifact_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    gpw = b"\x89fake gpaw state dump"
+    monkeypatch.setattr(
+        struct_relax,
+        "RUNNER",
+        _runner_with_projections(structure, converged=True, gpw=gpw),
+    )
+    _no_stale_container(monkeypatch)
+    ctx, events = _fake_ctx_for(structure.store, ref.id, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    kept = root / "job-artifacts" / str(ref.id) / "projections.gpw"
+    assert kept.read_bytes() == gpw
+    with structure.store.pool.connection() as conn:
+        meta = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref.id,)
+        ).fetchone()[0]
+        run_params = conn.execute(
+            "SELECT params FROM struct_runs WHERE ref_id = %s ORDER BY id DESC LIMIT 1",
+            (ref.id,),
+        ).fetchone()[0]
+    entries = [
+        a for a in meta.get("artifacts") or [] if a.get("name") == "projections.gpw"
+    ]
+    assert len(entries) == 1
+    proj = run_params.get("projections") or {}
+    assert proj["status"] == "kept"
+    assert proj["artifact"]["name"] == "projections.gpw"
+    assert proj["artifact"]["sha256"] == entries[0]["sha256"]
+    assert proj["artifact"]["bytes"] == len(gpw)
+
+
+def test_unconverged_container_run_keeps_no_projections(
+    structure, tmp_path, monkeypatch
+):
+    """The keep is per *converged* run — a step-cap verdict records its
+    envelope on the run row but stores no dump."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair")
+    root = _artifact_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    monkeypatch.setattr(
+        struct_relax,
+        "RUNNER",
+        _runner_with_projections(structure, converged=False, gpw=b""),
+    )
+    _no_stale_container(monkeypatch)
+    ctx, events = _fake_ctx_for(structure.store, ref.id, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    assert not (root / "job-artifacts" / str(ref.id)).exists()
+    with structure.store.pool.connection() as conn:
+        converged, run_params = conn.execute(
+            "SELECT converged, params FROM struct_runs WHERE ref_id = %s "
+            "ORDER BY id DESC LIMIT 1",
+            (ref.id,),
+        ).fetchone()
+    assert converged is False
+    proj = (run_params or {}).get("projections") or {}
+    assert proj.get("status") == "skipped"
+    assert "artifact" not in proj
+
+
+def test_old_image_cannot_attach_stale_projections(
+    structure: StructureHandler, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair")
+    assert ref is not None
+    root = _artifact_env(tmp_path, monkeypatch)
+    _, out_dir = _stage(tmp_path, ref.id)
+    stale_dump = Path(out_dir, "projections.gpw")
+    stale_dump.write_bytes(b"previous run")
+    Path(out_dir, "result.json").write_text("previous run", encoding="utf-8")
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    old_runner = _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24))
+
+    def runner(
+        argv: list[str], *, node: str, in_dir: str, out_dir: str, timeout: float
+    ) -> tuple[int, str]:
+        assert not stale_dump.exists()
+        assert not Path(out_dir, "result.json").exists()
+        # Even if an unclaimed file shows up in scratch, the old image
+        # does not report it as an output of this run.
+        stale_dump.write_bytes(b"unclaimed dump")
+        return old_runner(
+            argv, node=node, in_dir=in_dir, out_dir=out_dir, timeout=timeout
+        )
+
+    monkeypatch.setattr(struct_relax, "RUNNER", runner)
+    _no_stale_container(monkeypatch)
+    ctx, events = _fake_ctx_for(structure.store, ref.id, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    assert not (root / "job-artifacts" / str(ref.id)).exists()
+    with structure.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT converged, params FROM struct_runs WHERE ref_id = %s "
+            "ORDER BY id DESC LIMIT 1",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None
+    converged, run_params = row
+    assert converged is True
+    assert "projections" not in run_params

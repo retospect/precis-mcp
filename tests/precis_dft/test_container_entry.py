@@ -157,6 +157,77 @@ class TestRankGating:
         assert world.rank == 0 and world.size >= 1
 
 
+class TestWriteProjections:
+    """gr739540: a converged run dumps its state to ``projections.gpw`` —
+    the artifact a post-hoc PDOS / fat-band pass on an atom selection
+    (gr694980) reads without re-running the SCF. Never raises; a failed
+    dump reports ``unavailable`` so the relax's result still lands."""
+
+    class _Calc:
+        def __init__(self, data: bytes = b"state") -> None:
+            self.calls: list[str | None] = []
+            self._data = data
+
+        def write(self, filename: str, mode: str = "") -> None:
+            self.calls.append(mode)
+            Path(filename).write_bytes(self._data)
+
+    def test_writes_mode_all_and_reports_bytes(self, tmp_path: Path) -> None:
+        calc = self._Calc()
+        info = gpaw_relax._write_projections(calc, tmp_path)
+        assert info["status"] == "written"
+        assert info["mode"] == "all"
+        assert info["file"] == "projections.gpw"
+        assert info["bytes"] == len(b"state")
+        assert (tmp_path / "projections.gpw").read_bytes() == b"state"
+        assert calc.calls == ["all"]
+
+    def test_restart_fallback_when_mode_kwarg_goes(self, tmp_path: Path) -> None:
+        """A calculator flavour without ``mode=`` still leaves the
+        density/potential dump — the envelope records what landed."""
+
+        class _OldCalc:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def write(self, filename: str, mode: str | None = None) -> None:
+                if mode is not None:
+                    raise TypeError("write() got an unexpected keyword 'mode'")
+                self.calls.append("plain")
+                Path(filename).write_bytes(b"restart")
+
+        calc = _OldCalc()
+        info = gpaw_relax._write_projections(calc, tmp_path)
+        assert info["status"] == "written"
+        assert info["mode"] == "restart"
+        assert calc.calls == ["plain"]
+
+    def test_write_failure_reports_unavailable(self, tmp_path: Path) -> None:
+        class _BadCalc:
+            def write(self, filename: str, mode: str = "") -> None:
+                raise OSError("disk full")
+
+        info = gpaw_relax._write_projections(_BadCalc(), tmp_path)
+        assert info["status"] == "unavailable"
+        assert "disk full" in info["reason"]
+        assert not (tmp_path / "projections.gpw").exists()
+
+    def test_non_zero_rank_skips_the_stat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``calc.write`` is collective — every rank calls it; only the
+        byte stat is rank-0's."""
+
+        class _Rank3:
+            rank = 3
+            size = 4
+
+        monkeypatch.setattr(gpaw_relax, "_world", lambda: _Rank3())
+        info = gpaw_relax._write_projections(self._Calc(), tmp_path)
+        assert info["status"] == "written"
+        assert "bytes" not in info
+
+
 class TestCli:
     def test_routes_gpaw_relax(self, tmp_path: Path) -> None:
         in_dir, out_dir = tmp_path / "in", tmp_path / "out"

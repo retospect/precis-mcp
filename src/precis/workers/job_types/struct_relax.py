@@ -88,6 +88,21 @@ stale ``precis-job-<ref_id>`` container left over from a prior attempt
 guarantees an ``rc=125`` name-conflict on every retry) and verified-kills
 it; an un-removable stale container fails the job fast with an honest
 infra event instead of colliding with ``docker run`` (gripe 310809).
+
+**Projections keep (gr739540).** A converged container relax also dumps
+its state to ``<out>/projections.gpw`` — the wavefunctions/density/
+potential a post-hoc projected-DOS / fat-band pass on an atom selection
+(gr694980, parked) needs. That state used to ride the scratch dir out of
+existence with the job, so every converged run made while the viewer
+waits would have to be re-run. :func:`_record_run` now keeps the dump in
+the job artifact store (:mod:`precis.store.job_artifacts` — the
+shared-mount sibling of this NFS scratch) and points the run row's
+``params.projections`` at the recorded entry, so the artifact's
+provenance is the run itself. Dispatch stages by job so different jobs
+for the same structure cannot share outputs, and clears both outputs
+before retrying a job. Recording requires the current result
+to report a written dump. Older images and in-process rungs produce no
+projection envelope. A failed keep leaves the run record usable.
 """
 
 from __future__ import annotations
@@ -195,6 +210,12 @@ _CONTAINER_OUT = "/work/out"
 #: Where the image's GPAW_SETUP_PATH points (docker/precis-dft/Dockerfile).
 _CONTAINER_PAW = "/opt/gpaw-setups"
 _RESULT_FILE = "result.json"
+#: The projections artifact a converged container relax leaves in
+#: ``<out>/`` (gr739540) — mirrors the container contract's
+#: ``precis_dft._container.gpaw_relax._PROJECTIONS_FILE``. :func:`_record_run`
+#: harvests it into the job artifact store and stamps the recorded entry
+#: onto the run row's ``params.projections``.
+_PROJECTIONS_FILE = "projections.gpw"
 #: Deterministic container-name prefix (see :func:`build_run_argv`) — the
 #: convention both the active reap (:func:`kill_container`, called from the
 #: sweeper on a DB-row timeout) and the stale-container watchdog
@@ -1331,7 +1352,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
             return
 
-    in_dir, out_dir = STAGER(structure_ref_id)
+    in_dir, out_dir = STAGER(ctx.ref_id)
+    result_path = Path(out_dir, _RESULT_FILE)
+    try:
+        result_path.unlink(missing_ok=True)
+        Path(out_dir, _PROJECTIONS_FILE).unlink(missing_ok=True)
+    except OSError as exc:
+        ctx.record_failure(
+            f"struct_relax: cannot clear prior container outputs: {exc}",
+            failure_class="infra",
+        )
+        return
     Path(in_dir, "POSCAR").write_text(poscar, encoding="utf-8")
     # ``max_steps`` is the name the container's relax driver actually reads;
     # ``steps`` alone silently left it on its own 200 default, so the step cap
@@ -1423,7 +1454,6 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     ctx.append_chunk("job_event", f"container rc={rc}\n{output[-2000:]}")
 
-    result_path = Path(out_dir) / _RESULT_FILE
     if rc != 0 or not result_path.exists():
         # The container itself didn't run to completion (crash, OOM-kill,
         # docker/ssh failure, …) — an INFRA failure, not a physical verdict on
@@ -1477,6 +1507,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         poscar_labels=poscar_labels,
         cell=cell,
         fmax=fmax,
+        out_dir=out_dir,
     )
 
 
@@ -1494,10 +1525,15 @@ def _record_run(
     poscar_labels: list[str],
     cell: str | None = None,
     fmax: float | None = None,
+    out_dir: str | None = None,
 ) -> None:
     """Sink a finished relax into the run-cube — the one write-back both
     backends (container and in-process MLIP) land on, so a rung cannot acquire
-    a second, subtly different recording path."""
+    a second, subtly different recording path.
+
+    ``out_dir`` is the container run's staged output dir (``None`` for the
+    in-process rungs): a converged run's ``<out>/projections.gpw`` is kept
+    from it as a job artifact (gr739540)."""
     scalars = result.get("scalars") or {}
     if "E_tot" not in scalars:
         ctx.record_failure(
@@ -1538,6 +1574,60 @@ def _record_run(
     warning = ((ctx.meta or {}).get("params") or {}).get("preflight_warning")
     if warning:
         run_params["preflight_warning"] = warning
+
+    # gr739540: a converged container relax leaves a state dump at
+    # ``<out>/projections.gpw`` — the projections the parked selection
+    # view (gr694980) reads projected DOS / fat bands from. Keep it as a
+    # job artifact (the shared-mount store every job_type with large
+    # outputs uses, gr543776) and stamp the recorded entry on the run
+    # row's params so the artifact's provenance is the run itself. A
+    # failed keep degrades to a warn — the run-cube verdict already
+    # landed nothing it can't live without.
+    projections = result.get("projections")
+    proj_path = Path(out_dir) / _PROJECTIONS_FILE if out_dir is not None else None
+    # The current result must confirm the write. Older images omit the
+    # envelope, and a failed write can leave a partial file.
+    if (
+        converged
+        and isinstance(projections, dict)
+        and projections.get("status") == "written"
+        and projections.get("file") == _PROJECTIONS_FILE
+        and proj_path is not None
+        and proj_path.is_file()
+    ):
+        try:
+            from precis.store import job_artifacts
+
+            data = proj_path.read_bytes()
+            with ctx.store.pool.connection() as conn:
+                entry = job_artifacts.write_artifact(
+                    conn, ctx.ref_id, _PROJECTIONS_FILE, data
+                )
+                conn.commit()
+        except Exception as exc:
+            log.warning(
+                "struct_relax: projections artifact keep for job %s failed",
+                ctx.ref_id,
+                exc_info=True,
+            )
+            ctx.append_chunk(
+                "job_event",
+                f"warn: projections artifact could not be kept ({exc}) — "
+                "the run-cube row lands without it",
+            )
+        else:
+            projections = {
+                **projections,
+                "status": "kept",
+                "artifact": entry,
+            }
+            ctx.append_chunk(
+                "job_event",
+                f"relax[{fidelity}]: kept projections artifact {entry['path']} "
+                f"({entry['bytes']} bytes) → job #{ctx.ref_id}",
+            )
+    if isinstance(projections, dict) and projections:
+        run_params["projections"] = projections
 
     with phase(structure_ref_id, "record_run"):
         run_id = ctx.store.structure_record_run(

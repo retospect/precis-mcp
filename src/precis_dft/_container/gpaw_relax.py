@@ -6,7 +6,17 @@ with GPAW + ASE, and writes ``<out>/result.json`` in the shape
 
     {"ok": true,
      "scalars": {"E_tot", "converged", "max_force", "steps", ...},
-     "relaxed_poscar": "...", "gpaw_version": "...", "functional": "..."}
+     "relaxed_poscar": "...", "gpaw_version": "...", "functional": "...",
+     "projections": {"status": "written"|"skipped"|"unavailable", ...}}
+
+A **converged** run also dumps its state to
+``<out>/projections.gpw`` (:data:`_PROJECTIONS_FILE`, gr739540): the
+wavefunctions + density + potential a post-hoc projected-DOS / fat-band
+pass on an atom selection needs (gr694980) — discarded state that a
+viewer feature would otherwise have to re-run the whole relax to
+recompute. A non-converged run writes nothing; a failed dump reports
+``unavailable`` on the envelope rather than sinking the relax's real
+result.
 
 On any failure it writes ``{"ok": false, "error", "traceback"}`` and
 returns a non-zero exit code, so the host side reports the failure
@@ -39,6 +49,11 @@ from precis_dft.structures import atoms_from_poscar, canonical_poscar
 #: LCAO basis. Plane-wave (mode='pw') is a v1.1 follow-up; see
 #: ``job_types/_dft_settings.py``.
 DEFAULT_BASIS = "dzp"
+
+#: The projections artifact a converged run leaves in ``<out>/``
+#: (gr739540) — the name the host side mirrors to harvest it into the
+#: job artifact store (``struct_relax._PROJECTIONS_FILE``).
+_PROJECTIONS_FILE = "projections.gpw"
 
 
 class _SerialWorld:
@@ -150,6 +165,45 @@ def relax(atoms: Any, params: dict[str, Any], out_dir: str) -> dict[str, Any]:
     return scalars
 
 
+def _write_projections(calc: Any, out_dir: Path) -> dict[str, Any]:
+    """Dump the converged state to ``<out>/projections.gpw`` and return
+    the ``result.json`` ``projections`` envelope.
+
+    ``calc.write`` is collective — every rank calls it and the writer
+    gathers internally — so it is unconditional here; only the byte-count
+    stat is rank-0-gated. ``mode='all'`` stores the wavefunctions on top
+    of the density and effective potential, the full state a projected
+    DOS / fat-band pass reads directly; a calculator flavour without the
+    ``mode`` kwarg falls back to a plain restart write (density +
+    potential — a fixed-density band-structure pass still runs from it)
+    and the envelope records which mode actually landed. Never raises: a
+    failed dump is a degraded keep, not a failed relax."""
+    path = out_dir / _PROJECTIONS_FILE
+    try:
+        calc.write(str(path), mode="all")
+        mode = "all"
+    except TypeError:
+        mode = "restart"
+        try:
+            calc.write(str(path))
+        except Exception as exc:
+            return {
+                "status": "unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+    except Exception as exc:
+        return {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
+    info: dict[str, Any] = {
+        "status": "written",
+        "file": _PROJECTIONS_FILE,
+        "mode": mode,
+    }
+    if _world().rank == 0:
+        with contextlib.suppress(OSError):
+            info["bytes"] = path.stat().st_size
+    return info
+
+
 def cpu_binding() -> dict[str, object]:
     """The CPUs this run could use: the container cgroup's effective cpuset
     and rank 0's own affinity. ``result.json`` records it beside ``ranks``,
@@ -187,6 +241,11 @@ def run_cli(in_dir: str, out_dir: str) -> int:
         params = json.loads((Path(in_dir) / "params.json").read_text(encoding="utf-8"))
         atoms = atoms_from_poscar(poscar)
         scalars = relax(atoms, params, out_dir)
+        projections = (
+            _write_projections(atoms.calc, out)
+            if scalars.get("converged")
+            else {"status": "skipped", "reason": "relax did not converge"}
+        )
 
         import gpaw
 
@@ -196,6 +255,7 @@ def run_cli(in_dir: str, out_dir: str) -> int:
             "relaxed_poscar": canonical_poscar(atoms),
             "gpaw_version": getattr(gpaw, "__version__", "?"),
             "functional": (params.get("dft", {}) or {}).get("functional", "RPBE"),
+            "projections": projections,
             # How much parallelism actually ran — a serial image and an
             # under-ranked mpirun look identical in the timings alone.
             "ranks": int(world.size),
