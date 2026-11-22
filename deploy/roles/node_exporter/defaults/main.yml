@@ -12,7 +12,7 @@ node_exporter_args_file: /opt/homebrew/etc/node_exporter.args
 # stays a no-op on nodes without one.
 node_exporter_colima_disk_enabled: true
 # User that owns the VM (colima is per-user) and which profile to probe.
-node_exporter_colima_user: reto
+node_exporter_colima_user: deploy
 node_exporter_colima_profile: default
 node_exporter_colima_bin: /opt/homebrew/bin/colima
 node_exporter_colima_timeout_s: 20

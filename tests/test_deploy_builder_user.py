@@ -770,3 +770,76 @@ def test_a_managed_builder_gets_its_own_coverage_map_copy() -> None:
         "a fresh home has no ~/.cache/precis; the file module would create "
         "the parents root-owned"
     )
+
+
+# ── deploy's colima VM (gr553519) ──────────────────────────────────────
+
+
+_AGENT_ROLE = _ROLE.parent / "precis_worker_agent"
+
+
+@pytest.mark.parametrize("entrypoint", ["site.yml", "redeploy-precis.yml"])
+def test_deploy_colima_runs_after_gateway_worker_provisioning(entrypoint: str) -> None:
+    imports = [
+        play.get("ansible.builtin.import_playbook")
+        for play in _yaml(_DEPLOY / entrypoint)
+    ]
+    colima = "playbooks/20j-deploy-colima.yml"
+    assert imports.index(colima) > imports.index(
+        "playbooks/20b-precis-worker-collapsed.yml"
+    )
+    (play,) = _yaml(_DEPLOY / colima)
+    assert play["hosts"] == "gateway"
+    (task,) = play["tasks"]
+    assert task["when"] == 'os_family == "darwin"'
+    assert task["ansible.builtin.import_role"] == {
+        "name": "precis_worker_agent",
+        "tasks_from": "colima_deploy",
+    }
+
+
+def test_deploy_colima_size_and_prune_defaults() -> None:
+    d = _yaml(_AGENT_ROLE / "defaults" / "main.yml")
+    assert d["precis_deploy_colima_cpu"] == 4
+    assert d["precis_deploy_colima_memory"] == 8
+    assert d["precis_deploy_colima_disk"] == 1000
+    assert d["precis_deploy_colima_prune_enabled"] is True
+    assert d["precis_deploy_gate_image_build"] is False
+
+
+def test_deploy_colima_prune_targets_deploy_and_keeps_tagged_images() -> None:
+    (profile,) = _yaml(_AGENT_ROLE / "tasks" / "colima_deploy.yml")
+    prune = _task(profile["block"], "Schedule daily dangling-image prune")[
+        "ansible.builtin.cron"
+    ]
+    assert prune["user"] == "deploy"
+    assert profile["vars"]["_deploy_colima_env"]["DOCKER_HOST"] == (
+        "unix:///Users/deploy/.colima/docker.sock"
+    )
+    assert _eval(
+        prune["job"],
+        _deploy_colima_env=profile["vars"]["_deploy_colima_env"],
+        precis_worker_agent_container_bin="/opt/homebrew/bin/docker",
+    ) == (
+        "DOCKER_CONTEXT= DOCKER_HOST=unix:///Users/deploy/.colima/docker.sock "
+        "/opt/homebrew/bin/docker image prune -f"
+    )
+    assert (prune["hour"], prune["minute"]) == ("3", "15")
+
+
+def test_deploy_colima_build_repairs_either_gate_tag() -> None:
+    (profile,) = _yaml(_AGENT_ROLE / "tasks" / "colima_deploy.yml")
+    check = _task(profile["block"], "Check the gate images")
+    assert check["become_user"] == "deploy"
+    probes = _task(check["block"], "Check for missing gate image tags")
+    probe = _task(probes["block"], "Probe gate image tags")
+    assert probe["loop"] == ["precis-dev", "precis-mcp:premodels"]
+    repair = _task(probes["block"], "Restore or report missing gate image tags")
+    build = _task(repair["block"], "Build precis-dev")
+    assert build["when"] == "precis_deploy_gate_image_build | bool"
+    assert build["ansible.builtin.command"] == "scripts/build-image precis-dev"
+
+
+def test_node_exporter_colima_metric_probes_deploys_vm() -> None:
+    ne = _yaml(_ROLE.parent / "node_exporter" / "defaults" / "main.yml")
+    assert ne["node_exporter_colima_user"] == "deploy"

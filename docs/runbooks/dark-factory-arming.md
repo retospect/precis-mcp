@@ -1360,9 +1360,15 @@ matters. Operator steps; the coordinator does not run them for a builder.
    units, rendered into the builder unit too); optionally
    `precis_builder_slice_repos` (a second repo's clone under the builder's
    home, placed by hand) and, on macOS, `precis_builder_colima_cpu`,
-   `_memory`, `_disk` (integers, GiB; empty keeps colima's own defaults, as
-   deploy's VM has: this tree sizes neither; applies at the next
-   `colima start` from stopped).
+   `_memory`, `_disk` (CPU count and GiB, applied at the next start from
+   stopped). Empty values retain Colima's defaults for the builder account.
+   Gateway deploys separately manage the `deploy` account's Colima config
+   through `20j-deploy-colima.yml` (4 CPUs, 8 GiB RAM, 1000 GiB disk by
+   default). The operator schedules any stop/start needed to apply the
+   settings. That play schedules a daily dangling-image prune and checks
+   for `precis-dev` and `precis-mcp:premodels`. To bootstrap missing tags
+   during deployment, set `precis_deploy_gate_image_build: true` with at
+   least 60 GB free in the VM and GitHub authentication for `deploy`.
 2. Hold the builder at zero before anything can claim: set the cap key
    `claim.executor_cap.ssh_node.<host>-coder` to 0 through the claim-setting
    door (`put(kind='job', mode='setting', args={'key': ..., 'value': 0,

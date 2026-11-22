@@ -1,0 +1,12 @@
+---
+# Run after the collapsed worker has provisioned com.precis.colima.
+- name: Maintain the deploy account's Colima VM
+  hosts: gateway
+  become: true
+  tags: [precis-worker-collapsed, precis]
+  tasks:
+    - name: Manage the deploy-owned Colima profile on macOS
+      when: os_family == "darwin"
+      ansible.builtin.import_role:
+        name: precis_worker_agent
+        tasks_from: colima_deploy

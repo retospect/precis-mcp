@@ -588,6 +588,9 @@
 - name: "Refresh /opt/precis/venv          (collapsed worker, --profile all)"
   ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
+- name: Maintain the gateway deploy account’s Colima VM
+  ansible.builtin.import_playbook: playbooks/20j-deploy-colima.yml
+
 # Dedicated agent worker lane on the gateway — a second tiny
 # `--only job_claude_inproc --only job_inproc` worker so the planner
 # (job_claude_inproc's plan_tick, the cluster's sole planner, gateway-only,

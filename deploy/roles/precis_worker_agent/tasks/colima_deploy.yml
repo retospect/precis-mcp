@@ -1,0 +1,97 @@
+---
+- name: Maintain deploy's default Colima profile
+  vars:
+    _deploy_colima_config: /Users/deploy/.colima/default/colima.yaml
+    _deploy_colima_env:
+      HOME: /Users/deploy
+      DOCKER_HOST: unix:///Users/deploy/.colima/docker.sock
+      DOCKER_CONTEXT: ""
+      PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+  block:
+    - name: Probe deploy's colima.yaml
+      ansible.builtin.stat:
+        path: "{{ _deploy_colima_config }}"
+      register: _deploy_colima_yaml
+
+    # Leave the rest of the generated profile intact. Colima can grow a disk
+    # on start. An operator schedules the stop/start that applies new sizes.
+    - name: Pin deploy's Colima VM size
+      when:
+        - _deploy_colima_yaml.stat.exists
+        - item.value | int(0) > 0
+      ansible.builtin.lineinfile:
+        path: "{{ _deploy_colima_config }}"
+        regexp: '^{{ item.key }}:'
+        line: "{{ item.key }}: {{ item.value | int }}"
+      become_user: deploy
+      loop:
+        - {key: cpu, value: "{{ precis_deploy_colima_cpu }}"}
+        - {key: memory, value: "{{ precis_deploy_colima_memory }}"}
+        - {key: disk, value: "{{ precis_deploy_colima_disk }}"}
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Report a Colima profile awaiting initial startup
+      when: not _deploy_colima_yaml.stat.exists
+      ansible.builtin.debug:
+        msg: "Deploy's Colima profile is absent. Re-run this play after Colima starts to apply the size settings."
+
+    # Run as deploy against its own VM. Without -a, prune preserves tagged
+    # images including precis-dev and precis-mcp:premodels.
+    - name: Schedule daily dangling-image prune in deploy's VM
+      ansible.builtin.cron:
+        name: precis Colima dangling-image prune
+        user: deploy
+        minute: "15"
+        hour: "3"
+        state: "{{ 'present' if precis_deploy_colima_prune_enabled | bool else 'absent' }}"
+        job: >-
+          DOCKER_CONTEXT= DOCKER_HOST={{ _deploy_colima_env.DOCKER_HOST }}
+          {{ precis_worker_agent_container_bin }} image prune -f
+
+    - name: Check the gate images in deploy's VM
+      when: not ansible_check_mode
+      become_user: deploy
+      environment: "{{ _deploy_colima_env }}"
+      block:
+        # Probe the daemon separately so an unreachable socket cannot
+        # masquerade as a missing image and trigger a build.
+        - name: Wait for deploy's Colima Docker daemon
+          ansible.builtin.command: "{{ precis_worker_agent_container_bin }} info"
+          register: _deploy_docker
+          changed_when: false
+          until: _deploy_docker.rc == 0
+          retries: 12
+          delay: 5
+          ignore_errors: "{{ not (precis_deploy_gate_image_build | bool) }}"
+
+        - name: Check for missing gate image tags
+          when: _deploy_docker.rc == 0
+          block:
+            - name: Probe gate image tags
+              ansible.builtin.command: "{{ precis_worker_agent_container_bin }} image inspect {{ item }}"
+              loop: [precis-dev, "precis-mcp:premodels"]
+              register: _deploy_gate_probe
+              changed_when: false
+              failed_when: false
+
+            - name: Restore or report missing gate image tags
+              when: _deploy_gate_probe.results | rejectattr('rc', 'equalto', 0) | list | length > 0
+              vars:
+                _deploy_gate_checkout: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}"
+              block:
+                - name: Report missing gate images when automatic builds are disabled
+                  when: not (precis_deploy_gate_image_build | bool)
+                  ansible.builtin.debug:
+                    msg: >-
+                      Missing in deploy's Colima VM:
+                      {{ _deploy_gate_probe.results | rejectattr('rc', 'equalto', 0) | map(attribute='item') | join(', ') }}.
+                      Run scripts/build-image precis-dev as deploy in {{ _deploy_gate_checkout }},
+                      or enable precis_deploy_gate_image_build. The build needs 60 GB free
+                      in the VM and GitHub authentication for the catpath layer.
+
+                - name: Build precis-dev and bootstrap premodels if missing
+                  when: precis_deploy_gate_image_build | bool
+                  ansible.builtin.command: scripts/build-image precis-dev
+                  args:
+                    chdir: "{{ _deploy_gate_checkout }}"

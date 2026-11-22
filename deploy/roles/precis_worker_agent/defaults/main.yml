@@ -59,3 +59,12 @@ precis_agent_image: "precis-agent:latest"
 # precis_embedder service can never drift apart.
 precis_worker_agent_embedder: remote
 precis_worker_agent_embedder_url: "http://127.0.0.1:{{ embedder_port | default(8181) }}"
+
+# Deploy's default Colima profile on the macOS gateway (gr553519).
+# Zero leaves a field alone. Values apply at the next operator-led stop/start.
+precis_deploy_colima_cpu: 4
+precis_deploy_colima_memory: 8
+precis_deploy_colima_disk: 1000
+precis_deploy_colima_prune_enabled: true
+# scripts/build-image precis-dev also bootstraps precis-mcp:premodels.
+precis_deploy_gate_image_build: false
