@@ -25,9 +25,22 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "mcp-entry-preflight"
 
 FAKE_CLAUDE = """#!/usr/bin/env bash
 # Registry state = a flag file; `get` fails without it, `add-json` creates it.
+# Like the real CLI, `get` resolves project (.mcp.json in the cwd) before
+# user scope and prints the scope of the entry it found.
 echo "$*" >> "$FAKE_CLAUDE_CALLS"
 if [ "$1 $2" = "mcp get" ]; then
-    if [ -f "$FAKE_CLAUDE_STATE" ]; then exit 0; fi
+    if [ -f "$PWD/.mcp.json" ] || [ -n "${FAKE_CLAUDE_SCOPE:-}" ]; then
+        echo "precis:"
+        echo "  Scope: ${FAKE_CLAUDE_SCOPE:-Project config (shared via .mcp.json)}"
+        echo "  Authorization: Bearer SECRET-INLINE-TOKEN"
+        exit 0
+    fi
+    if [ -f "$FAKE_CLAUDE_STATE" ]; then
+        echo "precis:"
+        echo "  Scope: User config (available in all your projects)"
+        echo "  Authorization: Bearer SECRET-INLINE-TOKEN"
+        exit 0
+    fi
     echo 'No MCP server named "precis".' >&2
     exit 1
 fi
@@ -67,9 +80,12 @@ def rig(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def _run(rig: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    rig: dict[str, str], *args: str, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
+        cwd=cwd,
         env={**os.environ, **rig},
         capture_output=True,
         text=True,
@@ -132,6 +148,54 @@ def test_re_add_is_idempotent(rig: dict[str, str]) -> None:
     assert second.stdout == ""
     adds = [c for c in _calls(rig, "FAKE_CLAUDE_CALLS") if c.startswith("mcp add-json")]
     assert len(adds) == 1
+
+
+def test_project_entry_does_not_count_as_the_user_entry(
+    rig: dict[str, str], tmp_path: Path
+) -> None:
+    """td765424: the checked-in .mcp.json makes `claude mcp get precis`
+    succeed inside a checkout while the user-scope entry is gone. The
+    preflight must look from outside the project and repair the user scope."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".mcp.json").write_text("{}", encoding="utf-8")
+    result = _run(rig, cwd=checkout)
+    assert result.returncode == 0, result.stderr
+    adds = [c for c in _calls(rig, "FAKE_CLAUDE_CALLS") if c.startswith("mcp add-json")]
+    assert len(adds) == 1
+    assert adds[0].startswith("mcp add-json -s user precis ")
+    assert "re-added" in result.stdout
+    # `get` output carries an (inline) token in the fake: never echoed.
+    assert "SECRET-INLINE-TOKEN" not in result.stdout + result.stderr
+
+
+def test_present_user_entry_is_kept_inside_a_checkout(
+    rig: dict[str, str], tmp_path: Path
+) -> None:
+    """Project entry shadowing a healthy user entry: still a silent no-op
+    and no rewrite of the (possibly inline-token) user entry."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".mcp.json").write_text("{}", encoding="utf-8")
+    Path(rig["FAKE_CLAUDE_STATE"]).touch()
+    result = _run(rig, cwd=checkout)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert not [c for c in _calls(rig, "FAKE_CLAUDE_CALLS") if "add-json" in c]
+    assert _calls(rig, "FAKE_ENSURE_CALLS") == []
+
+
+def test_non_user_scope_entry_is_reported_missing(
+    rig: dict[str, str], tmp_path: Path
+) -> None:
+    """Even from outside any project, a `get` that reports a project or
+    local scope is not the user entry."""
+    rig = {**rig, "FAKE_CLAUDE_SCOPE": "Local config (private to you in this project)"}
+    result = _run(rig, "--dry-run", cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "MISSING" in result.stdout
+    assert "nothing to do" not in result.stdout
+    assert "SECRET-INLINE-TOKEN" not in result.stdout + result.stderr
 
 
 def test_dry_run_missing_changes_nothing(rig: dict[str, str]) -> None:

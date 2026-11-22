@@ -2,7 +2,7 @@
   "mcpServers": {
     "precis": {
       "type": "http",
-      "url": "http://127.0.0.1:8765/mcp",
+      "url": "http://127.0.0.1:${PRECIS_MCP_HTTP_PORT:-8765}/mcp",
       "headers": {
         "Authorization": "Bearer ${PRECIS_MCP_TOKEN}"
       },
