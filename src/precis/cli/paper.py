@@ -39,7 +39,7 @@ import argparse
 import sys
 from typing import Any
 
-from precis.cli._common import REFUSAL_EXIT, resolve_dsn
+from precis.cli._common import REFUSAL_EXIT, bind_process_store, resolve_dsn
 from precis.errors import PrecisError
 from precis.store import Store
 
@@ -438,6 +438,7 @@ def _run_restore(args: argparse.Namespace) -> None:
     with open(args.file, encoding="utf-8") as fh:
         dump = json.load(fh)
     store = Store.connect(resolve_dsn(args.database_url))
+    bind_process_store(store)
     try:
         report = restore_paper(
             store,
