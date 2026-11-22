@@ -273,7 +273,7 @@ def test_stateless_claude_word_handles_follow_the_connector(
     user = _user(store, "alice")
     first, _ = _grant(store, oauth_config, user.id, ("mcp:full",))
     other, _ = _grant(store, oauth_config, user.id, ("mcp:full",))
-    store.insert_ref(kind="memory", slug="voice-test", title="Voice test")
+    store.insert_ref(kind="memory", slug=None, title="Voice test")
     app = _app(store, oauth_config, runtime_with_store, monkeypatch, stateless=True)
 
     async def exercise() -> None:
