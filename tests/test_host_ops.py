@@ -59,6 +59,11 @@ all:
     vllm_serving:
       hosts:
         cedar:
+    sglang_serving:
+      hosts:
+        poplar:
+          os_update_units: precis-worker
+          os_update_peer: birch
     macos:
       hosts:
         alder:
@@ -94,9 +99,10 @@ def _commit(repo: Path, body: str) -> str:
 
 @pytest.fixture
 def bin_dir(tmp_path: Path) -> dict[str, str]:
-    """PATH stubs: ssh logs argv (rc 1 when the remote mentions sglang, so
-    vllm-stop's refusal guard takes the proceed path); ansible-playbook logs
-    argv and exits 0."""
+    """PATH stubs: ssh logs argv (rc 1 on `is-active sglang`, so vllm-stop's
+    refusal guard takes the proceed path; `is-enabled sglang` answers
+    "enabled"; `bash -s` — os-update's host-busy probe — answers 0);
+    ansible-playbook logs argv and exits 0."""
     d = tmp_path / "bin"
     d.mkdir()
     ssh_calls = tmp_path / "ssh.calls"
@@ -105,7 +111,12 @@ def bin_dir(tmp_path: Path) -> dict[str, str]:
         "#!/bin/sh\n"
         # one log line per call: remote commands carry newlines
         f"{{ printf '%s' \"$*\" | tr '\\n' ' '; echo; }} >> \"{ssh_calls}\"\n"
-        'case "$*" in *sglang*) exit 1;; esac\n'
+        'case "$*" in\n'
+        '  *"is-active sglang"*) exit 1;;\n'
+        '  *"is-enabled sglang"*) echo enabled; exit 0;;\n'
+        '  *"curl -sf localhost:8000/health"*) exit "${HEALTH_PROBE_RC:-0}";;\n'
+        '  *"bash -s"*) echo 0;;\n'
+        "esac\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -137,7 +148,12 @@ def _env(tmp_path: Path, bin_dir: dict[str, str], **extra: str) -> dict[str, str
     }
     # Ambient operator vars must not steer a fixture: only the ones a test
     # passes explicitly (via extra) count.
-    for key in ("PROD_CHECKOUT", "PRECIS_PROD_CHECKOUT", "MAIN_CHECKOUT"):
+    for key in (
+        "PROD_CHECKOUT",
+        "PRECIS_PROD_CHECKOUT",
+        "MAIN_CHECKOUT",
+        "HEALTH_PROBE_RC",
+    ):
         if key not in extra:
             env.pop(key, None)
     return env
@@ -295,6 +311,80 @@ def test_os_update_serving_dry_run_skips_llm_wait(
     assert "for u in sglang precis-worker " in result.stdout
     assert "waiting for sglang health" not in result.stdout
     assert len(_calls(bin_dir["ssh_calls"])) == 1
+
+
+def test_os_update_sglang_group_member_gets_the_wait(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    """gr572878: the health wait keys on `sglang_serving` membership, not on
+    the unit list alone — poplar's os_update_units omits sglang, yet the run
+    checks the sglang unit and waits on /health."""
+    env = _env(tmp_path, bin_dir, OS_UPDATE_SLEEP_S="0")
+    result = _run(env, "os-update", "--host", "poplar")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "waiting for sglang health" in result.stdout
+    assert "sglang healthy" in result.stdout
+    joined = "\n".join(_calls(bin_dir["ssh_calls"]))
+    assert "for u in precis-worker sglang " in joined
+    assert "is-enabled sglang" in joined
+
+
+def test_os_update_sglang_group_member_dry_run(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    result = _run(_env(tmp_path, bin_dir), "os-update", "--host", "poplar", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "for u in precis-worker sglang " in result.stdout
+
+
+def test_os_update_sglang_health_timeout_keeps_reserve(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    env = _env(tmp_path, bin_dir, OS_UPDATE_SLEEP_S="0", HEALTH_PROBE_RC="1")
+    result = _run(env, "os-update", "--host", "poplar")
+    assert result.returncode == 1
+    assert "sglang health check timed out after 40 probes" in result.stderr
+    assert "sglang healthy" not in result.stdout
+    assert "done:" not in result.stdout
+    calls = _calls(bin_dir["ssh_calls"])
+    assert sum("curl -sf localhost:8000/health" in call for call in calls) == 40
+    assert any("service reserve --host poplar" in call for call in calls)
+    assert not any("service release" in call for call in calls)
+
+
+def test_os_update_host_match_is_literal_not_regex(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    """gr572878 review: the sglang_serving membership check compares the
+    host literally (`grep -Fx`) — under `grep -x` the dotted `poplar.example`
+    would regex-match the `poplar-example` member and gain the sglang checks
+    meant only for that host."""
+    yml = _HOSTS_YML.replace(
+        "          os_update_peer: birch\n    macos:",
+        "          os_update_peer: birch\n        poplar-example:\n    macos:",
+    )
+    # The real node-var resolver cannot build an env-override name for a
+    # dotted host. Stub that resolver and keep the real inventory group lookup.
+    script_dir = tmp_path / "host-ops"
+    script_dir.mkdir()
+    script = shutil.copyfile(_DIR / "os-update", script_dir / "os-update")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "pgb-host.sh").symlink_to(_DIR.parent / "lib" / "pgb-host.sh")
+    (lib / "node-host.sh").write_text(
+        '. "${_HERE}/../lib/pgb-host.sh"\n'
+        "resolve_node_var() {\n"
+        '  case "$2" in\n'
+        "    os_update_units) echo precis-worker ;;\n"
+        "    os_update_peer) echo birch ;;\n"
+        "  esac\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    env = _env(tmp_path, bin_dir, hosts_yml=yml)
+    result = _run(env, str(script), "--host", "poplar.example", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "for u in precis-worker $(" in result.stdout
 
 
 def test_os_update_host_without_units_fails_clearly(

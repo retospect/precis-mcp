@@ -31,7 +31,9 @@
 #   os_update_units  comma-separated systemd units to check after the reboot,
 #                    e.g. `sglang,precis-worker`; a unit list containing
 #                    `sglang` (or `vllm`; first match) also gets the LLM
-#                    health wait. Required.
+#                    health wait — as does any host in the overlay's
+#                    `sglang_serving` group (sglang joins the checked units).
+#                    Required.
 #   os_update_peer   the node that runs the precis reserve CLI while HOST
 #                    reboots (a peer that keeps running). Required unless
 #                    RUN_ON is set.
@@ -62,7 +64,10 @@ release. Run order: the idle canary GPU node, then the science node, then
 the serving node — one host at a time, only after the previous host's
 checks are all active. The unit list (os_update_units) and the peer that
 runs the precis reserve CLI (os_update_peer, or RUN_ON) are per-host keys
-in the cluster overlay (deploy/inventory/hosts.yml).
+in the cluster overlay (deploy/inventory/hosts.yml); a host in the
+overlay's sglang_serving group gets the sglang unit + /health wait even
+when its unit list omits sglang.
+Env: OS_UPDATE_SLEEP_S overrides the settle/poll sleeps (tests).
 EOF
 }
 
@@ -87,6 +92,14 @@ if [[ -z "$UNITS" ]]; then
   exit 2
 fi
 UNITS="${UNITS//,/ }"
+# A host in the overlay's sglang_serving group serves with SGLang: put its
+# unit in the checked list so the post-reboot health wait runs even when
+# os_update_units omits it (gr572878 — the wait keyed on the list only).
+# -Fx: the host name is a literal, not a regex — a dotted name such as
+# `gpu.example` must not match the `gpu-example` group member.
+if inventory_group_hosts sglang_serving 2>/dev/null | grep -Fqx -- "$HOST"; then
+  case " $UNITS " in *" sglang "*) ;; *) UNITS="${UNITS:+$UNITS }sglang" ;; esac
+fi
 # The precis CLI runs on a peer that keeps running while HOST reboots.
 if [[ -z "${RUN_ON:-}" ]]; then
   RUN_ON="$(resolve_node_var "$HOST" os_update_peer 2>/dev/null || true)"
@@ -101,6 +114,7 @@ ACTOR="os-update-$(date -u +%Y%m%dT%H%MZ)"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10)
 say() { echo "[$(date -u +%H:%M:%SZ)] $HOST: $*"; }
 run() { if (( DRY )); then echo "DRY: $*"; else "$@"; fi; }
+nap() { sleep "${OS_UPDATE_SLEEP_S:-$1}"; }
 
 precis_cli() {
   # shellcheck disable=SC2029
@@ -128,7 +142,7 @@ if (( ! DRY )); then
       (( FORCE )) || { say "still $b compute process(es)/container(s) after ${DRAIN_MIN} min; rerun with --force-drain or wait"; exit 1; }
       say "forcing reboot with $b still running (--force-drain)"; break
     fi
-    say "  $b still running; next check in 5 min"; sleep 300
+    say "  $b still running; next check in 5 min"; nap 300
   done
 fi
 
@@ -164,11 +178,11 @@ say "5/7 reboot"
 run "${SSH[@]}" "$HOST" 'sudo systemctl reboot' || true
 
 if (( ! DRY )); then
-  sleep 60
+  nap 60
   say "6/7 wait for ssh (<= 25 min; firmware capsules lengthen the boot)"
   for _ in $(seq 1 50); do
     "${SSH[@]}" "$HOST" true 2>/dev/null && break
-    sleep 30
+    nap 30
   done
   "${SSH[@]}" "$HOST" true || { say "NOT BACK after 25 min: check the console"; exit 1; }
 fi
@@ -185,7 +199,8 @@ run "${SSH[@]}" "$HOST" "
   done
   systemctl --failed --no-legend
 "
-# The serving unit in the list (first match: sglang, then vllm) gets the health wait.
+# The serving unit in the list (first match: sglang, then vllm) gets the health
+# wait; sglang_serving members always carry sglang in it (added above).
 LLM_UNIT=""
 for _u in sglang vllm; do
   case " $UNITS " in *" $_u "*) LLM_UNIT="$_u"; break ;; esac
@@ -195,10 +210,19 @@ if [[ -n "$LLM_UNIT" && $DRY == 0 ]] && \
   say "$LLM_UNIT disabled, skipping health wait"   # vllm stopped 18:44Z 2026-10-15 (gr489474)
 elif [[ -n "$LLM_UNIT" && $DRY == 0 ]]; then
   say "waiting for $LLM_UNIT health (model load ~2 min on SGLang; cap 20 min)"
+  healthy=0
   for _ in $(seq 1 40); do
-    "${SSH[@]}" "$HOST" 'curl -sf localhost:8000/health' >/dev/null 2>&1 && { say "$LLM_UNIT healthy"; break; }
-    sleep 30
+    if "${SSH[@]}" "$HOST" 'curl -sf localhost:8000/health' >/dev/null 2>&1; then
+      healthy=1
+      break
+    fi
+    nap 30
   done
+  if (( ! healthy )); then
+    say "$LLM_UNIT health check timed out after 40 probes; the reserve is still set" >&2
+    exit 1
+  fi
+  say "$LLM_UNIT healthy"
 fi
 
 say "release the reserve"
