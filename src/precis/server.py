@@ -116,6 +116,8 @@ from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+    from precis.users import WebUser
+
 # mcp 1.27.0's ``FuncMetadata.convert_result`` validates
 # ``CallToolResult.structuredContent`` against the auto-generated output
 # schema whenever the tool has one.  Our error path returns a
@@ -368,9 +370,19 @@ def _install_once_per_connection_instructions() -> None:
     original = ServerSession._received_request
 
     async def _received_request(self: Any, responder: Any) -> None:
+        if not isinstance(responder.request.root, InitializeRequest):
+            await original(self, responder)
+            return
+        if not getattr(self, "_precis_initialized", False):
+            transport = getattr(responder.message_metadata, "request_context", None)
+            user = await _startup_user(getattr(transport, "scope", {}))
+            if user is not None:
+                self._init_options.instructions = _authenticated_instructions(
+                    user, self._init_options.instructions
+                )
         await original(self, responder)
-        if isinstance(responder.request.root, InitializeRequest):
-            self._init_options.instructions = None
+        self._precis_initialized = True
+        self._init_options.instructions = None
 
     # ``setattr`` sidesteps method-assign/attr-defined without a
     # ``type: ignore`` — the ratchet counts those (test_type_ignore_ratchet).
@@ -838,6 +850,7 @@ def _offload_sync(
 
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
+    "Overview: get(kind='skill', id='precis-overview'). "
     "Discover: search(kind='skill', args={'queries': ['<goal in your "
     "own words>', '<rephrase it>']}) | get(kind='skill', id='toc'). "
     "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
@@ -847,6 +860,48 @@ _INSTRUCTIONS = (
     "Voice: describe the reference first and never read its numeric id aloud. "
     "See get(kind='skill', id='precis-word-handles-help')."
 )
+
+
+# A middleware stamp carries the account store to the SDK initialize hook,
+# which runs before FastMCP creates a tool RequestContext.
+_STARTUP_STORE = "precis.startup_account_store"
+
+
+async def _startup_user(scope: dict[str, Any]) -> WebUser | None:
+    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_USER_ID
+
+    store = scope.get(_STARTUP_STORE)
+    oauth = scope.get(SCOPE_OAUTH_IDENTITY)
+    user_id = oauth.user_id if oauth is not None else scope.get(SCOPE_USER_ID)
+    if store is None or user_id is None:
+        return None
+    try:
+        user: WebUser | None = await anyio.to_thread.run_sync(
+            store.get_web_user_by_id, user_id
+        )
+    except Exception as exc:
+        log.warning("MCP startup account lookup failed (%s)", type(exc).__name__)
+        return None
+    return user if user is not None and user.enabled else None
+
+
+def _authenticated_instructions(user: WebUser, generic: str | None) -> str:
+    from precis.key_memory import instructions
+
+    identity = instructions(user)
+    if user.is_developer:
+        return f"{identity}\n\n{generic or _INSTRUCTIONS}"
+    return (
+        f"{identity}\n\n"
+        "precis: verbs get/search/put/edit/delete/tag/link, subject to the "
+        "connection's permissions. Overview: get(kind='skill', id='precis-overview'). "
+        "Find skills with search(kind='skill', q='<the task>'). "
+        "If a call or skill misbehaves, file a gripe quietly with "
+        "put(kind='gripe', text='<command + expected + actual>') when permitted. "
+        "Tell the user what failed and mention gripes or maintainer work only "
+        "if they ask."
+    )
+
 
 # Sanity check the instructions actually advertise every verb. The MCP
 # critic flagged ``put, put`` as a silent typo that hid a verb from
@@ -1594,9 +1649,10 @@ def _personal_request_refusal(request: Any, ctx: Context) -> str | None:
                 except CommandParseError:
                     # An unparseable command cannot establish learning scope.
                     verb, payload = "", {}
-        if core._personal_call_allowed(verb, payload):
+        store = core._asgi_scope(ctx).get(_STARTUP_STORE)
+        if core._personal_call_allowed(verb, payload, store):
             # The actual tool dispatch revalidates and checks scope again after
-            # normalization. Do not add an account query to permitted calls.
+            # normalization.
             return None
         runtime = core._get_runtime()
         try:
@@ -1718,6 +1774,7 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
     from mcp.shared.exceptions import McpError
 
     from precis import slice_reader_scope, slice_tokens
+    from precis.key_memory import instructions
     from precis.tools import core
     from precis.user_context import current_principal
 
@@ -1725,7 +1782,7 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
         async def call(request: Any) -> Any:
             ctx = fastmcp.get_context()
             # Transport stamps are pure context reads. Only personal callers
-            # can need the blocking revocation check in the refusal path.
+            # can need an account lookup in the refusal path.
             with core._ctx_user_scope(ctx):
                 personal = current_principal() is not None
             scoped_write = (
@@ -1735,7 +1792,7 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                 is not None
             )
             if personal or scoped_write:
-                # The personal path blocks on the revocation check; a
+                # The personal path can look up the account's key memory; a
                 # scoped write blocks on the own todo's live fixes
                 # links. Both go through the worker thread.
                 refusal = await anyio.to_thread.run_sync(
@@ -1755,20 +1812,38 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                 if isinstance(request, types.CallToolRequest):
                     from precis.tools.core import _validation_error
 
-                    return types.ServerResult(_validation_error(refusal))
-                raise McpError(
-                    types.ErrorData(code=types.INVALID_PARAMS, message=refusal)
-                )
-            # Resources and prompts dispatch directly to the runtime rather
-            # than through tools/core. Keep the resolved-kind backstop bound
-            # across the SDK handler (and its worker-thread context copies).
-            from precis.runtime.dispatch import _KIND_GATE
+                    result = types.ServerResult(_validation_error(refusal))
+                else:
+                    raise McpError(
+                        types.ErrorData(code=types.INVALID_PARAMS, message=refusal)
+                    )
+            else:
+                # Prompts and resources can bypass tools/core, so bind the
+                # resolved-kind gate around the SDK handler as well.
+                from precis.runtime.dispatch import _KIND_GATE
 
-            gate_token = _KIND_GATE.set(core._capability_kind_gate(ctx))
-            try:
-                return await handler(request)
-            finally:
-                _KIND_GATE.reset(gate_token)
+                gate_token = _KIND_GATE.set(core._capability_kind_gate(ctx))
+                try:
+                    result = await handler(request)
+                finally:
+                    _KIND_GATE.reset(gate_token)
+            # Stateless HTTP has one SDK session per request, so each
+            # tool response on that transport carries the fallback.
+            if (
+                personal
+                and isinstance(request, types.CallToolRequest)
+                and isinstance(result.root, types.CallToolResult)
+                and not getattr(ctx.session, "_precis_key_memory_sent", False)
+            ):
+                user = await _startup_user(core._asgi_scope(ctx))
+                if user is not None and not getattr(
+                    ctx.session, "_precis_key_memory_sent", False
+                ):
+                    result.root.content.append(
+                        types.TextContent(type="text", text=instructions(user))
+                    )
+                    setattr(ctx.session, "_precis_key_memory_sent", True)
+            return result
 
         return call
 
@@ -2521,6 +2596,7 @@ def _install_token_auth(
                 await self.app(scope, receive, send)
                 return
             for key in (
+                _STARTUP_STORE,
                 mcp_identity.SCOPE_USER_ID,
                 mcp_identity.SCOPE_TOKEN_ID,
                 mcp_identity.SCOPE_OAUTH_IDENTITY,
@@ -2615,6 +2691,7 @@ def _install_token_auth(
                                 headers={"Cache-Control": "no-store"},
                             )(scope, receive, send)
                             return
+                        scope[_STARTUP_STORE] = store
                         scope[mcp_identity.SCOPE_OAUTH_IDENTITY] = oauth_identity
                         await self._authorized(
                             scope,
@@ -2653,6 +2730,7 @@ def _install_token_auth(
                         )
                         await response(scope, receive, send)
                         return
+                    scope[_STARTUP_STORE] = store
                     scope[mcp_identity.SCOPE_USER_ID] = identity.user_id
                     scope[mcp_identity.SCOPE_TOKEN_ID] = identity.token_id
                     await self._authorized(

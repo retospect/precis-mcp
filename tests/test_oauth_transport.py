@@ -89,7 +89,9 @@ def _headers(raw: str, session: str | None = None) -> dict[str, str]:
     return result
 
 
-async def _initialize(client: httpx.AsyncClient, raw: str) -> str:
+async def _initialize(
+    client: httpx.AsyncClient, raw: str, *, instructions: str | None = None
+) -> str:
     response = await client.post(
         "/mcp",
         headers=_headers(raw),
@@ -105,6 +107,12 @@ async def _initialize(client: httpx.AsyncClient, raw: str) -> str:
         },
     )
     assert response.status_code == 200, response.text
+    banner = response.json()["result"]["instructions"]
+    if instructions is not None:
+        assert instructions in banner
+        assert "Build/sha/DB" not in banner
+    elif raw == "install":
+        assert banner == server._INSTRUCTIONS
     session = response.headers["mcp-session-id"]
     ready = await client.post(
         "/mcp",
@@ -133,7 +141,12 @@ async def _call(client, raw, session, call_id, verb="get", arguments=None):
 
 def _app(store, config, runtime, monkeypatch, profile="typed", *, stateless=False):
     monkeypatch.setattr(core, "_get_runtime", lambda: runtime)
-    mcp = FastMCP("oauth-test", json_response=True, stateless_http=stateless)
+    mcp = FastMCP(
+        "oauth-test",
+        instructions=server._INSTRUCTIONS,
+        json_response=True,
+        stateless_http=stateless,
+    )
     monkeypatch.setattr(server, "mcp", mcp)
     monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
     server._register_tools_from_registry()
@@ -749,9 +762,12 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
     """The whoami read answers for any OAuth connection, full or narrow."""
     alice = _user(store, "alice")
     raw, identity = _grant(store, oauth_config, alice.id, (grant_scope,))
+    other_raw, _ = _grant(store, oauth_config, alice.id, (grant_scope,))
+    pointer = f"me{alice.key_memory_id}"
+    startup = f"You are serving al. Their key memory is {pointer}"
     app = _app(store, oauth_config, runtime_with_store, monkeypatch)
 
-    async def exercise():
+    async def exercise() -> None:
         async with (
             app.router.lifespan_context(app),
             httpx.AsyncClient(
@@ -759,7 +775,9 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
                 base_url=oauth_config.resource.removesuffix("/mcp"),
             ) as client,
         ):
-            session = await _initialize(client, raw)
+            session = await _initialize(client, raw, instructions=startup)
+            await _initialize(client, other_raw, instructions=startup)
+            await _initialize(client, "install")
             response = await _call(
                 client,
                 raw,
@@ -772,6 +790,8 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
             assert not result.get("isError", False), result
             body = result["content"][0]["text"]
             assert f"user: al (login: alice, id: {alice.id})" in body
+            assert f"key memory: {pointer}" in body
+            assert startup in result["content"][1]["text"]
             assert "credential: OAuth connection 'Test app'" in body
             assert f"(client: precis-claude, grant: {identity.grant_id})" in body
             assert f"scopes: {grant_scope}" in body
@@ -784,6 +804,17 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
             assert f"writes recorded as: oauth:{identity.grant_id}" in body
             assert "revision actor: user:al" in body
             assert "client: oauth-test/1" in body
+            memory = await _call(
+                client,
+                raw,
+                session,
+                3,
+                arguments={"kind": "memory", "id": pointer},
+            )
+            memory_result = memory.json()["result"]
+            assert not memory_result.get("isError", False), memory_result
+            assert "Key memory" in memory_result["content"][0]["text"]
+            assert all(startup not in item["text"] for item in memory_result["content"])
 
     asyncio.run(exercise())
     assert current_principal() is None

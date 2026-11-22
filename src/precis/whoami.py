@@ -1,9 +1,9 @@
 """The whoami read — which identity this MCP session writes as (gr633675).
 
 ``get(kind='profile', id='me')`` answers "who does the server think I am":
-the authenticated account (the OAuth subject or personal-token owner), the
-credential carrying the session (an OAuth connection with its label, or a
-personal MCP token with its label), the permission scope that credential
+the authenticated account (the OAuth subject or personal-token owner), its
+key-memory handle, the credential carrying the session (a labelled OAuth
+connection or personal MCP token), the permission scope that credential
 carries, and the exact write attribution the server records — the write
 principal and revision actor a ``put``/``edit``/``tag`` from this session
 stamps, plus the MCP client the session declared. A session answers for
@@ -59,11 +59,16 @@ def _utc(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _user_line(store: Store, user_id: int) -> str:
+def _user_lines(store: Store, user_id: int) -> list[str]:
     user = _degraded(lambda: store.get_web_user_by_id(user_id))
     if user is None:
-        return f"user: id {user_id} (account row unavailable)"
-    return f"user: {user.abbrev} (login: {user.login}, id: {user.id})"
+        return [f"user: id {user_id} (account row unavailable)"]
+    return [
+        f"user: {user.abbrev} (login: {user.login}, id: {user.id})",
+        f"key memory: me{user.key_memory_id}"
+        if user.key_memory_id is not None
+        else "key memory: (unavailable)",
+    ]
 
 
 def _private_permission_line(scopes: tuple[str, ...] | None = None) -> str:
@@ -148,7 +153,7 @@ def render(store: Store | None) -> str:
                 "permission: shared-credential scope (install / slice / agent)"
             )
     else:
-        lines.append(_user_line(store, owner.user_id))
+        lines.extend(_user_lines(store, owner.user_id))
         lines.extend(_credential_lines(store, owner))
     ctx = current_revision_context()
     actor = ctx.actor if ctx is not None else None

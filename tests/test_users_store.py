@@ -34,6 +34,22 @@ def test_create_and_read_back(store: Store) -> None:
     assert store.count_web_users() == 1
 
 
+def test_each_account_has_a_distinct_key_memory_stub(store: Store) -> None:
+    alice = _make(store, login="alice", abbrev="al")
+    bob = _make(store, login="bob", abbrev="bo")
+    assert alice.key_memory_id is not None
+    assert bob.key_memory_id is not None
+    assert alice.key_memory_id != bob.key_memory_id
+    for user in (alice, bob):
+        memory = store.get_ref(kind="memory", id=user.key_memory_id)
+        assert memory is not None
+        assert memory.title == "Key memory"
+        assert memory.owner_login == user.login
+        fetched = store.get_web_user_by_id(user.id)
+        assert fetched is not None
+        assert fetched.key_memory_id == user.key_memory_id
+
+
 def test_credentials_roundtrip_through_the_columns(store: Store) -> None:
     from precis.users import verify_password
 

@@ -37,6 +37,7 @@ from precis.user_context import current_principal, user_actor_scope
 if TYPE_CHECKING:
     from precis.errors import Denied
     from precis.runtime import PrecisRuntime
+    from precis.store import Store
 
 # Conditional imports for MCP types (not available in all environments)
 try:
@@ -446,7 +447,7 @@ def _dispatch_as_user(
             filtered = {
                 key: value for key, value in payload.items() if value is not None
             }
-            _require_personal_scope(verb, filtered)
+            _require_personal_scope(verb, filtered, store)
             _require_capability_scope(verb, filtered, ctx)
             _require_slice_grant_scope(verb, filtered, ctx)
             # Bind the per-call image sink so a handler's Response.images
@@ -519,17 +520,33 @@ def _dispatch_as_user(
             pass
 
 
-def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
-    """Apply PAT's private-kind boundary or an OAuth app's capabilities."""
+def _personal_call_allowed(
+    verb: str, payload: dict[str, Any], store: Store | None = None
+) -> bool:
+    """Apply PAT's private-kind boundary or an OAuth app's capabilities.
+
+    Any authenticated caller additionally gets one read regardless of
+    scope: ``get(kind='memory', id=<own key memory>)``, the hub the
+    startup text names.
+    """
     from precis import private_kinds
     from precis.whoami import CALL as WHOAMI
 
     verbs = {"get", "search", "put", "edit", "delete", "tag", "link"}
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
+    if oauth is not None and "mcp:full" in oauth.scopes:
+        return verb in verbs
+    if (
+        owner is not None
+        and store is not None
+        and verb == "get"
+        and (payload.get("kind") == "memory" and payload.keys() == {"kind", "id"})
+    ):
+        from precis.key_memory import may_read
+
+        return may_read(store.get_web_user_by_id(owner.user_id), verb, payload)
     if oauth is not None:
-        if "mcp:full" in oauth.scopes:
-            return verb in verbs
         private = private_kind_of(payload)
         if private is not None:
             entry = private_kinds.PRIVATE_KINDS[private]
@@ -561,9 +578,13 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
     )
 
 
-def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
+def _require_personal_scope(
+    verb: str, payload: dict[str, Any], store: Store | None = None
+) -> None:
     """Refuse personal MCP calls outside the allowlist without echoing input."""
-    if current_principal() is not None and not _personal_call_allowed(verb, payload):
+    if current_principal() is not None and not _personal_call_allowed(
+        verb, payload, store
+    ):
         from precis import private_kinds
         from precis.errors import Denied
 

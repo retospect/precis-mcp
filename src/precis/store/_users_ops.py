@@ -44,7 +44,7 @@ _USER_COLS = (
     "EXISTS (SELECT 1 FROM web_user_capability_tokens ft"
     " WHERE ft.user_id = web_users.id AND ft.revoked_at IS NULL"
     " AND ft.scopes = ARRAY['feed']::text[]) AS has_feed_token,"
-    " orcid, discord_user_id"
+    " orcid, discord_user_id, key_memory_id, is_developer"
 )
 
 
@@ -81,6 +81,8 @@ def _row_to_user(row: tuple[Any, ...]) -> WebUser:
         has_feed_token=bool(row[9]),
         orcid=row[10],
         discord_user_id=row[11],
+        key_memory_id=int(row[12]),
+        is_developer=bool(row[13]),
     )
 
 
@@ -141,9 +143,9 @@ class WebUsersMixin:
         if not row:
             return None
         record = PasswordRecord(
-            password_hash=str(row[12]),
-            password_salt=str(row[13]),
-            password_algo=str(row[14]),
+            password_hash=str(row[14]),
+            password_salt=str(row[15]),
+            password_algo=str(row[16]),
         )
         return _row_to_user(row), record
 

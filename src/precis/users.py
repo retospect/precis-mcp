@@ -117,6 +117,16 @@ class WebUser:
     #: Numeric Discord user id (snowflake), or ``None`` — how asa_bot maps
     #: a Discord speaker to this account. See :func:`normalize_discord_user_id`.
     discord_user_id: str | None = None
+    #: Ref id of the account's key-memory hub, minted as an empty stub by
+    #: the insert trigger (migration 0349) so the pointer always exists.
+    #: Per user, not per grant — every OAuth grant and bearer token of
+    #: this account resolves to the same hub.
+    key_memory_id: int | None = None
+    #: Whether MCP startup text may surface maintainer machinery (gripes,
+    #: backlog, build status). Developer accounts get the full text; plain
+    #: accounts get the reduced text and agents file gripes for them
+    #: silently (gr741439).
+    is_developer: bool = False
 
     @property
     def enabled(self) -> bool:
