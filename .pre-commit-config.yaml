@@ -4,7 +4,7 @@ repos:
   # `uv run ruff` agree on which formatter rules to apply. A mismatch
   # silently passes locally and fails in CI's `ruff format --check`.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.16
+    rev: v0.17.3
     hooks:
       - id: ruff
         args: [--fix]

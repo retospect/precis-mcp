@@ -642,8 +642,11 @@ dev = [
     # in via `uv run --with` too, so this entry just bakes it into the image
     # and documents the dep.
     "pytest-testmon>=2.1",
-    "ruff>=0.17.2",
-    "mypy>=1.15",
+    # Exact pins: ruff format / mypy are merge gates whose output is compared
+    # across worktrees and machines; a floor lets each resolve its own. Bump
+    # deliberately in its own commit carrying the reformat.
+    "ruff==0.17.3",
+    "mypy==2.3.0",
     "pre-commit>=4.7.0",
     # FastAPI's TestClient (starlette) needs httpx; used by the
     # precis_web route tests under tests/precis_web/.
