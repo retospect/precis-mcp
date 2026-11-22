@@ -18,7 +18,6 @@ from precis.workers.child_compute import (
     run_in_child,
 )
 from tests import _child_compute_targets as targets
-from tests import rlimit_lowerable
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only process groups and signals"
@@ -105,14 +104,22 @@ def test_child_applies_the_mem_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     """gr595537: the spawn-started compute child applies the
     ``PRECIS_JOB_MEM_LIMIT`` cap in-process — a spawn child has no
     ``preexec_fn`` door, so ``_child_main`` sets the rlimits itself.
-    gr700449: skip when the kernel refuses the requested cap."""
+    Darwin can reject a cap below the current data usage, so probe after
+    the same spawn bootstrap that the compute child uses (gr753584)."""
     import resource
 
     if not hasattr(resource, "RLIMIT_DATA"):
         pytest.skip("platform lacks RLIMIT_DATA")
     cap = 512 * 1024 * 1024
-    if not rlimit_lowerable(resource.RLIMIT_DATA, cap):
-        pytest.skip("kernel refuses RLIMIT_DATA lowering (gr700449)")
+    monkeypatch.delenv("PRECIS_JOB_MEM_LIMIT", raising=False)
+    if not run_in_child(
+        targets.can_set_rlimit_data,
+        (cap,),
+        label="rlim-probe",
+        timeout_s=60,
+        poll_s=0.1,
+    ):
+        pytest.skip("spawned child cannot set RLIMIT_DATA to 512 MiB")
     monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "512m")
     soft = run_in_child(
         targets.rlimit_data_soft, label="rlim", timeout_s=60, poll_s=0.1

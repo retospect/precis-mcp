@@ -54,6 +54,18 @@ def rlimit_data_soft() -> int:
     return int(resource.getrlimit(resource.RLIMIT_DATA)[0])
 
 
+def can_set_rlimit_data(cap: int) -> bool:
+    """Probe the cap after the same spawn bootstrap as the compute target."""
+    import resource
+
+    _, hard = resource.getrlimit(resource.RLIMIT_DATA)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (cap, hard))
+    except (ValueError, OSError):
+        return False
+    return rlimit_data_soft() == cap
+
+
 def spawn_grandchild_and_sleep() -> None:
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     emit("grandchild", proc.pid)
