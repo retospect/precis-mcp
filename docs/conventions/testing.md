@@ -231,10 +231,11 @@ caused it. Windows is not supported or tested: its nightly leg was dropped
 the `tests/test_posix_only_guards.py` walk remain until a separate cleanup
 removes them.
 
-The nightly coverage job caps xdist at four workers: six workers lost the
-runner around 40 minutes at 30–31% on two runs, consistent with memory
-pressure but without an OOM diagnostic (gr564777). It logs memory snapshots
-and test names to verify that inference. It deselects `nightly` as well as
+The nightly coverage job sets `PRECIS_COVERAGE_RUN=1`, which caps xdist at
+three workers in `tests/conftest.py`. Hosted runners lost communication
+with six workers (gr564777) and again with four (gr647528). The cap leaves
+more headroom for the traced suite, and the job logs memory snapshots and
+test names to diagnose runner losses. It deselects `nightly` as well as
 `no_cov`: the ≥30 s tests are what cannot finish under the tracer (a
 pytest-timeout kill ends the session, since worker restart is off, and the
 uploaded map stops there), and the map feeds the fast-test selection, which

@@ -121,6 +121,7 @@ from tests import _testmon_shim
 from tests._network import _no_outbound_network  # noqa: F401 (autouse fixture)
 from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_repo_git)
+from tests._timing import COVERAGE_ENV
 
 # Test DSN. Default targets the local-dev convention
 # (postgres at host.docker.internal:5432, role + db both
@@ -751,6 +752,16 @@ def _refuse_bare_suite_on_a_slice(config: pytest.Config) -> None:
     if args and all(_arg_is_named_test(a) for a in args):
         return
     pytest.exit(_SLICE_SUITE_REFUSAL, returncode=int(pytest.ExitCode.USAGE_ERROR))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_cmdline_main(config: pytest.Config) -> Iterator[None]:
+    # xdist builds its worker specs in this hook, before pytest_configure.
+    # Leave more headroom after runner losses with four traced workers.
+    if os.environ.get(COVERAGE_ENV) == "1" and config.pluginmanager.hasplugin("xdist"):
+        requested = config.getoption("maxprocesses")
+        config.option.maxprocesses = min(requested, 3) if requested else 3
+    yield
 
 
 def pytest_configure(config: pytest.Config) -> None:
