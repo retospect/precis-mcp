@@ -36,6 +36,10 @@ cluster.
 Title-token overlap is available on core installs for these checks.
 Only fuzzy PDF verification loads the optional RapidFuzz dependency.
 
+Draft DOI recovery (``doi_fetch.py``) requires a persistent non-DOI
+identifier. Lookup misses and write refusals share an attempt stamp so
+capped batches can advance. Transport failures remain eligible for retry.
+
 The legacy ``.acatome`` bundle parser that this package re-exported
 through B6 was deleted in B7. Callers that still need bundle
 parsing should pin to ``precis<0.7``; otherwise migrate to the

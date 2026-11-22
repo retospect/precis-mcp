@@ -655,6 +655,7 @@ class IdentifiersMixin:
         *,
         source: str = "web-edit",
         conn: Connection | None = None,
+        only_if_missing: bool = False,
     ) -> bool:
         """Set (replace) this ref's identifier for ``scheme`` to ``value``.
 
@@ -666,6 +667,8 @@ class IdentifiersMixin:
         aliases.
 
         Blank ``value`` is a no-op (blank field = keep existing).
+        With ``only_if_missing``, check for any existing value of the
+        scheme under the ref lock before writing.
         Returns True when a row was written. Raises :class:`BadInput`
         if ``value`` is already claimed by a *different* **live** ref (the
         cross-ref uniqueness conflict) rather than silently dropping
@@ -712,6 +715,14 @@ class IdentifiersMixin:
 
         def _do(c: Connection) -> bool:
             marked = _cleared_schemes(c, ref_id)
+            if (
+                only_if_missing
+                and c.execute(
+                    "SELECT 1 FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                    (ref_id, s),
+                ).fetchone()
+            ):
+                return False
             dropped = _dropped_pairs(c, ref_id)
             if s in marked and src not in _HUMAN_EDIT_SOURCES:
                 log.info(

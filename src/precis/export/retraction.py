@@ -43,7 +43,7 @@ than rounding it down to clean.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -172,6 +172,7 @@ class CitedPaper:
     #: ``None`` when this DOI has never been validated — a first-class
     #: state, not rounded down to "valid" (mirrors ``checked_at``).
     doi_validated_at: Any = None
+    doi_entry_type_note: str | None = None
 
     @property
     def label(self) -> str:
@@ -373,7 +374,17 @@ def cited_paper_refs(
     return refs, unresolved
 
 
-def select_for_check(refs: Sequence[Any], limit: int) -> list[Any]:
+def _check_need_key(r: Any) -> tuple[bool, Any]:
+    at = getattr(r, "retraction_checked_at", None)
+    return (at is not None, at)
+
+
+def select_for_check(
+    refs: Sequence[Any],
+    limit: int,
+    *,
+    need_key: Callable[[Any], tuple[bool, Any]] = _check_need_key,
+) -> list[Any]:
     """The ``limit`` cites most in need of a network re-check, neediest
     first: never-checked before checked, then oldest stamp first.
 
@@ -389,15 +400,8 @@ def select_for_check(refs: Sequence[Any], limit: int) -> list[Any]:
     if limit <= 0 or len(refs) <= limit:
         return list(refs)
     # Stable sort: cites with equal need keep their cited order.
-    ordered = sorted(refs, key=_check_need_key)
+    ordered = sorted(refs, key=need_key)
     return ordered[:limit]
-
-
-def _check_need_key(r: Any) -> tuple[bool, Any]:
-    """Sort key for :func:`select_for_check` — ``False`` sorts first, so
-    never-checked leads, then oldest ``retraction_checked_at``."""
-    at = getattr(r, "retraction_checked_at", None)
-    return (at is not None, at)
 
 
 # store stays Any: forwards into cited_paper_refs, which stays Any for the
@@ -442,6 +446,8 @@ def draft_retraction_report(
     these totals, so a report scoped to the checked subset always looks
     complete.
     """
+    from precis.ingest.doi_fetch import missing_doi_entry_type_note
+
     refs, unresolved = cited_paper_refs(store, ref, cited_slugs=cited_slugs)
 
     to_check = refs
@@ -530,6 +536,11 @@ def draft_retraction_report(
                 ),
                 doi=doi,
                 identifier_kind=identifier_kind_for(ids) if not doi else None,
+                doi_entry_type_note=(
+                    missing_doi_entry_type_note(getattr(r, "meta", None) or {})
+                    if not doi
+                    else None
+                ),
                 doi_status=(
                     doi_checked.status
                     if doi_checked is not None

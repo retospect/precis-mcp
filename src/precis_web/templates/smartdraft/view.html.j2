@@ -1053,8 +1053,8 @@
            appendix (docx returns a zip; PDF a pdfpages appendix) — same
            semantics as classic. The retraction state is fetched read-only
            (no network) on pane load so the "N of M never checked" warning is
-           visible before anyone presses "check retractions"; that button is
-           the one thing here that DOES hit the network (Crossref, TTL-gated). #}
+           visible on load. Retraction checks and DOI fetches make
+           TTL-gated lookups when requested. #}
       <div x-show="tool === 'export'" x-cloak class="space-y-1.5 p-2 text-xs"
            x-data="{
              withSources: false,
@@ -1077,6 +1077,8 @@
              retractionScope: 'stale',
              retraction: null,
              retractionChecking: false,
+             doiFetching: false,
+             doiFetchFeedback: null,
              retractionError: null,
              // Feature C: which citation-health bucket's paper list is
              // currently expanded below the summary line (null = none; at
@@ -1143,6 +1145,28 @@
                  this.retractionError = String(e);
                } finally {
                  this.retractionChecking = false;
+               }
+             },
+             async fetchMissingDois() {
+               this.doiFetching = true;
+               this.retractionError = null;
+               this.doiFetchFeedback = null;
+               try {
+                 const r = await fetch('/drafts/{{ ident }}/doi-fetch', { method: 'POST' });
+                 const data = await r.json();
+                 if (!r.ok || !data.ok) {
+                   this.retractionError = data.error || 'DOI fetch failed';
+                 } else {
+                   this.retraction = data;
+                   const { attempted, resolved } = data.doi_fetch;
+                   this.doiFetchFeedback = attempted
+                     ? `Found ${resolved.length} of ${attempted} missing DOIs checked.`
+                     : 'No missing DOIs are due for lookup.';
+                 }
+               } catch (e) {
+                 this.retractionError = String(e);
+               } finally {
+                 this.doiFetching = false;
                }
              },
              // Shared query for every GET export download (docx + PDF): the
@@ -1262,9 +1286,14 @@
               <div class="max-h-40 overflow-y-auto rounded border border-line bg-surface p-1"
                    data-retraction-list>
                 <template x-for="p in (retraction[expandedBucket] || [])" :key="p.ref_id">
-                  <a :href="'/r/paper/' + p.slug" target="_blank" rel="noopener"
-                     class="block truncate rounded px-1 py-0.5 text-[10px] text-fg-muted hover:bg-surface-subtle hover:text-info-strong"
-                     :title="p.title" x-text="p.title || p.slug"></a>
+                  <div>
+                    <a :href="'/r/paper/' + p.slug" target="_blank" rel="noopener"
+                       class="block truncate rounded px-1 py-0.5 text-[10px] text-fg-muted hover:bg-surface-subtle hover:text-info-strong"
+                       :title="p.title" x-text="p.title || p.slug"></a>
+                    <span x-show="expandedBucket === 'missing_doi'"
+                          class="px-1 text-fg-subtle"
+                          x-text="[p.doi_presence_label, p.doi_entry_type_note].filter(Boolean).join(' · ')"></span>
+                  </div>
                 </template>
               </div>
             </template>
@@ -1293,7 +1322,7 @@
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span x-show="retraction" x-text="retraction ? ((retraction.coverage_entries[retractionScope][0] || [retraction.coverage])[0]) : ''"
                 :class="retraction && (retraction.coverage_entries[retractionScope][0] || [null, false])[1] ? 'text-danger' : 'text-fg-subtle'"></span>
-          <button type="button" @click="checkRetraction()" :disabled="retractionChecking || retractionScope === 'none'"
+          <button type="button" @click="checkRetraction()" :disabled="retractionChecking || doiFetching || retractionScope === 'none'"
                   class="text-fg-subtle underline hover:text-fg disabled:opacity-50"
                   title="live-check every cited paper against Crossref for retraction/correction notices (TTL-gated)">
             <span x-text="retractionChecking ? 'checking…' : 'check retractions'"></span>
@@ -1306,6 +1335,13 @@
               <option value="none">none</option>
             </select>
           </label>
+          <button type="button" @click="fetchMissingDois()"
+                  x-show="doiFetching || retraction?.missing_doi?.some(p => p.doi_fetchable)"
+                  :disabled="doiFetching || retractionChecking"
+                  class="text-fg-subtle underline hover:text-fg disabled:opacity-50">
+            <span x-text="doiFetching ? 'fetching DOIs…' : 'fetch missing DOIs'"></span>
+          </button>
+          <span x-show="doiFetchFeedback" x-text="doiFetchFeedback" role="status" class="text-fg-subtle"></span>
           <span x-show="retractionError" x-text="retractionError" class="text-danger"></span>
         </div>
 

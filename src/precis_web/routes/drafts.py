@@ -69,7 +69,8 @@ from here:
   ``POST .../retraction-check`` (live re-check, TTL-gated,
   ``force=1`` bypasses) back the export pane; same shared walk. That walk
   also carries DOI completeness/validity (gr690484) on the same two routes' JSON —
-  advisory only, never export-gating.
+  advisory only, never export-gating. ``POST .../doi-fetch`` is the phase-2
+  fix action: resolves fetchable cites' DOIs and writes them back.
 
 Rendering is **raw source** (Tier A); §-numbering/cross-ref resolution is
 the export engine (Tier B), shared across HTML/LaTeX/Word. KaTeX renders
@@ -1350,6 +1351,8 @@ def _retraction_paper_json(paper: Any) -> dict[str, Any]:
         else checked_at,
         "doi": paper.doi,
         "doi_presence_label": paper.doi_presence_label,
+        "doi_fetchable": paper.doi_fetchable,
+        "doi_entry_type_note": paper.doi_entry_type_note,
         "doi_status": paper.doi_status,
         "doi_never_validated": paper.doi_never_validated,
         "doi_validated_at": doi_validated_at.isoformat()
@@ -1915,6 +1918,97 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
             f"re-checked {checked_now} of {total} cited papers this press "
             f"(per-press cap) — press again to continue. {report.summary()}"
         )
+    return JSONResponse(payload)
+
+
+@router.post("/drafts/{ident}/doi-fetch")
+async def doi_fetch_route(request: Request, ident: str) -> Response:
+    """ "Fetch missing DOIs" button (gr690484 phase 2) — the fix action
+    beside the retraction button. Resolves the draft's *fetchable* cites
+    (no DOI, but an arxiv/pubmed/s2 id) by identifier or title+author and
+    writes the DOI back onto the ref (``precis.ingest.doi_fetch``).
+
+    Same budget model as ``retraction_check_route``: at most
+    ``_RETRACTION_CHECK_CAP`` targets per press, picked by
+    ``select_for_check``, under ``_RETRACTION_CHECK_BUDGET_S``; the
+    returned report is a stored-state read over *every* cite, so a cite
+    with no identifier at all stays flagged. ``force=1`` bypasses the
+    per-ref attempt TTL."""
+    from precis.export.retraction import (
+        cited_paper_refs,
+        draft_retraction_report,
+        identifier_kind_for,
+        select_for_check,
+    )
+    from precis.ingest.doi_fetch import doi_fetch_need_key, fetch_missing_dois
+
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    form = await request.form()
+    force = str(form.get("force") or "") in ("1", "true", "yes", "on")
+
+    def _run() -> tuple[Any, list[str], list[Any], int]:
+        refs, unresolved = cited_paper_refs(store, ref)
+        ids = store.identifiers_for_refs([r.id for r in refs]) if refs else {}
+        targets = [
+            r
+            for r in refs
+            if not ids.get(r.id, {}).get("doi")
+            and identifier_kind_for(ids.get(r.id, {})) is not None
+        ]
+        selected = select_for_check(
+            targets, _RETRACTION_CHECK_CAP, need_key=doi_fetch_need_key
+        )
+        checks = fetch_missing_dois(
+            store, [r.id for r in selected], force=force, mailto=_crossref_mailto()
+        )
+        report = draft_retraction_report(
+            store, ref, cited_slugs=[r.slug for r in refs], check=False
+        )
+        return report, unresolved, checks, len(targets)
+
+    try:
+        report, unresolved, checks, n_targets = await asyncio.wait_for(
+            asyncio.to_thread(_run), timeout=_RETRACTION_CHECK_BUDGET_S
+        )
+    except TimeoutError:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"the DOI fetch ran past its {_RETRACTION_CHECK_BUDGET_S:.0f}s "
+                    "budget — resolved DOIs are saved; press again to continue"
+                ),
+            },
+            status_code=504,
+        )
+    except Exception:  # pragma: no cover - defensive
+        log.error("drafts: doi-fetch failed for %s", ident, exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "DOI fetch failed — see server log"},
+            status_code=502,
+        )
+
+    payload = _retraction_report_json(report)
+    payload["unresolved"] = unresolved
+    payload["doi_fetch"] = {
+        "targets": n_targets,
+        "attempted": sum(
+            c.outcome in ("resolved", "unresolved", "unchecked") for c in checks
+        ),
+        "resolved": [
+            {"ref_id": c.ref_id, "doi": c.doi, "source": c.source}
+            for c in checks
+            if c.outcome == "resolved"
+        ],
+        "unresolved": [
+            {"ref_id": c.ref_id, "note": c.note, "error": c.error}
+            for c in checks
+            if c.outcome in ("unresolved", "unchecked")
+        ],
+    }
     return JSONResponse(payload)
 
 

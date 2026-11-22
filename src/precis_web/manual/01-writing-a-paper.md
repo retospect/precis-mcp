@@ -85,6 +85,12 @@ asks the source live. You can override the block deliberately, which is
 the right call for a paper that *discusses* a retraction — but it has to
 be deliberate.
 
+In the export pane, **fetch missing DOIs** looks up cited papers with
+an arXiv, PubMed or Semantic Scholar identifier and saves matched DOIs
+to their library records. Press again to continue through a large draft.
+Citations without a persistent identifier stay flagged in the missing DOI
+list. Missing DOIs are advisory.
+
 If the draft cites claims you have signed and published as nanopubs
 (→ *Publishing claims*), the export grows a **Published claim
 artifacts** appendix automatically — frozen sentence, trusty URI,

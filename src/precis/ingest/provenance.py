@@ -641,6 +641,7 @@ def _search_crossref_works(
     author: str | None,
     mailto: str | None,
     rows: int = 5,
+    raise_on_error: bool = False,
 ) -> list[dict[str, Any]]:
     """Issue a Crossref ``/works`` query and return the ranked items.
 
@@ -652,7 +653,8 @@ def _search_crossref_works(
 
     Returns the raw ``items`` array from the response. Caller wraps
     each into a ``CandidateMatch``. Returns ``[]`` on any transport
-    error — candidate hints are advisory, never load-bearing.
+    error by default — candidate hints are advisory. DOI fetch requests
+    errors so it can distinguish a failed lookup from a definitive miss.
     """
     if not title and not author:
         return []
@@ -676,6 +678,8 @@ def _search_crossref_works(
         # List/query lane: its own limiter row and a slower backoff base.
         result = call_with_backoff(lambda: cr.works(**kwargs), service="crossref-list")
     except Exception:
+        if raise_on_error:
+            raise
         return []
     if not result or "message" not in result:
         return []

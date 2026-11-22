@@ -971,6 +971,7 @@ def test_export_pdf_falls_back_to_draft_ref_when_no_project(tmp_path) -> None:
 import precis.export.retraction as retraction_mod
 import precis_web.routes.drafts as drafts_mod
 from precis.export.retraction import CitedPaper, DraftRetractionReport
+from precis.ingest import doi_fetch, openalex_meta
 
 
 def _cited(
@@ -1669,6 +1670,74 @@ def test_retraction_status_route_surfaces_doi_completeness(
     assert [p["slug"] for p in data["doi_unvalidated"]] == ["has-doi"]
     assert "missing DOI" in data["summary"]
     assert "DOI never validated" in data["summary"]
+
+
+def test_doi_fetch_action_rotates_targets_and_rereads_all_cites(
+    draft_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refs = {
+        1: SimpleNamespace(id=1, slug="first", meta={}),
+        2: SimpleNamespace(id=2, slug="arxiv", meta={}),
+        3: SimpleNamespace(id=3, slug="stub", meta={"entry_type": "dataset"}),
+    }
+    ids = {1: {"arxiv": "2501.01234"}, 2: {"arxiv": "2501.01235"}, 3: {}}
+    lookups: list[str] = []
+
+    def lookup(identifier: str, *, email: str) -> dict[str, str] | None:
+        lookups.append(identifier)
+        return (
+            {"doi": "10.1234/resolved"} if identifier.endswith("2501.01235") else None
+        )
+
+    def write(store: Any, ref_id: int, scheme: str, value: str, **kw: Any) -> bool:
+        ids[ref_id][scheme] = value
+        return True
+
+    def patch(
+        store: Any, ref_id: int, *, meta_patch: dict[str, Any], **kw: Any
+    ) -> None:
+        refs[ref_id].meta.update(meta_patch)
+
+    view = draft_client.get("/smartdraft/nt")
+    assert view.status_code == 200
+    assert '@click="fetchMissingDois()"' in view.text
+    assert "/drafts/nt/doi-fetch" in view.text
+
+    monkeypatch.setattr(
+        retraction_mod, "cited_paper_refs", lambda *a, **kw: (list(refs.values()), [])
+    )
+    monkeypatch.setattr(drafts_mod, "_RETRACTION_CHECK_CAP", 1)
+    monkeypatch.setattr(
+        DraftFakeStore,
+        "fetch_refs_by_ids",
+        lambda self, keys: {i: refs[i] for i in keys},
+    )
+    monkeypatch.setattr(
+        DraftFakeStore,
+        "identifiers_for_refs",
+        lambda self, keys: {i: ids[i] for i in keys},
+    )
+    monkeypatch.setattr(DraftFakeStore, "set_ref_identifier", write, raising=False)
+    monkeypatch.setattr(DraftFakeStore, "update_paper_fields", patch, raising=False)
+    monkeypatch.setattr(openalex_meta, "fetch_openalex_work_by_identifier", lookup)
+
+    first = draft_client.post("/drafts/nt/doi-fetch")
+    assert first.status_code == 200
+    assert first.json()["doi_fetch"]["attempted"] == 1
+    assert doi_fetch.FETCH_ATTEMPTED_KEY in refs[1].meta
+
+    second = draft_client.post("/drafts/nt/doi-fetch")
+    assert second.status_code == 200
+    data = second.json()
+    assert data["total"] == 3
+    assert [p["slug"] for p in data["missing_doi"]] == ["first", "stub"]
+    assert [p["slug"] for p in data["doi_unvalidated"]] == ["arxiv"]
+    assert data["missing_doi"][1]["doi_presence_label"] == "no persistent identifier"
+    assert "dataset" in data["missing_doi"][1]["doi_entry_type_note"]
+    assert lookups == ["arxiv:2501.01234", "arxiv:2501.01235"]
+
+    reread = draft_client.get("/drafts/nt/retraction-status").json()
+    assert reread["missing_doi"] == data["missing_doi"]
 
 
 def test_retraction_check_route_reports_per_paper_status(
