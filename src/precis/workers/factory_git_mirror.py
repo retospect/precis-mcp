@@ -132,6 +132,10 @@ MIRROR_REFS = ("main", "prod")
 POPULATE_TIMEOUT_S = 300.0
 SYNC_TIMEOUT_S = 120.0
 
+#: How long a launch waits for a sibling's vet/init/set-aside of the shared
+#: cache (a few local git calls of at most 30 s each) before refusing.
+CACHE_LOCK_TIMEOUT_S = 120.0
+
 #: Prepended to every mirror/op git argv. The hooksPath override applies
 #: to the invoking Git process. Local transports clear command-scope
 #: config before spawning receive-pack, so its hooks still run on a push.
@@ -510,11 +514,24 @@ def _bare_defect(
 def _cache_lock(cache: Path) -> Iterator[None]:
     """Exclusive ``flock`` on ``<cache>.lock`` (a sibling file, created on
     first use and left in place) for the span of one vet/init/set-aside of
-    the shared cache. Raises :class:`OSError` when the lock file cannot be
-    opened."""
+    the shared cache. The lock is polled with ``LOCK_NB`` for at most
+    :data:`CACHE_LOCK_TIMEOUT_S`. Raises :class:`OSError` when the lock
+    file cannot be opened, and :class:`TimeoutError` (an ``OSError``) when
+    a sibling launch still holds it at the deadline."""
     lock = cache.with_name(cache.name + ".lock")
     with lock.open("a", encoding="utf-8") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + CACHE_LOCK_TIMEOUT_S
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"{lock.name} still held by another launch after "
+                        f"{CACHE_LOCK_TIMEOUT_S:.0f}s"
+                    ) from None
+                time.sleep(0.1)
         try:
             yield
         finally:

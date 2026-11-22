@@ -2114,6 +2114,33 @@ def test_concurrent_cache_vets_set_aside_a_corrupt_cache_once(
     assert (cache / "HEAD").stat().st_size > 0
 
 
+def test_cache_lock_held_past_the_deadline_raises_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling that never releases the cache lock bounds the wait: the
+    poll gives up with a ``TimeoutError`` (an ``OSError``, so populate
+    refuses) instead of hanging the launch."""
+    cache = fgm.cache_dir(tmp_path)
+    cache.parent.mkdir(parents=True)
+    monkeypatch.setattr(fgm, "CACHE_LOCK_TIMEOUT_S", 0.3)
+    with fgm._cache_lock(cache):
+        errors: list[BaseException] = []
+
+        def contend() -> None:
+            try:
+                with fgm._cache_lock(cache):
+                    pass
+            except BaseException as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=contend)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], TimeoutError)
+    assert "cache.git.lock" in str(errors[0])
+
+
 def test_drop_launch_retires_broken_tips_by_rename(tmp_path: Path) -> None:
     path = fgm.launch_tips_path(tmp_path, "td1")
     path.parent.mkdir(parents=True)

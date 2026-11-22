@@ -753,8 +753,9 @@ def test_dep_check_job_pins_the_land(
         log_path: Path,
         exit_file: Path,
         store: Any = None,
+        job_id: int | None = None,
     ) -> int:
-        seen.update(argv=argv, log=log_path, exit=exit_file)
+        seen.update(argv=argv, log=log_path, exit=exit_file, job_id=job_id)
         return 999_999
 
     monkeypatch.setattr(rs, "slice_root", lambda: tmp_path)
@@ -768,6 +769,8 @@ def test_dep_check_job_pins_the_land(
     assert ctx.failures == [] and handle["pr"] == 63
     assert seen["argv"][1:3] == ["-m", "precis.workers.job_types.dep_check"]
     assert seen["argv"][-2:] == ["--head", HEAD]
+    # The spawn holds follow the dep_check job, not the worker (gr762788).
+    assert seen["job_id"] == ctx.ref_id
     assert dc.poll(ctx, handle) is False
     res = dc.run_check(tmp_path, 63, head=HEAD, run=FakeRun())
     Path(seen["log"]).write_text(
