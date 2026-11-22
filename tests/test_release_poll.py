@@ -4609,6 +4609,17 @@ def test_without_carries_the_branch_commit_is_its_own_unit(
     rp.engine_review_blockers(store, rel=rel, file_asks=True)
     assert f"sha:{_BRANCH_X[:12]}" in _reviewer_keys(store)
     assert f"sha:{r_sha[:12]}" in _reviewer_keys(store)
+    reviewers = {
+        meta["generate"]["from"]: (rid, meta) for rid, meta in rp._reviewer_rows(store)
+    }
+    branch_rid, branch_meta = reviewers[f"sha:{_BRANCH_X[:12]}"]
+    branch = R.release_branch(str(rel["rN"]))
+    assert R.land_target_of(branch_meta) == branch
+    assert f"origin/{branch}" in _todo_text(store, branch_rid)
+    assert f"`git show {_BRANCH_X[:12]}`" in _todo_text(store, branch_rid)
+    main_rid, main_meta = reviewers[f"sha:{r_sha[:12]}"]
+    assert R.land_target_of(main_meta) is None
+    assert "origin/main" in _todo_text(store, main_rid)
 
 
 def test_a_picked_fix_on_the_branch_satisfies_the_carry_hold(

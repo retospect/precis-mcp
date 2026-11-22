@@ -483,16 +483,15 @@ def _repo_reviewer_brief(target_id: int, repo: str) -> str:
     )
 
 
-def _sha_reviewer_brief(sha12: str) -> str:
+def _sha_reviewer_brief(sha12: str, base: str) -> str:
     """The sha-keyed reviewer's brief: the commit IS the brief — no live
     plan root claims it (gr597625)."""
     return (
         "Review after land, from another lane than the builder's. Commit "
-        f"{sha12} is on main — an engine land no live plan root claims "
+        f"{sha12} is on origin/{base} — an engine land no live plan root claims "
         "(no `land_slice` job or subject handle links it, or the linked "
-        "todo's root is dead). Read `git show " + sha12 + "` and "
-        "judge whether the diff is fit for main, and does nothing it "
-        "should not.\n\n" + _REVIEWER_BRIEF_TAIL
+        f"todo's root is dead). Read `git show {sha12}` and judge whether the "
+        f"diff is fit for {base}.\n\n" + _REVIEWER_BRIEF_TAIL
     )
 
 
@@ -1210,7 +1209,9 @@ def mint_reviewer(
     return _run_body(store, plan_root, plan_root, build).ids["review"]
 
 
-def mint_sha_reviewer(store: Store, sha12: str) -> int:
+def mint_sha_reviewer(
+    store: Store, sha12: str, *, release_base: str | None = None
+) -> int:
     """Mint the sha-keyed reviewer over a hand-landed engine commit —
     nothing links it, or the linked todo has no live plan root to hang
     a td-keyed reviewer under (gr597625, td599062): a
@@ -1224,6 +1225,7 @@ def mint_sha_reviewer(store: Store, sha12: str) -> int:
     transaction (``store.tx()`` joins it as a savepoint); it mints nothing
     deferred, so there is no post-commit step. Returns the reviewer's id."""
     sha12 = sha12[:12]
+    base_meta = {_release.LAND_TARGET_KEY: release_base} if release_base else {}
 
     def build(m: _Minter) -> None:
         m.node("root", f"Engine review of the {sha12} hand land", _phase())
@@ -1232,9 +1234,10 @@ def mint_sha_reviewer(store: Store, sha12: str) -> int:
             f"Review the {sha12} engine land",
             {
                 **_generate("reviewer", f"sha:{sha12}"),
+                **base_meta,
                 "task_class": REVIEW_TASK_CLASS,
             },
-            body=_sha_reviewer_brief(sha12),
+            body=_sha_reviewer_brief(sha12, release_base or "main"),
         )
 
     with store.tx() as conn:
