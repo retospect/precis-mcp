@@ -968,7 +968,11 @@ class _Busy(AuthError):
 
 @contextmanager
 def _scrypt_slot() -> Iterator[None]:
-    if not _SCRYPT_GATE.acquire(timeout=_SCRYPT_WAIT):
+    # Bind the gate once: release must hit the semaphore that was
+    # acquired, never whatever the module global names by then (a swapped
+    # gate would otherwise free a slot another thread still holds).
+    gate = _SCRYPT_GATE
+    if not gate.acquire(timeout=_SCRYPT_WAIT):
         raise _Busy(
             503,
             "precis-web is busy verifying passwords — try again shortly.",
@@ -977,7 +981,7 @@ def _scrypt_slot() -> Iterator[None]:
     try:
         yield
     finally:
-        _SCRYPT_GATE.release()
+        gate.release()
 
 
 def authenticate_record(

@@ -1224,6 +1224,9 @@ def test_a_burst_of_wrong_guesses_is_verified_only_up_to_the_limit(
     calls = _counting_scrypt(monkeypatch, delay=0.05)
     store = FakeUserStore(user=_user(), record=hash_password("pw"))
     app = _app(store)
+    # Concurrent first requests can build separate middleware stacks with
+    # separate failure trackers. Build one before starting the burst.
+    _gate(app)
     n = 60
     barrier = threading.Barrier(n)
 
@@ -1254,6 +1257,7 @@ def test_a_burst_across_logins_is_verified_only_up_to_the_address_limit(
     calls = _counting_scrypt(monkeypatch, delay=0.02)
     store = FakeUserStore(user=_user(), record=hash_password("pw"))
     app = _app(store)
+    _gate(app)  # Build the middleware stack so all requests share one tracker.
     n = 120
     barrier = threading.Barrier(n)
 
@@ -1374,6 +1378,27 @@ def test_a_saturated_scrypt_gate_sheds_load_with_503(
     gate.release()
     # Not recorded: the right password is accepted straight away.
     assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+
+
+def test_a_slot_is_released_to_the_gate_it_was_taken_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A swapped module gate must not receive a release for a slot taken
+    from another: that would free a slot a different thread still holds
+    and admit one more concurrent derivation than ``_SCRYPT_SLOTS``."""
+    import threading
+
+    from precis_web import auth as auth_mod
+
+    real = threading.BoundedSemaphore(2)
+    other = threading.BoundedSemaphore(2)
+    assert real.acquire(timeout=1)  # another thread holds one real slot
+    monkeypatch.setattr(auth_mod, "_SCRYPT_GATE", real)
+    with auth_mod._scrypt_slot():
+        monkeypatch.setattr(auth_mod, "_SCRYPT_GATE", other)
+    assert real.acquire(timeout=0.05)  # only the one free slot came back
+    assert not real.acquire(timeout=0.05)
+    assert other.acquire(timeout=0.05) and other.acquire(timeout=0.05)
 
 
 def test_a_shed_attempt_is_served_on_a_valid_cookie(
