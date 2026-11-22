@@ -64,6 +64,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
+from precis.store import Store
 
 # HV507PG-G, 64-channel push-pull HV shift register (docs/backlog/
 # pcb-ewod-multitile.md's own dogfood choice, "the OpenDrop-proven EWOD
@@ -931,11 +932,13 @@ def _foreign_lands_on_authored_vias(pcb, store, slug: str) -> list[Any]:
 
 
 @pytest.mark.slow
-@pytest.mark.timeout(480)  # CI worst 175s x2.5 for runner variance (gr503084)
+@pytest.mark.timeout(480)  # Preserve headroom for fixture setup and legalization on CI.
 @pytest.mark.nightly(
-    reason="192 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+    reason="PCB setup and legalization remain expensive with a bounded anneal; run in the full matrix outside coverage-db (gr700454)"
 )
-def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
+def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(
+    pcb: PcbHandler, store: Store
+) -> None:
     """``op='place'`` must not park a part's solder lands on authored
     copper (docs/backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md).
 
@@ -959,7 +962,9 @@ def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
             ]
         },
     )
-    resp = pcb.put(id=slug, args={"op": "place", "seed": 1})
+    # Bound the nightly anneal. Fixed-copper legality is enforced at
+    # legalization and for every proposal, regardless of the iteration budget.
+    resp = pcb.put(id=slug, args={"op": "place", "seed": 1, "iters": 100})
     assert "enqueued" in resp.body
     _drain_one_job(store, ref.id)
 
