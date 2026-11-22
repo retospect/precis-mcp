@@ -1152,3 +1152,68 @@ def test_the_newest_red_land_is_the_conflict_path_only_when_it_stamped() -> None
     assert pd._conflict_red_land(plan, mine, 0, [land]) is True
     assert pd._conflict_red_land(plan, older, 0, [land]) is False
     assert pd._conflict_red_land(plan, none, 0, [land]) is False
+
+
+def test_a_pin_to_a_host_held_at_cap_zero_asks_and_heals(store: Store) -> None:
+    """gr752561: a queued job pinned to a live host whose ssh_node lane cap
+    is 0 can never claim — it counts as a placement gap, and the ask
+    closes once the cap is raised."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.sync_host_resource_slots(
+        _HOST, {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) VALUES (%s, now()) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (_HOST,),
+        )
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, '0') "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (f"claim.executor_cap.ssh_node.{_HOST}",),
+        )
+        conn.commit()
+    job = _slice_job(
+        store,
+        task,
+        "run_slice",
+        "queued",
+        params={"todo_id": task, "target_node": _HOST},
+        meta={
+            "adapter": "claude_p",
+            pd.HUB_PIN_KEY: {"host": _HOST, "todo": task},
+        },
+    )
+    _backdate(store, job, 35)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    cap_key = f"claim.executor_cap.ssh_node.{_HOST}"
+    assert any("ssh_node cap 0" in note and cap_key in note for note in res.notes)
+    assert all("no host advertises" not in note for note in res.notes)
+    ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
+    ask_meta = _meta(store, ask)["ask"]
+    assert "ssh_node cap 0" in ask_meta["context"]
+    assert cap_key in ask_meta["context"]
+    assert ask_meta["options"] == ["raise the cap", "keep the hold", "drop the node"]
+    body = next(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == TODO_BODY_KIND
+    )
+    assert "effective ssh_node cap is 0" in body
+    assert f"Set `{cap_key}` above 0" in body
+    assert "release the pin" in body
+    assert "scheduler/unschedulable" not in body
+    assert "provision a host" not in body
+    assert pd.run_pass(store).asks == 0
+    assert _status(store, ask) == "open"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE app_state SET value = '2' WHERE key = %s",
+            (cap_key,),
+        )
+        conn.commit()
+    pd.run_pass(store)
+    assert _status(store, ask) == "done"

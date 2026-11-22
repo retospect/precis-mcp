@@ -10257,46 +10257,55 @@ def _step_gripe_leases(store: Any, w: _Writer, res: PassResult, now: datetime) -
 
 
 def _mint_unplaced_ask(
-    store: Any, n: _Node, j: _Node, gap: frozenset[str], minutes: int
+    store: Any,
+    n: _Node,
+    j: _Node,
+    minutes: int,
+    reason: str,
+    *,
+    held_host: str | None,
 ) -> int:
-    """The ONE ruling ask a placement gap files on its node (gr657333):
-    the job's ``ServiceSpec.placement`` tokens no live host advertises
-    together — the claim gate holds it until one does, so the ask is the
-    escalation, not a block: no ``blocked-by`` edge (the queued job still
-    claims the moment a host turns up; :data:`_UNPLACED_ASK_KEY` on the
-    node's meta is the dedup mark instead). Insert shape of
-    :func:`_mint_orphan_ask`, parked on the plan root."""
+    """Escalate a queued job's placement gap without blocking its claim.
+
+    The node's :data:`_UNPLACED_ASK_KEY` dedups the ask, which is parked on
+    the plan root like :func:`_mint_orphan_ask`."""
     job_type = str(j.meta.get("job_type") or "job")
-    gap_s = ", ".join(sorted(gap))
-    context = (
-        f"job jo{j.id} ({job_type}) queued {minutes}m — no live host "
-        f"advertises {{{gap_s}}} together (td{n.id}, plan td{n.root})"
+    context = f"job jo{j.id} ({job_type}) queued {minutes}m — {reason} (td{n.id}, plan td{n.root})"
+    title = f"td{n.id}: job jo{j.id} unplaceable {minutes}m — "
+    body = f"td{n.id}'s job jo{j.id} ({job_type}) has sat queued {minutes} min. "
+    if held_host is not None:
+        options = ["raise the cap", "keep the hold", "drop the node"]
+        title += f"raise the cap on {held_host}, keep the hold, or drop the node?"
+        body += (
+            f"The job is pinned to `{held_host}`, where the effective ssh_node cap is 0. "
+            f"Set `claim.executor_cap.ssh_node.{held_host}` above 0 to lift the hold, "
+            "then pick 'raise the cap' and close this todo done. "
+            "Pick 'keep the hold' and close this todo done to acknowledge that "
+            "the job will wait while the cap stays at 0. "
+        )
+    else:
+        options = _UNPLACED_ASK_OPTIONS
+        title += "provision a host, wait, or drop the node?"
+        body += (
+            f"The claim gate holds it because {reason}. To fix the gap, "
+            "provision a host advertising the tokens (pick the first option and "
+            "close this todo done). To keep waiting — the host comes back on its "
+            "own — pick 'wait' and close this todo done. "
+            "The sweeper's scheduler/unschedulable alert is the standing page meanwhile. "
+        )
+    body += (
+        "To give up on the work, pick 'drop the node' "
+        f"and close td{n.id} STATUS:won't-do (this ask then closes won't-do with it)."
     )
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
-            "options": list(_UNPLACED_ASK_OPTIONS),
+            "options": list(options),
             "blocks": f"td{n.id}",
             "context": context[:_ASK_CONTEXT_CAP],
         }
     }
     check_ask_meta(meta)
-    title = (
-        f"td{n.id}: job jo{j.id} unplaceable {minutes}m — "
-        "provision a host, wait, or drop the node?"
-    )
-    body = (
-        f"td{n.id}'s job jo{j.id} ({job_type}) has sat queued {minutes} min: "
-        f"its placement capabilities {{{gap_s}}} are advertised by no live "
-        f"host together, so the claim gate holds it. To fix the gap, "
-        "provision a host advertising the tokens (pick the first option and "
-        "close this todo done). To keep waiting — the host comes back on its "
-        "own — pick 'wait' and close this todo done; the job claims the "
-        "moment one turns up. To give up on the work, pick 'drop the node' "
-        f"and close td{n.id} STATUS:won't-do (this ask then closes won't-do "
-        "with it). The sweeper's scheduler/unschedulable alert is the "
-        "standing page meanwhile."
-    )
     pin = j.meta.get(HUB_PIN_KEY)
     if isinstance(pin, dict) and pin.get("host"):
         body += (
@@ -10304,7 +10313,7 @@ def _mint_unplaced_ask(
             f"td{pin.get('todo')}'s work is in that host's hub "
             "(`meta.build_ref`), so no other host can run it — and a `start "
             "over` answer cannot help, its launch has to run on that host "
-            f"too. If `{pin['host']}` is gone for good, release the pin by "
+            "too. If you need to rebuild on another host, release the pin by "
             f"hand: cancel job jo{j.id} and clear `meta.build_ref` (and "
             "`meta.conflict` and `meta.conflict_tries`, and "
             f"`meta.pending_land`, if set) on td{pin.get('todo')}. That "
@@ -10352,13 +10361,24 @@ def _unplaced_asked(plan: _Plan, n: _Node, j: _Node) -> bool:
     return mark.get("job") == j.id or (ask is not None and not _closed(ask))
 
 
+def _zero_cap_hosts(conn: Any, hosts: set[str]) -> set[str]:
+    """The ``hosts`` whose ``ssh_node`` lane cap is 0 (gr752561): the
+    arming runbook's hold-at-zero suspends the lane, so a job pinned
+    there never claims."""
+    from precis.workers.executors._common import executor_lane_limits
+
+    return {h for h in hosts if executor_lane_limits(conn, "ssh_node", h)[0] == 0}
+
+
 def _step_unplaced(
     store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
 ) -> None:
     """td543917: a note per plan job queued past :data:`QUEUED_NOTE_AFTER`
     whose placement capabilities (``ServiceSpec.placement``) no live host
     advertises together — the claim gate holds it until one does. The
-    sweeper's ``scheduler/unschedulable:<id>`` alert is the page.
+    sweeper's ``scheduler/unschedulable:<id>`` alert pages for missing
+    capabilities. A pin to a host held at cap 0 also produces a note and
+    ask, even when that host advertises all required capabilities.
 
     gr657333: past :data:`QUEUED_ASK_AFTER` the node also files ONE ruling
     ask (:func:`_mint_unplaced_ask`), deduped per job on
@@ -10402,6 +10422,21 @@ def _step_unplaced(
         advertised = advertised_by_host(conn)
         dark = dark_advertised_by_host(conn)
         lane_map = lane_adapter_map(conn)
+        held = _zero_cap_hosts(
+            conn,
+            {
+                str(pin)
+                for n in plan.todos()
+                for j in plan.jobs(n)
+                if j.status == "queued"
+                and (pin := (j.meta.get("params") or {}).get("target_node"))
+            },
+        )
+
+    def held_pin(j: _Node) -> str | None:
+        pin = (j.meta.get("params") or {}).get("target_node")
+        return str(pin) if pin and str(pin) in held else None
+
     for n, mark in marked:
         ask_id = mark.get("ask")
         ask = plan.nodes.get(ask_id) if isinstance(ask_id, int) else None
@@ -10423,15 +10458,15 @@ def _step_unplaced(
         still_blocked = any(
             j.status == "queued"
             and placement_requires(j.meta)
-            and placement_gap(j.meta, advertised, lane_map)
+            and (held_pin(j) or placement_gap(j.meta, advertised, lane_map))
             for j in plan.jobs(n)
         )
         if still_blocked:
             continue
         w.comment(
             ask,
-            f"plan_dispatch: td{n.id}'s placement gap closed (job jo{mark.get('job')} "
-            "claims or ended) — this ask is moot.",
+            f"plan_dispatch: td{n.id} no longer has a queued job with a "
+            "placement gap — this ask is moot.",
         )
         w.set_status(ask, "done")
         res.notes.append(
@@ -10439,13 +10474,17 @@ def _step_unplaced(
         )
     for n, j in waiting:
         gap = placement_gap(j.meta, advertised, lane_map)
-        if not gap:
+        held_host = None if gap else held_pin(j)
+        if not held_host and not gap:
             continue
         minutes = int((now - j.created_at).total_seconds() // 60)
-        res.notes.append(
-            f"td{n.id}: job jo{j.id} queued {minutes} min — no host advertises "
-            f"{{{', '.join(sorted(gap))}}}"
+        reason = (
+            f"pinned host {held_host} has ssh_node cap 0 "
+            f"(host setting: claim.executor_cap.ssh_node.{held_host})"
+            if held_host
+            else f"no host advertises {{{', '.join(sorted(gap))}}}"
         )
+        res.notes.append(f"td{n.id}: job jo{j.id} queued {minutes} min — {reason}")
         if (
             now - j.created_at <= QUEUED_ASK_AFTER
             or _unplaced_asked(plan, n, j)
@@ -10463,7 +10502,7 @@ def _step_unplaced(
         pin = (j.meta.get("params") or {}).get("target_node")
         waiting_on = (
             None
-            if isinstance(j.meta.get(HUB_PIN_KEY), dict)
+            if held_host or isinstance(j.meta.get(HUB_PIN_KEY), dict)
             else next(
                 (
                     h
@@ -10481,11 +10520,10 @@ def _step_unplaced(
         if w.dry_run:
             res.asks += 1
             res.notes.append(
-                f"td{n.id}: would ask — job jo{j.id} unplaceable {minutes}m "
-                f"({{{', '.join(sorted(gap))}}})"
+                f"td{n.id}: would ask — job jo{j.id} unplaceable {minutes}m ({reason})"
             )
             continue
-        ask_id = _mint_unplaced_ask(store, n, j, gap, minutes)
+        ask_id = _mint_unplaced_ask(store, n, j, minutes, reason, held_host=held_host)
         w.stamp_meta(
             n,
             {
@@ -10494,6 +10532,7 @@ def _step_unplaced(
                     "at": _iso(now),
                     "job": j.id,
                     "gap": sorted(gap),
+                    **({"held_host": held_host} if held_host else {}),
                 }
             },
         )

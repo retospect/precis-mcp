@@ -45,6 +45,9 @@ approved edits against rule body text.
 vendor. Availability drives fallback so a held or saturated lane cannot
 keep a pre-land review and its build's file-overlap hold waiting when
 another lane can run the review.
+A review pinned to the hub holding its build can only claim there.
+If that host's executor cap is zero, plan dispatch raises an unplaced ask
+because capability advertisements alone cannot reveal the claim hold.
 After a coordinator ask re-arms a build, a fresh brief or an acknowledged
 answer sends the pushed head to a builder before it can return to review.
 The ask's brief wins only at a higher comment ``ord`` than the brief

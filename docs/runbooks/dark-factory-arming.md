@@ -1356,7 +1356,10 @@ matters. Operator steps; the coordinator does not run them for a builder.
    door (`put(kind='job', mode='setting', args={'key': ..., 'value': 0,
    'reason': '...'})`). Placement advertises a lane the moment its binary and
    login exist, so an installed but logged-out CLI would otherwise take a
-   build and fail it.
+   build and fail it. Before holding an existing builder at zero, let
+   its pending lands finish. Reviews and lands pinned to its hub need
+   that host to claim. A queued pin held at zero raises an unplaced ask
+   after 30 minutes when placement capabilities are otherwise satisfied.
 3. Give `coder` the slice-token directory (the operator's, setgid and
    group-writable for a general group `coder` is deliberately not in).
    Without it `run_slice` does not fail: `slice_tokens.registry_dir()`
