@@ -443,9 +443,13 @@ def test_verdict_of_picks_the_newest_check_run_on_the_release_branch() -> None:
     assert cvp.verdict_of([_run(4, "in_progress", None)], SHA, "release/r7")[0] == (
         "pending"
     )
+    # gr752626: cancelled is no verdict — only failure is red.
     assert cvp.verdict_of([_run(5, "completed", "cancelled")], SHA, "release/r7")[
         0
-    ] == ("red")
+    ] == ("cancelled")
+    assert cvp.verdict_of([_run(6, "completed", "timed_out")], SHA, "release/r7")[
+        0
+    ] == ("cancelled")
     assert cvp.verdict_of([], SHA, "release/r7")[0] == "pending"
 
 
@@ -951,6 +955,283 @@ def test_an_ordinary_poll_ignores_the_attempt(
     assert ctx.stamped["ci_verdict_poll"]["state"] == "red"
     assert "run_attempt" not in ctx.stamped["ci_verdict_poll"]
     assert gates.read_ci_verdicts(store)[-1]["verdict"] == "red"
+
+
+# ── a stopped run is no verdict (gr752626) ────────────────────────
+
+
+def test_a_cancelled_run_fires_one_rerun_and_parks_pending(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr752626: a cancelled run on the current head is no verdict — the
+    poll fires ``gh run rerun --failed`` once (the claim stamped before
+    ``gh`` runs; only the stopped legs re-run), parks pending and
+    records nothing; a second tick seeing the same attempt fires
+    nothing."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "cancelled", run_attempt=1)])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == [["run", "rerun", "31", "--failed", "--repo", "o/r"]]
+    assert gates.read_ci_verdicts(store) == []
+    assert ctx.stamped["ci_verdict_poll"]["state"] == "cancelled"
+    marker = _meta(store, mint.ids["poll"])["ci_verdict_stall"]
+    assert marker["sha"] == SHA and marker["rerun"] == "31"
+    assert any("gh run rerun 31" in c for c in _poll_comments(store, mint.ids["poll"]))
+    # The same cancelled attempt next tick: the re-run is still
+    # landing — watch, never a second fire.
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert len(gh) == 1
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_a_cancelled_run_without_a_branch_fires_no_rerun(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The head check is the re-run's supersede guard (gr685062): a
+    poll node under no recorded cut has no release branch, so a
+    cancelled run just parks — a re-run of a run it cannot prove
+    current cancels the live gate."""
+    node = int(store.insert_ref(kind="todo", slug=None, title="a poll", meta=None).id)
+    _fake_github(monkeypatch, [_run(31, "completed", "cancelled", run_attempt=1)])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(
+        store,
+        {"sha": SHA, "range": RNG, "repo": "o/r", "todo_id": node},
+    )
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == []
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_a_second_stop_files_one_hang_ask_not_a_red(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr752626: a re-run was already asked for (attempt 2+) and the run
+    ended cancelled again — a hang, reported once on the plan root as a
+    records-only ask; still no verdict, no second re-run, no red."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "cancelled", run_attempt=2)])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == []
+    assert gates.read_ci_verdicts(store) == []
+    asks = _ruling_asks(store, mint.root_id)
+    assert len(asks) == 1
+    ask_id, meta = asks[0]
+    assert meta["ask"]["options"] == ["acknowledged"]
+    assert meta["ask"]["blocks"] == "nothing"
+    assert "cancelled" in meta["ask"]["context"]
+    tags = {str(t.value) for t in store.tags_for(ask_id)}
+    assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= tags
+    marker = _meta(store, mint.ids["poll"])["ci_verdict_stall"]
+    assert marker["sha"] == SHA and "hang_asked" in marker
+    # A second tick files no second ask and still parks, never fails.
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert len(_ruling_asks(store, mint.root_id)) == 1
+    assert gh == []
+
+
+def test_a_rerun_then_a_cancelled_second_attempt_is_the_hang(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The poll's own re-run landing cancelled is the same second stop:
+    the marker says it already fired, so attempt 2 cancelled files the
+    hang ask, never another re-run."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "cancelled", run_attempt=1)])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert gh == [["run", "rerun", "31", "--failed", "--repo", "o/r"]]
+    # GitHub flipped the run to attempt 2 and it cancelled again.
+    _fake_github(monkeypatch, [_run(31, "completed", "cancelled", run_attempt=2)])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert len(gh) == 1
+    asks = _ruling_asks(store, mint.root_id)
+    assert len(asks) == 1 and "cancelled" in asks[0][1]["ask"]["context"]
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_a_refused_rerun_is_noted_not_looped(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 403 from ``gh run rerun`` is one comment plus the marker —
+    the poll keeps watching, it does not loop the re-run."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "cancelled", run_attempt=1)])
+    gh = _fake_gh(monkeypatch, rc=1, stderr="gh: Resource not accessible (HTTP 403)")
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert len(gh) == 1
+    comments = _poll_comments(store, mint.ids["poll"])
+    assert any("refused" in c and "403" in c for c in comments)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(gh) == 1
+
+
+def _github_seq(
+    monkeypatch: pytest.MonkeyPatch, seq: list[list[dict[str, Any]]]
+) -> None:
+    """``_http_get`` answering each runs-list call from ``seq`` in order
+    (the last entry repeats); the jobs listing stays an empty, readable
+    one."""
+    calls = iter(seq)
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        if url.endswith("/jobs"):
+            return SimpleNamespace(
+                status_code=200, json=lambda: {"total_count": 0, "jobs": []}
+            )
+        return SimpleNamespace(
+            status_code=200, json=lambda: {"workflow_runs": next(calls, seq[-1])}
+        )
+
+    monkeypatch.setattr(cvp, "_http_get", get)
+
+
+def test_a_newer_run_seen_at_fire_time_holds_the_rerun(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr752626 review: the runs list the verdict read is stale at fire
+    time — a last fresh read that picks a NEWER run on the same
+    branch+sha holds the fire: the re-run joins the branch's
+    concurrency group and would cancel the live gate (gr685062)."""
+    mint = _cut(store)
+    stopped = _run(31, "completed", "cancelled", run_attempt=1)
+    newer = _run(42, "in_progress", None)
+    _github_seq(monkeypatch, [[stopped], [stopped, newer]])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == []
+    assert gates.read_ci_verdicts(store) == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+
+
+def test_a_run_already_live_at_fire_time_holds_the_rerun(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same freshness read catches a re-run fired by hand between
+    the polls: the run is live again, so the poll watches the new
+    attempt — it never fires a second."""
+    mint = _cut(store)
+    _github_seq(
+        monkeypatch,
+        [
+            [_run(31, "completed", "cancelled", run_attempt=1)],
+            [_run(31, "in_progress", None, run_attempt=2)],
+        ],
+    )
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == []
+    assert gates.read_ci_verdicts(store) == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+
+
+@pytest.mark.parametrize("initial_attempt", [1, 2])
+@pytest.mark.parametrize(
+    ("conclusion", "verdict"), [("success", "green"), ("failure", "red")]
+)
+def test_a_retry_verdict_seen_at_fire_time_holds_stopped_run_actions(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_attempt: int,
+    conclusion: str,
+    verdict: str,
+) -> None:
+    mint = _cut(store)
+    stopped = _run(31, "completed", "cancelled", run_attempt=initial_attempt)
+    finished = _run(31, "completed", conclusion, run_attempt=initial_attempt + 1)
+    _github_seq(monkeypatch, [[stopped], [finished]])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == []
+    assert _ruling_asks(store, mint.root_id) == []
+    assert gates.read_ci_verdicts(store) == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+
+    # The next normal dispatch records the retry's actual verdict.
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and parks == []
+    assert gates.read_ci_verdicts(store)[-1]["verdict"] == verdict
+    assert gh == []
+    assert _ruling_asks(store, mint.root_id) == []
+
+
+def test_a_second_stop_seen_at_fire_time_is_the_hang(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The freshness read can also catch the second stop the stale list
+    missed — a hand re-run's attempt 2 ended cancelled between the
+    polls: the hang rung, not another fire."""
+    mint = _cut(store)
+    _github_seq(
+        monkeypatch,
+        [
+            [_run(31, "completed", "cancelled", run_attempt=1)],
+            [_run(31, "completed", "cancelled", run_attempt=2)],
+        ],
+    )
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert gh == []
+    assert gates.read_ci_verdicts(store) == []
+    asks = _ruling_asks(store, mint.root_id)
+    assert len(asks) == 1 and "cancelled" in asks[0][1]["ask"]["context"]
+
+
+def test_a_live_new_attempt_after_the_stop_is_attempt_free(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fired re-run flips the run live — the poll then waits
+    attempt-free on the new attempt like any live gate (gr656644)."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "in_progress", None, run_attempt=2)])
+    gh = _fake_gh(monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert ctx.stamped["pause_parks"] == 0
+    assert gh == []
+    assert gates.read_ci_verdicts(store) == []
 
 
 def test_poll_refuses_a_sha_already_on_prod(

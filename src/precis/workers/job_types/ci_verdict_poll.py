@@ -29,8 +29,8 @@ The newest check.yml run (on the release branch when one is known):
   and Reto 2026-11-19 ruled the deploy does not wait for it). A red
   soak is debt for the next ``round cut`` and a ``ci:soak`` gripe, not a
   red release.
-- completed ``success``/``skipped``/``neutral`` → ``green``; any other
-  completed conclusion → ``red``. The verdict row
+- completed ``success``/``skipped``/``neutral`` → ``green``;
+  ``failure`` → ``red``. The verdict row
   ``{sha, range, verdict, run_id, at}`` goes into ``release.ci_verdicts``
   (:func:`precis.plans.release.record_ci_verdict`, the row
   ``scripts/release`` writes) and the job succeeds — so the plan tick
@@ -62,6 +62,37 @@ Pending splits two ways (gr656644):
   the park cap: past six parks the job fails "still pending"; the tick
   re-dispatches it up to the node's ``meta.retries`` (the template sets
   3), then files the usual retry-cap ask.
+
+A completed run whose conclusion is no verdict — ``cancelled`` (a
+superseded push's concurrency kill, or a job killed at its
+``timeout-minutes``; check.yml notes "a timeout reads as 'cancelled'"),
+``timed_out``, ``stale``, ``action_required``, ``startup_failure`` — is
+never red (gr752626): the run was stopped before it judged, and
+recording r347's timeout-killed run red spent a fix iteration and
+raised a false showstopper while main was green. The gate legs still
+decide first (a cancelled soak beside a green gate is green), and the
+supersede head check runs as ever — a stopped run on an old head just
+adopts the moved head. Only on the current head does the poll fire
+``gh run rerun <id> --failed`` once — the rerun-failed-jobs endpoint:
+the stopped legs and their dependents re-run, the green legs carry
+into the new attempt — the one-shot claim is stamped before ``gh``
+runs, the no-run ladder's rule — and parks on the new attempt
+(a re-run already in flight, by hand or otherwise, reads the same:
+watch, never a second fire; a cancelled run is attempt-bounded pending
+like any non-live wait, so a re-run that never lands ends at the park
+cap and the retry-cap ask, not a red). The verdict's runs list is
+stale by fire time — a hand dispatch or a late event can start a newer
+run on the same sha — so the rung re-reads the head and the list and
+fires only while the run is still the newest stopped run on the
+current head: a re-run joins the branch's concurrency group, and
+firing on a superseded run cancels the live gate (gr685062). A run
+stopped a second time — a fresh attempt concluded
+``cancelled``/``timed_out`` again — is a hang, not a verdict: one
+records-only ask on the plan root, deduped on
+``ci_verdict_stall.hang_asked``, and the poll keeps watching. Without
+a release branch no re-run fires — the head check cannot prove the run
+is current, and re-running a superseded run cancels the live gate
+through the branch concurrency group (gr685062).
 
 ``dedupe_pending`` also holds a recurring-todo arming to one poll.
 
@@ -668,8 +699,10 @@ def _rerun_baseline(meta: dict[str, Any]) -> int | None:
 def verdict_of(
     runs: list[dict[str, Any]], sha: str, branch: str = ""
 ) -> tuple[str, str, str]:
-    """``(green|red|pending, run_id, why)`` from the newest check.yml run on
-    ``sha`` (on ``branch`` when given)."""
+    """``(green|red|cancelled|pending, run_id, why)`` from the newest
+    check.yml run on ``sha`` (on ``branch`` when given). ``cancelled``
+    covers every completed conclusion that is no verdict — only
+    ``failure`` is red (gr752626)."""
     run = _picked_run(runs, sha, branch)
     if run is None:
         where = f" on {branch}" if branch else ""
@@ -681,11 +714,13 @@ def verdict_of(
     conclusion = str(run.get("conclusion") or "")
     if conclusion in OK_CONCLUSIONS:
         return "green", run_id, f"run {run_id} concluded {conclusion}"
-    return (
-        "red",
-        run_id,
-        f"run {run_id} concluded {conclusion or 'without a conclusion'}",
-    )
+    if conclusion != "failure":
+        return (
+            "cancelled",
+            run_id,
+            f"run {run_id} concluded {conclusion or 'without a conclusion'}",
+        )
+    return "red", run_id, f"run {run_id} concluded failure"
 
 
 # ── the gate legs decide, not the soak (me580555) ─────────────────
@@ -785,7 +820,13 @@ def gate_verdict(
     A run that ended not-green whose jobs cannot be read is ``pending``,
     not ``red``: the soak alone may have turned it, and a recorded red
     is final — it would start the fix loop on a green release. The next
-    poll reads the jobs again."""
+    poll reads the jobs again.
+
+    The returned state adds ``cancelled`` to :func:`verdict_of`'s
+    contract: a completed run whose conclusion is no verdict
+    (``cancelled``, ``timed_out``, … — gr752626). It passes through
+    unreadable jobs unchanged — no verdict is recorded from it either
+    way — and the dispatch's stopped-run rung re-fires it once."""
     state, run_id, why = verdict_of(runs, sha, branch)
     if state == "green" or not run_id:
         return state, run_id, why
@@ -1003,6 +1044,184 @@ def _mint_live_ask(
     )
 
 
+def _mint_hang_ask(
+    store: Any,
+    node_id: int,
+    root: int,
+    target: dict[str, str],
+    run: dict[str, Any],
+    marker: dict[str, Any],
+) -> int:
+    """The gr752626 rung for a run stopped a second time: a re-run was
+    already asked for (by this poll or by hand) and the fresh attempt
+    ended ``cancelled``/``timed_out`` again — a hang on the run, not a
+    verdict. Names the legs that never finished when the jobs listing
+    reads."""
+    branch, sha = target["branch"], target["sha"]
+    where = branch or "the release branch"
+    run_id = str(run.get("id") or "")
+    attempt = str(run.get("run_attempt") or "?")
+    conclusion = str(run.get("conclusion") or "stopped")
+    jobs = fetch_jobs(target["repo"], run_id)
+    hung = [
+        str(j.get("name") or "")
+        for j in jobs or []
+        if str(j.get("status") or "") != "completed"
+        or str(j.get("conclusion") or "") in ("cancelled", "timed_out")
+    ]
+    legs = (
+        f"; the unfinished leg(s): {', '.join(h for h in hung if h)[:200]}"
+        if hung
+        else ""
+    )
+    title = (
+        f"{NAME}: {WORKFLOW_FILE} run {run_id} on {where} ended "
+        f"{conclusion} again ({sha[:9]})"
+    )
+    context = (
+        f"{WORKFLOW_FILE} run {run_id} on {where} for {sha[:9]} ended "
+        f"{conclusion} on attempt {attempt} — a re-run was already asked "
+        f"for; the leg is likely hung{legs}; answering executes nothing"
+    )
+    body = (
+        f"A release cut pushed {where} at {sha[:9]}, and its {WORKFLOW_FILE} "
+        f"run {run_id} ended {conclusion} — a re-run was already asked for, "
+        f"and attempt {attempt} ended {conclusion} again{legs}. A stopped "
+        "run is no verdict (gr752626): nothing was recorded and no fix "
+        "iteration was spent — a second stop on the same run is a hang, "
+        "not a red. The verdict poll keeps watching — a push supersedes "
+        "the run, a hand re-run lands a verdict; this ask only records "
+        "the hang — answering 'acknowledged' closes it."
+    )
+    return _mint_stall_ask(
+        store,
+        node_id,
+        root,
+        title=title,
+        context=context,
+        body=body,
+        marker=marker,
+    )
+
+
+def _fresh_stopped_run(target: dict[str, str], run_id: str) -> dict[str, Any] | None:
+    """Recheck the newest run's gate verdict before retrying or filing a
+    hang ask. Return the same run only while it is stopped on the current
+    release head.
+
+    A hand dispatch or a late event can start a newer run on the same
+    sha, and a hand re-run can go live or reach a verdict between reads.
+    The normal poll handles that newer evidence on its next tick. A
+    re-run joins the branch's ``cancel-in-progress`` concurrency group,
+    so firing on a superseded run cancels the live gate (gr685062).
+    An unreadable head or runs list also returns ``None``."""
+    repo, sha, branch = target["repo"], target["sha"], target["branch"]
+    if not branch or fetch_head(repo, branch) != sha:
+        return None
+    try:
+        runs = fetch_runs(repo, sha)
+    except PollError:
+        return None
+    if runs is None:
+        return None
+    fresh = _picked_run(runs, sha, branch)
+    if fresh is None or str(fresh.get("id") or "") != run_id:
+        return None
+    if gate_verdict(repo, runs, sha, branch)[0] != "cancelled":
+        return None
+    return fresh
+
+
+def _stopped_run(
+    ctx: Any,
+    todo_id: Any,
+    target: dict[str, str],
+    run: dict[str, Any],
+    *,
+    now: datetime,
+) -> list[str]:
+    """The gr752626 rung for a completed run whose conclusion is no
+    verdict (module docstring): on the current head, fire ``gh run
+    rerun --failed`` once — only the stopped legs and their dependents
+    re-run; the green legs carry into the new attempt — the one-shot
+    claim stamped BEFORE ``gh`` runs, the no-run ladder's rule, so no
+    failure path re-fires it — and the park waits on the new attempt.
+    The verdict's run is stale at fire time, so
+    :func:`_fresh_stopped_run` re-proves the head unmoved and the run
+    still newest-and-stopped first; a fresh read showing a second stop
+    lands on the hang rung, not on a fire. A run stopped on a second
+    attempt is a hang: ONE records-only ask on the plan root, deduped
+    on the marker's ``hang_asked``. Returns the actions taken for the
+    summary; ``[]`` without a poll node, a run id or a readable marker
+    — and on any write failure (the park is the verdict path; a rung
+    fault degrades to next tick, never a job failure)."""
+    if not isinstance(todo_id, int) or isinstance(todo_id, bool) or ctx.store is None:
+        return []
+    run_id = str(run.get("id") or "")
+    if not run_id:
+        return []
+    try:
+        marker = _stall_marker(ctx.store, todo_id, target["sha"])
+    except Exception:
+        log.warning("%s: stall marker read failed", NAME, exc_info=True)
+        return []
+    if marker is None:
+        return []
+    if _run_attempt(run) < 2 and marker.get("rerun") == run_id:
+        return []
+    fresh = _fresh_stopped_run(target, run_id)
+    if fresh is None:
+        return []
+    stamp = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if _run_attempt(fresh) >= 2:
+        # A re-run was already asked for — by this poll (the ``rerun``
+        # marker) or by hand (attempt 2+) — and the fresh attempt still
+        # ended stopped: a hang, not a red (gr752626).
+        if "hang_asked" in marker:
+            return []
+        try:
+            root = _release.plan_root(ctx.store, todo_id)
+            marker["hang_asked"] = stamp
+            ask_id = _mint_hang_ask(ctx.store, todo_id, root, target, fresh, marker)
+        except Exception:
+            log.warning("%s: stopped-run hang ask failed", NAME, exc_info=True)
+            return []
+        return [f"filed the hang ask td{ask_id} on plan td{root}"]
+    if marker.get("rerun") == run_id:
+        # The fresh read may still show the attempt we already retried.
+        return []
+    marker["rerun"] = run_id
+    marker["rerun_at"] = stamp
+    argv = ["run", "rerun", run_id, "--failed", "--repo", target["repo"]]
+    shown = f"gh {' '.join(argv)}"
+    try:
+        # The one-shot claim persists BEFORE gh fires — an unrecorded
+        # re-run (a crash or a failed comment write after the POST) is
+        # the re-fire bug.
+        ctx.store.stamp_ref_meta(todo_id, {STALL_META_KEY: marker})
+    except Exception:
+        log.warning("%s: re-run claim stamp failed", NAME, exc_info=True)
+        return []
+    proc = _gh(argv)
+    if proc.returncode == 0:
+        detail = (
+            f"{NAME}: {shown} — the stopped legs re-fire; the poll "
+            "keeps watching for the new attempt"
+        )
+    else:
+        lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+        tail = f": {lines[-1][:160]}" if lines else ""
+        detail = (
+            f"{NAME}: {shown} refused (exit {proc.returncode}{tail}) "
+            "— not retried; the poll keeps watching"
+        )
+    try:
+        _node_comment(ctx.store, todo_id, detail)
+    except Exception:
+        log.warning("%s: re-run note write failed", NAME, exc_info=True)
+    return [f"fired the one-shot stopped-run re-run ({shown})"]
+
+
 def _no_run_stall(
     ctx: Any, todo_id: Any, target: dict[str, str], *, now: datetime
 ) -> list[str]:
@@ -1175,7 +1394,16 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         meta["run_attempt"] = picked.get("run_attempt")
         meta["updated_at"] = picked.get("updated_at")
     before = _rerun_baseline(ctx.meta)
-    if before is not None and picked is not None and state in ("green", "red"):
+    if (
+        before is not None
+        and picked is not None
+        and state
+        in (
+            "green",
+            "red",
+            "cancelled",
+        )
+    ):
         # A completed verdict at or below the pre-rerun attempt is the
         # OLD run's verdict — GitHub has not flipped the rerun yet:
         # pending, not the rerun's verdict (gr588028 review, F4; the
@@ -1189,7 +1417,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
                 f"baseline (<= {before}) — the rerun's own verdict has "
                 "not landed"
             )
-    if state in ("green", "red") and target["branch"]:
+    if state in ("green", "red", "cancelled") and target["branch"]:
         # A fix push cancels the previous release run. Its completed
         # verdict belongs to the old head, never to the current release.
         head = fetch_head(target["repo"], target["branch"])
@@ -1208,22 +1436,30 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
                 params.pop("range", None)
                 ctx.set_meta(params=params)
         meta["state"] = state
+    stall: list[str] = []
+    now = datetime.now(UTC)
+    if state == "cancelled" and picked is not None:
+        # gr752626 (module docstring): a stopped run is no verdict — the
+        # head check above already adopted a moved head or proved this
+        # run current, so re-fire it once or report a second stop as a
+        # hang; either way the job parks pending and never records.
+        stall = _stopped_run(ctx, params.get("todo_id"), target, picked, now=now)
+        state = "pending"
     ctx.set_meta(ci_verdict_poll=meta)
     if state in ("green", "red"):
         line = _release.record_ci_verdict(ctx.store, sha, rng, state, run_id)
         ctx.append_chunk("job_summary", f"{NAME}: {sha[:9]} {state} ({why}); {line}")
         log.info("%s: %s %s", NAME, sha[:9], state)
         return
-    stall: list[str] = []
-    now = datetime.now(UTC)
     live = picked is not None and str(picked.get("status") or "") != "completed"
-    if runs is not None and picked is None:
-        # GitHub answered and no run exists for the sha: the confirmed-
-        # absent case the gr589270 ladder covers (an in-progress run or
-        # an unreadable GitHub is ordinary pending, no rungs).
-        stall = _no_run_stall(ctx, params.get("todo_id"), target, now=now)
-    elif live and picked is not None:
-        stall = _live_run_stall(ctx, params.get("todo_id"), target, picked, now=now)
+    if not stall:
+        if runs is not None and picked is None:
+            # GitHub answered and no run exists for the sha: the confirmed-
+            # absent case the gr589270 ladder covers (an in-progress run or
+            # an unreadable GitHub is ordinary pending, no rungs).
+            stall = _no_run_stall(ctx, params.get("todo_id"), target, now=now)
+        elif live and picked is not None:
+            stall = _live_run_stall(ctx, params.get("todo_id"), target, picked, now=now)
     interval = poll_interval(_run_age(picked, now))
     note = f"{NAME}: pending on {sha[:9]} ({why}); next poll in {interval}"
     if stall:

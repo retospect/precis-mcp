@@ -91,7 +91,10 @@ in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
 on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
 in `release.ci_verdicts`, parked between polls while CI runs; the verdict
 is `lint` plus the `gate-fast` legs, so the deploy does not wait for the
-run's soak legs and a red soak is not a red release) → `gate`
+run's soak legs and a red soak is not a red release; a run ended
+`cancelled`/`timed_out` — a superseded push's concurrency kill or a shard
+timeout — is no verdict: the poll re-fires its stopped legs once, and a
+second stop is a hang ask, never a red) → `gate`
 (`tests-green` on the cut's range) and `loop` (a red verdict mints the
 `release-fix` body: `digest` (`ci_red_digest`: `scripts/ci-failed` on the
 red run, the digest posted as a `brief:` on the fix) → fix → `recut`

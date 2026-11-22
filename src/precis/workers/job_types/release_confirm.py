@@ -456,10 +456,11 @@ def _fetch_head(repo: str, branch: str) -> str | None:
 
 
 def _gate_run_verdict(repo: str, sha: str, branch: str) -> str | None:
-    """Seam: ``green``/``red``/``pending`` of the newest check.yml run on
-    ``sha`` on ``branch`` (``ci_verdict_poll.gate_verdict`` — the gate
-    legs decide, as they did for the deploy); ``None`` when GitHub is
-    unreadable."""
+    """Seam: ``green``/``red``/``cancelled``/``pending`` of the newest
+    check.yml run on ``sha`` on ``branch``
+    (``ci_verdict_poll.gate_verdict`` — the gate legs decide, as they
+    did for the deploy; ``cancelled`` is a stopped run, no verdict —
+    gr752626); ``None`` when GitHub is unreadable."""
     from precis.workers.job_types import ci_verdict_poll as _cvp
 
     try:
