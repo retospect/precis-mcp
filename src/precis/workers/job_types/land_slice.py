@@ -326,7 +326,17 @@ release head only afterwards, and sibling fixes move that head in
 parallel. A conflict fails the land as an ordinary red
 (:data:`RELEASE_SYNC_CONFLICT_MARK`) whose handoff says to merge the
 release, never ``origin/main``. A slice with no target lands on main
-exactly as before.
+exactly as before — save one (gr754677): a todo stamped
+``meta.merge_back_resolver`` is a release's merge-back resolver, whose
+branch carries the release merge resolved against an older main, and
+ship's squash-and-rebase would replay that resolution against the
+moved main and re-conflict. Its launch first merges the launch
+mirror's main tip into the branch (:func:`_sync_release` with
+``onto="main"``), so ship's merge-base is main itself and the rebase
+has nothing to replay. (``origin/main`` stands in when no factory
+token resolves a mirror.) A conflict in that merge is an ordinary red
+telling the builder to merge ``origin/main``; every non-conflict sync
+failure is infra, refused attempt-free so the tick re-mints the land.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
 plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
@@ -4577,7 +4587,16 @@ _SYNC_IDENTITY = (
 )
 
 
-def _sync_release(ctx: Any, tree: Path, onto: str, todo_id: int, lane: Any) -> str:
+def _sync_release(
+    ctx: Any,
+    tree: Path,
+    onto: str,
+    todo_id: int,
+    lane: Any,
+    *,
+    mirror: Path | None = None,
+    main_tip: str | None = None,
+) -> str:
     """Merge ``origin/<onto>`` into a release fix's branch before ship
     lints it (gr738762). ``scripts/ship --onto`` lints the branch as cut
     and only then applies its diff onto the release head with
@@ -4590,26 +4609,61 @@ def _sync_release(ctx: Any, tree: Path, onto: str, todo_id: int, lane: Any) -> s
     landed commit's diff from the newer merge-base, so the land is still
     only the fix.
 
-    Skips — launching as before — when the fetch fails (ship reports the
-    network itself), the tree is dirty, git cannot answer, or the merge
-    fails without a conflict (an identity or an untracked-file refusal;
-    aborted; a merge that timed out is aborted too, so ship never gets a
-    half-merged tree). :data:`SYNC_FAILED` after failing the land on a
-    conflict (tree restored by ``merge --abort``), :data:`SYNC_MERGED`
-    when the head was merged in, else :data:`SYNC_LEFT`. What happened
-    lands on the job's ``meta.release_sync`` and a job event."""
+    ``onto == "main"`` is the merge-back resolver mode (gr754677, the
+    todo's ``meta.merge_back_resolver``). Ship squashes the branch at
+    its merge-base with main and rebases that squash onto
+    ``origin/main``; a branch that carries a merge resolution made
+    against an older main replays it as a diff vs the old base and
+    re-conflicts wherever main moved. Merging current main in first
+    makes main the merge-base, so the squash's diff is exactly the
+    resolution still needed and the rebase applies it onto its own
+    base. ``mirror``/``main_tip`` point the sync at the same main
+    snapshot ship will fetch: the launch's own mirror dir (a ``git
+    fetch`` of ``refs/heads/main`` from a local path instead of
+    ``_fetch_onto``) and its recorded tip sha, which replaces
+    ``origin/<onto>`` as the ref merged. In resolver mode a skip cannot
+    launch — ship's rebase would re-conflict the resolution — so a
+    conflict fails as an ordinary red re-briefing the builder to merge
+    ``origin/main``, while every non-conflict skip (fetch failed, git
+    unanswered, unreadable ancestry, a dirty tree, a non-conflict merge
+    failure) is infra: the land fails attempt-free (``red_class``
+    ``"resolver-sync"``) and the tick re-mints it. ``"already current"``
+    counts as :data:`SYNC_MERGED`: an up-to-date resolver squashes with
+    main as its merge-base either way.
+
+    Skips — launching as before, for a release fix — when the fetch
+    fails (ship reports the network itself), the tree is dirty, git
+    cannot answer, or the merge fails without a conflict (an identity
+    or an untracked-file refusal; aborted; a merge that timed out is
+    aborted too, so ship never gets a half-merged tree).
+    :data:`SYNC_FAILED` after failing the land on a conflict (tree
+    restored by ``merge --abort``), :data:`SYNC_MERGED` when the head
+    was merged in, else :data:`SYNC_LEFT`. What happened lands on the
+    job's ``meta.release_sync`` and a job event."""
+    # For a merge-back resolver, integrate against the same snapshot ship
+    # will fetch. With main already an ancestor, ship's squash uses main
+    # as its parent and its initial rebase has no commits to replay.
+    resolver = onto == "main"
     note = ""
     outcome = SYNC_LEFT
     merging = False
     try:
-        if not _fetch_onto(tree, onto):
+        fetched = (
+            _git(["fetch", "--quiet", str(mirror), "refs/heads/main"], tree).returncode
+            == 0
+            if mirror is not None
+            else _fetch_onto(tree, onto)
+        )
+        if not fetched:
             note = "skipped: fetch failed"
         else:
-            ref = f"origin/{onto}"
+            ref = main_tip or f"origin/{onto}"
             anc = _git(["merge-base", "--is-ancestor", ref, "HEAD"], tree).returncode
             dirty = _git(["status", "--porcelain", "--untracked-files=no"], tree)
             if anc == 0:
                 note = "already current"
+                if resolver:
+                    outcome = SYNC_MERGED
             elif anc != 1:
                 note = "skipped: ancestry unreadable"
             elif dirty.returncode != 0 or dirty.stdout.strip():
@@ -4642,6 +4696,21 @@ def _sync_release(ctx: Any, tree: Path, onto: str, todo_id: int, lane: Any) -> s
                 note += "; merge --abort did not answer either"
     ctx.set_meta(release_sync=note)
     ctx.append_chunk("job_event", f"land_slice: release sync onto {onto}: {note}")
+    if resolver and outcome == SYNC_LEFT:
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            f"could not sync merge-back resolver onto main ({note})",
+            handoff=(f"land FAILED: could not sync the resolver onto main ({note})."),
+            # A non-conflict sync failure is infra, not the work —
+            # re-mint the land, never a builder (gr754677 review). Only
+            # a real conflict (``_release_sync_conflict``) burns an
+            # attempt.
+            attempt_free="resolver-sync",
+            folder=FOLDER_DROP,
+        )
+        return SYNC_FAILED
     return outcome
 
 
@@ -4650,10 +4719,29 @@ def _release_sync_conflict(
 ) -> None:
     """Fail the land for a conflict merging ``origin/<onto>`` into the
     branch: an ordinary red (an attempt), the handoff naming the paths
-    and the right base — a merge of the release, never ``origin/main``
-    and never a rebase of pushed commits."""
+    and the right base. For a release fix that base is the release —
+    never ``origin/main`` and never a rebase of pushed commits. For a
+    merge-back resolver (``onto == "main"``, gr754677) a merge of
+    ``origin/main`` is exactly what ran, so the handoff says to merge
+    ``origin/main`` into the slice again, keeping both main's newer work
+    and the release fixes."""
     listed = ", ".join(paths)
     ctx.set_meta(release_sync=f"conflict in {listed}")
+    if onto == "main":
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            f"merge-back resolver conflicts with moved main in {listed}",
+            handoff=(
+                f"land FAILED: merging origin/main into the resolver conflicts "
+                f"in {listed}. Merge origin/main into the slice, preserve both "
+                "main's newer changes and the release fixes, then commit "
+                "the resolution and hand off again."
+            ),
+            folder=FOLDER_DROP,
+        )
+        return
     _fail(
         ctx,
         todo_id,
@@ -4912,6 +5000,23 @@ def _launch_ship(
                 ctx.store.stamp_ref_meta(todo_id, {FACTORY_MIRROR_KEY: None})
             except Exception:
                 pass
+        if onto is None and number is None and todo_id:
+            todo = ctx.store.get_ref(kind="todo", id=todo_id)
+            if (
+                todo is not None
+                and (todo.meta or {}).get("merge_back_resolver")
+                and _sync_release(
+                    ctx,
+                    tree,
+                    "main",
+                    todo_id,
+                    lane,
+                    mirror=mirror,
+                    main_tip=(mirror_tips or {}).get("main"),
+                )
+                == SYNC_FAILED
+            ):
+                return None
         # A release fix skips main's drift probe: ship's release lane
         # skips its drift guard too — the release push runs its own CI.
         pre: dict[str, Any] = (

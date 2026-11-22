@@ -1912,6 +1912,146 @@ def test_real_git_a_clean_release_merge_brings_the_sibling_fix_in(
     assert ctx.meta_set["release_sync"] == f"synced onto {tip[:12]}"
 
 
+@pytest.mark.parametrize("main_conflicts", [False, True])
+def test_resolver_launch_merges_main_into_the_recorded_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, main_conflicts: bool
+) -> None:
+    tree = _real_release_tree(tmp_path, monkeypatch, sibling_file="b.txt")
+    seed = tmp_path / "seed"
+
+    def git(cwd: Path, *args: str) -> str:
+        result = _tree_git(cwd, *args)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    git(tree, "push", "origin", "HEAD:main")
+    git(tree, "fetch", "origin", "release/r7")
+    release_head = git(tree, "rev-parse", "FETCH_HEAD")
+    assert _tree_git(tree, "merge", "--no-edit", release_head).returncode == 1
+    (tree / "b.txt").write_text("resolved\n", encoding="utf-8")
+    git(tree, "add", "b.txt")
+    git(tree, "commit", "-m", "Resolve release merge")
+    resolved = git(tree, "rev-parse", "HEAD")
+
+    git(seed, "fetch", "origin", "main")
+    git(seed, "checkout", "--detach", "FETCH_HEAD")
+    (seed / ("b.txt" if main_conflicts else "a.txt")).write_text(
+        "new main\n", encoding="utf-8"
+    )
+    git(seed, "commit", "-am", "Advance main")
+    git(seed, "push", "origin", "HEAD:main")
+    main = git(seed, "rev-parse", "HEAD")
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(land_slice._factory_git, "factory_git_token", lambda: None)
+    monkeypatch.setattr(land_slice, "_finish_if_landed", lambda *args: False)
+    monkeypatch.setattr(land_slice, "_drop_land_folder", lambda *a, **kw: None)
+    monkeypatch.setattr(land_slice, "_drift_preflight", lambda *a, **kw: {"ran": False})
+    monkeypatch.setattr(land_slice, "_sweep_stacks", lambda **kw: [])
+    launched: list[list[str]] = []
+
+    def launch(argv: list[str], **kw: Any) -> int:
+        # Ship's squash uses this merge base. Main already being the base
+        # means its sync has no release commits or resolution to replay.
+        assert git(tree, "merge-base", "origin/main", "HEAD") == main
+        assert git(tree, "rev-parse", "HEAD^1") == resolved
+        assert git(tree, "rev-parse", "HEAD^2") == main
+        assert (tree / "a.txt").read_text(encoding="utf-8") == "new main\n"
+        assert (tree / "b.txt").read_text(encoding="utf-8") == "resolved\n"
+        launched.append(argv)
+        return 4242
+
+    monkeypatch.setattr(land_slice, "_launch", launch)
+    store = _release_store()
+    store.add_todo(42, meta={"merge_back_resolver": "r7"})
+    ctx = _Ctx(store, {"todo_id": 42, "branch": "slice/42"})
+    handle = land_slice._launch_ship(ctx, tree, "--quick", SUBJECT)
+    if main_conflicts:
+        assert handle is None and not launched
+        assert ctx.failure is not None and "b.txt" in ctx.failure
+        assert "Merge origin/main into the slice" in store.comments(42)[-1]
+        # A conflict is the work's to redo: an ordinary red, an attempt
+        # burned — the infra skips below are the attempt-free ones.
+        assert "attempt_free" not in ctx.meta_set
+        assert git(tree, "rev-parse", "HEAD") == resolved
+        assert git(tree, "status", "--porcelain") == ""
+    else:
+        assert handle is not None and launched
+        assert ctx.failure is None
+
+
+@pytest.mark.parametrize("skip", ["fetch", "dirty", "merge-fail", "timeout"])
+def test_resolver_sync_infra_skip_is_attempt_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skip: str
+) -> None:
+    """gr754677 review: a resolver sync that cannot merge main for a
+    non-conflict, infra cause fails the land attempt-free — the tick
+    re-mints the land, no attempt is burned and no builder is briefed.
+    Only a real conflict charges an attempt."""
+    tree = _real_release_tree(tmp_path, monkeypatch, sibling_file="a.txt")
+    seed = tmp_path / "seed"
+
+    def git(cwd: Path, *args: str) -> str:
+        result = _tree_git(cwd, *args)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    # main moves ahead of the slice, so the sync has something to merge.
+    git(seed, "fetch", "origin", "main")
+    git(seed, "checkout", "--detach", "FETCH_HEAD")
+    (seed / "a.txt").write_text("new main\n", encoding="utf-8")
+    git(seed, "commit", "-am", "Advance main")
+    git(seed, "push", "origin", "HEAD:main")
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(land_slice._factory_git, "factory_git_token", lambda: None)
+    monkeypatch.setattr(land_slice, "_finish_if_landed", lambda *args: False)
+    monkeypatch.setattr(land_slice, "_drop_land_folder", lambda *a, **kw: None)
+    monkeypatch.setattr(land_slice, "_drift_preflight", lambda *a, **kw: {"ran": False})
+    monkeypatch.setattr(land_slice, "_sweep_stacks", lambda **kw: [])
+    launched: list[list[str]] = []
+
+    def launch(argv: list[str], **kw: Any) -> int:
+        launched.append(argv)
+        return 4242
+
+    monkeypatch.setattr(land_slice, "_launch", launch)
+
+    base_git = land_slice._git
+    if skip == "fetch":
+        git(tree, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+    elif skip == "dirty":
+        (tree / "b.txt").write_text("dirty\n", encoding="utf-8")
+    else:
+
+        def flaky(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+            if "merge" in args and "--abort" not in args:
+                if skip == "timeout":
+                    raise subprocess.TimeoutExpired(args, 300)
+                return _proc("merge exploded", rc=1)
+            return base_git(args, cwd)
+
+        monkeypatch.setattr(land_slice, "_git", flaky)
+
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"merge_back_resolver": "r7", "op": "run_slice"},
+    )
+    ctx = _Ctx(store, {"todo_id": 42, "branch": "slice/42", "lane": "claude-sub"})
+    handle = land_slice._launch_ship(ctx, tree, "--quick", SUBJECT)
+    assert handle is None and launched == []
+    assert ctx.failure is not None
+    assert "could not sync merge-back resolver onto main" in ctx.failure
+    assert ctx.meta_set["release_sync"].startswith("skipped:")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "resolver-sync"
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(tag.startswith("attempt:") for tag in tags)
+
+
 def test_real_git_a_conflicting_release_merge_is_aborted_and_fails_the_land(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

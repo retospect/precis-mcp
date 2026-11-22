@@ -35,7 +35,9 @@ the lands' path).
   the release fixes' intent onto main, resolving the conflicting hunks
   (its brief names the merged head sha, not the possibly-retired ref) —
   and a second ``merge_back`` node blocked-by it with
-  ``strategy="ours"``. ``scripts/ship`` squashes every land into one
+  ``strategy="ours"``. The lander merges current main into the resolver
+  branch first so a recorded merge resolution is integrated as a tree
+  against main. ``scripts/ship`` squashes the result into one
   non-merge commit, so the resolver alone can never make the release
   head an ancestor of main; the ours-merge
   (``git merge --no-ff -s ours``, message ``Merge release/r<N> fix
@@ -133,9 +135,9 @@ def _resolver_body(rn: str, cut: str, head: str, files: list[str]) -> str:
         "on main, so the branch may already be gone — then read the fixes "
         f"with `git log -p {since}`, and apply each one's change to main, "
         "resolving the conflicting hunks so BOTH sides' intent survives "
-        "(the release's fixes and main's later work). Commit plain "
-        "commits, not a merge: the lander squashes the slice onto main "
-        "like any other. Run the tests the conflicted files touch. A fix "
+        "(the release's fixes and main's later work). Commit the resolved "
+        "changes. The lander merges current main into the slice before "
+        "squashing. Run the tests the conflicted files touch. A fix "
         "main already carries needs nothing. Once this lands, the plan's "
         f"next merge-back node records release/{rn} as merged into main "
         "(an ours-merge on the same head, no content); the next release "
