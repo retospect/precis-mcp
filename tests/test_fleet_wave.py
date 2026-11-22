@@ -2261,6 +2261,84 @@ def test_land_retries_past_a_lock_naming_its_own_session(
     assert "not a builder" in proc.stdout
 
 
+def _lock_reason(env: dict[str, str], wt: Path) -> str:
+    """The tree's ``locked`` porcelain line, or "" when it is not locked."""
+    out = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    cur = ""
+    for ln in out.splitlines():
+        if ln.startswith("worktree "):
+            cur = ln[len("worktree ") :]
+        elif ln.startswith("locked") and Path(cur).resolve() == wt.resolve():
+            return ln
+    return ""
+
+
+#: A fake ship that leaves the tree locked with FAKE_LOCK_PID's pid and
+#: then fails — the state ship's reassert_session_lock leaves behind on a
+#: failed run (gr753258).
+FAKE_SHIP_LOCK_AND_FAIL = f"""#!{sys.executable}
+import json, os, subprocess, sys
+with open(os.environ["FAKE_SHIP_LOG"], "w", encoding="utf-8") as fh:
+    json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd()}}, fh)
+subprocess.run(
+    ["git", "worktree", "lock", "--reason",
+     "pid " + os.environ["FAKE_LOCK_PID"], os.getcwd()],
+    cwd=os.environ["CWD"], check=True,
+)
+sys.stdout.write("✖ ruff check failed\\n")
+sys.exit(1)
+"""
+
+
+def test_land_releases_the_lock_a_failed_ship_leaves(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """gr753258: a failed land leaves the builder tree's worktree lock held
+    by the calling session's pid, so the builder's relaunch is refused
+    ("worktree held by live pid") until a manual unlock. The land must
+    release a lock whose pid is its own before returning."""
+    wt = _ship_tree(env, "b15", FAKE_SHIP_LOCK_AND_FAIL)
+    # pytest's pid stands in for the coordinator session: it is in the
+    # fleet-wave process's ancestor chain, like the real session's pid.
+    lenv = {**_land_env(env, tmp_path), "FAKE_LOCK_PID": str(os.getpid())}
+    proc = _run(lenv, "land", "b15")
+    assert proc.returncode == 1
+    assert _ship_call(tmp_path) is not None
+    assert _lock_reason(env, wt) == ""
+    assert "released" in proc.stdout
+
+
+def test_land_keeps_a_failed_ship_lock_that_is_not_its_own(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """The release touches only the land's own lock: a lock naming a pid
+    outside its ancestor chain is a real holder and is left alone."""
+    wt = _ship_tree(env, "b16", FAKE_SHIP_LOCK_AND_FAIL)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lenv = {**_land_env(env, tmp_path), "FAKE_LOCK_PID": str(other.pid)}
+        proc = _run(lenv, "land", "b16")
+        assert proc.returncode == 1
+        reason = _lock_reason(env, wt)
+        assert str(other.pid) in reason
+        assert "released" not in proc.stdout
+    finally:
+        subprocess.run(
+            ["git", "worktree", "unlock", str(wt)],
+            cwd=env["CWD"],
+            check=False,
+        )
+        other.kill()
+        other.wait()
+
+
 FAKE_SHIP_FAIL_ONCE = f"""#!{sys.executable}
 import os, sys
 from pathlib import Path

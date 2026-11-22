@@ -181,7 +181,9 @@ a ship running in it, or that has an active subagent task — and any run
 outside ``FLEET_COORDINATOR_TREE``. A lock whose pid is in the land's own
 ancestor chain is the calling session itself — what a failed land's ship
 re-assertion leaves behind (gr574979) — so a retry is not refused by it,
-and a failed run whose log shows a bare ``remote rejected … (failed)``
+and a failed run releases that lock before returning, leaving the tree
+free for the builder's relaunch (gr753258). A failed run whose log shows
+a bare ``remote rejected … (failed)``
 push (the transient host-error class ship's race classifier declines) is
 retried once.
 
@@ -3257,6 +3259,25 @@ def _own_session_lock(reason: str) -> bool:
     return m is not None and int(m.group(1)) in _ancestor_pids()
 
 
+def _release_own_land_lock(f: Fleet, tree: Path) -> bool:
+    """Unlock ``tree`` when its lock names a pid in this invocation's own chain.
+
+    gr753258: ship's reassert_session_lock resolves its own caller — the
+    land's coordinator session — and re-locks the tree with that pid on
+    every run; when the ship fails, the lock stays and the builder's
+    relaunch is refused ("worktree held by live pid", read as another
+    session) until a manual ``git worktree unlock``. That lock is the
+    land's own, not a builder's, so a failed land releases it. A foreign
+    live-session lock was refused before the ship ran and is left
+    untouched; a successful run keeps ship's lock, which ``close``
+    releases with the tree."""
+    reason = _registered_trees(f).get(tree)
+    if not reason or not _own_session_lock(reason):
+        return False
+    git("worktree", "unlock", str(tree), cwd=f.main)
+    return True
+
+
 #: A bare ``[remote rejected] … (failed)`` — the host's no-reason internal
 #: receive error — is the one transient push class ship dies on: its
 #: _push_is_lost_race declines every remote-rejected as terminal. A hook or
@@ -3279,6 +3300,9 @@ def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
 
     No cherry-pick, no new branch: a branch lands only by ship run in its
     own tree, so the builder's branch is the thing that becomes merged.
+    A failed run releases the worktree lock its ship re-asserted with the
+    calling session's pid (gr753258) — that lock is the land's own, and it
+    would otherwise refuse the builder's relaunch as a live other session.
     """
     if why := _coordinator_refusal():
         print(f"fleet-wave: REFUSED: {why}", file=sys.stderr)
@@ -3362,6 +3386,11 @@ def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
             rc = run_ship()
     print(f"log: {log}")
     print(f"exit: {rc}")
+    if rc and _release_own_land_lock(f, tree):
+        print(
+            f"released {a.tree}'s worktree lock — left by this land's own "
+            "failed ship, not a builder; the tree is free for a relaunch"
+        )
     return rc
 
 
