@@ -12965,13 +12965,14 @@ def test_remote_diversity_lanes_respects_claim_placement(
 ) -> None:
     from precis.workers.executors import _common
 
+    gate = ("gate_image", "uv_bin")
     monkeypatch.setenv("PRECIS_NODE", "maple")
     monkeypatch.setattr(
         _common,
         "advertised_by_host",
         lambda _conn: {
-            "maple": {"claude_bin", "repo_checkout", "git"},
-            "birch": {"codex_bin", "repo_checkout", "git"},
+            "maple": {"claude_bin", "repo_checkout", "git", *gate},
+            "birch": {"codex_bin", "repo_checkout", "git", *gate},
             "cedar": {"devin_bin", "git"},
         },
     )

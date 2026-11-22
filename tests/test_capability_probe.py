@@ -969,3 +969,41 @@ def test_repo_probe_stays_quiet_when_env_unset_or_valid(
         assert probe() == 1
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
     cap._SLICE_REPOS_WARNED.clear()
+
+
+def test_gate_image_probe_retracts_without_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr701559: a host missing either gate image advertises ``gate_image``
+    as 0 (retract); both present is 1; an unaskable daemon is unknown."""
+    monkeypatch.delenv(cap.GATE_PREFLIGHT_ENV, raising=False)
+    present: dict[str, bool | None] = {}
+    monkeypatch.setattr(cap, "_image_present", lambda image: present[image])
+    present.update({"precis-mcp:premodels": True, "precis-dev": True})
+    assert cap._probe_gate_image() == 1
+    present["precis-dev"] = False
+    assert cap._probe_gate_image() == 0
+    present["precis-dev"] = None
+    assert cap._probe_gate_image() is None
+
+
+def test_gate_host_lack_names_what_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(cap.GATE_PREFLIGHT_ENV, raising=False)
+    monkeypatch.setattr(cap, "_image_present", lambda image: image != "precis-dev")
+    assert cap.gate_host_lack() == "image precis-dev"
+    monkeypatch.setattr(cap, "_image_present", lambda image: True)
+    monkeypatch.setattr(cap, "_probe_uv_bin", lambda: 0)
+    assert cap.gate_host_lack() == "tool uv"
+    monkeypatch.setattr(cap, "_probe_uv_bin", lambda: 1)
+    assert cap.gate_host_lack() is None
+    monkeypatch.setattr(cap, "_image_present", lambda image: None)
+    assert cap.gate_host_lack() is None
+
+
+def test_gate_tokens_gate_land_and_run_placement() -> None:
+    from precis.workers.registry import SERVICES_BY_NAME
+
+    for name in ("land_slice", "run_slice"):
+        assert {"gate_image", "uv_bin"} <= SERVICES_BY_NAME[name].placement

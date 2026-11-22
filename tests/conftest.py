@@ -885,6 +885,13 @@ def _reset_connection_scope() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _gate_preflight_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite runs without the gate images or docker: the land/run
+    submit preflight (gr701559) and the gate probes read present."""
+    monkeypatch.setenv("PRECIS_GATE_PREFLIGHT", "off")
+
+
+@pytest.fixture(autouse=True)
 def _release_deploy_clock_outside_window(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin ``release_deploy``'s clock to midday UTC (gr697664): its dispatch
     hold reads the wall clock against ``release.no_release_windows``, so a

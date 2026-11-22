@@ -125,6 +125,9 @@
     append: true
   become: true
 
+- name: Gate images on the builder's docker (gr701559)
+  ansible.builtin.import_tasks: gate_images.yml
+
 # ── bwrap sandbox (Ubuntu 24.04 AppArmor userns restriction) ─────────
 # codex sandboxes every session with bwrap, which needs an unprivileged
 # user namespace. Ubuntu 24.04 sets kernel.apparmor_restrict_unprivileged_

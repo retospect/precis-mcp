@@ -7440,6 +7440,13 @@ def submit(ctx: Any, spec: Any) -> Any:
     if reason is not None:
         ctx.record_failure(reason)
         return None
+    # gr701559: a host without the gate images or uv cannot run scripts/test.
+    from precis.workers import capability_probe
+
+    lack = capability_probe.gate_host_lack()
+    if lack is not None:
+        ctx.record_failure(f"run_slice: host lacks {lack}")
+        return None
     reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))
     if reason is not None:
         ctx.record_failure(reason)

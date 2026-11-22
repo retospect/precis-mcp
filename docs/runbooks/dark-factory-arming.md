@@ -1374,6 +1374,12 @@ matters. Operator steps; the coordinator does not run them for a builder.
    for `precis-dev` and `precis-mcp:premodels`. To bootstrap missing tags
    during deployment, set `precis_deploy_gate_image_build: true` with at
    least 60 GB free in the VM and GitHub authentication for `deploy`.
+   A builder's docker must hold both images too: the heartbeat advertises
+   `gate_image` (and `uv_bin`) only then, and `land_slice`/`run_slice` place
+   only on hosts that advertise them. Set `precis_builder_gate_image_source`
+   to a host that has them and the builder role loads the missing ones
+   (`docker save | docker load`). A job that reaches a host without them
+   fails at once with `host lacks <image|tool>` and re-mints elsewhere.
 2. Hold the builder at zero before anything can claim: set the cap key
    `claim.executor_cap.ssh_node.<host>-coder` to 0 through the claim-setting
    door (`put(kind='job', mode='setting', args={'key': ..., 'value': 0,

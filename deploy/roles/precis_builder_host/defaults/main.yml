@@ -174,3 +174,12 @@ precis_builder_colima_start_flags: >-
   {{ (' --cpu ' ~ (precis_builder_colima_cpu | int(0))) if ((precis_builder_colima_cpu | int(0)) > 0) else ''
   }}{{ (' --memory ' ~ (precis_builder_colima_memory | int(0))) if ((precis_builder_colima_memory | int(0)) > 0) else ''
   }}{{ (' --disk ' ~ (precis_builder_colima_disk | int(0))) if ((precis_builder_colima_disk | int(0)) > 0) else '' }}
+
+# The images the gate needs on the builder's docker (gr701559). The heartbeat
+# advertises `gate_image` only when both exist; gate_images.yml loads the
+# missing ones from precis_builder_gate_image_source (an inventory host that
+# holds them, ssh-reachable from this one; empty = report only).
+precis_builder_gate_images:
+  - precis-mcp:premodels
+  - precis-dev
+precis_builder_gate_image_source: ""

@@ -426,6 +426,86 @@ def _probe_repo_checkout() -> int | None:
     return 1 if root.is_dir() and (root / ".git").exists() else 0
 
 
+#: The images ``scripts/ship`` / ``scripts/test`` need on the local docker
+#: daemon: compose's ``additional_contexts: docker-image://precis-mcp:premodels``
+#: dies on a host without the first, the gate container is the second
+#: (gr701559).
+GATE_IMAGES: tuple[str, ...] = ("precis-mcp:premodels", "precis-dev")
+#: ``PRECIS_GATE_PREFLIGHT=off`` skips the gate-host checks (every gate
+#: probe answers present): for a host that gates elsewhere, and the test
+#: suite, which runs without docker.
+GATE_PREFLIGHT_ENV = "PRECIS_GATE_PREFLIGHT"
+
+
+def gate_preflight_off() -> bool:
+    return os.environ.get(GATE_PREFLIGHT_ENV, "").strip().lower() in (
+        "off",
+        "0",
+        "no",
+        "false",
+    )
+
+
+def _image_present(image: str) -> bool | None:
+    """``True``/``False`` whether the local daemon holds ``image``;
+    ``None`` when the daemon could not be asked (timeout, spawn error)."""
+    # ``docker`` itself: the gate is ``docker compose`` (scripts/ship), and a
+    # podman-only host cannot run it.
+    if shutil.which("docker") is None:
+        return False
+    try:
+        done = subprocess.run(
+            ["docker", "inspect", "--type", "image", image],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.returncode == 0
+
+
+def _probe_gate_image() -> int | None:
+    """Both :data:`GATE_IMAGES` exist locally — the host can run
+    ``scripts/ship`` and ``scripts/test``. ``0`` when either is missing
+    (retract: a bare host must never be handed a land or a build);
+    ``None`` when the daemon could not be asked (leave the row)."""
+    if gate_preflight_off():
+        return 1
+    unknown = False
+    for image in GATE_IMAGES:
+        present = _image_present(image)
+        if present is False:
+            return 0
+        unknown = unknown or present is None
+    return None if unknown else 1
+
+
+def _probe_uv_bin() -> int:
+    """``uv`` on the PATH the slice jobs run with (user ``~/.local/bin``
+    included, as ``run_slice.path_with_user_uv`` builds it)."""
+    if gate_preflight_off():
+        return 1
+    from precis.workers.job_types import run_slice
+
+    path = run_slice.path_with_user_uv(os.environ.get("PATH"))
+    return 1 if shutil.which("uv", path=path) else 0
+
+
+def gate_host_lack() -> str | None:
+    """What this host lacks to run a gate — ``"image precis-dev"``,
+    ``"tool uv"`` — or ``None`` when it has all of it (or could not tell:
+    an unreadable daemon never refuses). The land/run submit preflight."""
+    if gate_preflight_off():
+        return None
+    for image in GATE_IMAGES:
+        if _image_present(image) is False:
+            return f"image {image}"
+    if _probe_uv_bin() == 0:
+        return "tool uv"
+    return None
+
+
 def _probe_anki_sync() -> int:
     """``1`` when THIS process can run the AnkiWeb sync
     (enabled, mirror configured, and the ``anki`` wheel importable), else ``0``."""
@@ -694,6 +774,8 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "clones_dir": _probe_clones_dir,
     "claude_config_mount": _probe_claude_config,
     "repo_checkout": _probe_repo_checkout,
+    "gate_image": _probe_gate_image,
+    "uv_bin": _probe_uv_bin,
     "autocatpath": _probe_autocatpath,
     "has_mace": _probe_has_mace,
     "latexmk": _probe_latexmk,

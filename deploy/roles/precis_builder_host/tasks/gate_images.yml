@@ -1,0 +1,60 @@
+---
+# The gate images `scripts/ship` / `scripts/test` need on this builder's
+# docker daemon (gr701559): compose's additional_contexts resolves
+# docker-image://precis-mcp:premodels and the gate runs in precis-dev. A host
+# without them is not advertised for land_slice/run_slice (the `gate_image`
+# heartbeat capability), so this is what flips it on.
+#
+# Opt-in: set precis_builder_gate_image_source to an inventory host that has
+# both images and ssh trust to this one; the images stream `docker save | docker
+# load` (tens of GB: the first play takes a while). Unset, the task only
+# reports what is missing and the operator seeds the host by hand.
+
+- name: The builder's docker socket env
+  ansible.builtin.set_fact:
+    _builder_docker_env: >-
+      {{ {'DOCKER_HOST': 'unix://' + precis_builder_home + '/.colima/docker.sock'}
+         if (os_family == 'darwin' and (precis_builder_manage_user | bool))
+         else ({'DOCKER_HOST': _builder_docker_host,
+                'XDG_RUNTIME_DIR': '/run/user/' ~ _builder_uid}
+               if (precis_builder_rootless_docker | bool) else {}) }}
+
+- name: Which gate images does the builder's docker lack
+  ansible.builtin.command: docker image inspect {{ item }}
+  loop: "{{ precis_builder_gate_images }}"
+  register: _builder_gate_probe
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "{{ precis_builder_user }}"
+  environment: "{{ _builder_docker_env | default({}) }}"
+
+- name: Load the missing gate images from the source host
+  when:
+    - (precis_builder_gate_image_source | default('')) | length > 0
+    - item.rc != 0
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    ssh {{ precis_builder_gate_image_source }} docker save {{ item.item }} | docker load
+  args:
+    executable: /bin/bash
+  loop: "{{ _builder_gate_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  become: true
+  become_user: "{{ precis_builder_user }}"
+  environment: "{{ _builder_docker_env | default({}) }}"
+  changed_when: true
+
+- name: Say what is still missing (the host stays unadvertised for lands)
+  when:
+    - (precis_builder_gate_image_source | default('')) | length == 0
+    - item.rc != 0
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} lacks {{ item.item }}: no land_slice/run_slice
+      until it is loaded (set precis_builder_gate_image_source, or
+      scripts/build-image precis-dev on the host).
+  loop: "{{ _builder_gate_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"

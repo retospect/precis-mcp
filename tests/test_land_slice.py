@@ -9897,3 +9897,20 @@ def test_land_signal_lands_on_the_build_job_its_ref_names(
         ctx, {"todo_id": 42, "ref": "refs/factory/build/42/901"}, "red"
     )
     assert "land signal on job 901 failed" in caplog.text
+
+
+def test_submit_refuses_a_host_lacking_the_gate_on_the_first_attempt(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr701559: no premodels/precis-dev image or no uv → the land fails at
+    once (a clean unclaim, no defer loop), before any git or ship call."""
+    monkeypatch.setattr(
+        land_slice._capability_probe, "gate_host_lack", lambda: "image precis-dev"
+    )
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed"
+    assert ctx.failure is not None and "host lacks image precis-dev" in ctx.failure
+    assert seams["git"] == [] and seams["launch"] == []

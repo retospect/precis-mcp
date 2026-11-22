@@ -436,6 +436,7 @@ from precis.plans.todo_chain import has_landed_comment, source_of_root
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import admission
+from precis.workers import capability_probe as _capability_probe
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
@@ -3279,6 +3280,22 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     assert isinstance(todo_id, int)
     lane = params.get("lane")
+    # gr701559: a host without the gate images or uv can never run ship —
+    # refuse on the first attempt (the slot frees, the land re-mints on a
+    # host that advertises ``gate_image``) instead of deferring to the deadline.
+    lack = _capability_probe.gate_host_lack()
+    if lack is not None:
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            f"host lacks {lack}",
+            handoff=f"land refused: host lacks {lack}; re-landing on a host "
+            "that advertises it. Do not rebuild.",
+            attempt_free="host-lacks-gate",
+            folder=FOLDER_KEEP,
+        )
+        return None
     number = _pr_param(params)
     pr = _plan_pr(ctx.store, todo_id) if number is not None else None
     branch_hint = str(
