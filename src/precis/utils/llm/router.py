@@ -1031,6 +1031,10 @@ class LlmResult:
     timed_out: bool = False
     cli_unavailable: bool = False
     quota_exhausted: bool = False
+    #: ``True`` when this host's ``admission.hold`` refused the launch (it
+    #: cannot fit the call right now). Always also ``paused``; a caller that
+    #: keeps a fleet-wide halt must not renew it on this host's refusal.
+    host_at_capacity: bool = False
     #: ``True`` when a gated ``claude_agent`` run (``require_mcp``, gr463517)
     #: refused to START the pass because the required MCP server (``precis``)
     #: never reported ``connected`` — no model turn ran, so it cost $0. A
@@ -7477,6 +7481,7 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         # Kept unmerged with `paused` so a bounded-budget caller sees *why*
         # it paused.
         timed_out=getattr(exc, "timed_out", False),
+        host_at_capacity=getattr(exc, "host_at_capacity", False),
         # gr335087: structural (never string-sniffed) signal that this
         # host's claude CLI itself is missing — see LlmResult.cli_unavailable.
         cli_unavailable=getattr(exc, "binary_missing", False),

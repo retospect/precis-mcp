@@ -987,6 +987,72 @@ class TestCallFailureBudget:
         assert r.claimed == 0 and "llm_blocked" in r.extra
         assert _claimed_at(store, gid) is None
 
+    def test_capacity_refused_probe_does_not_re_arm_the_halt(
+        self, store: Store
+    ) -> None:
+        """A probe this host cannot fit (``host_at_capacity``) tested nothing:
+        the halt's stamp stays, so the probe is still due on the next pass
+        (any host) instead of the halt renewing for another window."""
+        gid = _gripe(store, "capacity")
+        _light(store)
+        old = "2020-01-01T00:00:00Z old halt"
+        store.set_setting(gripe_triage._BLOCKED_KEY, old)
+
+        def refused(prompt: str) -> LlmResult:
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model="stub",
+                tier=Tier.BIG,
+                error="deferred, host at capacity",
+                paused=True,
+                host_at_capacity=True,
+            )
+
+        r = _run(store, llm=refused)
+        assert r.extra["llm_error"] == "paused"
+        assert store.get_setting(gripe_triage._BLOCKED_KEY) == old
+        assert _claimed_at(store, gid) is not None  # lease kept, ages out alone
+        _, probe_due = gripe_triage._blocked_state(store, datetime.now(UTC))
+        assert probe_due
+
+    def test_capacity_refused_probe_still_checks_halt_supervision(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The capacity-refused branch must not mute halt supervision: a
+        tick that leaves the halt in place still runs the overdue check
+        (operator-set halt adoption / >2h overdue escalation), while
+        leaving the stamp untouched."""
+        gid = _gripe(store, "capacity-supervision")
+        _light(store)
+        old = "2020-01-01T00:00:00Z old halt"
+        store.set_setting(gripe_triage._BLOCKED_KEY, old)
+        checked: list[str] = []
+
+        def spy_check(store: Store, note: str, when: datetime) -> None:
+            checked.append(note)
+
+        monkeypatch.setattr(gripe_triage, "_check_overdue", spy_check)
+
+        def refused(prompt: str) -> LlmResult:
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model="stub",
+                tier=Tier.BIG,
+                error="deferred, host at capacity",
+                paused=True,
+                host_at_capacity=True,
+            )
+
+        r = _run(store, llm=refused)
+        assert r.extra["llm_error"] == "paused"
+        assert checked == [old]
+        assert store.get_setting(gripe_triage._BLOCKED_KEY) == old
+        assert _claimed_at(store, gid) is not None
+
 
 # ── prompt hardening (re-review item 7) ────────────────────────────────────
 

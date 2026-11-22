@@ -118,8 +118,12 @@ rung):
   the tick posts one ``blocked`` board line and halts. Every
   :data:`_BLOCKED_PROBE_S` it runs ONE probe batch of
   :data:`_TIMEOUT_BATCH_FLOOR`: a good envelope clears the halt and
-  the counters, any failure re-arms it for another window (N1
-  ruling). An operator reset — delete or empty the ``app_state`` row
+  the counters, any probe failure re-arms it for another window (N1
+  ruling) — except a host-capacity refusal (the ``admission.hold``
+  ``host_at_capacity`` path), which tested nothing about the model
+  and leaves the stamp alone so the probe stays due for the next
+  pass on any host (gr747995). An operator reset — delete or empty the
+  ``app_state`` row
   :data:`_BLOCKED_KEY` (``scripts/prod-psql "DELETE FROM app_state
   WHERE key = 'gripe_triage:blocked'"``) — resumes immediately. Every time
   the halt is armed or re-armed (:func:`_halt`) it also asks the halt
@@ -239,7 +243,9 @@ _DISPUTE_CAP = 5
 #: Seconds a halt stands before the tick runs ONE probe batch of
 #: :data:`_TIMEOUT_BATCH_FLOOR` — a transient fault self-heals instead
 #: of waiting forever on an operator (N1 ruling). A good probe clears
-#: the halt; any failure re-arms it for another 6 h.
+#: the halt; any probe failure re-arms it for another 6 h — except a
+#: host-capacity refusal (``host_at_capacity``, gr747995), which leaves
+#: the stamp so the probe stays due for the next pass on any host.
 _BLOCKED_PROBE_S = 6 * 3600
 
 #: ``fix:<type>`` closed vocabulary (spec §Data model; ``memory`` added
@@ -3002,7 +3008,16 @@ def run_gripe_triage_pass(
         # Real unavailability (429/5xx, connection, breaker): keep the
         # leases (they age out on their own) and report
         # claimed-but-blocked — the only no-miss, no-release path.
-        if probe:
+        if probe and getattr(res, "host_at_capacity", False):
+            # This host cannot fit the call right now; the model itself was
+            # not tested. Leave the halt's stamp alone so the probe stays due
+            # and the next pass (any host) runs it, instead of re-arming a
+            # fleet-wide halt for another window on one host's refusal. Still
+            # run the supervisor check (adoption / >2h overdue escalation) —
+            # a persistent capacity refusal must not mute halt supervision.
+            if blocked:
+                _check_overdue(store, blocked, when)
+        elif probe:
             # The probe could not test anything — re-arm quietly so the
             # next probe is a full window out.
             note = f"{when:%Y-%m-%dT%H:%M:%SZ} probe paused"
