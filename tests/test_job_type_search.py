@@ -638,21 +638,23 @@ class TestRelativeWindowAndRecentSort:
             _titled(store, f"release_poll run {n}", "release_poll") for n in range(3)
         ]
         other = _titled(store, "release_deploy run", "release_deploy")
-        # Created oldest..newest = ids[0], ids[1], ids[2]; but ids[0] was
-        # touched last, so a last-touched order would put it first.
-        for age_h, ref_id in zip((30, 20, 10), ids):
+        # Created oldest..newest = ids[0], ids[2], ids[1] — deliberately not
+        # ref_id order, so neither the plain listing's order (equal rank,
+        # then ref_id descending) nor a last-touched order (ids[0] was
+        # touched last) can pass for newest-created-first.
+        for age_h, ref_id in zip((30, 10, 20), ids):
             _backdate(store, ref_id, now - timedelta(hours=age_h))
         _touch(store, ids[0], now)
         query = {"kind": "job", "q": "release_poll", "status": "*"}
         unsorted = runtime_with_store.dispatch("search", query)
-        assert _listed_ids(unsorted)[0] == ids[0], unsorted
+        assert _listed_ids(unsorted) == [ids[2], ids[1], ids[0]], unsorted
         body = runtime_with_store.dispatch("search", {**query, "sort": "recent"})
-        assert _listed_ids(body) == [ids[2], ids[1], ids[0]], body
+        assert _listed_ids(body) == [ids[1], ids[2], ids[0]], body
         assert other not in _listed_ids(body), body
         newest = runtime_with_store.dispatch(
             "search", {**query, "sort": "recent", "page_size": 1}
         )
-        assert _listed_ids(newest) == [ids[2]], newest
+        assert _listed_ids(newest) == [ids[1]], newest
 
     def test_sort_recent_composes_with_job_type_and_status(
         self, runtime_with_store: PrecisRuntime, store: Store

@@ -8479,13 +8479,60 @@ class DraftHandler(Handler):
 
         steps: list[str] = []
 
+        def list_markdown(container: DraftChunk, depth: int = 0) -> list[str]:
+            """The container's items as markdown bullet lines, nested lists
+            indented under their item — the one shape a list put accepts."""
+            marker = "-" if container.chunk_kind == "ulist" else "1."
+            lines: list[str] = []
+            for item in children.get(container.chunk_id, []):
+                if item.chunk_kind != "item":
+                    continue
+                item_text = " ".join(item.text.split())
+                if item_text:
+                    lines.append(f"{'  ' * depth}{marker} {item_text}")
+                for sub in children.get(item.chunk_id, []):
+                    if sub.chunk_kind in ("ulist", "olist"):
+                        lines.extend(list_markdown(sub, depth + 1))
+            return lines
+
         def restore(node: DraftChunk, placement: str) -> str:
             kids = children.get(node.chunk_id, [])
             text = node.text
             if node.chunk_kind in ("ulist", "olist"):
-                # The public put requires text even for structural list nodes.
-                text = text if text.strip() else "Restored list"
-            elif not text.strip():
+                # A list container carries no prose, and the put refuses one
+                # without bullets: its items travel inside one markdown put,
+                # which mints the container and its items together.
+                bullets = list_markdown(node)
+                block = "\n".join(bullets)
+                new_handle = f"restored_{node.dc}"
+                if len(bullets) >= 2:
+                    steps.append(
+                        f"{new_handle} = put(kind={node.kind!r}, id={draft_id!r}, "
+                        f"chunk_kind={node.chunk_kind!r}, "
+                        f"text={block!r}, at={placement})"
+                    )
+                elif bullets:
+                    lone = bullets[0].strip().split(" ", 1)[1]
+                    # A list needs two items; the put would refuse one.
+                    steps.append(
+                        "# a list of one item cannot be put as a list; "
+                        "restoring its item as a paragraph"
+                    )
+                    steps.append(
+                        f"{new_handle} = put(kind={node.kind!r}, id={draft_id!r}, "
+                        f"chunk_kind='paragraph', "
+                        f"text={lone!r}, at={placement})"
+                    )
+                else:
+                    return placement
+                # Anything under the container that is not an item or a
+                # nested list would be lost with the markdown; put it after.
+                after = f"{{'after': {new_handle}}}"
+                for child in kids:
+                    if child.chunk_kind not in ("item", "ulist", "olist"):
+                        after = restore(child, after)
+                return after
+            if not text.strip():
                 text = next(
                     (
                         e["prev_text"]
