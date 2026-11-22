@@ -41,6 +41,7 @@ from precis.store.revision_context import (
     TrustAct,
     parse_kg_review,
 )
+from precis.utils.secret_scan import refuse_secrets
 
 #: Keys the ``trust`` payload accepts.
 _PAYLOAD_KEYS = frozenset(
@@ -157,9 +158,11 @@ def pop_writer_payload(args: dict[str, Any], extras_key: str) -> dict[str, str] 
     for key, value in payload.items():
         if not isinstance(value, str) or not _WRITER_PATTERNS[key].fullmatch(value):
             raise BadInput(
-                f"writer {key} {value!r} is not a plain label",
+                f"writer {key} must be a plain label",
                 next="args={'writer': {'model': 'claude-opus-5-5', 'human': 'reto'}}",
             )
+    # Writer labels are stored as attribution even on kinds with opaque text.
+    refuse_secrets((f"writer.{key}", value) for key, value in payload.items())
     return payload
 
 

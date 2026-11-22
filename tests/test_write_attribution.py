@@ -144,6 +144,8 @@ def test_claimed_model_and_human_are_labelled(
     ref = store.get_ref(kind="memory", id=ref_id)
     assert ref is not None
     assert ref.meta["filed_by"]["model"] == "claude-opus-5-5"
+    state = store.trust_state("ref", ref_id)
+    assert state is not None and state.origin == "generated"
 
 
 def test_declared_model_beats_a_claim(runtime_with_store: PrecisRuntime) -> None:
@@ -252,7 +254,7 @@ def test_human_ingress_is_direct(runtime_with_store: PrecisRuntime) -> None:
     with revision_context(
         actor="user:rs", trust_origin="human", trust_actor_type="human"
     ):
-        ref_id, _ = _put(runtime_with_store)
+        ref_id, _ = _put(runtime_with_store, **_claim(human="another person"))
     store = runtime_with_store.store
     assert store is not None
     (writer,) = _writers(store, ref_id)
@@ -315,6 +317,19 @@ def test_bad_claims_are_refused(
         "put", {"kind": "memory", "text": "x", "__extras__": {"writer": writer}}
     )
     assert error and "writer" in body
+
+
+@pytest.mark.parametrize("field", ["model", "human"])
+def test_credential_shaped_writer_labels_are_refused(
+    runtime_with_store: PrecisRuntime, field: str
+) -> None:
+    credential = "sk-ant-" + "x" * 16
+    body, error = runtime_with_store.dispatch_with_status(
+        "put",
+        {"kind": "memory", "text": "test writer", **_claim(**{field: credential})},
+    )
+    assert error and f"writer.{field}" in body and "credential" in body
+    assert credential not in body
 
 
 def test_nudge_shows_once_and_only_when_the_model_is_unknown(
