@@ -820,6 +820,39 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
     assert current_principal() is None
 
 
+def test_oauth_key_memory_grant_never_opens_a_private_kind(
+    store: Store, oauth_config: OAuthConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr764258: a narrow OAuth connection reads its own hub, nothing else
+    under ``memory``; a private-kind id under ``memory`` is decided by the
+    grant's scopes, exactly as without the key-memory check."""
+    # The fixture's env offers only learning and mcp:full; add gtd.
+    assert oauth_config.resource
+    monkeypatch.setenv("PRECIS_OAUTH_SCOPES", "learning gtd mcp:full")
+    config = OAuthConfig.from_env()
+    assert config is not None
+    alice, bob = _user(store, "alice"), _user(store, "bob")
+    own, other = alice.key_memory_id, bob.key_memory_id
+    assert own is not None and other is not None
+    private: dict[str, Any] = {"kind": "memory", "id": "learning:/activity"}
+    for scope, private_allowed in (("gtd", False), ("learning", True)):
+        _raw, identity = _grant(store, config, alice.id, (scope,))
+        with user_scope(alice.id, oauth=identity):
+            for ident in (f"me{own}", own):
+                mine: dict[str, Any] = {"kind": "memory", "id": ident}
+                assert core._personal_call_allowed("get", mine, store), (scope, ident)
+            for ident in (f"me{other}", other):
+                theirs: dict[str, Any] = {"kind": "memory", "id": ident}
+                assert not core._personal_call_allowed("get", theirs, store)
+            assert not core._personal_call_allowed(
+                "delete", {"kind": "memory", "id": f"me{own}"}, store
+            )
+            allowed = core._personal_call_allowed("get", private, store)
+            assert allowed is private_allowed, scope
+            assert allowed is core._personal_call_allowed("get", private)
+    assert current_principal() is None
+
+
 def test_oauth_write_records_user_principal_and_client(
     store: Store,
     oauth_config: OAuthConfig,

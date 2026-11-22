@@ -545,7 +545,12 @@ def _personal_call_allowed(
     ):
         from precis.key_memory import may_read
 
-        return may_read(store.get_web_user_by_id(owner.user_id), verb, payload)
+        # Grant-only: a memory read that is not the caller's own hub falls
+        # through to the checks below unchanged, so a private-kind id
+        # (``memory`` + ``learning:…``) still reaches the private-kind
+        # refusal instead of a generic Denied (gr764258).
+        if may_read(store.get_web_user_by_id(owner.user_id), verb, payload):
+            return True
     if oauth is not None:
         private = private_kind_of(payload)
         if private is not None:

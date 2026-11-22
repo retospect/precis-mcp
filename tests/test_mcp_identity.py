@@ -597,6 +597,37 @@ def test_personal_token_mixed_wire_envelopes_never_reach_public_dispatch(
     asyncio.run(exercise())
 
 
+def test_personal_token_key_memory_grant_is_own_hub_read_only(store: Store) -> None:
+    """gr764258: the key-memory check grants exactly one read and otherwise
+    falls through. A personal token reads its own hub; another account's
+    hub, a write to its own hub and any other memory stay refused; a
+    private-kind id under ``memory`` goes on to the private-kind route
+    (where dispatch_private refuses it), never to a public read."""
+    alice, bob = _user(store), _user(store, "bob")
+    token_id, _raw = mint_user_token(store, alice.id, "key memory test")
+    own, other = alice.key_memory_id, bob.key_memory_id
+    assert own is not None and other is not None
+    with user_scope(alice.id, token_id):
+        for ident in (f"me{own}", own):
+            payload: dict[str, Any] = {"kind": "memory", "id": ident}
+            assert core._personal_call_allowed("get", payload, store)
+            core._require_personal_scope("get", payload, store)
+        refused: list[tuple[str, dict[str, Any]]] = [
+            ("get", {"kind": "memory", "id": f"me{other}"}),
+            ("get", {"kind": "memory", "id": other}),
+            ("get", {"kind": "memory", "id": f"me{own + other + 1000}"}),
+            ("get", {"kind": "memory", "id": f"me{own}", "view": "full"}),
+            ("edit", {"kind": "memory", "id": f"me{own}", "text": "x"}),
+            ("delete", {"kind": "memory", "id": f"me{own}"}),
+        ]
+        for verb, payload in refused:
+            assert not core._personal_call_allowed(verb, payload, store), payload
+            with pytest.raises(Denied):
+                core._require_personal_scope(verb, payload, store)
+        private = {"kind": "memory", "id": "learning:PRIVATE_SCOPE_SENTINEL"}
+        assert core._personal_call_allowed("get", private, store)
+
+
 def test_personal_token_cannot_bypass_tools_through_modalities(
     store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

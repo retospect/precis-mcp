@@ -34,8 +34,8 @@ plugins and bridges sharing the repo:
   and the service ``Hub``. ``response.py`` and ``hints.py`` shape what comes
   back. The word-handle switch uses the OAuth grant on stateless HTTP so
   token refresh and per-request SDK sessions preserve the connector's
-  preference. See ``word_handle_session.py``. The key-memory pointer lives
-  on ``web_users`` so token rotation and separate grants keep the same hub.
+  preference. See ``word_handle_session.py``. The key-memory pointer is
+  per account (``web_user_key_memory``) so token rotation and separate grants keep the same hub.
   The account insert mints the hub transactionally. MCP reads the pointer
   from the authenticated request for initialize and the first tool result.
 - *Storage.* ``store/`` (psycopg3 pool, forward-only ``Migrator``, composed

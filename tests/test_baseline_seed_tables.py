@@ -131,6 +131,12 @@ NOT_VOCAB: dict[str, str] = {
         "NULL) — empty on a fresh DB; per-user credentials are minted at "
         "runtime, never reference vocabulary."
     ),
+    "web_user_key_memory": (
+        "0352_web_user_key_memory.sql: moves each web_users row's "
+        "key_memory_id into the join table (INSERT … SELECT FROM "
+        "web_users) — empty on a fresh DB; the web_users insert trigger "
+        "mints each account's row at runtime, never reference vocabulary."
+    ),
     "_key": (
         "0239_vault_key_table.sql: carries the cluster's existing "
         "app.secret_key GUC into vault._key, guarded by 'WHERE "

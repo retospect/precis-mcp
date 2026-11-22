@@ -44,7 +44,12 @@ _USER_COLS = (
     "EXISTS (SELECT 1 FROM web_user_capability_tokens ft"
     " WHERE ft.user_id = web_users.id AND ft.revoked_at IS NULL"
     " AND ft.scopes = ARRAY['feed']::text[]) AS has_feed_token,"
-    " orcid, discord_user_id, key_memory_id, is_developer"
+    " orcid, discord_user_id,"
+    # The hub pointer lives in its own table (0352) so web_users has no FK
+    # into refs; refs.owner_login already points back at web_users.
+    " (SELECT km.ref_id FROM web_user_key_memory km"
+    " WHERE km.user_id = web_users.id) AS key_memory_id,"
+    " is_developer"
 )
 
 
@@ -81,7 +86,7 @@ def _row_to_user(row: tuple[Any, ...]) -> WebUser:
         has_feed_token=bool(row[9]),
         orcid=row[10],
         discord_user_id=row[11],
-        key_memory_id=int(row[12]),
+        key_memory_id=int(row[12]) if row[12] is not None else None,
         is_developer=bool(row[13]),
     )
 
@@ -220,8 +225,11 @@ class WebUsersMixin:
             "(login, abbrev, full_name, email, "
             " password_hash, password_salt, password_algo) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-            f"RETURNING {_USER_COLS}"
+            "RETURNING id"
         )
+        # Re-read after the INSERT: the hub is minted by an AFTER trigger,
+        # which a RETURNING subselect on the same statement cannot see.
+        reread = f"SELECT {_USER_COLS} FROM web_users WHERE id = %s"
         params = (
             normalize_login(login),
             normalize_login(abbrev),
@@ -232,12 +240,16 @@ class WebUsersMixin:
             password.password_algo,
         )
         if conn is not None:
-            row = conn.execute(sql, params).fetchone()
+            inserted = conn.execute(sql, params).fetchone()
+            assert inserted is not None  # RETURNING on a successful INSERT
+            row = conn.execute(reread, (inserted[0],)).fetchone()
         else:
             with self.pool.connection() as c:
                 with c.transaction():
-                    row = c.execute(sql, params).fetchone()
-        assert row is not None  # RETURNING on a successful INSERT
+                    inserted = c.execute(sql, params).fetchone()
+                    assert inserted is not None
+                    row = c.execute(reread, (inserted[0],)).fetchone()
+        assert row is not None
         return _row_to_user(row)
 
     def set_web_user_password(self, login: str, password: PasswordRecord) -> bool:
