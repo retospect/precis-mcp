@@ -1664,7 +1664,10 @@ def _brief_node_body(
         + f"\n\nRead the live {handle} before you decide: `get(kind='todo', "
         f"id={todo_id})` for its current text and comments, its parent chain "
         "and its linked refs (read verbs only), and the code the change "
-        "touches."
+        f"touches. Your final message's `Read:` line copies the "
+        f"`updated_at:` a `get(kind='todo', id={todo_id}, view='raw')` "
+        "shows — verbatim, so the dispatcher can tell a fresh brief from "
+        "one the source has moved past."
     )
 
 

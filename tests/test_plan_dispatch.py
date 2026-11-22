@@ -13964,17 +13964,50 @@ def _todo_chain(store: Store, hub: Any) -> tuple[int, T.PlanMint]:
     return source, T.mint_todo_build(store, None, todo_id=source)
 
 
-def _brief_session(store: Store, mint: T.PlanMint, handoff: str | None) -> int:
+def _job_bound_comment(store: Store, todo: int, text: str, job: int) -> None:
+    """A comment posted the way ``run_slice`` posts a session's handoff:
+    signed with the job's id, so the tick binds the read to that job."""
+    ords = [int(c.ord) for c in store.chunks.list_chunks_for_ref(todo)]
+    store.chunks.insert_chunks(
+        todo,
+        [
+            ChunkInsert(
+                ord=max(ords, default=0) + 1,
+                text=text,
+                meta={"chunk_kind": "todo_comment", "handoff_job": job},
+            )
+        ],
+    )
+
+
+def _read_line(store: Store, source: int, *, stale: bool = False) -> str:
+    """The `Read:` line a brief names the source with: its current
+    ``updated_at``, or an hour older when ``stale``."""
+    from datetime import timedelta
+
+    from precis.plans.todo_chain import read_line as _read_line_text
+
+    ref = store.get_ref(kind="todo", id=source)
+    assert ref is not None and ref.updated_at is not None
+    stamp = ref.updated_at - timedelta(hours=1) if stale else ref.updated_at
+    return _read_line_text(source, stamp.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def _brief_session(
+    store: Store, mint: T.PlanMint, handoff: str | None, *, job: int | None = None
+) -> int:
     """The brief session ran clean: a succeeded job, the node left ``doing``
-    under its claim, the final message posted as the ``handoff:`` comment."""
+    under its claim, the final message posted as the job-signed ``handoff:``
+    comment ``run_slice`` posts."""
     brief = mint.ids["brief"]
-    job = _job(store, brief, lane="claude-sub")
+    if job is None:
+        job = _job(store, brief, lane="claude-sub")
     store.add_tag(brief, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
     store.add_tag(
         brief, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
     )
     if handoff is not None:
-        _todo_comment(store, brief, f"handoff: {handoff}")
+        _job_bound_comment(store, brief, f"handoff: {handoff}", job)
     return job
 
 
@@ -13990,13 +14023,17 @@ def test_brief_copied_to_build_names_source(store: Store, hub: Any) -> None:
     source, mint = _todo_chain(store, hub)
     brief, build = mint.ids["brief"], mint.ids["build"]
     _brief_session(
-        store, mint, f"brief: td{build}\nChange: stop the leak.\nWhere: widget.py"
+        store,
+        mint,
+        f"brief: td{build}\n{_read_line(store, source)}\n"
+        "Change: stop the leak.\nWhere: widget.py",
     )
     res = pd.run_pass(store)
     (posted,) = _todo_brief_comments(store, build)
-    head, _, body = posted.partition("\n\n")
-    assert f"td{source}" in head and "updated_at" in head
+    head, stamp_line, _blank, body = posted.split("\n", 3)
+    assert f"td{source}" in head
     assert f"brief node td{brief}" in head
+    assert stamp_line == _read_line(store, source)
     assert body == "Change: stop the leak.\nWhere: widget.py"
     assert _status(store, brief) == "done"
     assert not any(t.startswith("claimed-by:") for t in _open_tags(store, brief))
@@ -14200,6 +14237,11 @@ def test_built_close_resumes_after_a_crash_between_the_steps(
         (None, "no `handoff:` comment"),
         ("I think this is fine as it is.", "neither a brief nor a refusal"),
         ("brief: td{build}", "neither a brief nor a refusal"),  # no brief text
+        ("brief: td{build}\nbody, no Read line", "neither a brief nor a refusal"),
+        (
+            "brief: td{build}\nRead: td1 at garbage\nbody",
+            "neither a brief nor a refusal",
+        ),
         ("refuse: whatever — nope", "neither a brief nor a refusal"),
         ("brief: td{build}\nbody …(clipped)… tail", "a clipped message"),
     ],
@@ -14209,7 +14251,7 @@ def test_neither_reopens_and_counts_attempt(
 ) -> None:
     _source, mint = _todo_chain(store, hub)
     brief, build = mint.ids["brief"], mint.ids["build"]
-    _brief_session(
+    job = _brief_session(
         store, mint, handoff.format(build=build) if handoff is not None else None
     )
     res = pd.run_pass(store)
@@ -14226,11 +14268,13 @@ def test_neither_reopens_and_counts_attempt(
     assert pd._attempts(plan, plan.nodes[brief]) == 1
     assert res.dispatched == 1
     (_old, (retry, _meta_)) = _jobs_under(store, brief)
+    assert retry != job
     # The same job is never read twice.
     res = pd.run_pass(store)
     assert len([c for c in _todo_comments(store, brief) if what in c]) == 1
     # A second miss spends the retry budget: no third session, the node parks.
     _set_job_status(store, retry, "succeeded")
+    _job_bound_comment(store, brief, "handoff: still no outcome line", retry)
     pd.run_pass(store)
     plan = pd._load(store, [mint.root_id])
     assert pd._attempts(plan, plan.nodes[brief]) == 2
@@ -14483,7 +14527,7 @@ def test_cap_after_failed_briefs_parks_and_files_the_ordinary_ask(
     store.add_tag(
         brief, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
     )
-    _todo_comment(store, brief, "handoff: still no outcome line")
+    _job_bound_comment(store, brief, "handoff: still no outcome line", retry)
     _set_job_status(store, retry, "succeeded")
     res = pd.run_pass(store)
     # Two attempts spent (the cap): the ordinary hygiene path takes the node
@@ -14580,7 +14624,9 @@ def test_one_failing_brief_node_does_not_fail_the_pass(
 def test_brief_naming_other_node_is_a_failed_attempt(store: Store, hub: Any) -> None:
     source, mint = _todo_chain(store, hub)
     brief, build = mint.ids["brief"], mint.ids["build"]
-    _brief_session(store, mint, f"brief: td{source}\nChange: it.")
+    _brief_session(
+        store, mint, f"brief: td{source}\n{_read_line(store, source)}\nChange: it."
+    )
     res = pd.run_pass(store)
     assert _status(store, brief) == "open"
     assert _todo_brief_comments(store, build) == [] and _jobs_under(store, build) == []
@@ -14640,6 +14686,81 @@ def test_build_without_brief_comment_not_dispatched(store: Store, hub: Any) -> N
     assert len(_jobs_under(store, build)) == 1 and res.dispatched == 1
 
 
+def test_later_handoff_comment_does_not_replace_the_jobs_outcome(
+    store: Store, hub: Any
+) -> None:
+    """F1 (td751290): a job-signed ``handoff:`` is the job's outcome. A
+    later ordinary comment — no job stamp — cannot replace it: the chain
+    files the refusal, not the build."""
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    _brief_session(store, mint, "refuse: split — two changes")
+    _todo_comment(
+        store,
+        brief,
+        f"handoff: brief: td{build}\n{_read_line(store, source)}\nChange: x",
+    )
+    res = pd.run_pass(store)
+    assert len(_asks_on(store, source)) == 1
+    assert _todo_brief_comments(store, build) == []
+    assert _jobs_under(store, build) == []
+    assert res.dispatched == 0
+
+
+def test_source_changed_after_brief_rebriefs(store: Store, hub: Any) -> None:
+    """F2 (td751290): the brief's ``Read:`` stamp names the revision the
+    writer read. The source moved on before dispatch: the build holds,
+    the brief node reopens, and a fresh-stamped brief replaces the stale
+    comment — then the build dispatches."""
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    _brief_session(
+        store,
+        mint,
+        f"brief: td{build}\n{_read_line(store, source, stale=True)}\nChange: stop the leak.",
+    )
+    res = pd.run_pass(store)
+    assert len(_todo_brief_comments(store, build)) == 1  # stale brief posted
+    assert _status(store, brief) == "open"  # re-briefed, not built
+    assert "its brief is stale" in res.dispatch_holds[build]
+    assert _jobs_under(store, build) == [] and res.dispatched == 0
+    assert any("re-briefing" in n for n in res.notes)
+    # The next pass mints the re-brief session's job; its fresh-stamped
+    # outcome replaces the stale brief, and the build dispatches.
+    res = pd.run_pass(store)
+    (_old, (retry, _m)) = _jobs_under(store, brief)
+    assert res.dispatched == 1
+    _set_job_status(store, retry, "succeeded")
+    _brief_session(
+        store,
+        mint,
+        f"brief: td{build}\n{_read_line(store, source)}\nChange: stop the leak.",
+        job=retry,
+    )
+    res = pd.run_pass(store)
+    comments = _todo_brief_comments(store, build)
+    assert len(comments) == 1 and _read_line(store, source) in comments[0]
+    assert _status(store, brief) == "done"
+    assert len(_jobs_under(store, build)) == 1 and res.dispatched == 1
+
+
+def test_dry_run_posts_brief_and_dispatches_in_one_pass(store: Store, hub: Any) -> None:
+    """F3 (td751290): a dry pass reads this pass's pending comments, so the
+    brief the brief step just posted unblocks the build in the same pass —
+    and persists nothing."""
+    source, mint = _todo_chain(store, hub)
+    brief, build = mint.ids["brief"], mint.ids["build"]
+    _brief_session(
+        store,
+        mint,
+        f"brief: td{build}\n{_read_line(store, source)}\nChange: stop the leak.",
+    )
+    res = pd.run_pass(store, dry_run=True)
+    assert res.dispatched == 1 and build not in res.dispatch_holds
+    assert _todo_brief_comments(store, build) == []
+    assert _status(store, brief) == "doing"
+
+
 def test_withdrawn_tag_stops_brief_dispatch(store: Store, hub: Any) -> None:
     source, mint = _todo_chain(store, hub)
     brief = mint.ids["brief"]
@@ -14687,14 +14808,14 @@ def test_gripe_chain_tick_unchanged(
     )
     _todo_comment(store, review, "handoff: refuse: rewrite — x\nno-op: nothing")
     plan = pd._load(store, [mint.root_id])
+    writer = pd._Writer(store, False)
     assert all(pd._source_todo_of(plan, n) is None for n in plan.todos())
     assert not any(pd._is_brief_node(n) for n in plan.todos())
-    assert not any(pd._awaits_brief(plan, n, store) for n in plan.todos())
+    assert not any(pd._awaits_brief(plan, n, writer) for n in plan.todos())
 
     def boom(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("the brief step wrote on a gripe chain")
 
-    writer = pd._Writer(store, False)
     for name in ("set_status", "stamp_meta", "remove_tags", "comment", "add_tags"):
         monkeypatch.setattr(writer, name, boom)
     monkeypatch.setattr(store, "tx", boom)

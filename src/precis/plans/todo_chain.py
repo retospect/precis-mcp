@@ -11,7 +11,8 @@ inventory (``workers.gripe_dispatch``) and the source holds
 
 The brief step's three outcomes live here too: :func:`parse_brief` reads the
 session's final message, :func:`post_brief` copies a brief onto the build
-node, :func:`refuse_source` acts on a refusal (:func:`close_built` on one
+node — carrying the source revision the writer read — and
+:func:`refuse_source` acts on a refusal (:func:`close_built` on one
 that proves the todo already built, closing the source with no ask) and
 :func:`split_source` on a split into two to four sequenced part todos
 (:func:`sweep_splits` closes the source when every part is done, and a
@@ -90,10 +91,15 @@ _PART_FIELD_CAP = 350
 
 #: What a brief session ends with — the one place the closing section in
 #: ``run_slice`` and the verdict parser share. Every outcome rides the
-#: FIRST line of the final message; any other ending is a failed attempt.
+#: FIRST line of the final message; a ``brief:`` also names the source
+#: revision the writer read on the SECOND line (``Read: td<id> at
+#: <updated_at>``), which the brief the tick posts carries verbatim. Any
+#: other ending is a failed attempt.
 BRIEF_GRAMMAR = (
-    "`brief: td<build id>` as the FIRST line of the final message, the brief "
-    "text on the following lines; or "
+    "`brief: td<build id>` as the FIRST line of the final message, "
+    "`Read: td<source id> at <updated_at>` as the SECOND (the source "
+    "revision read, copied verbatim from the todo), the brief text on "
+    "the following lines; or "
     f"`refuse: <{'|'.join(REFUSAL_REASONS)}> — <what is missing, or the "
     "evidence>` as the FIRST line (`built` needs evidence you read yourself, "
     "written in the refusal's text: a done todo or closed gripe that built "
@@ -113,6 +119,12 @@ BRIEF_GRAMMAR = (
 #: had to clip at its cap: a message carrying it lost its middle, so a
 #: brief read from it is not the brief the session wrote.
 CLIP_MARKER = "…(clipped)…"
+
+#: The chunk-``meta`` key with which ``run_slice`` signs the ``handoff:``
+#: comment a job posts: the comment is THAT job's outcome, so the tick
+#: binds its read to the job and a later ``handoff:`` comment — a human's
+#: ordinary note — decides nothing.
+HANDOFF_JOB_KEY = "handoff_job"
 
 #: ``meta`` key on the ask :func:`refuse_source` files: ``{source, reason,
 #: root}``, the marker later code finds a refusal ask by.
@@ -136,18 +148,77 @@ _HANDOFF_PREFIX_RE = re.compile(r"\s*handoff:", re.IGNORECASE)
 _SPLIT_HEAD_RE = re.compile(r"split:\s*(\d{1,3})", re.IGNORECASE)
 _PART_HEAD_RE = re.compile(r"\s*part\s+(\d{1,3})\s*:\s*(\S.*)", re.IGNORECASE)
 _PART_LABEL_RE = re.compile(r"\s*(change|where|done when)\s*:(.*)", re.IGNORECASE)
+#: A brief's mandatory second line — ``Read: td<id> at <stamp>`` — the
+#: source revision the writer read, reported by the writer itself. The
+#: stamp the posted brief carries is what the dispatch gate re-checks
+#: against the live source: a source that moved past it re-briefs the
+#: chain instead of building from a stale brief. The stamp is the rest
+#: of the line — the raw view's form holds a space between date and
+#: time — and :func:`norm_stamp` decides whether it parses.
+_READ_LINE_RE = re.compile(r"read:\s*td(\d+)\s+at\s+(.+?)\s*$", re.IGNORECASE)
+#: The stamp's comparison form: seconds-precision UTC, fixed width, so
+#: lexicographic order is chronological order.
+_STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _COMMENT_KIND = "todo_comment"
 #: Longest stretch of the session's refusal text quoted into the ask.
 _WHY_CAP = 1500
 
 
+def read_line(source_id: int, stamp: str) -> str:
+    """The mandatory second line of a brief: the revision the writer
+    read, in :data:`_STAMP_FORMAT`."""
+    return f"Read: td{source_id} at {stamp}"
+
+
+def parse_read_line(line: str) -> tuple[int, str] | None:
+    """``(source_id, normalized stamp)`` from a ``Read:`` line, or
+    ``None`` when the line is not one or the stamp does not parse."""
+    m = _READ_LINE_RE.match(line.strip())
+    if m is None:
+        return None
+    stamp = norm_stamp(m.group(2))
+    return (int(m.group(1)), stamp) if stamp is not None else None
+
+
+def norm_stamp(value: str) -> str | None:
+    """A writer-reported ``updated_at`` in the comparison form
+    (:data:`_STAMP_FORMAT`), or ``None`` when it does not parse — a
+    stamp the writer garbled is no stamp at all."""
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return str(parsed.astimezone(UTC).strftime(_STAMP_FORMAT))
+
+
+def source_updated_at(
+    store: Store, source_id: int, conn: Connection | None = None
+) -> str:
+    """The source todo's ``updated_at`` in :data:`_STAMP_FORMAT` — the
+    revision a brief's carried read stamp is compared against
+    (``"unknown"`` when the row carries none)."""
+    ref = (
+        store.get_ref(kind="todo", id=source_id)
+        if conn is None
+        else store.get_ref(kind="todo", id=source_id, conn=conn)
+    )
+    stamp = getattr(ref, "updated_at", None)
+    if stamp is None:
+        return "unknown"
+    return str(stamp.astimezone(UTC).strftime(_STAMP_FORMAT))
+
+
 @dataclass(frozen=True, slots=True)
 class Brief:
-    """A brief outcome: the session named this build node and wrote ``text``
-    for it."""
+    """A brief outcome: the session named this build node, reported the
+    source revision it read — ``read`` is ``(source_id, stamp)`` — and
+    wrote ``text`` for it."""
 
     build_id: int
     text: str
+    read: tuple[int, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,9 +302,12 @@ def parse_brief(text: str) -> BriefOutcome | None:
     """The outcome of a brief session's final message, or ``None``.
 
     Decided by the FIRST non-empty line alone (after the optional
-    ``handoff:`` prefix the posted comment carries): ``brief: td<id>`` with
-    at least one more non-empty line, ``refuse: <reason> <dash> <why>``
-    with ``<reason>`` in :data:`REFUSAL_REASONS`, or ``split: <n>`` with
+    Decided by the FIRST non-empty line alone (after the optional
+    ``handoff:`` prefix the posted comment carries): ``brief: td<id>``
+    with a ``Read:`` line second — the source revision the writer read,
+    see :func:`parse_read_line` — and at least one more non-empty line,
+    ``refuse: <reason> <dash> <why>`` with ``<reason>`` in
+    :data:`REFUSAL_REASONS`, or ``split: <n>`` with
     ``n`` well-formed parts (:func:`_parse_split`; an ``n`` above
     :data:`MAX_SPLIT_PARTS` still parses, the caller refuses it). Anything
     else, a malformed ``split:`` message included, is ``None``
@@ -250,7 +324,11 @@ def parse_brief(text: str) -> BriefOutcome | None:
     first, rest = lines[0].strip(), "\n".join(lines[1:]).strip()
     brief = _BRIEF_HEAD_RE.fullmatch(first)
     if brief is not None:
-        return Brief(int(brief.group(1)), rest) if rest else None
+        read = parse_read_line(lines[1]) if len(lines) > 1 else None
+        if read is None:
+            return None
+        body = "\n".join(lines[2:]).strip()
+        return Brief(int(brief.group(1)), body, read) if body else None
     if first.lower().startswith("split:"):
         head = _SPLIT_HEAD_RE.fullmatch(first)
         return _parse_split(int(head.group(1)), lines[1:]) if head else None
@@ -270,12 +348,16 @@ def parse_brief(text: str) -> BriefOutcome | None:
     return None
 
 
-def _updated_at(store: Store, source_id: int, conn: Connection) -> str:
-    ref = store.get_ref(kind="todo", id=source_id, conn=conn)
-    stamp = getattr(ref, "updated_at", None)
-    if stamp is None:
-        return "unknown"
-    return str(stamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+def brief_comment_text(
+    source_id: int, brief_node_id: int, text: str, read: tuple[int, str]
+) -> str:
+    """The build node's ``brief:`` comment: the header the idempotency
+    check (and a human) reads, the carried ``Read:`` stamp, then the
+    brief itself."""
+    return (
+        f"brief: written from td{source_id} by brief node td{brief_node_id}\n"
+        f"{read_line(*read)}\n\n{text.strip()}"
+    )
 
 
 def post_brief(
@@ -284,41 +366,55 @@ def post_brief(
     source_id: int,
     brief_node_id: int,
     text: str,
+    read: tuple[int, str],
     *,
     conn: Connection | None = None,
 ) -> bool:
     """Post the brief on the build node as one ``brief:`` comment — the form
     ``run_slice`` reads its builder's brief in — and return whether it did.
 
-    The first line names the source todo, its ``updated_at`` as of now and
-    the brief node; the brief follows. Idempotent: a build node that already
-    carries a brief comment naming ``brief_node_id`` gets nothing. The
-    comment is not worker-stamped, so the dispatch route reads it like any
+    The comment carries ``read`` — the source revision the writer read —
+    as its ``Read:`` line: the dispatch gate compares it against the live
+    source and re-briefs a chain whose source moved on. Idempotent: a
+    build node that already carries this brief node's comment with the
+    same read stamp gets nothing; a comment from this brief node with an
+    older stamp (the source moved and the chain re-briefed) is replaced,
+    so the fresh brief is the only one a builder can read. The comment is
+    not worker-stamped, so the dispatch route reads it like any
     coordinator brief."""
     if conn is None:
         with store.tx() as own:
-            return post_brief(store, build_id, source_id, brief_node_id, text, conn=own)
+            return post_brief(
+                store, build_id, source_id, brief_node_id, text, read, conn=own
+            )
     marker = re.compile(rf"brief node td{brief_node_id}\b")
-    existing = list(store.chunks.list_chunks_for_ref(build_id, conn=conn))
+    existing = [
+        c
+        for c in store.chunks.list_chunks_for_ref(build_id, conn=conn)
+        if c.chunk_kind == _COMMENT_KIND
+        and str(c.text or "").lstrip().lower().startswith("brief:")
+        and marker.search(str(c.text or "").lstrip().splitlines()[0])
+    ]
     for c in existing:
-        head = str(c.text or "").lstrip()
-        if (
-            c.chunk_kind == _COMMENT_KIND
-            and head.lower().startswith("brief:")
-            and marker.search(head.splitlines()[0])
+        if any(
+            parse_read_line(line) == read for line in str(c.text or "").splitlines()[:2]
         ):
             return False
-    header = (
-        f"brief: written from td{source_id} (updated_at "
-        f"{_updated_at(store, source_id, conn)}) by brief node td{brief_node_id}"
+    for c in existing:
+        conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (int(c.id),))
+    ord_ = (
+        max(
+            (int(c.ord) for c in store.chunks.list_chunks_for_ref(build_id, conn=conn)),
+            default=0,
+        )
+        + 1
     )
-    ord_ = max((int(c.ord) for c in existing), default=0) + 1
     store.chunks.insert_chunks(
         build_id,
         [
             ChunkInsert(
                 ord=ord_,
-                text=f"{header}\n\n{text.strip()}",
+                text=brief_comment_text(source_id, brief_node_id, text, read),
                 meta={"chunk_kind": _COMMENT_KIND},
             )
         ],
@@ -1292,6 +1388,7 @@ __all__ = [
     "CLIP_MARKER",
     "CLOSED_BUILT_TAG",
     "FACTORY_BUILD_TAG",
+    "HANDOFF_JOB_KEY",
     "MAX_SPLIT_PARTS",
     "NEEDS_SPEC_TAG",
     "REFUSAL_KEY",
@@ -1307,15 +1404,20 @@ __all__ = [
     "Refusal",
     "Split",
     "SplitPart",
+    "brief_comment_text",
     "close_built",
     "close_source",
     "done_note",
     "has_landed_comment",
+    "norm_stamp",
     "parse_brief",
+    "parse_read_line",
     "post_brief",
+    "read_line",
     "refuse_source",
     "set_source_done",
     "source_of_root",
+    "source_updated_at",
     "split_source",
     "sweep_landed_sources",
     "sweep_splits",

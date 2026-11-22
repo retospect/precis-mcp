@@ -27,12 +27,17 @@ from precis.plans.todo_chain import (
     Refusal,
     Split,
     SplitPart,
+    brief_comment_text,
     close_built,
     close_source,
     has_landed_comment,
+    norm_stamp,
     parse_brief,
+    parse_read_line,
     post_brief,
+    read_line,
     refuse_source,
+    source_updated_at,
     split_source,
     sweep_landed_sources,
     sweep_splits,
@@ -46,20 +51,38 @@ from tests.conftest import id_of
 
 
 def test_brief_first_line_with_text() -> None:
-    assert parse_brief("brief: td42\nChange: x\nWhere: y") == Brief(
-        42, "Change: x\nWhere: y"
-    )
+    assert parse_brief(
+        "brief: td42\nRead: td7 at 2026-11-21T20:44:58Z\nChange: x\nWhere: y"
+    ) == Brief(42, "Change: x\nWhere: y", (7, "2026-11-21T20:44:58Z"))
 
 
 def test_brief_survives_the_handoff_prefix_and_blank_lines() -> None:
-    assert parse_brief("handoff: \n\n  brief: td7  \n\nDo the thing.\n") == Brief(
-        7, "Do the thing."
-    )
+    assert parse_brief(
+        "handoff: \n\n  brief: td7  \n"
+        "Read: td5 at 2026-11-21T20:44:58Z\n\nDo the thing.\n"
+    ) == Brief(7, "Do the thing.", (5, "2026-11-21T20:44:58Z"))
+
+
+def test_brief_requires_the_read_line_second() -> None:
+    """The `Read:` line — the source revision the writer read — is part
+    of the grammar: without a readable one the message is no brief."""
+    assert parse_brief("brief: td42\nChange: x\nWhere: y") is None
+    assert parse_brief("brief: td42") is None
+    assert parse_brief("brief: td42\n\nRead: td7 at 2026-11-21T20:44:58Z\nbody") is None
+    assert (
+        parse_brief("brief: td42\nRead: td7 at nonsense\nChange: x") is None
+    )  # a garbled stamp is no stamp
+    assert parse_brief("brief: td42\nRead: at 2026-11-21T20:44:58Z\nbody") is None
+    assert (
+        parse_brief("brief: td42\nChange: x\nRead: td7 at 2026-11-21T20:44:58Z") is None
+    )  # the Read line is second, not third
 
 
 def test_brief_without_text_is_nothing() -> None:
     assert parse_brief("brief: td42") is None
     assert parse_brief("brief: td42\n   \n\n") is None
+    assert parse_brief("brief: td42\nRead: td7 at 2026-11-21T20:44:58Z") is None
+    assert parse_brief("brief: td42\nRead: td7 at 2026-11-21T20:44:58Z\n  \n") is None
 
 
 @pytest.mark.parametrize("reason", REFUSAL_REASONS)
@@ -101,6 +124,8 @@ def test_refusal_keeps_the_lines_after_the_first() -> None:
         "moot: already on main",
         "validated: fine",
         "BRIEF td5\nbody",
+        "brief: td5\nbody with no Read line",
+        "brief: td5\nRead: td5 at garbage\nbody",
     ],
 )
 def test_neither_outcome_is_nothing(text: str) -> None:
@@ -108,9 +133,12 @@ def test_neither_outcome_is_nothing(text: str) -> None:
 
 
 def test_the_first_line_decides_when_both_are_present() -> None:
-    assert isinstance(parse_brief("brief: td5\nrefuse: rewrite — x"), Brief), (
-        "a later refuse line is brief text"
-    )
+    assert isinstance(
+        parse_brief(
+            "brief: td5\nRead: td5 at 2026-11-21T20:44:58Z\nrefuse: rewrite — x"
+        ),
+        Brief,
+    ), "a later refuse line is brief text"
     assert parse_brief("refuse: rewrite — x\nbrief: td5\nbody") == Refusal(
         "rewrite", "x\nbrief: td5\nbody"
     )
@@ -219,7 +247,10 @@ def test_a_later_or_quoted_split_line_decides_nothing() -> None:
     assert parse_brief("Here it is:\n" + _split_msg(2)) is None
     assert parse_brief("> " + _split_msg(2).replace("\n", "\n> ")) is None
     # as brief text or refusal text it is just text
-    assert isinstance(parse_brief("brief: td5\n" + _split_msg(2)), Brief)
+    assert isinstance(
+        parse_brief(f"brief: td5\nRead: td7 at 2026-11-21T20:44:58Z\n{_split_msg(2)}"),
+        Brief,
+    )
     assert isinstance(parse_brief("refuse: split — x\n" + _split_msg(2)), Refusal)
 
 
@@ -259,6 +290,41 @@ def test_a_largest_split_fits_the_handoff_cap() -> None:
     assert len(message) <= run_slice._HANDOFF_CAP
     outcome = parse_brief(message)
     assert isinstance(outcome, Split) and len(outcome.parts) == MAX_SPLIT_PARTS
+
+
+# -- the Read: stamp -----------------------------------------------------------
+
+
+def test_norm_stamp_accepts_what_a_raw_get_shows() -> None:
+    """The writer copies `updated_at` verbatim from its get — the
+    seconds-precision Z form, the raw view's microseconds-and-offset
+    form, and the offset-less T form all normalize to one comparison
+    value."""
+    assert norm_stamp("2026-11-21T20:44:58Z") == "2026-11-21T20:44:58Z"
+    assert norm_stamp("2026-11-21 20:44:58.123456+00:00") == "2026-11-21T20:44:58Z"
+    assert norm_stamp("2026-11-21T20:44:58+00:00") == "2026-11-21T20:44:58Z"
+    assert norm_stamp("2026-11-21 20:44:58") == "2026-11-21T20:44:58Z"
+    assert norm_stamp("not a timestamp") is None
+    assert norm_stamp("") is None
+
+
+def test_parse_read_line() -> None:
+    assert parse_read_line("Read: td7 at 2026-11-21T20:44:58Z") == (
+        7,
+        "2026-11-21T20:44:58Z",
+    )
+    assert parse_read_line("READ: TD7 AT 2026-11-21 20:44:58+00:00") == (
+        7,
+        "2026-11-21T20:44:58Z",
+    )
+    assert parse_read_line("  read: td12 at 2026-11-21T20:44:58Z  ") == (
+        12,
+        "2026-11-21T20:44:58Z",
+    )
+    assert parse_read_line("Read: td7 at garbage") is None
+    assert parse_read_line("Reading: td7 at 2026-11-21T20:44:58Z") is None
+    assert parse_read_line("the files to change") is None
+    assert read_line(7, "2026-11-21T20:44:58Z") == "Read: td7 at 2026-11-21T20:44:58Z"
 
 
 # -- the build node's brief and the refusal ----------------------------------
@@ -324,15 +390,17 @@ def test_post_brief_writes_one_comment_in_the_builders_form(
 
     source, mint = _chain(handler, store)
     build, brief = mint.ids["build"], mint.ids["brief"]
-    assert post_brief(store, build, source, brief, "Change: widen it.\nWhere: x.py")
-    (text,) = [c for c in _comments(store, build) if c.startswith("brief:")]
-    head, _blank, body = text.partition("\n\n")
-    ref = store.get_ref(kind="todo", id=source)
-    assert ref is not None
-    stamp = ref.updated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-    assert head == (
-        f"brief: written from td{source} (updated_at {stamp}) by brief node td{brief}"
+    read = (source, source_updated_at(store, source))
+    assert post_brief(
+        store, build, source, brief, "Change: widen it.\nWhere: x.py", read
     )
+    (text,) = [c for c in _comments(store, build) if c.startswith("brief:")]
+    assert text == brief_comment_text(
+        source, brief, "Change: widen it.\nWhere: x.py", read
+    )
+    head, stamp_line, _blank, body = text.split("\n", 3)
+    assert head == f"brief: written from td{source} by brief node td{brief}"
+    assert stamp_line == read_line(source, read[1])
     assert body == "Change: widen it.\nWhere: x.py"
     # The builder reads exactly this comment as its brief.
     chunks = [
@@ -349,13 +417,31 @@ def test_post_brief_is_idempotent_per_brief_node(
 ) -> None:
     source, mint = _chain(handler, store)
     build, brief = mint.ids["build"], mint.ids["brief"]
-    assert post_brief(store, build, source, brief, "first")
-    assert not post_brief(store, build, source, brief, "second")
+    read = (source, source_updated_at(store, source))
+    assert post_brief(store, build, source, brief, "first", read)
+    assert not post_brief(store, build, source, brief, "second", read)
     posted = [c for c in _comments(store, build) if c.startswith("brief:")]
     assert len(posted) == 1 and posted[0].endswith("first")
     # Another brief node (a later chain) is not shadowed by the first.
-    assert post_brief(store, build, source, brief + 1, "another node's brief")
+    assert post_brief(store, build, source, brief + 1, "another node's brief", read)
     assert len([c for c in _comments(store, build) if c.startswith("brief:")]) == 2
+
+
+def test_post_brief_replaces_a_stale_stamp_from_the_same_brief_node(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The source moved after the first brief: the re-brief's post must
+    land, not be swallowed by the idempotency check — the stale comment
+    is replaced so the builder reads the fresh brief alone."""
+    source, mint = _chain(handler, store)
+    build, brief = mint.ids["build"], mint.ids["brief"]
+    stale = (source, "2026-11-21T20:00:00Z")
+    fresh = (source, source_updated_at(store, source))
+    assert post_brief(store, build, source, brief, "the old brief", stale)
+    assert post_brief(store, build, source, brief, "the fresh brief", fresh)
+    posted = [c for c in _comments(store, build) if c.startswith("brief:")]
+    assert len(posted) == 1
+    assert posted[0] == brief_comment_text(source, brief, "the fresh brief", fresh)
 
 
 def test_refuse_source_files_one_ask_tags_links_and_closes_the_root(

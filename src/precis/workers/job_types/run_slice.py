@@ -404,7 +404,7 @@ from precis.plans import lanes as _lanes
 from precis.plans import outcome as _outcome
 from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
-from precis.plans.todo_chain import CLIP_MARKER
+from precis.plans.todo_chain import CLIP_MARKER, HANDOFF_JOB_KEY
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.container_limits import mem_limit_preexec
@@ -2081,22 +2081,30 @@ def _todo_chunks(store: Any, todo_id: int) -> list[Any]:
     return list(store.chunks.list_chunks_for_ref(todo_id))
 
 
-def _append_comment(store: Any, todo_id: int, text: str) -> None:
+def _append_comment(
+    store: Any, todo_id: int, text: str, *, job_id: int | None = None
+) -> None:
     """Append ``text`` as the todo's next comment chunk (the
-    ``put(kind='todo', id=N, text=...)`` shape: ord = max ord + 1)."""
+    ``put(kind='todo', id=N, text=...)`` shape: ord = max ord + 1).
+    ``job_id`` binds the comment to the job that wrote it: the tick
+    reads a ``handoff:`` comment as THAT job's outcome and no one
+    else's, however new another ``handoff:`` comment may be."""
     existing = _todo_chunks(store, todo_id)
     ord_ = max((int(c.ord) for c in existing), default=0) + 1
+    meta: dict[str, Any] = {
+        "chunk_kind": _COMMENT_KIND,
+        # worker-stamped — the G2 trust boundary (td575705).
+        **worker_comment_meta(),
+    }
+    if job_id is not None:
+        meta[HANDOFF_JOB_KEY] = job_id
     store.chunks.insert_chunks(
         todo_id,
         [
             ChunkInsert(
                 ord=ord_,
                 text=text,
-                meta={
-                    "chunk_kind": _COMMENT_KIND,
-                    # worker-stamped — the G2 trust boundary (td575705).
-                    **worker_comment_meta(),
-                },
+                meta=meta,
             )
         ],
     )
@@ -2390,9 +2398,12 @@ def _brief_close(todo_id: int, mcp: bool = True) -> list[str]:
         "then is. Any other ending counts as a failed attempt.",
         "",
         "A brief must let a builder with no access to the todo graph work "
-        "from it alone. It names:",
+        "from it alone. Its final message's SECOND line is exactly "
+        "`Read: td<source id> at <updated_at>` — the source todo's handle "
+        "and the `updated_at` you read, copied verbatim from a "
+        "`get(kind='todo', id=<source>, view='raw')` (a wrong or missing "
+        "line is a failed attempt) — and the brief after it names:",
         "",
-        "- the source todo's handle and its `updated_at` as you read it;",
         "- the files to change;",
         "- the behaviour before and after;",
         "- the test to add and the exact command that proves it;",
@@ -10960,7 +10971,12 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 + handoff[-(_HANDOFF_CAP - _HANDOFF_HEAD) :].lstrip()
             )
         try:
-            _append_comment(ctx.store, todo_id, f"handoff: {handoff}")
+            _append_comment(
+                ctx.store,
+                todo_id,
+                f"handoff: {handoff}",
+                job_id=getattr(ctx, "ref_id", None),
+            )
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
     if full_handoff and not unscrubbed:
