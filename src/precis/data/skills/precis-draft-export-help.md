@@ -95,14 +95,7 @@ page-number list in the glossary. PDF and Word define the same
 occurrence: headings print the bare short and never define it, URLs and
 DOIs are left alone, `CNB-based` and `aerosol-CVD` count as uses (the
 latter defines as `aerosol-CVD (chemical vapour deposition)`), and `et al.`/`e.g.` do
-not capitalise the next word. Record handles follow the audience choice
-below; chunk cross-references read `Figure 1`, `Table 1`, `Section 5.4`
-(`Eq. (1)`); ones joined by whitespace, `,` or `and` merge (`Sections 1 and 2`,
-`Figures 1 to 3`; not `or`); a reference into the citing chunk's own section or an
-ancestor prints `above` (target first) or `below` (`Above` at a sentence
-start) and ends a run. The Word export abbreviates by default (`fig. 1`,
-`table 1`, `section 5.4`, `Eq. (1)`); `?labels=full` on its download URL
-keeps the spellings above.
+not capitalise the next word. Record handles follow the audience choice below.
 The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub
@@ -120,6 +113,19 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
 - **Word/.docx** — toolchain-free and **synchronous**, with acronym
   first-use expansion + list; figure, table and equation numbers and
   cross-references are Word fields (update fields renumbers); styles below.
+
+## Cross-references
+
+Chunk cross-references read `Figure 1`, `Table 1`, `Section 5.4`
+(`Eq. (1)`); ones joined by whitespace, `,` or `and` merge (`Sections 1 and 2`,
+`Figures 1 to 3`; not `or`); a reference into the citing chunk's own section or an
+ancestor prints `above` (target first) or `below` (`Above` at a sentence
+start) and ends a run. A reference to a section adds a locator so the
+reader need not hunt: PDF appends the page (`Section 2 (page 4)`; not in
+posters), Word the heading name (`section 2 (Methods)`), as Word fields
+have no page number. Equations get neither. The Word export abbreviates by default (`fig. 1`,
+`table 1`, `section 5.4`, `Eq. (1)`); `?labels=full` on its download URL
+keeps the spellings above.
 
 ## Repeated citations
 
