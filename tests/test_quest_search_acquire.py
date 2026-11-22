@@ -1053,6 +1053,6 @@ def test_metadata_less_hit_is_not_linked(store: Any) -> None:
         for b in store.chunks.list_chunks_for_ref(quest)
         if b.chunk_kind == "quest_log"
     )
-    assert f"pa{bare} (no title/abstract)" in log
+    assert f"[pa{bare}] (no title/abstract)" in log
     # Cheap triage is not a judgment: no considered verdict was written.
     assert store.links_for(quest, direction="out", relation="considered") == []

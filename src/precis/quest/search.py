@@ -596,16 +596,24 @@ def _candidate_refs(store: Store, ref_ids: list[int]) -> dict[int, Any]:
         return {}
 
 
+def _cite(kinds: dict[int, str], rid: int) -> str:
+    """``[pa<id>]`` — a candidate's handle as the lit-search line prints it.
+
+    Bracketed because the tick's logbook tail is the only place the model
+    sees a ``pa`` handle, and it copies the form it reads: a bare handle
+    here came back bare in the dossier prose, where only the bracketed
+    form links (gr690465)."""
+    return f"[{_handle(kinds.get(rid, 'paper'), rid)}]"
+
+
 def _seen_clause(not_linked: list[tuple[int, str]], kinds: dict[int, str]) -> str:
-    """``; seen not linked: pa1 (no host term), pa2 (no title/abstract)`` —
-    the per-candidate verdict list gr592951 asks the lit-search line to
+    """``; seen not linked: [pa1] (no host term), [pa2] (no title/abstract)``
+    — the per-candidate verdict list gr592951 asks the lit-search line to
     carry, capped at :data:`_SEEN_CLAUSE_CAP` with a "+N more" tail."""
     if not not_linked:
         return ""
     shown = not_linked[:_SEEN_CLAUSE_CAP]
-    parts = [
-        f"{_handle(kinds.get(rid, 'paper'), rid)} ({reason})" for rid, reason in shown
-    ]
+    parts = [f"{_cite(kinds, rid)} ({reason})" for rid, reason in shown]
     tail = (
         f", +{len(not_linked) - len(shown)} more"
         if len(not_linked) > len(shown)
@@ -786,7 +794,7 @@ def run_search_step(
         seen_text = _seen_clause(not_linked, kinds)
         if linked:
             handles = ", ".join(
-                _handle(kinds.get(rid, "paper"), rid) + (f" ({flag})" if flag else "")
+                _cite(kinds, rid) + (f" ({flag})" if flag else "")
                 for rid, flag in linked
             )
             append_entry(

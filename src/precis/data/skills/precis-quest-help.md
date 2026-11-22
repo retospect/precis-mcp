@@ -587,9 +587,9 @@ ending `graph thin, outside searched`, `graph answered, outside peeked` or
 
 **A relevance gate stands before each link** (gr592951). A candidate
 carrying neither title nor abstract is NEVER linked — the line says
-`pa<id> (no title/abstract)`. The rest are checked against the quest's
+`[pa<id>] (no title/abstract)`. The rest are checked against the quest's
 `meta.lit_gate` term lists (below): a miss is logged `seen not linked:
-pa<id> (no host term|no reaction term)` — a per-candidate verdict, capped
+[pa<id>] (no host term|no reaction term)` — a per-candidate verdict, capped
 at 12 names per line — and every `ref_id % 5 == 0` rejection links anyway,
 flagged `(sampled past gate)`, so cheap triage is never the only discovery
 path. Neither drop writes a `considered` verdict: the tick's `judgments`
