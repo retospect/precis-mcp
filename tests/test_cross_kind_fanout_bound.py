@@ -446,6 +446,12 @@ def _stub_cancelled_fan_out(
 
     monkeypatch.setattr(rt.hub, "handler_for", handler_for)
     monkeypatch.setattr(type(rt), "_cross_kind_kinds", lambda self: list(handlers))
+    # One worker, todo ahead of memory: the stub that advances the frozen
+    # clock must run last, or todo starts with the budget already spent
+    # and reports a TimeoutError instead of its empty hit list.
+    _serial_fan_out(monkeypatch)
+    monkeypatch.setitem(search_mod._cross_kind_costs, "todo", 0.0)
+    monkeypatch.setitem(search_mod._cross_kind_costs, "memory", 1.0)
 
 
 @pytest.mark.parametrize(
