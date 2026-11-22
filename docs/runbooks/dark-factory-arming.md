@@ -25,7 +25,12 @@ The same tick also returns a `STATUS:fixing` gripe to `triaged` once its
 `scripts/release` runs `scripts/gripe-validate` after a rollout. For a pass
 that needs no release and no git checkout, arm the `gripe_validate` job type:
 it closes every `STATUS:verify` gripe whose `resolved: <sha>` comment names a
-sha in the `release.prod_head` record (the head or its `landed` list). Same
+sha in the `release.prod_head` record (the head or its `landed` list) — except
+a gripe tagged `live-when:<service>` while no `service_config` row lights
+that service anywhere (`prio > 0`): the ship is noted and the status waits
+for the service to light. `scripts/gripe-validate` honours the same hold —
+`--verify-list` marks those rows `dark` and `--verify-done` refuses them at
+the shared close boundary either way. Same
 shape as the tick, every 15 minutes:
 
     put(kind='todo', text='gripe_validate tick (verify gripes to done)',

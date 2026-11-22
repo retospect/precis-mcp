@@ -97,14 +97,15 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--verify-list",
         action="store_true",
         help=(
-            "Print one JSON line {id, status, sha, held, check, check_why} "
-            "per live verify-state gripe (auto_verify, user_verify, legacy "
-            "verify); sha is from its newest 'resolved: <sha>' / "
+            "Print one JSON line {id, status, sha, held, check, check_why, "
+            "dark} per live verify-state gripe (auto_verify, user_verify, "
+            "legacy verify); sha is from its newest 'resolved: <sha>' / "
             "'fix-sha: <sha>' comment, held is the hold:no-autoclose tag, "
             "check flags a prod-check line the autoclose pass can evaluate "
             "(it owns the close), check_why names why a check line it "
-            "cannot evaluate falls back to the sha close "
-            "(scripts/gripe-validate). Read-only."
+            "cannot evaluate falls back to the sha close, dark names the "
+            "service a live-when:<service> gripe waits on while it is lit "
+            "nowhere (scripts/gripe-validate). Read-only."
         ),
     )
     dp.add_argument(
@@ -185,6 +186,7 @@ def run(args: argparse.Namespace) -> None:
                 vrows = verify_list(store)
                 held = hold_set(store, [g for g, _st, _s in vrows])
                 cmap = check_map(store, [g for g, _st, _s in vrows])
+                dmap = dark_map(store, [g for g, _st, _s in vrows])
                 for gid, status, sha in vrows:
                     print(
                         json.dumps(
@@ -195,6 +197,7 @@ def run(args: argparse.Namespace) -> None:
                                 "held": gid in held,
                                 "check": gid in cmap and cmap[gid] is None,
                                 "check_why": cmap.get(gid),
+                                "dark": dmap.get(gid),
                             }
                         )
                     )
@@ -442,6 +445,44 @@ def hold_set(store: Any, ids: list[int]) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+#: The live-when prefix: a gripe tagged ``live-when:<service>`` stays out
+#: of the auto-verify close while no ``service_config`` row lights the
+#: service anywhere (the validator's dark-service hold).
+LIVE_WHEN_PREFIX = "live-when:"
+
+
+def live_when_map(store: Any, ids: list[int]) -> dict[int, str]:
+    """The ``live-when:<service>`` tagged gripes among ``ids``:
+    ``{gid: service}`` with the prefix stripped."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id, t.value FROM ref_tags rt "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.value LIKE %s",
+            (list(ids), LIVE_WHEN_PREFIX + "%"),
+        ).fetchall()
+    return {int(r[0]): str(r[1]).removeprefix(LIVE_WHEN_PREFIX) for r in rows}
+
+
+def dark_map(store: Any, ids: list[int]) -> dict[int, str]:
+    """The dark-held subset of ``ids``: ``{gid: service}`` for every
+    ``live-when:<service>`` gripe whose service no ``service_config``
+    row lights anywhere (``prio > 0``). ``verify_done`` refuses those
+    and ``--verify-list`` marks them ``dark``. Read errors abort validation
+    so a close always requires a successful positive-priority lookup."""
+    tagged = live_when_map(store, ids)
+    if not tagged:
+        return {}
+    # Lazy: cli sits above workers in the import order; the predicate
+    # module loads at call time (--verify-list / verify_done only).
+    from precis.workers.service_config import service_lit_anywhere
+
+    dark = {s for s in set(tagged.values()) if not service_lit_anywhere(store, s)}
+    return {g: s for g, s in tagged.items() if s in dark}
+
+
 def check_map(store: Any, ids: list[int]) -> dict[int, str | None]:
     """The check-lined gripes among ``ids``: ``{gid: None}`` when the
     ``gripe_autoclose`` pass can evaluate the line (autoclose-owned),
@@ -478,9 +519,13 @@ def verify_done(
     the handler so the ``resolved:`` guard and the close cascade both
     run.
 
-    Returns ``done grA grB · not verify: grC · not found: grD · failed: …``
+    Returns ``done grA grB · held: … · autoclose-owned: … · held
+    (service dark): … · not verify: grC · not found: grD · failed: …``
     (empty groups omitted). A gripe that left the cohort since the list
-    was read is skipped, never re-closed.
+    was read is skipped, never re-closed; a ``hold:no-autoclose``,
+    autoclose-owned or dark ``live-when:<service>`` gripe is refused the
+    same way — the holds live here, at the shared close boundary, so a
+    stale caller's id list cannot override them.
     """
     from precis.dispatch import Hub
     from precis.errors import PrecisError
@@ -491,13 +536,19 @@ def verify_done(
     # A ``hold:no-autoclose`` gripe is never closed by this verb
     # (gr547015) — a stale caller's id list cannot override the hold.
     # Same for a check-lined gripe (td570413): the gripe_autoclose pass
-    # owns that close, so ``verify_done`` refuses it too.
+    # owns that close, so ``verify_done`` refuses it too. A
+    # ``live-when:<service>`` gripe whose service is dark fleet-wide
+    # waits for the light — the hold lives at this shared boundary so
+    # scripts/gripe-validate's release-time call cannot close one
+    # either.
     held = hold_set(store, ids) if statuses == AUTO_VERIFY_STATUSES else set()
     checked = check_set(store, ids) if statuses == AUTO_VERIFY_STATUSES else set()
+    dark = dark_map(store, ids) if statuses == AUTO_VERIFY_STATUSES else {}
     groups: dict[str, list[str]] = {
         "done": [],
         "held:": [],
         "autoclose-owned:": [],
+        "held (service dark):": [],
         "not verify:": [],
         "not found:": [],
         "failed:": [],
@@ -508,6 +559,9 @@ def verify_done(
             continue
         if gid in checked:
             groups["autoclose-owned:"].append(f"gr{gid}")
+            continue
+        if gid in dark:
+            groups["held (service dark):"].append(f"gr{gid}@{dark[gid]}")
             continue
         if store.get_ref(kind="gripe", id=gid) is None:
             groups["not found:"].append(f"gr{gid}")

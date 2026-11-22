@@ -27,7 +27,11 @@ the recurring ``gripe_validate`` job posts its ``shipped in r<N>``
 note instead. A gripe carrying a prod-check line — its own
 ``meta.fix.check`` or its ``fixes``-linked code todo's (td570413, the
 ``check`` field) — is likewise skipped: the ``gripe_autoclose`` pass
-runs the line in prod and owns that close.
+runs the line in prod and owns that close. A ``live-when:<service>``
+gripe whose service is dark fleet-wide — no ``service_config`` row
+lights it anywhere (the ``dark`` field) — is held the same way: the
+status waits for the service to light, and ``--verify-done`` refuses
+it at the shared close boundary if a stale list still sends its id.
 
 scripts/release runs it after the deploy step; it is idempotent and
 non-interactive, so a recurring job (precis schedule, cron) can run it
@@ -97,16 +101,17 @@ _AUTO_STATUSES = frozenset({"verify", "auto_verify"})
 
 def parse_verify_list(
     out: str,
-) -> list[tuple[int, str, str | None, bool, bool, str | None]]:
-    """``[(id, status, sha|None, held, check, check_why)]`` from
+) -> list[tuple[int, str, str | None, bool, bool, str | None, str | None]]:
+    """``[(id, status, sha|None, held, check, check_why, dark)]`` from
     ``gripes --verify-list`` JSON lines; any non-JSON line (a
     deprecation notice, a warning) is skipped. A row with no ``status``
     reads as ``verify``; ``held`` (the ``hold:no-autoclose`` tag,
     gr547015), ``check`` (a prod-check line the autoclose pass can
-    evaluate, td570413) and ``check_why`` (the reason a check line it
-    cannot evaluate falls back to the sha close, r2) all default
-    empty — an older prod build emits none."""
-    rows: list[tuple[int, str, str | None, bool, bool, str | None]] = []
+    evaluate, td570413), ``check_why`` (the reason a check line it
+    cannot evaluate falls back to the sha close, r2) and ``dark`` (the
+    service a ``live-when:<service>`` gripe waits on while it is lit
+    nowhere) all default empty — an older prod build emits none."""
+    rows: list[tuple[int, str, str | None, bool, bool, str | None, str | None]] = []
     for line in out.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -117,6 +122,7 @@ def parse_verify_list(
             continue
         sha = obj.get("sha")
         why = obj.get("check_why")
+        dark = obj.get("dark")
         rows.append(
             (
                 int(obj["id"]),
@@ -125,6 +131,7 @@ def parse_verify_list(
                 bool(obj.get("held")),
                 bool(obj.get("check")),
                 str(why) if why else None,
+                str(dark) if dark else None,
             )
         )
     return rows
@@ -247,15 +254,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     rows = parse_verify_list(listed.stdout)
-    held = [(g, s) for g, st, s, h, c, w in rows if st in _AUTO_STATUSES and h]
+    held = [(g, s) for g, st, s, h, c, w, d in rows if st in _AUTO_STATUSES and h]
     owned = [
-        (g, s) for g, st, s, h, c, w in rows if st in _AUTO_STATUSES and not h and c
+        (g, s)
+        for g, st, s, h, c, w, d in rows
+        if st in _AUTO_STATUSES and not h and c
+    ]
+    dark = [
+        (g, d)
+        for g, st, s, h, c, w, d in rows
+        if st in _AUTO_STATUSES and not h and not c and d
     ]
     auto = [
-        (g, s) for g, st, s, h, c, w in rows if st in _AUTO_STATUSES and not h and not c
+        (g, s)
+        for g, st, s, h, c, w, d in rows
+        if st in _AUTO_STATUSES and not h and not c and not d
     ]
-    why = {g: w for g, st, s, h, c, w in rows if w}
-    users = [g for g, st, _s, _h, _c, _w in rows if st == "user_verify"]
+    why = {g: w for g, st, s, h, c, w, d in rows if w}
+    users = [g for g, st, _s, _h, _c, _w, _d in rows if st == "user_verify"]
     groups = classify(auto, prod)
     live = groups["live"][:MAX_IDS]
     rest = [
@@ -265,6 +281,12 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if held:
         rest.append("held (no auto-close): " + _named(held))
+    if dark:
+        # The live-when hold (status waits for the service to light);
+        # --verify-done refuses these too if a stale list sends them.
+        rest.append(
+            "held (service dark): " + " ".join(f"gr{g}@{d}" for g, d in dark)
+        )
     if owned:
         # The refusal names the next step, not just the block (r2).
         rest.append(

@@ -20,6 +20,9 @@ Per cohort (:func:`precis.cli.gripe.verify_list`):
   be verified). A gripe carrying ``hold:no-autoclose`` (gr547015, the
   never-close mark) is skipped: a live sha earns one ``shipped in
   <release> (sha <short-sha>)`` note per fix, never ``STATUS:done``.
+  A ``live-when:<service>`` tag holds the gripe out of the close while
+  no ``service_config`` row lights that service anywhere (``prio > 0``):
+  the ship is noted and the status waits for the service to light.
 - ``user_verify``: a human checks — :func:`~precis.cli.gripe.user_verify_sync`
   mints or refreshes ONE ask-user todo listing the cohort and closes
   the covered gripes once the ask is answered (gr519676).
@@ -80,6 +83,7 @@ class ValidateResult:
     no_sha: list[int] = field(default_factory=list)
     failed: list[int] = field(default_factory=list)
     held: list[tuple[int, str]] = field(default_factory=list)
+    held_dark: list[tuple[int, str]] = field(default_factory=list)
     user: int = 0
     spec: int = 0
     closed: str = ""
@@ -94,6 +98,7 @@ class ValidateResult:
             "no_sha": len(self.no_sha),
             "failed": len(self.failed),
             "held": len(self.held),
+            "held_dark": len(self.held_dark),
             "user": self.user,
             "spec": self.spec,
             "dry_run": self.dry_run,
@@ -105,7 +110,7 @@ class ValidateResult:
             f"gripe_validate (prod head {head}): verify={self.verify} "
             f"live={len(self.live)} pending={len(self.pending)} "
             f"no_sha={len(self.no_sha)} failed={len(self.failed)} "
-            f"held={len(self.held)} "
+            f"held={len(self.held)} held_dark={len(self.held_dark)} "
             f"user={self.user} spec={self.spec} dry_run={self.dry_run}"
         )
 
@@ -137,6 +142,11 @@ class ValidateResult:
             lines.append(
                 "held (no auto-close): "
                 + " ".join(f"gr{g}@{s[:9]}" for g, s in self.held)
+            )
+        if self.held_dark:
+            lines.append(
+                "held (service dark): "
+                + " ".join(f"gr{g}@{s}" for g, s in self.held_dark)
             )
         if self.ask:
             lines.append(self.ask)
@@ -204,9 +214,19 @@ _HELD_NOTE_RE = re.compile(
     r"shipped in .+?(?: \(sha ([0-9a-f]{7,40})\))?"
     r" — held from auto-close \(hold:no-autoclose\)"
 )
+#: The live-when-dark hold's per-fix note; STATUS waits for the service
+#: to light somewhere.
+_DARK_HELD_TEXT = (
+    "shipped in {where} (sha {sha}) — held: {service} is off (live-when:{service})"
+)
+_DARK_HELD_NOTE_RE = re.compile(
+    r"shipped in .+? \(sha ([0-9a-f]{7,40})\) — held: .+ is off \(live-when:.+\)"
+)
 
 
-def _held_noted(store: Any, gid: int, sha: str) -> bool:
+def _held_noted(
+    store: Any, gid: int, sha: str, note_re: re.Pattern[str] = _HELD_NOTE_RE
+) -> bool:
     """Deduplicate held notes by fix SHA, independent of release label.
 
     Legacy notes inherit the preceding resolved:/fix-sha: comment's SHA,
@@ -222,7 +242,7 @@ def _held_noted(store: Any, gid: int, sha: str) -> bool:
             continue
         if fix := _VERIFY_SHA_RE.match(comment.text):
             prior_sha = fix.group(1)
-        if note := _HELD_NOTE_RE.fullmatch(comment.text.strip()):
+        if note := note_re.fullmatch(comment.text.strip()):
             noted_sha = note.group(1) or prior_sha
             if noted_sha is None or _prefix_match(noted_sha, sha):
                 return True
@@ -241,6 +261,7 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
     """One validation pass (module docstring)."""
     from precis.cli.gripe import (
         AUTO_VERIFY_STATUSES,
+        dark_map,
         hold_set,
         note_gripes,
         spec_list,
@@ -277,6 +298,23 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
             res.failed.append(gid)
         else:
             res.live.append((gid, sha))
+    # A live-when:<service> gripe whose service is dark fleet-wide is
+    # held out of the close: the ship is noted, the status waits for the
+    # service to light somewhere. The hold is the shared dark_map the
+    # --verify-done boundary also enforces, so the script path cannot
+    # close one either.
+    dark_rows: list[tuple[int, str, str]] = []
+    dark = dark_map(store, [g for g, _s in res.live])
+    if dark:
+        still_live: list[tuple[int, str]] = []
+        for gid, sha in res.live:
+            service = dark.get(gid)
+            if service is None:
+                still_live.append((gid, sha))
+            else:
+                res.held_dark.append((gid, service))
+                dark_rows.append((gid, sha, service))
+        res.live = still_live
     # Held gripes are never closed (gr547015). A live sha means this
     # deploy shipped code touching it — note the ship, hold the status.
     res.held = [(g, s or "?") for g, s in held_rows]
@@ -286,6 +324,13 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
     for gid, sha in held_rows:
         if sha and sha_live(rec, sha) and not _held_noted(store, gid, sha):
             note_gripes(store, _HELD_TEXT.format(where=where, sha=sha[:9]), [gid])
+    for gid, sha, service in dark_rows:
+        if not _held_noted(store, gid, sha, _DARK_HELD_NOTE_RE):
+            note_gripes(
+                store,
+                _DARK_HELD_TEXT.format(where=where, sha=sha[:9], service=service),
+                [gid],
+            )
     if res.failed:
         out = _verify_failed(store, res.failed, gate or {}, res.head)
         if out:

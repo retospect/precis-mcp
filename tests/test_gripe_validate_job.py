@@ -323,6 +323,83 @@ def test_held_legacy_note_does_not_repost(hub: Any, prior_fix: bool) -> None:
     assert _status(store, gid) == "verify"
 
 
+def _light_service(store: Store, service: str, prio: int) -> None:
+    """One ``service_config`` row lighting (or not) ``service`` on h1."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES ('h1', %s, %s) "
+            "ON CONFLICT (host, service) DO UPDATE SET prio = EXCLUDED.prio",
+            (service, prio),
+        )
+        conn.commit()
+
+
+def test_live_when_gripe_held_while_service_dark(hub: Any) -> None:
+    """A ``live-when:<service>`` gripe whose service is dark fleet-wide
+    is not closed: the ship earns one held note per fix and the STATUS
+    waits; an untagged sibling with the same live sha closes as today."""
+    store = hub.store
+    _record(store)
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    untagged = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    store.add_tag(gid, Tag.open("live-when:svcx"), set_by="agent")
+    # dry_run lists the hold without writing a note.
+    dry = gv.run_pass(store, dry_run=True)
+    assert dry.held_dark == [(gid, "svcx")]
+    assert dry.live == [(untagged, HEAD[:9])]
+    assert _comments(store, gid) == [f"resolved: {HEAD[:9]} (main, release pending)"]
+    res = gv.run_pass(store)
+    assert res.held_dark == [(gid, "svcx")] and res.live == [(untagged, HEAD[:9])]
+    assert _status(store, gid) == "verify"
+    assert _status(store, untagged) == "done"
+    comments = _comments(store, gid)
+    assert comments[-1] == (
+        f"shipped in prod {HEAD[:9]} (sha {HEAD[:9]})"
+        " — held: svcx is off (live-when:svcx)"
+    )
+    assert "held (service dark): " + f"gr{gid}@svcx" in res.render()
+    # Idempotent: the second pass notes nothing new, STATUS unchanged.
+    res2 = gv.run_pass(store)
+    assert res2.held_dark == [(gid, "svcx")]
+    assert _comments(store, gid) == comments
+    assert _status(store, gid) == "verify"
+
+
+def test_live_when_gripe_closes_once_service_lit(hub: Any) -> None:
+    """The first pass with the service lit anywhere (prio > 0) takes the
+    normal close path; a prio-0 row does not count as lit."""
+    store = hub.store
+    _record(store)
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    store.add_tag(gid, Tag.open("live-when:svcx"), set_by="agent")
+    gv.run_pass(store)
+    assert _status(store, gid) == "verify"
+    _light_service(store, "svcx", 0)
+    gv.run_pass(store)
+    assert _status(store, gid) == "verify"
+    _light_service(store, "svcx", 1)
+    res = gv.run_pass(store)
+    assert _status(store, gid) == "done"
+    assert (gid, HEAD[:9]) in res.live
+
+
+def test_live_when_hold_no_autoclose_comes_first(hub: Any) -> None:
+    """A gripe carrying both holds stays on the hold:no-autoclose path:
+    its note text and dedup are the existing held behaviour."""
+    store = hub.store
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    store.add_tag(gid, Tag.open("hold:no-autoclose"), set_by="agent")
+    store.add_tag(gid, Tag.open("live-when:svcx"), set_by="agent")
+    _release(store, "r161", HEAD, [])
+    res = gv.run_pass(store)
+    assert res.held == [(gid, HEAD[:9])] and res.held_dark == []
+    assert _status(store, gid) == "verify"
+    assert _comments(store, gid)[-1] == (
+        f"shipped in r161 (sha {HEAD[:9]}) — held from auto-close (hold:no-autoclose)"
+    )
+
+
 def test_red_gate_sends_live_gripe_back_to_triaged(hub: Any) -> None:
     store = hub.store
     _record(store)

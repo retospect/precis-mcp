@@ -10,6 +10,7 @@ real run makes, and the two in-process prod halves on the test DB.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from psycopg import Connection, OperationalError
 
 from precis.store import Store
 from precis.store.types import Tag
@@ -158,6 +160,26 @@ def test_held_gripe_is_never_in_the_close_set(
 
 
 @posix
+def test_dark_gripe_is_held_and_reported(tmp_path: Path, repo: dict[str, Any]) -> None:
+    """A ``live-when:<service>`` gripe whose service is dark fleet-wide
+    (``dark`` on --verify-list) stays out of the close set and is
+    reported under the hold — in the dry run's listing too."""
+    rows = _rows(repo) + [{"id": 6, "sha": repo["c1"][:9], "dark": "svcx"}]
+    cli, log = _fake_cli(tmp_path, rows)
+    line = _run(repo, cli)
+    assert ": done gr1 · pending:" in line
+    assert "held (service dark): gr6@svcx" in line
+    calls = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    done = calls[1]
+    assert done[:2] == ["gripes", "--verify-done"]
+    assert done[3:] == ["--ids", "1,5"]  # gr6 is live but dark — absent
+    line = _run(repo, cli, "--dry-run")
+    assert "held (service dark): gr6@svcx" in line
+    flip = line.split("verify → done: ", 1)[1].split(" · ", 1)[0]
+    assert "gr6" not in flip
+
+
+@posix
 def test_nothing_live_makes_no_write(tmp_path: Path, repo: dict[str, Any]) -> None:
     cli, log = _fake_cli(tmp_path, [{"id": 2, "sha": repo["c3"]}])
     line = _run(repo, cli)
@@ -278,6 +300,90 @@ def test_verify_done_refuses_a_held_gripe(hub: Any, store: Store) -> None:
     out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
     assert out == f"held: gr{a}"
     assert {str(t) for t in store.tags_for(a)} >= {"STATUS:verify"}
+
+
+@pytest.mark.db
+def test_verify_done_refuses_a_dark_live_when_gripe(
+    hub: Any, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prod-side verb holds a ``live-when:<service>`` gripe whose
+    service is dark fleet-wide — the same shared-boundary shape as the
+    ``hold:no-autoclose`` refusal — and closes it once the service is
+    lit anywhere (prio > 0)."""
+    from precis.cli.gripe import dark_map, verify_done
+    from precis.handlers.gripe import GripeHandler
+    from precis.workers.service_config import set_service_prio
+
+    h = GripeHandler(hub=hub)
+    a = _gripe(store, "verify")
+    h.put(id=a, text="resolved: abcdef123 (main, release pending)")
+    store.add_tag(a, Tag.open("live-when:svcx"), set_by="agent")
+    assert dark_map(store, [a]) == {a: "svcx"}
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert out == f"held (service dark): gr{a}@svcx"
+    assert {str(t) for t in store.tags_for(a)} >= {"STATUS:verify"}
+    # A prio-0 row does not light it.
+    set_service_prio(store, "h1", "svcx", 0, actor="test")
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert out == f"held (service dark): gr{a}@svcx"
+    # A positive row only permits closing after the lookup succeeds.
+    set_service_prio(store, "h1", "svcx", 1, actor="test")
+    execute = Connection.execute
+
+    def fail_service_read(
+        conn: Connection[Any], query: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        if isinstance(query, str) and "FROM service_config WHERE service" in query:
+            raise OperationalError("service priority read failed")
+        return execute(conn, query, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Connection, "execute", fail_service_read)
+        with pytest.raises(OperationalError, match="service priority read failed"):
+            verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert {str(t) for t in store.tags_for(a)} >= {"STATUS:verify"}
+
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert out == f"done gr{a}"
+    assert {str(t) for t in store.tags_for(a)} >= {"STATUS:done"}
+
+
+@pytest.mark.db
+def test_verify_list_marks_a_dark_live_when_gripe(
+    hub: Any, store: Store, capsys: Any
+) -> None:
+    """``--verify-list`` emits ``dark: <service>`` on the gripe's row
+    while its ``live-when:`` service is lit nowhere — the field
+    scripts/gripe-validate reads to keep the hold out of its close set.
+    ``dark_map`` agrees once the service is lit the mark is gone."""
+    from precis.cli import gripe as cli_gripe
+    from precis.cli.gripe import dark_map
+    from precis.handlers.gripe import GripeHandler
+    from precis.workers.service_config import set_service_prio
+    from tests import conftest
+
+    h = GripeHandler(hub=hub)
+    a = _gripe(store, "verify")
+    h.put(id=a, text="resolved: abcdef123 (main, release pending)")
+    store.add_tag(a, Tag.open("live-when:svcx"), set_by="agent")
+    args = argparse.Namespace(
+        summary=False,
+        verify_list=True,
+        verify_done=None,
+        verify_ask=False,
+        spec_list=False,
+        spec_done=None,
+        ids="",
+        database_url=conftest._active_dsn(),
+    )
+    cli_gripe.run(args)
+    rows = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert next(r for r in rows if r["id"] == a)["dark"] == "svcx"
+    set_service_prio(store, "h1", "svcx", 1, actor="test")
+    assert dark_map(store, [a]) == {}
+    cli_gripe.run(args)
+    rows = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert next(r for r in rows if r["id"] == a)["dark"] is None
 
 
 def _code_todo(

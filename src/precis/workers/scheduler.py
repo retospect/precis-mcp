@@ -138,16 +138,10 @@ def _service_lit_anywhere(store: Store, service: str) -> bool:
     """True iff some ``service_config`` row (any host, ``*`` included)
     lights ``service`` (prio > 0). A read blip answers True: the
     ``claim_when_dark`` caller then skips this fire rather than burn it."""
+    from precis.workers.service_config import service_lit_anywhere
+
     try:
-        with store.pool.connection() as conn:
-            return (
-                conn.execute(
-                    "SELECT 1 FROM service_config WHERE service = %s AND prio > 0 "
-                    "LIMIT 1",
-                    (service,),
-                ).fetchone()
-                is not None
-            )
+        return service_lit_anywhere(store, service)
     except Exception:
         log.warning("scheduler: service_config lit check failed", exc_info=True)
         return True

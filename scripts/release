@@ -87,9 +87,10 @@ Steps, in order:
      or 3) the deployed head is recorded in prod as the `release.prod_head`
      setting, `{head, deployed_at, landed}` (best-effort, through
      scripts/prod-precis); the plan gates `sha-in-prod` / `tests-green` read
-     it (src/precis/plans/gates.py). Then scripts/gripe-validate flips every
-     STATUS:verify gripe whose resolved sha is now on origin/prod to done
-     (gr541800; best-effort).
+     it (src/precis/plans/gates.py). Then scripts/gripe-validate closes
+     eligible verify gripes whose resolved sha is now on origin/prod.
+     A live-when:<service> gripe waits for a successful lookup showing a
+     positive service_config priority anywhere (gr541800; best-effort).
 
 Re-running after any partial state resumes: a recorded release containing S
 skips the cut (owner only; the marker is removed after `round close`
@@ -1678,9 +1679,12 @@ VALIDATE_TIMEOUT_S = 200.0
 
 
 def validate_gripes() -> None:
-    """Flip verify gripes whose sha is now on origin/prod to done
-    (scripts/gripe-validate, gr541800). Best-effort like :func:`note_gripes`:
-    the rollout already happened, nothing here fails the release."""
+    """Close eligible verify gripes whose sha is now on origin/prod.
+
+    A live-when:<service> gripe waits for a successful service_config
+    lookup showing positive priority anywhere. Validation is best-effort
+    after rollout (scripts/gripe-validate, gr541800).
+    """
     script = HERE / "gripe-validate"
     if not script.exists() or HERE.parent != ROOT:
         return  # a test rig / foreign checkout (PRECIS_ROUND_ROOT) never writes

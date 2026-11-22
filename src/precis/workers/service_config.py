@@ -53,6 +53,21 @@ DEFAULT_PRIO = 5
 ALL_HOSTS = "*"
 
 
+def service_lit_anywhere(store: Store, service: str) -> bool:
+    """Read whether any host, including the wildcard, has positive priority.
+
+    Read failures propagate so callers can apply their own failure policy.
+    """
+    with store.pool.connection() as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM service_config WHERE service = %s AND prio > 0 LIMIT 1",
+                (service,),
+            ).fetchone()
+            is not None
+        )
+
+
 @dataclass
 class ServiceConfigResolver:
     """Resolve the effective ``prio`` for a service on this host, cached.
