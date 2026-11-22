@@ -39,8 +39,8 @@ Two deliberate design choices:
 * **Cite-group anchored, not per-sentence** — ``[pc<id>]`` markers already
   partition prose into grounded spans (a claim is whatever a citation
   grounds; one sentence can bundle two cited claims, or a claim can span
-  two sentences). Contiguous bare pc-cites grounding one span collapse to
-  **one** hub with two evidence edges (free dedup).
+  two sentences). Contiguous bare pc-cites grounding one atomic span
+  collapse to **one** hub with two evidence edges (free dedup).
 * **On-demand, dry-run-first, one chunk at a time** — NOT a corpus sweep
   (a corpus-wide pass belongs to a worker, gated by a quality bar); the
   per-chunk human-in-the-loop is the safety gate. :func:`plan_chunk`
@@ -52,15 +52,31 @@ fakes, mirroring :func:`precis.taproot.canon.place`'s ``merge_confirm_fn``.
 
 **Decomposition** (docs/backlog/taproot-atomic-claims.md): ``extract_fn``
 returns a :class:`~precis.taproot.canon.ClaimExtraction`. Per group, the
-cascade tail runs once per atom and, when present, once for the composite
-(:func:`_run_cascade`); the pairs go to
-:func:`precis.taproot.hub.apply_extraction` (mints/converges each atom
-and the composite with **no** evidence edge, links ``conjunct-of``, folds
-``not_claims`` into the composite's memo). The prose collapse always
-targets the composite when one exists, else the lone atom — "one
-cite-group, one ``[fi<hub>]``" holds either way. Supporter papers beyond
-the first attach ``corroborates`` to **every** atom, never the composite
-(the cited passage asserts all conjuncts; LLM-free, so cheap).
+cascade tail runs once per atom (:func:`_run_cascade`); the pairs go to
+:func:`precis.taproot.hub.apply_extraction`, which mints/converges each
+atom with its evidence edge. Supporter papers beyond the first attach
+``corroborates`` to **every** atom (the cited passage asserts all
+conjuncts; LLM-free, so cheap).
+
+**No composite hub** (gr720460, ruled 2026-11-20): a hub minted here must
+carry its own evidence edge. The extraction's ``composite`` is the draft's
+bundling sentence and holds no evidence by construction, so the backfill
+neither places nor mints it: a split span's cite run rewrites to one
+``[fi<hub>]`` per atom hub. Its ``not_claims`` no longer have a composite
+hub to hold their memo; they ride the plan and are printed by the CLI
+(json and text) and counted in the job summary. Other callers of
+``apply_extraction`` (chase, migrate) keep their composites.
+
+What this does **not** establish, so nobody reads more into it:
+
+* Atom statements are still extracted from the draft span, not written
+  from the source passage — the ruling's "statement drawn from the
+  source" is unmet for atoms.
+* Per-atom verification against a cited passage runs only for a split
+  span on the ``[pc]`` path. A lone atom is not verified, and a
+  ref-level ``[pa]`` promote has no passage to verify against, so a
+  split span promoted that way mints unverified atoms on whole-paper
+  (``ungrounded``) edges.
 """
 
 from __future__ import annotations
@@ -209,7 +225,7 @@ class GroupPlan:
     #: ``"unverified"`` — a split extraction produced an atom no cited
     #: supporter's own grounding passage asserts; the whole group is
     #: refused (no write, prose left) rather than silently dropping a
-    #: conjunct of the composite the prose collapses to;
+    #: conjunct of the sentence the cite run grounds;
     #: ``"verify-unavailable"`` — the atom-verification dispatch itself
     #: failed (infra); retryable, prose left as-is;
     #: ``"extract-unavailable"`` — the extraction LLM dispatch failed (infra,
@@ -225,10 +241,10 @@ class GroupPlan:
     #: else the cascade action: ``"attach"`` / ``"new"`` /
     #: ``"new_contradicts"`` / ``"needs_review"``.
     action: str
-    #: The **target** claim/placement for this group's ``action``/
-    #: ``hub_ref_id``/``note`` above — the composite's when the extraction
-    #: decomposed (:attr:`composite_plan` non-``None``), else the lone atom's
-    #: (an already-atomic extraction has no composite, step-1 invariant).
+    #: The claim/placement behind this group's ``action``/``note`` above —
+    #: the atom whose placement ranks first in :data:`_ACTION_RANK` (a lone
+    #: atom's own; for a split span the one needing most attention, so one
+    #: ``needs_review`` atom marks the whole group).
     #: ``None`` for no-claim / unresolved / ungroundable / stub-fetch-first /
     #: reground(-nomatch).
     claim: CanonicalClaim | None = None
@@ -239,17 +255,11 @@ class GroupPlan:
     #: Empty for no-claim / unresolved / ungroundable / stub-fetch-first /
     #: reground(-nomatch).
     atom_plans: list[tuple[CanonicalClaim, Placement]] = field(default_factory=list)
-    #: The composite's own ``(claim, Placement)`` pair, or ``None`` when the
-    #: extraction didn't decompose (a lone atom has no composite).
-    composite_plan: tuple[CanonicalClaim, Placement] | None = None
-    #: Provenance of the composite (``ClaimExtraction.composite_source``:
-    #: ``"model"`` / ``"coerced"`` / ``None``) — written to the minted
-    #: composite hub's ``meta.composite_source`` by ``apply_extraction``.
-    composite_source: str | None = None
-    #: Rejected conjuncts (:func:`extract_claim`'s ``not_claims``) — folded
-    #: into the composite hub's audit memo by
-    #: :func:`precis.taproot.hub.apply_extraction` (step 8). Empty when the
-    #: extraction rejected nothing (including the no-decomposition case).
+    #: Rejected conjuncts (:func:`extract_claim`'s ``not_claims``) — a
+    #: report only: the backfill mints no composite hub to hold their audit
+    #: memo (gr720460), so the CLI prints them per group and the job
+    #: summary counts them (:attr:`ChunkBackfill.n_not_claims`). Empty when
+    #: the extraction rejected nothing (including the no-decomposition case).
     not_claims: tuple[NotClaim, ...] = ()
     #: The extraction's ``explains`` pairs — indices into :attr:`atom_plans`
     #: (explaining atom, explained atom) — handed to
@@ -265,13 +275,19 @@ class GroupPlan:
     #: (handle, paper_ref_id) for each resolved supporter — for a fetched-``[pa]``
     #: ref-level promote, only the fetched supporters (stubs never mint evidence).
     supporters: list[tuple[str, int]] = field(default_factory=list)
-    #: The hub this group's prose cite targets once acted on — the composite
-    #: hub when one exists, else the lone atom hub (the "one cite-group, one
-    #: ``[fi<hub>]``" collapse target). Populated at plan time for ``attach``
-    #: (the matched candidate); set post-write by :func:`apply_chunk` for
-    #: ``new``/``new_contradicts``. ``None`` for no-claim / needs_review /
-    #: unresolved / stub-fetch-first / reground-needed (prose left untouched).
+    #: The first hub this group's prose cite targets once acted on (the
+    #: lone atom's hub; the first of :attr:`cite_hub_ids` for a split span).
+    #: Populated at plan time for ``attach`` (the matched candidate); set
+    #: post-write by :func:`apply_chunk` for ``new``/``new_contradicts``.
+    #: ``None`` for no-claim / needs_review / unresolved / stub-fetch-first
+    #: / reground-needed (prose left untouched).
     hub_ref_id: int | None = None
+    #: Every hub the rewritten cite run names, in atom order, deduplicated
+    #: (two atoms can converge on one hub) — one ``[fi<hub>]`` each. Known
+    #: at plan time only when every atom is an ``attach`` (a dry run then
+    #: shows the whole run); otherwise set post-write by :func:`apply_chunk`
+    #: once every atom has landed. Empty when the prose is left untouched.
+    cite_hub_ids: list[int] = field(default_factory=list)
     #: True for a fetched-``[pa]`` ref-level promote — the evidence edge cites
     #: the whole paper (no grounding passage), so it lands ``ungrounded``.
     ungrounded: bool = False
@@ -321,6 +337,12 @@ class ChunkBackfill:
         return sum(1 for p in self.plans if p.claim is not None)
 
     @property
+    def n_not_claims(self) -> int:
+        """Conjuncts the extraction rejected as not-a-claim across this
+        chunk's groups — reported, written to no hub."""
+        return sum(len(p.not_claims) for p in self.plans)
+
+    @property
     def n_explains_skipped(self) -> int:
         """``explains`` pairs the extraction proposed that this chunk's
         apply could not write (dropped with a WARNING naming ``dc<chunk>``)."""
@@ -352,6 +374,10 @@ MergeConfirmFn = Callable[[str, str], Verdict]
 LocateFn = Callable[[str, list[tuple[int, int, str]]], tuple[int, int, str] | None]
 
 _MERGE_CONFIRM_DEFAULT = merge_confirm
+
+#: Placement actions, most attention first — a split span reports the
+#: first-ranked action among its atoms (:func:`_run_cascade`).
+_ACTION_RANK = ("needs_review", "new_contradicts", "new", "attach")
 
 _TOKEN_RE = re.compile(r"\w+")
 #: A numeric literal kept whole (``7.27``, ``0.77``, ``-3``) for table matching.
@@ -743,11 +769,11 @@ def _run_cascade(
     verify_batch_fn: VerifyBatchFn = verify_atoms_batch,
 ) -> GroupPlan:
     """The shared extract → block → judge → place tail, once supporters are
-    resolved. Runs the block/judge/place cascade once per atom **and**, when
-    the extraction decomposed, once more for the composite
-    (docs/backlog/taproot-atomic-claims.md step 2) — canon (LLM/ANN) stays
-    per-claim; only the write door (:func:`precis.taproot.hub.apply_extraction`,
-    called from :func:`apply_chunk`) is decomposition-aware. ``ungrounded``
+    resolved. Runs the block/judge/place cascade once per atom; the
+    extraction's composite is never placed (module docstring, "No composite
+    hub") — canon (LLM/ANN) stays per-claim; only the write door
+    (:func:`precis.taproot.hub.apply_extraction`, called from
+    :func:`apply_chunk`) is decomposition-aware. ``ungrounded``
     marks a ref-level ``[pa]`` promote (whole-paper edge, no grounding
     passage).
 
@@ -817,8 +843,8 @@ def _run_cascade(
     # passage never asserts is an extraction artefact — minting it would
     # attach the wrong evidence edge. Every split atom must verify against
     # at least one supporter's own passage or the whole group is refused
-    # (a partial mint would silently drop a conjunct of the composite the
-    # prose collapse targets). A lone-atom extraction skips this: its
+    # (a partial mint would silently drop a conjunct of the sentence the
+    # cite run grounds). A lone-atom extraction skips this: its
     # claim text IS the cited span, which the cite already grounds; and a
     # ref-level [pa] promote carries no passage to verify against at all.
     atom_supporters: list[list[int]] | None = None
@@ -864,12 +890,22 @@ def _run_cascade(
         return claim, place(claim, judged, merge_confirm_fn=merge_confirm_fn)
 
     atom_plans = [_place_one(atom) for atom in atoms]
-    composite_plan = _place_one(extraction.composite) if extraction.composite else None
 
-    # Prose/reporting target: the composite when the extraction decomposed,
-    # else the lone atom (step-1 invariant: a multi-atom extraction always
-    # carries a composite, so this is never ambiguous).
-    target_claim, target_placement = composite_plan or atom_plans[0]
+    # The composite is never placed: it is the draft's bundling sentence and
+    # holds no evidence edge, so it cannot become a hub here (gr720460).
+    # Reporting target: the atom whose placement needs most attention.
+    target_claim, target_placement = min(
+        atom_plans, key=lambda cp: _ACTION_RANK.index(cp[1].action)
+    )
+    # An all-attach group's cite run is already known: every hub exists.
+    attach_ids = [
+        pl.hub_ref_id
+        for _c, pl in atom_plans
+        if pl.action == "attach" and pl.hub_ref_id is not None
+    ]
+    cite_hub_ids = (
+        list(dict.fromkeys(attach_ids)) if len(attach_ids) == len(atom_plans) else []
+    )
 
     return GroupPlan(
         group=group,
@@ -877,13 +913,12 @@ def _run_cascade(
         claim=target_claim,
         placement=target_placement,
         atom_plans=atom_plans,
-        composite_plan=composite_plan,
-        composite_source=extraction.composite_source,
         not_claims=extraction.not_claims,
         explains=explains,
         supporters=supporters,
         atom_supporters=atom_supporters,
         hub_ref_id=target_placement.hub_ref_id,
+        cite_hub_ids=cite_hub_ids,
         ungrounded=ungrounded,
         note=target_placement.reason,
     )
@@ -1158,10 +1193,9 @@ def plan_chunk(
     For each paper cite-group: resolve its supporter papers, then route by
     kind. A ``[pc]`` group extracts the claim (empty extraction ->
     ``no-claim``, prose left as-is) and runs the canonicalizer cascade
-    (``block`` -> ``dedup_judge`` -> ``place``) once per atom, and once for
-    the composite if the extraction decomposed, to decide **attach** vs
-    mint ``new``. A ``[pa]`` group classifies by block-count: stub ->
-    ``stub-fetch-first``, fetched -> ``reground`` (locate the passage,
+    (``block`` -> ``dedup_judge`` -> ``place``) once per atom to decide
+    **attach** vs mint ``new``. A ``[pa]`` group classifies by block-count:
+    stub -> ``stub-fetch-first``, fetched -> ``reground`` (locate the passage,
     rewrite ``[pa]``->``[pc]``; ``reground-nomatch`` if none found) unless
     ``ref_level`` promotes it whole-paper. LLM- and embedder-bearing —
     inherent, since neither convergence nor the grounding passage can be
@@ -1200,11 +1234,30 @@ def _file_review_todo(
     declined to auto-apply — mirrors
     :func:`precis.workers.chase._file_taproot_review_todo` but keyed on the
     draft chunk instead of a finding. Its own ``store.tx()`` (no hub/edge
-    write on this path to stay atomic with)."""
+    write on this path to stay atomic with).
+
+    Filed once per (chunk, claim): a group left as ``[pc…]`` because an atom
+    needs review is re-planned on every run, so an open todo for the same
+    draft chunk and claim sentence is left alone rather than duplicated. A
+    closed one does not block a new filing (the merge was ruled on, and it
+    is risky again)."""
     from precis.store.types import Tag
 
     title = f"taproot: review backfill merge for draft chunk dc{chunk_id}"
     with store.tx() as c:
+        open_already = c.execute(
+            "SELECT 1 FROM refs r "
+            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE r.kind = 'todo' AND r.retired_at IS NULL "
+            "AND t.namespace = 'STATUS' AND t.value = 'open' "
+            "AND r.meta->>'source' = 'taproot:backfill' "
+            "AND r.meta->>'draft_chunk' = %s "
+            "AND r.meta->>'claim_sentence' = %s LIMIT 1",
+            (f"dc{chunk_id}", claim.sentence),
+        ).fetchone()
+        if open_already is not None:
+            return
         todo = store.insert_ref(
             kind="todo",
             slug=None,
@@ -1228,6 +1281,11 @@ def _file_review_todo(
 
 
 # ── apply (writes: mint/converge hubs + rewrite prose) ─────────────────────
+
+
+def _fi_run(hub_ids: list[int]) -> str:
+    """The prose cite run for a group's hubs: one ``[fi<hub>]`` each."""
+    return "".join(f"[fi{h}]" for h in hub_ids)
 
 
 def _record_reground_citations(
@@ -1326,11 +1384,12 @@ def apply_chunk(
     **Decomposition**: each group's writes go through
     :func:`precis.taproot.hub.apply_extraction`, not a single
     ``apply_placement`` — atoms mint/converge + attach the primary
-    supporter; the composite (if any) mints with **no** evidence edge plus
-    the ``not_claims`` memo; placed atoms link ``conjunct-of`` to the
-    composite. Remaining supporters attach ``corroborates`` to **every**
-    atom, never the composite. The prose rewrite targets the composite when
-    one landed, else the lone atom.
+    supporter; remaining supporters attach ``corroborates`` to **every**
+    atom. No composite is passed, so no hub lands without its own evidence
+    edge (module docstring, "No composite hub"). The cite run rewrites to
+    one ``[fi<hub>]`` per atom hub, and only when **every** atom landed: an
+    atom held for review leaves the prose as ``[pc…]`` rather than a cite
+    that covers part of the sentence.
     """
     from precis.taproot.hub import _DEFAULT_ROLE, apply_extraction, attach_evidence
 
@@ -1397,7 +1456,7 @@ def apply_chunk(
             plan.note = f"re-grounded [pa]→{replacement}"
             _record_reground_citations(store, plan, set_by=set_by)
             continue
-        if not plan.atom_plans and plan.composite_plan is None:
+        if not plan.atom_plans:
             # no-claim / unresolved / ungroundable / stub-fetch-first /
             # reground-nomatch — prose left untouched ([pc…] or [pa…]).
             continue
@@ -1422,12 +1481,12 @@ def apply_chunk(
         # Isolate each group's writes: a mid-loop failure (transient DB /
         # LLM error) on one group must not abort the batch or strand the
         # earlier groups' prose rewrites — those are applied below regardless.
-        # hub mint + evidence commit per call (own tx per atom/composite);
+        # hub mint + evidence commit per call (own tx per atom);
         # full mint-and-prose atomicity isn't available through the draft
         # edit door, so on failure we rewrite prose only for the groups whose
-        # target hub actually landed, and a re-run converges onto them
+        # target hubs actually landed, and a re-run converges onto them
         # (idempotent) — including any atom that landed before a later
-        # atom/composite in the same call raised.
+        # atom in the same call raised.
         #
         # ``hub_landed`` — not ``plan.hub_ref_id`` — is the "did this call's
         # write commit?" signal: for ``attach``, ``plan.hub_ref_id`` is
@@ -1461,9 +1520,7 @@ def apply_chunk(
             outcome = apply_extraction(
                 store,
                 atoms=plan.atom_plans,
-                composite=plan.composite_plan,
-                composite_source=plan.composite_source,
-                not_claims=plan.not_claims,
+                composite=None,
                 explains=plan.explains,
                 origin=f"dc{chunk_id}",
                 paper_ref_id=plan.supporters[0][1],
@@ -1472,25 +1529,21 @@ def apply_chunk(
                 todo_fn=_todo_fn,
                 atom_papers=atom_papers,
             )
-            target_hub_id = (
-                outcome.composite_hub_id
-                if outcome.composite_hub_id is not None
-                else (outcome.atom_hub_ids[0] if outcome.atom_hub_ids else None)
-            )
-            if (
-                target_hub_id is None
-            ):  # needs_review — todo(s) filed, prose left as [pc…]
+            if len(outcome.atom_hub_index) < len(plan.atom_plans):
+                # needs_review — todo(s) filed, prose left as [pc…]. Sibling
+                # atoms that landed keep their hub and evidence edge; a
+                # re-run converges onto them.
                 plan.note = "risky merge — filed for review, prose left as [pc…]"
                 continue
-            plan.hub_ref_id = target_hub_id
+            plan.cite_hub_ids = list(dict.fromkeys(outcome.atom_hub_ids))
+            plan.hub_ref_id = plan.cite_hub_ids[0]
             plan.explains_skipped = outcome.explains_skipped
             hub_landed = True
             # Remaining supporters → corroborating evidence. Verified
             # path: only the supporters whose own passage verified that
             # atom (the first already carried its primary edge). Default
             # path: every remaining supporter corroborates every atom hub
-            # (the cited passage asserts all conjuncts; never the
-            # composite, step 3).
+            # (the cited passage asserts all conjuncts).
             for atom_idx, atom_hub_id in outcome.atom_hub_index.items():
                 extra = (
                     [plan.supporters[j] for j in plan.atom_supporters[atom_idx][1:]]
@@ -1509,6 +1562,7 @@ def apply_chunk(
         except Exception as exc:  # isolate one group, keep the batch going
             if not hub_landed:
                 plan.action = "error"
+                plan.cite_hub_ids = []  # a plan-time all-attach run: not written
                 plan.note = f"write failed, prose left as [pc…]: {exc}"
                 continue  # no hub write landed on this call — nothing to point prose at
             # The hub and its primary-supporter edge committed; a later
@@ -1517,16 +1571,17 @@ def apply_chunk(
             # so the report must say so rather than claim the prose was left.
             plan.action = "partial"
             plan.note = (
-                f"hub landed, prose rewritten to [fi{plan.hub_ref_id}], but a "
-                f"supporter evidence edge failed — re-run to attach it: {exc}"
+                f"hub landed, prose rewritten to {_fi_run(plan.cite_hub_ids)}, "
+                f"but a supporter evidence edge failed — re-run to attach it: {exc}"
             )
 
-        # Collapse the whole contiguous same-kind run (cites + inter-cite
-        # whitespace) to a SINGLE [fi<hub>] with one span-replace — no leftover
-        # "" edits, no chunk-wide cleanup regex (which corrupted unrelated
-        # markdown). Works identically for a [pc…] run and a ref-level [pa…] run.
+        # Replace the whole contiguous same-kind run (cites + inter-cite
+        # whitespace) with one [fi<hub>] per landed atom hub in one
+        # span-replace — no leftover "" edits, no chunk-wide cleanup regex
+        # (which corrupted unrelated markdown). Works identically for a
+        # [pc…] run and a ref-level [pa…] run.
         cites = plan.group.pc_cites
-        edits.append((cites[0].start, cites[-1].end, f"[fi{plan.hub_ref_id}]"))
+        edits.append((cites[0].start, cites[-1].end, _fi_run(plan.cite_hub_ids)))
 
     result = ChunkBackfill(chunk_id=chunk_id, draft_ref_id=draft_ref_id, plans=plans)
     if not edits:

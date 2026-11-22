@@ -76,6 +76,8 @@ def _render_chunk_summary(result: Any) -> str | None:
         summary += f", {result.n_ungrounded} ref-level/ungrounded"
     if result.n_explains_skipped:
         summary += f", {result.n_explains_skipped} explains pair(s) dropped"
+    if result.n_not_claims:
+        summary += f", {result.n_not_claims} not-a-claim conjunct(s) rejected"
     return f"dc{result.chunk_id}: {summary}"
 
 
@@ -125,6 +127,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     n_failed = 0
     n_ungrounded = 0
     n_explains_skipped = 0
+    #: Conjuncts the extraction rejected as not-a-claim. The backfill mints
+    #: no composite hub to hold their memo (gr720460), so the per-chunk
+    #: event and this run total are where they are reported.
+    n_not_claims = 0
     #: Chunks with a group whose extraction LLM was down — left OFF the
     #: checkpoint so a retry of this job re-runs them (an outage is not a
     #: verdict; checkpointing it would make the loss permanent).
@@ -183,6 +189,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 n_converted += 1
             n_ungrounded += result.n_ungrounded
             n_explains_skipped += result.n_explains_skipped
+            n_not_claims += result.n_not_claims
             stalled = [p for p in result.plans if p.action == "extract-unavailable"]
             if stalled:
                 unavailable.append(c.chunk_id)
@@ -203,6 +210,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         summary += f", {n_ungrounded} ref-level/ungrounded"
     if n_explains_skipped:
         summary += f", {n_explains_skipped} explains pair(s) dropped"
+    if n_not_claims:
+        summary += f", {n_not_claims} not-a-claim conjunct(s) rejected"
     if unavailable:
         summary += f", {len(unavailable)} with claim extraction unavailable"
     ctx.append_chunk("job_summary", summary)

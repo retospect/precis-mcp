@@ -66,12 +66,20 @@ preceding prose is the claim span, and adjacent pc-cites (`[pc1][pc2]`)
 grounding one span collapse to **one** written cite. Each span runs the
 full canonicalizer cascade (`extract_claim → block → dedup_judge →
 place → apply_extraction`): a span bundling more than one atomic claim
-splits into several atom hubs (each with its own evidence edge) plus a
-non-evidence **composite** hub `conjunct-of`-linked to them (see
-[[precis-taproot-help]]'s "The evidence model" section) — either way
-the rewrite target is **one** `[fi<hub>]` (the composite when one
-landed, else the lone atom), so a citer sees no change. A risky merge
-files a review `todo` and leaves the `[pc…]` untouched; a
+splits into several atom hubs, each carrying its own evidence edge, and
+the cite run rewrites to one `[fi<hub>]` per atom hub (`[fi12][fi13]`;
+two atoms that converge on one hub give one cite). On the `[pc]` path
+each atom of a split span is passage-verified first: a conjunct no cited
+passage asserts refuses the whole group. That check does not run for a
+single-claim span or for a ref-level `[pa]` promote (no passage to
+check against), and an atom's wording is extracted from the draft span,
+not written from the source. The backfill mints no **composite** hub
+for the bundling sentence, which has no evidence of its own (see
+[[precis-taproot-help]]'s "The evidence model" section for composites
+elsewhere); conjuncts the extraction rejected as not-a-claim are
+listed per group in the CLI output and counted in the job summary. A
+risky merge on any atom files one review `todo` (not re-filed while it
+is open) and leaves the `[pc…]` untouched; a
 pointer-only span (no groundable claim) is left as-is. It is
 **on-demand, per draft or section** — not a corpus sweep — and
 idempotent: a re-run finds no `[pc…]` left to convert.

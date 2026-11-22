@@ -34,6 +34,7 @@ from precis.store.store import Store
 # recurse into the fake itself.
 from precis.taproot.backfill import apply_chunk as _REAL_APPLY_CHUNK
 from precis.taproot.canon import CanonicalClaim, ClaimExtraction
+from precis.taproot.reground import AtomVerifyResult
 from precis.taproot.seniority import is_claim_hub
 from precis.workers.job_types import get_job_type, known_job_types
 from tests.workers._helpers import seed_chunk, seed_ref
@@ -282,6 +283,59 @@ def test_dispatch_converts_pc_cites_and_lands_evidence(
     assert ctx.meta_set.get("converted", 0) >= 1
     assert _chunk_id(handles["para_a1"]) in ctx.meta_set.get("done_chunk_ids", [])
     assert _chunk_id(handles["para_b1"]) in ctx.meta_set.get("done_chunk_ids", [])
+
+
+def test_dispatch_counts_rejected_conjuncts_in_the_summary(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backfill mints no composite hub to hold the not-a-claim memo
+    (gr720460), so each chunk's event and the job summary count them."""
+    draft = DraftHandler(hub=hub)
+    _paper_a, pc1 = _pc_of(store, paper_title="paper A")
+    _paper_b, pc2 = _pc_of(store, paper_title="paper B")
+    _seed_sectioned_draft(draft, hub, pc1=pc1, pc2=pc2)
+
+    def _extract(_span: str) -> ClaimExtraction:
+        return ClaimExtraction(
+            atoms=(_claim("A claim."),),
+            composite=_claim("A claim, and a promise."),
+            not_claims=({"text": "a promise", "reason": "forward-looking"},),
+        )
+
+    def _verify_all(atoms: Any, passages: Any) -> list[AtomVerifyResult]:
+        p = passages[0]
+        return [
+            AtomVerifyResult(i, True, p.chunk_ord, p.text, None)
+            for i, _ in enumerate(atoms)
+        ]
+
+    def _fake(
+        store: Any, embedder: Any, draft_handler: Any, chunk_id: int, **kw: Any
+    ) -> Any:
+        return _REAL_APPLY_CHUNK(
+            store,
+            embedder,
+            draft_handler,
+            chunk_id,
+            extract_fn=_extract,
+            block_fn=_block_none,
+            judge_fn=_never_called,
+            merge_confirm_fn=_never_called,
+            verify_batch_fn=_verify_all,
+            **kw,
+        )
+
+    monkeypatch.setattr("precis.taproot.backfill.apply_chunk", _fake)
+
+    ctx = _FakeCtx(store=store, meta={"params": {"scope": "nt"}})
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    chunk_lines = [t for k, t in ctx.events if k == "job_event"]
+    assert len(chunk_lines) == 2
+    assert all("1 not-a-claim conjunct(s) rejected" in t for t in chunk_lines)
+    summaries = [t for k, t in ctx.events if k == "job_summary"]
+    assert summaries and "2 not-a-claim conjunct(s) rejected" in summaries[0]
 
 
 def test_dispatch_extraction_outage_is_not_checkpointed_and_fails_job(

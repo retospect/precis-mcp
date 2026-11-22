@@ -12,6 +12,8 @@ Two layers:
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 import pytest
@@ -73,7 +75,7 @@ def _extract_multi(
     """Fake ``ExtractFn``: a decomposed extraction — ``atoms`` sentences plus
     an optional bundling ``composite`` sentence and ``not_claims``. Mirrors
     the real decomposed shape (:func:`precis.taproot.canon._coerce_extraction`'s
-    invariant) so backfill's per-atom + per-composite cascade fan-out is
+    invariant) so backfill's per-atom cascade fan-out is
     exercised the same way a real ``extract_claim`` result would drive it."""
 
     def _fn(span: str) -> ClaimExtraction:
@@ -1678,14 +1680,19 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
 # ── decomposition: multi-atom + composite (docs/backlog/taproot-atomic-claims.md) ─
 
 
-def _conjunct_atom_ids(store: Store, composite_hub_id: int) -> set[int]:
-    """Atom hub ids linked ``conjunct-of`` onto ``composite_hub_id``."""
+def _conjunct_links_count(store: Store) -> int:
+    """``conjunct-of`` links in the graph — the backfill writes none: it
+    mints no composite for an atom to be a conjunct of (gr720460)."""
     with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT src_ref_id FROM links WHERE dst_ref_id = %s AND relation = 'conjunct-of'",
-            (composite_hub_id,),
-        ).fetchall()
-    return {int(r[0]) for r in rows}
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'conjunct-of'"
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _fi_run(hub_ids: list[int]) -> str:
+    """The cite run the backfill writes for a group: one ``[fi<hub>]`` each."""
+    return "".join(f"[fi{h}]" for h in hub_ids)
 
 
 def _edges_from(store: Store, src_ref_id: int) -> set[int]:
@@ -1716,10 +1723,9 @@ def _taproot_links_count(store: Store) -> int:
 def test_apply_decomposes_multi_atom_mints_hubs_links_and_evidence_on_atoms_only(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    # A bundled [pc] group decomposes to 2 atoms + a surviving composite:
-    # 3 hubs minted, 2 conjunct-of links (atom -> composite), and the
-    # supporter paper's evidence edge lands on the atoms only, never the
-    # composite (step 3).
+    # A bundled [pc] group decomposes to 2 atoms: 2 hubs minted, each with
+    # the supporter paper's evidence edge. The bundling composite is never
+    # minted (gr720460), so there is no conjunct-of link either.
     paper, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
     before = _finding_count(hub.live_store)
@@ -1737,33 +1743,80 @@ def test_apply_decomposes_multi_atom_mints_hubs_links_and_evidence_on_atoms_only
     )
 
     plan = result.plans[0]
-    assert plan.action == "new"  # the composite's own placement action
+    assert plan.action == "new"  # both atoms mint
     assert len(plan.atom_plans) == 2
-    composite_hub = plan.hub_ref_id
-    assert composite_hub is not None
-    assert _finding_count(hub.live_store) == before + 3  # 2 atoms + 1 composite
+    assert len(plan.cite_hub_ids) == 2
+    assert plan.hub_ref_id == plan.cite_hub_ids[0]
+    assert _finding_count(hub.live_store) == before + 2  # 2 atoms, no composite
+    assert _conjunct_links_count(hub.live_store) == 0
 
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
-    assert len(atom_hub_ids) == 2
-    assert composite_hub not in atom_hub_ids
+    # The paper's evidence edge lands on both atoms.
+    assert _edges_from(hub.live_store, paper) == set(plan.cite_hub_ids)
 
-    # The paper's evidence edge lands on both atoms, never the composite.
-    paper_edges = _edges_from(hub.live_store, paper)
-    assert paper_edges == atom_hub_ids
-    assert composite_hub not in paper_edges
-
-    # Prose collapses to the ONE composite cite.
+    # Prose cites each atom hub, in atom order, in place of the [pc] run.
     assert result.rewritten_text is not None
-    assert f"[fi{composite_hub}]" in result.rewritten_text
+    assert _fi_run(plan.cite_hub_ids) in result.rewritten_text
+    assert "[pc" not in result.rewritten_text
+
+
+def _finding_titles(store: Store) -> dict[int, str]:
+    """Live finding hubs as ``ref_id -> title`` (the hub's statement)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, title FROM refs "
+            "WHERE kind = 'finding' AND retired_at IS NULL"
+        ).fetchall()
+    return {int(r[0]): str(r[1]) for r in rows}
+
+
+def test_apply_mints_no_hub_from_the_draft_sentence_without_own_evidence(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # gr720460: a hub is a claim about the source and carries its own
+    # evidence edge to the cited passage. The bundling sentence of a split
+    # span is draft prose with no passage attached to it, so the backfill
+    # mints no hub for it; the prose cites the atoms the passage verified.
+    paper, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+    before = set(_finding_titles(hub.live_store))
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(
+            ["Atom one.", "Atom two."], "Bundle claim.", composite_source="coerced"
+        ),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+    )
+
+    titles = _finding_titles(hub.live_store)
+    minted = set(titles) - before
+    # Every minted hub has the paper's evidence edge; none is evidence-less.
+    assert minted == _edges_from(hub.live_store, paper)
+    assert sorted(titles[i] for i in minted) == ["Atom one.", "Atom two."]
+    assert "Bundle claim." not in titles.values()
+
+    # The prose cites exactly the minted atoms, in place of the [pc] run.
+    assert result.rewritten_text is not None
+    cited = re.findall(r"\[fi(\d+)\]", result.rewritten_text)
+    assert {int(i) for i in cited} == minted
+    assert len(cited) == 2
     assert "[pc" not in result.rewritten_text
 
 
 def test_apply_needs_review_atom_contributes_no_conjunct_link(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    # Regression: an atom that resolves to needs_review must NOT get a
-    # conjunct-of link (nothing to link — apply_placement returned no hub for
-    # it) while its sibling atom and the composite still land normally.
+    # Regression: an atom that resolves to needs_review lands on no hub
+    # (apply_placement returned none for it), so the group's cite run would
+    # cover only part of the sentence — the prose is left as [pc…]. Its
+    # sibling atom still lands with its evidence edge; nothing links
+    # conjunct-of (no composite is minted, gr720460).
     from precis.taproot.authoring import seed_claim_hub
 
     paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
@@ -1798,13 +1851,17 @@ def test_apply_needs_review_atom_contributes_no_conjunct_link(
     )
 
     plan = result.plans[0]
-    composite_hub = plan.hub_ref_id
-    assert composite_hub is not None
+    assert plan.action == "needs_review"
+    assert plan.cite_hub_ids == []
+    assert result.rewritten_text is None  # prose left as [pc…]
     assert _todos(hub.live_store) == before_todos + 1  # atom 1's needs_review
+    assert _conjunct_links_count(hub.live_store) == 0
 
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
-    assert len(atom_hub_ids) == 1  # only atom 2 linked; atom 1 contributed nothing
-    assert existing_hub not in atom_hub_ids
+    # Atom 2 landed on its own hub, with paper B's evidence edge.
+    titles = _finding_titles(hub.live_store)
+    atom_two = {i for i, t in titles.items() if t == "Atom two."}
+    assert len(atom_two) == 1
+    assert _edges_from(hub.live_store, paper_b) == atom_two
 
     # Atom 1's existing hub got no new evidence edge from this call either.
     with hub.live_store.pool.connection() as conn:
@@ -1821,7 +1878,7 @@ def test_apply_multi_atom_fanout_supporters_attach_to_every_atom(
     # Two [pc] cites grounding ONE bundled span: the primary supporter
     # attaches via apply_extraction's atom loop, and the remaining
     # supporter(s) (plan.supporters[1:]) fan out corroborates to EVERY atom
-    # hub — never the composite.
+    # hub.
     paper1, pc1 = _pc_of(hub.live_store, paper_title="p1")
     paper2, pc2 = _pc_of(hub.live_store, paper_title="p2")
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc1}][{pc2}].")
@@ -1839,26 +1896,21 @@ def test_apply_multi_atom_fanout_supporters_attach_to_every_atom(
     )
 
     plan = result.plans[0]
-    composite_hub = plan.hub_ref_id
-    assert composite_hub is not None
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
+    atom_hub_ids = set(plan.cite_hub_ids)
     assert len(atom_hub_ids) == 2
 
     p1_edges = _edges_from(hub.live_store, paper1)
     p2_edges = _edges_from(hub.live_store, paper2)
     assert p1_edges == atom_hub_ids
     assert p2_edges == atom_hub_ids
-    assert composite_hub not in p1_edges
-    assert composite_hub not in p2_edges
 
 
 def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
     draft: DraftHandler, hub: Hub
 ) -> None:
     # A second draft, citing a different paper for the SAME bundled claim,
-    # converges onto the atom + composite hubs the first run minted — no
-    # duplicate hub, no duplicate conjunct-of link, and the new supporter's
-    # evidence lands on the (pre-existing) atom hubs.
+    # converges onto the atom hubs the first run minted — no duplicate hub,
+    # and the new supporter's evidence lands on the (pre-existing) atom hubs.
     paper1, pc1 = _pc_of(hub.live_store, paper_title="p1")
     dc1 = _seed_draft_para(draft, hub, f"Bundle claim [{pc1}].")
 
@@ -1873,13 +1925,11 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
         merge_confirm_fn=_never_called,
         verify_batch_fn=_verify_all,
     )
-    composite_hub = first.plans[0].hub_ref_id
-    assert composite_hub is not None
-    atom_hub_ids = sorted(_conjunct_atom_ids(hub.live_store, composite_hub))
+    atom_hub_ids = first.plans[0].cite_hub_ids
     assert len(atom_hub_ids) == 2
 
     findings_before = _finding_count(hub.live_store)
-    conjuncts_before = _taproot_links_count(hub.live_store)
+    links_before = _taproot_links_count(hub.live_store)
 
     paper2, pc2 = _pc_of(hub.live_store, paper_title="p2")
     dc2 = _seed_draft_para(draft, hub, f"Bundle claim [{pc2}].", draft_id="nt2")
@@ -1887,7 +1937,6 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
     mapping = {
         "Atom one.": (atom_hub_ids[0], "Atom one."),
         "Atom two.": (atom_hub_ids[1], "Atom two."),
-        "Bundle claim.": (composite_hub, "Bundle claim."),
     }
 
     second = apply_chunk(
@@ -1904,24 +1953,35 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
 
     plan2 = second.plans[0]
     assert plan2.action == "attach"
-    assert plan2.hub_ref_id == composite_hub
+    assert plan2.cite_hub_ids == atom_hub_ids
     assert _finding_count(hub.live_store) == findings_before  # no new hub minted
 
-    # No duplicate conjunct-of edges — link_claims no-oped on the existing pair,
-    # plus 2 new evidence edges (paper2 -> each atom hub) is the only taproot
+    # 2 new evidence edges (paper2 -> each atom hub) is the only taproot
     # growth (the draft edit door's own draft-of/cites bookkeeping edges are
     # excluded — scoped to the taproot vocabulary).
-    assert _taproot_links_count(hub.live_store) == conjuncts_before + 2
+    assert _taproot_links_count(hub.live_store) == links_before + 2
     assert set(_edges_from(hub.live_store, paper2)) == set(atom_hub_ids)
-    assert composite_hub not in _edges_from(hub.live_store, paper2)
 
     assert second.rewritten_text is not None
-    assert f"[fi{composite_hub}]" in second.rewritten_text
+    assert _fi_run(atom_hub_ids) in second.rewritten_text
 
 
-def test_apply_not_claims_memo_lands_on_composite_hub_meta(
+def _findings_with_meta_key(store: Store, key: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'finding' "
+            "AND retired_at IS NULL AND meta ? %s",
+            (key,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def test_apply_not_claims_stay_on_the_plan_with_no_memo_hub(
     draft: DraftHandler, hub: Hub
 ) -> None:
+    # The rejected conjuncts' audit memo lived on the composite hub. The
+    # backfill mints none (gr720460), so they are reported on the plan and
+    # written to no hub.
     _, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
 
@@ -1942,26 +2002,18 @@ def test_apply_not_claims_memo_lands_on_composite_hub_meta(
         verify_batch_fn=_verify_all,
     )
 
-    composite_hub = result.plans[0].hub_ref_id
-    assert composite_hub is not None
-    with hub.live_store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s", (composite_hub,)
-        ).fetchone()
-    assert row is not None
-    memo = dict(row[0].get("taproot_not_claims") or {})
-    assert len(memo) == 1
-    entry = next(iter(memo.values()))
-    assert entry["text"] == "enables next-gen tech"
-    assert entry["reason"] == "forward-looking"
+    plan = result.plans[0]
+    assert len(plan.cite_hub_ids) == 2
+    assert plan.not_claims == tuple(not_claims)
+    assert _findings_with_meta_key(hub.live_store, "taproot_not_claims") == 0
 
 
 @pytest.mark.parametrize("source", ["model", "coerced"])
-def test_apply_composite_source_lands_on_composite_hub_meta(
+def test_apply_mints_no_composite_whichever_way_it_was_written(
     draft: DraftHandler, hub: Hub, source: str
 ) -> None:
-    """The extraction's ``composite_source`` rides GroupPlan through
-    ``apply_extraction`` into the minted composite hub's ``meta``."""
+    """A model-written bundling sentence is draft prose just as a coerced
+    one is: neither becomes a hub (gr720460)."""
     _, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
 
@@ -1979,14 +2031,223 @@ def test_apply_composite_source_lands_on_composite_hub_meta(
         verify_batch_fn=_verify_all,
     )
 
-    composite_hub = result.plans[0].hub_ref_id
-    assert composite_hub is not None
-    with hub.live_store.pool.connection() as conn:
+    assert len(result.plans[0].cite_hub_ids) == 2
+    assert "Bundle claim." not in _finding_titles(hub.live_store).values()
+    assert _findings_with_meta_key(hub.live_store, "composite_source") == 0
+
+
+def _edge_rows(store: Store, *, src: int, dst: int) -> int:
+    with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s", (composite_hub,)
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (src, dst),
         ).fetchone()
-    assert row is not None
-    assert row[0]["composite_source"] == source
+    return int(row[0]) if row else 0
+
+
+def _review_todos(store: Store) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'todo' "
+            "AND title LIKE 'taproot: review backfill%'"
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def test_apply_two_atoms_converging_on_one_hub_cite_it_once(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # Both atoms of a split span attach to the SAME existing hub: the cite
+    # run names it once, and the dry run already knows the run (every hub
+    # exists at plan time).
+    from precis.taproot.authoring import seed_claim_hub
+
+    paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
+    existing = int(
+        seed_claim_hub(
+            hub.live_store,
+            sentence="Atom one.",
+            scope={},
+            supporters=[{"paper": paper_a}],
+        )["hub_ref_id"]
+    )
+    paper_b, pc = _pc_of(hub.live_store, paper_title="paper B")
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+    both = _block_map(
+        {"Atom one.": (existing, "Atom one."), "Atom two.": (existing, "Atom one.")}
+    )
+
+    planned = plan_chunk(
+        hub.live_store,
+        embedder=None,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=both,
+        judge_fn=lambda a, b: _verdict("same", 0.99),
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+    )
+    assert planned.plans[0].action == "attach"
+    assert planned.plans[0].cite_hub_ids == [existing]
+
+    before = _finding_count(hub.live_store)
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=both,
+        judge_fn=lambda a, b: _verdict("same", 0.99),
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+    )
+
+    assert result.plans[0].cite_hub_ids == [existing]
+    assert _finding_count(hub.live_store) == before
+    assert result.rewritten_text is not None
+    assert f"Bundle claim [fi{existing}]." in result.rewritten_text
+    assert result.rewritten_text.count("[fi") == 1
+    assert _edge_rows(hub.live_store, src=paper_b, dst=existing) == 1
+
+
+def test_apply_all_attach_dry_run_names_every_hub(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A dry run of a split span whose atoms each attach to a different
+    # existing hub reports the whole cite run, not just the first hub.
+    from precis.taproot.authoring import seed_claim_hub
+
+    paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
+    hubs = [
+        int(
+            seed_claim_hub(
+                hub.live_store, sentence=s, scope={}, supporters=[{"paper": paper_a}]
+            )["hub_ref_id"]
+        )
+        for s in ("Atom one.", "Atom two.")
+    ]
+    _paper_b, pc = _pc_of(hub.live_store, paper_title="paper B")
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+
+    planned = plan_chunk(
+        hub.live_store,
+        embedder=None,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=_block_map(
+            {"Atom one.": (hubs[0], "Atom one."), "Atom two.": (hubs[1], "Atom two.")}
+        ),
+        judge_fn=lambda a, b: _verdict("same", 0.99),
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+    )
+
+    assert planned.plans[0].action == "attach"
+    assert planned.plans[0].cite_hub_ids == hubs
+
+
+def test_apply_rerun_after_partial_landing_reuses_sibling_and_files_no_second_todo(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # Run 1: atom one is a risky merge (todo filed, no hub), atom two mints,
+    # prose stays [pc…]. Run 2 re-plans the same group: atom two converges
+    # on the hub run 1 minted (no new hub, no duplicate evidence edge) and
+    # atom one's still-open review todo is not filed a second time.
+    from precis.taproot.authoring import seed_claim_hub
+
+    paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
+    existing = int(
+        seed_claim_hub(
+            hub.live_store,
+            sentence="Atom one.",
+            scope={},
+            supporters=[{"paper": paper_a}],
+        )["hub_ref_id"]
+    )
+    paper_b, pc = _pc_of(hub.live_store, paper_title="paper B")
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+    todos_before = _review_todos(hub.live_store)
+
+    first = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=_block_map({"Atom one.": (existing, "Atom one.")}),
+        judge_fn=lambda a, b: _verdict("same", 0.40),  # low-confidence same
+        merge_confirm_fn=lambda a, b: _verdict("different", 0.9),  # not confirmed
+        verify_batch_fn=_verify_all,
+    )
+    assert first.plans[0].action == "needs_review"
+    assert first.rewritten_text is None
+    assert _review_todos(hub.live_store) == todos_before + 1
+    (sibling,) = _edges_from(hub.live_store, paper_b)
+    assert _finding_titles(hub.live_store)[sibling] == "Atom two."
+    findings_before = _finding_count(hub.live_store)
+
+    second = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(["Atom one.", "Atom two."], "Bundle claim."),
+        block_fn=_block_map(
+            {"Atom one.": (existing, "Atom one."), "Atom two.": (sibling, "Atom two.")}
+        ),
+        judge_fn=lambda a, b: _verdict("same", 0.40 if a == "Atom one." else 0.99),
+        merge_confirm_fn=lambda a, b: _verdict("different", 0.9),
+        verify_batch_fn=_verify_all,
+    )
+
+    assert second.plans[0].action == "needs_review"
+    assert second.plans[0].cite_hub_ids == []
+    assert second.rewritten_text is None  # prose still [pc…]
+    assert _finding_count(hub.live_store) == findings_before  # sibling reused
+    assert _edges_from(hub.live_store, paper_b) == {sibling}
+    assert _edge_rows(hub.live_store, src=paper_b, dst=sibling) == 1
+    assert _review_todos(hub.live_store) == todos_before + 1  # not re-filed
+
+
+def test_cli_backfill_report_shows_a_lone_atoms_not_claims(
+    draft: DraftHandler, hub: Hub, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # One surviving atom plus a rejected conjunct: with no composite hub to
+    # hold the memo, the CLI report is where the rejection is visible.
+    from precis.cli.taproot import _print_backfill
+
+    _, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+    not_claims: list[NotClaim] = [
+        {"text": "enables next-gen tech", "reason": "forward-looking"}
+    ]
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(
+            ["Atom one."], "Bundle claim.", not_claims=not_claims
+        ),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        verify_batch_fn=_verify_all,
+    )
+    assert result.n_not_claims == 1
+
+    _print_backfill([result], "json", applied=True)
+    group = json.loads(capsys.readouterr().out)[0]["groups"][0]
+    assert group["not_claims"] == not_claims
+    assert group["cite_hub_ids"] == [group["hub_ref_id"]]
+
+    _print_backfill([result], "text", applied=True)
+    assert (
+        "not a claim: 'enables next-gen tech' (forward-looking)"
+        in capsys.readouterr().out
+    )
 
 
 # ── prose-less grounding is refused (gripe 245842) ───────────────────────
@@ -2249,8 +2510,8 @@ def test_apply_decomposition_mints_the_explains_edge_between_atom_hubs(
 ) -> None:
     """The causal split reaches the graph on the draft-backfill path too:
     the extraction's ``explains`` pair rides GroupPlan into apply_extraction,
-    which writes mechanism -> effect between the two ATOM hubs (never the
-    composite) while both atoms stay conjunct-of parts of the composite."""
+    which writes mechanism -> effect between the two ATOM hubs;
+    the backfill mints no composite for them to be conjuncts of."""
     _paper, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Because claim [{pc}].")
 
@@ -2282,9 +2543,7 @@ def test_apply_decomposition_mints_the_explains_edge_between_atom_hubs(
         for r in caplog.records
         if r.levelname == "WARNING"
     )
-    composite_hub = plan.hub_ref_id
-    assert composite_hub is not None
-    assert len(_conjunct_atom_ids(hub.live_store, composite_hub)) == 2
+    assert len(plan.cite_hub_ids) == 2
     with hub.live_store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT s.title, d.title FROM links l "
@@ -2302,7 +2561,7 @@ def test_split_atom_unverified_by_any_passage_refuses_the_group(
 ) -> None:
     # A conjunct the cited passage never asserts is an extraction artefact —
     # the WHOLE group is refused (no mint, prose left), never a partial mint
-    # that silently drops a conjunct of the composite the prose collapses to.
+    # that silently drops a conjunct of the sentence the cite run grounds.
     paper, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
     findings_before = _finding_count(hub.live_store)
@@ -2374,9 +2633,7 @@ def test_split_atom_verification_scopes_evidence_to_its_own_passage(
     )
 
     plan = result.plans[0]
-    composite_hub = plan.hub_ref_id
-    assert composite_hub is not None
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
+    atom_hub_ids = plan.cite_hub_ids
     assert len(atom_hub_ids) == 2
 
     # paper1 edges only the atom its passage verified; paper2 the other.
@@ -2386,7 +2643,6 @@ def test_split_atom_verification_scopes_evidence_to_its_own_passage(
     assert len(p2_edges) == 1
     assert p1_edges != p2_edges
     assert p1_edges | p2_edges == set(atom_hub_ids)
-    assert composite_hub not in p1_edges | p2_edges
 
 
 def test_verify_dispatch_failure_is_retryable_not_a_verdict(

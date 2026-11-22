@@ -1110,9 +1110,11 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                         "kind": p.group.kind,
                         "handles": p.group.handles,
                         "hub_ref_id": p.hub_ref_id,
+                        "cite_hub_ids": p.cite_hub_ids,
                         "ungrounded": p.ungrounded,
                         "reground_targets": p.reground_targets,
                         "claim": p.claim.sentence if p.claim else None,
+                        "not_claims": [dict(nc) for nc in p.not_claims],
                         "note": p.note,
                     }
                     for p in r.plans
@@ -1143,10 +1145,11 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
         )
         for p in r.plans:
             handles = "+".join(p.group.handles)
+            cited = "+".join(f"fi{h}" for h in p.cite_hub_ids or [p.hub_ref_id])
             if p.action == "attach":
-                arrow = f"→ fi{p.hub_ref_id} (converge)"
+                arrow = f"→ {cited} (converge)"
             elif p.action in ("new", "new_contradicts"):
-                arrow = f"→ fi{p.hub_ref_id}" if p.hub_ref_id else "→ new hub"
+                arrow = f"→ {cited}" if p.hub_ref_id else "→ new hub"
             elif p.action == "reground":
                 pcs = "".join(f"[pc{c}]" for c in p.reground_targets)
                 arrow = f"→ {pcs} (re-ground)"
@@ -1156,6 +1159,13 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 arrow += " [ref-level]"  # whole-paper [pa] promote, any action
             claim = (p.claim.sentence[:70] + "…") if p.claim else p.note
             print(f"    [{handles}] {arrow}  {claim}")
+            if p.not_claims:
+                # No composite hub holds these any more (gr720460): this
+                # line is where a rejected conjunct is reported.
+                rejected = "; ".join(
+                    f"{nc['text']!r} ({nc['reason']})" for nc in p.not_claims
+                )
+                print(f"        not a claim: {rejected}")
 
 
 def _run_backfill(args: argparse.Namespace) -> None:

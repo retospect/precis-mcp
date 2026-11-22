@@ -56,6 +56,7 @@ def backfill_seen(monkeypatch: pytest.MonkeyPatch) -> list[int]:
             plans=[],
             n_ungrounded=0,
             n_explains_skipped=0,
+            n_not_claims=0,
             rewritten_text=None,
             chunk_id=chunk_id,
         )
