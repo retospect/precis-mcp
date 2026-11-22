@@ -204,6 +204,35 @@ def test_the_migrate_play_runs_once_on_the_gateway_and_stops_the_run() -> None:
     assert len(msgs) == 1 and msgs[0].startswith("PRECIS_DEPLOY_MIGRATED {{")
 
 
+def test_gateway_migrate_repairs_shared_venv_before_install() -> None:
+    """Same-sha redeploys must install and bounce after repairing the interpreter."""
+    play = _load(MIGRATE)[0]
+    require_ref, prepare, probe, restore = play["pre_tasks"]
+    assert "precis_web_git_ref" in require_ref["ansible.builtin.assert"]["that"]
+    assert prepare["ansible.builtin.import_role"] == {
+        "name": "mcps",
+        "tasks_from": "venv",
+    }
+    assert "always" in prepare["tags"]
+    assert probe["register"] == "mcps_venv_restore"
+    assert restore["when"] == "mcps_venv_restore.stat.exists"
+    assert "always" in restore["tags"]
+    packages, force = restore["block"]
+    assert packages["ansible.builtin.import_role"] == {
+        "name": "mcps",
+        "tasks_from": "packages",
+    }
+    assert force["ansible.builtin.set_fact"] == {
+        "precis_deploy_changed": True,
+        "precis_bounce_scope": "full",
+    }
+    install, migrate, clear = play["tasks"][:3]
+    assert install["ansible.builtin.include_role"]["tasks_from"] == "install"
+    assert migrate["ansible.builtin.include_role"]["tasks_from"] == "migrate"
+    marker = probe["ansible.builtin.stat"]["path"]
+    assert clear["ansible.builtin.file"] == {"path": marker, "state": "absent"}
+
+
 def test_play_38_installs_then_skips_a_second_migrate() -> None:
     main = _load(WEB_TASKS / "main.yml")
     imports = [

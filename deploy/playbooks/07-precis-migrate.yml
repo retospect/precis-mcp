@@ -11,7 +11,8 @@
 # both its hosts, ansible ended the whole run, 38 never migrated, and prod sat
 # half-deployed for about an hour.
 #
-# WHAT. On the gateway (the one host that has always migrated): land the
+# WHAT. On the gateway, repair the shared venv before the first pip install
+# if it does not use the python.org interpreter, then land the
 # pinned code in /opt/mcps/venv with precis_web's own install.yml — the same
 # tasks play 38 runs, so 38's second pass finds the venv current — then run
 # `precis migrate` with precis_web's migrate.yml. Nothing restarts here: under
@@ -41,6 +42,41 @@
   hosts: gateway
   become: true
   any_errors_fatal: true
+  pre_tasks:
+    - name: Require a deploy ref before preparing the gateway's shared venv
+      ansible.builtin.assert:
+        that: (precis_web_git_ref | default('') | length) > 0
+        fail_msg: Run via scripts/deploy or scripts/host-ops/play, or set precis_web_git_ref.
+        quiet: true
+      tags: [always]
+
+    - name: Prepare the gateway's shared MCP venv before installing precis
+      ansible.builtin.import_role:
+        name: mcps
+        tasks_from: venv
+      tags: [always]
+
+    - name: Check whether the shared MCP venv needs its packages restored
+      ansible.builtin.stat:
+        path: /opt/mcps/etc/venv-restore-pending
+      register: mcps_venv_restore
+      tags: [always]
+
+    - name: Restore MCP packages and request a bounce after a venv rebuild
+      when: mcps_venv_restore.stat.exists
+      tags: [always]
+      block:
+        - name: Restore the shared MCP packages before the web install
+          ansible.builtin.import_role:
+            name: mcps
+            tasks_from: packages
+
+        - name: Force installation and a full bounce even on a same-sha redeploy
+          when: precis_deploy_changed is defined
+          ansible.builtin.set_fact:
+            precis_deploy_changed: true
+            precis_bounce_scope: full
+
   tasks:
     - name: Land the pinned precis-mcp in the gateway's MCP venv (precis_web install.yml)
       ansible.builtin.include_role:
@@ -56,6 +92,13 @@
         tasks_from: migrate
         apply:
           tags: [always]
+      tags: [always]
+
+    - name: Clear the rebuild marker after both installs and migration succeed
+      when: mcps_venv_restore.stat.exists
+      ansible.builtin.file:
+        path: /opt/mcps/etc/venv-restore-pending
+        state: absent
       tags: [always]
 
     - name: Record that this run migrated (play 38 skips its own migrate)

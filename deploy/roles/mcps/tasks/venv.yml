@@ -1,0 +1,106 @@
+---
+- name: Ensure MCP directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  become: true
+  loop:
+    - /opt/mcps
+    - /opt/mcps/etc
+    - /opt/mcps/bin
+
+# ── 1. MCP venv (shared by all pip-installable MCPs) ──
+
+- name: Ensure uv is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: uv
+    state: present
+  become: false
+
+- name: Set uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+# TCC note: the venv python must be a *symlink* to python.org's framework
+# python, not a copy. python.org's macOS builds are signed by the Python
+# Software Foundation with a Developer-ID certificate, so the Full Disk
+# Access grant the operator clicks in pins to that *signature* (via the
+# cluster-fda-checklist) rather than an ad-hoc cdhash — it survives both
+# Ansible re-runs (symlink, not a copy) AND a python upgrade (Homebrew's
+# ad-hoc-signed builds mint a fresh cdhash on every `brew upgrade`; a
+# python.org series upgrade keeps the same TeamIdentifier). No brew pin
+# needed for this anymore. See roles/pythonorg.
+- name: Resolve python.org 3.14 interpreter path (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.set_fact:
+    mcps_python: /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14
+
+# Detect whether the venv python resolves into the python.org framework
+# (correct) or somewhere else (stale — brew-linked, copied, or a broken
+# symlink chain; rebuild). `python3` in a venv is always a symlink (->
+# python3.X) regardless of mode, so we must follow to the leaf and check
+# where it actually lands.
+- name: Detect /opt/mcps/venv python mode (python.org symlink vs. stale)
+  when: os_family == "darwin"
+  ansible.builtin.shell: |
+    set -u
+    python=/opt/mcps/venv/bin/python3
+    if [ -x "$python" ] \
+      && [ "$(/usr/bin/readlink -f "$python")" = "$(/usr/bin/readlink -f "{{ mcps_python }}")" ] \
+      && "$python" --version >/dev/null 2>&1; then
+      echo ok
+    else
+      echo stale
+    fi
+  register: mcps_venv_mode
+  check_mode: false
+  changed_when: false
+  become: true
+
+- name: Check the replacement interpreter before removing the MCP venv
+  when:
+    - os_family == "darwin"
+    - mcps_venv_mode.stdout | trim != "ok"
+  ansible.builtin.command: "{{ mcps_python }} --version"
+  changed_when: false
+  check_mode: false
+
+# Keep the marker outside the venv so a retry can finish package
+# restoration even if the previous run already recreated the interpreter.
+- name: Record that the MCP venv needs its packages restored
+  when:
+    - os_family == "darwin"
+    - mcps_venv_mode.stdout | trim != "ok"
+  ansible.builtin.copy:
+    content: ""
+    dest: /opt/mcps/etc/venv-restore-pending
+    mode: "0644"
+  become: true
+
+# `state: absent` on a nonexistent path is a no-op, so this also correctly
+# handles a fresh install as well as a broken symlink whose venv directory
+# still exists. The latter must be removed before the create task runs.
+- name: Wipe /opt/mcps/venv if not on python.org (force symlink rebuild)
+  when:
+    - os_family == "darwin"
+    - mcps_venv_mode.stdout | default('') | trim != "ok"
+  ansible.builtin.file:
+    path: /opt/mcps/venv
+    state: absent
+  become: true
+
+- name: Create MCP Python venv (symlinked to python.org python, macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    cmd: "{{ mcps_python }} -m venv --symlinks /opt/mcps/venv"
+    creates: /opt/mcps/venv/bin/python3
+  become: true
+
+- name: Create MCP Python venv with uv (non-macOS)
+  when: os_family != "darwin"
+  ansible.builtin.command:
+    cmd: "{{ uv_bin }} venv /opt/mcps/venv"
+    creates: /opt/mcps/venv/bin/python
+  become: true
