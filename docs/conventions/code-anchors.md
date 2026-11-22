@@ -1,6 +1,26 @@
-# Convention — durable code anchors in docs
+# Convention — durable code citations
 
-**Cite code by symbol, not by line.** In `docs/` and the memory index, a
+## Persisted code anchors
+
+Cite code in gripe comments and findings by its `an<N>` handle. Read a
+two- or three-line Python source range, then use the mint call printed
+under it. Minting reuses the existing handle when its snippet overlaps
+the selected range in the same repository and symbol.
+
+```python
+put(kind="python", mode="anchor", id="precis/src/precis/dispatch.py~L12-L14")
+get(kind="python", id="an123", view="meta")
+```
+
+The default `bare` view shows the current location. `context` shows
+surrounding source, `meta` shows the recorded repository, symbol, commit
+and citing gripe comments, and `fisheye` shows the symbol's code edges.
+A moved snippet can have several candidates. A stale or re-verify result
+calls for checking the current code before relying on the citation.
+
+## Checkout-local citations
+
+**Cite code by symbol in tracked docs.** For a checkout-local citation, a
 reference like `workers/review.py:308` rots the moment anyone edits above line
 308. Instead write a **durable anchor** — the repo-relative file plus the
 symbol's dotted qualified name:
@@ -63,8 +83,8 @@ scripts/coderef outline <file.py> --symbol Qual.name  # exact decorated source f
 - **`ast`, not the semantic index.** `scripts/coderef` is deterministic exact
   resolution. The precis `python` kind
   (`search(kind='python', mode='pattern', q=…)`) is for *discovery* — finding
-  the symbol the first time you write an anchor — not resolution; don't couple
-  a citation check to a running MCP.
+  the symbol before minting a persisted anchor. Checkout-local citation
+  checks work without a running MCP.
 - Line numbers are fine in throwaway chat and terminal output (they're clickable
   there and die with the message). This convention governs what gets *written
   down* to be read later.

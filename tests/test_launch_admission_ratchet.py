@@ -92,6 +92,7 @@ PROBES: dict[str, str] = {
     "exiftool": "PDF metadata read",
     "chktex": "LaTeX lint of one file",
     "ruff": "lint/format of a few files",
+    "rg": "bounded exact-source relocation probe (five-second timeout)",
     "hostname": "host identity read",
     "tcpdump": "bounded packet capture (count/time-capped)",
 }

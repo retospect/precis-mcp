@@ -873,6 +873,13 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
 
     @wraps(method)
     def wrapped(self: Any, **kwargs: Any) -> Response:
+        if method.__name__ in ("get", "eye"):
+            from precis.handlers._python_anchors import HANDLE
+
+            if isinstance(ident := kwargs.get("id"), str) and HANDLE.fullmatch(ident):
+                # Anchor reads already compare the named file to recorded
+                # git history. Keep bare reads to a single location line.
+                return method(self, **kwargs)
         reads = _Reads()
         token = _reads.set(reads)
         try:

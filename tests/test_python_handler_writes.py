@@ -517,18 +517,14 @@ def test_put_response_next_hint_round_trips(handler: PythonHandler, repo: Path) 
 
 
 def test_kind_spec_supports_seven_verb_surface() -> None:
-    """The KindSpec advertises the seven-verb shape: ``put`` is
-    creation-only (``mode='create'`` only), ``edit`` and ``delete``
-    are first-class verbs that own region edits + selector deletes
-    respectively."""
+    """Put creates files or anchor records. Edit and delete own source changes."""
     from precis.handlers.python import _SUPPORTED_PUT_MODES
 
     assert PythonHandler.spec.supports_put is True
     assert PythonHandler.spec.supports_edit is True
     assert PythonHandler.spec.supports_delete is True
-    # ``put`` only carries ``create`` after the cutover.
     assert PythonHandler.spec.modes == _SUPPORTED_PUT_MODES
-    assert _SUPPORTED_PUT_MODES == ("create",)
+    assert _SUPPORTED_PUT_MODES == ("create", "anchor")
 
 
 # ---------------------------------------------------------------------------

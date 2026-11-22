@@ -61,6 +61,7 @@ from typing import Any, ClassVar
 from precis.config import cache_root
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers import _python_anchors as anchors
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_eye as peye
@@ -129,6 +130,7 @@ _SUPPORTED_VIEWS = (
     "impact",
     "placed",
     "params",
+    *anchors.VIEWS,
 )
 _REVERSE_VIEWS = ("callers", "importers", "imports")
 _SEARCH_MODES = ("pattern", "lexical", "semantic", "literal")
@@ -140,11 +142,11 @@ _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
 #: delete) refuse before touching disk — the public OAuth MCP exposes
 #: the corpus to read but must not let a connector write server code.
 _READONLY_ENV = "PRECIS_PYTHON_READONLY"
-# After the seven-verb cutover, ``put`` on a file kind is creation-only.
+# File creation and explicit code-anchor minting have separate put modes.
 # Region edits live on ``edit`` (mode='find-replace'|'append'|'insert'|
 # 'replace'); selector-deletes live on ``delete``. The three gates
 # (parse / qualname-drop / ruff) ride on whichever verb is invoked.
-_SUPPORTED_PUT_MODES = ("create",)
+_SUPPORTED_PUT_MODES = ("create", "anchor")
 # ``edit``'s accepted modes — region-modifying ops only. Python supports
 # the same set as markdown/plaintext minus ``create`` (lives on ``put``)
 # and ``delete`` (its own verb).
@@ -471,6 +473,7 @@ class PythonHandler(Handler):
             {
                 "run",
                 "expected_root",
+                "checkout",
                 "entry",
                 "depth",
                 "max_results",
@@ -483,7 +486,8 @@ class PythonHandler(Handler):
                 "max_events",
                 "expand_stdlib",
             }
-        )
+        ),
+        "put": ArgsSpec({"note"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -618,6 +622,18 @@ class PythonHandler(Handler):
         # back in here (``run`` is read straight from args).
         extra = dict(args or {})
         expected_root = extra.get("expected_root", expected_root)
+        if isinstance(id, str) and anchors.HANDLE.fullmatch(id):
+            return self._get_code_anchor(
+                id.lower(),
+                view,
+                checkout=extra.get("checkout"),
+                expected_root=expected_root,
+            )
+        if "checkout" in extra or view in anchors.VIEWS:
+            raise BadInput(
+                "checkout and anchor views require an an<N> handle",
+                next="get(kind='python', id='an<N>', view='meta')",
+            )
         entry = extra.get("entry", entry)
         depth = extra.get("depth", depth)
         max_results = extra.get("max_results", max_results)
@@ -833,6 +849,9 @@ class PythonHandler(Handler):
                 "a python eye focuses one symbol or module: id='<alias>::<qualname>'",
                 next="get(kind='python', id='<alias>', view='toc')",
             )
+        if isinstance(id, str) and anchors.HANDLE.fullmatch(id):
+            return self.get(id=id, view="fisheye")
+
         parsed = _parse_id(str(id))
         if parsed.start_line is not None or parsed.block_selector is not None:
             raise BadInput(
@@ -1423,16 +1442,20 @@ class PythonHandler(Handler):
         id: str | int | None = None,
         text: str | None = None,
         mode: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        """Create a new Python file in a configured repo.
+        """Create a Python file or persist a source observation.
 
-        Per the seven-verb surface (D6), ``put`` on python is
-        creation-only. Region edits (append / insert / replace /
+        Region edits (append / insert / replace /
         find-replace) live on the ``edit`` verb; symbol / file
         deletes live on ``delete``. Both go through the three
         gates (parse / qualname-drop / ruff).
         """
+        if mode == "anchor":
+            return self._mint_code_anchor(id, (args or {}).get("note", text))
+        if args and "note" in args:
+            raise BadInput("note requires mode='anchor'", next=anchors.MINT_NEXT)
         if mode in self._LEGACY_PUT_MODES_TO_EDIT:
             new_mode = "find-replace" if mode == "edit" else mode
             raise BadInput(
@@ -1449,8 +1472,8 @@ class PythonHandler(Handler):
             )
         if mode != "create":
             raise BadInput(
-                f"mode= is required and must be 'create' (got {mode!r})",
-                options=["create"],
+                f"mode= is required and must be 'create' or 'anchor' (got {mode!r})",
+                options=list(_SUPPORTED_PUT_MODES),
                 next="put(kind='python', id='r/path/new.py', text='...', mode='create')",
             )
         if id is None:
@@ -2526,6 +2549,243 @@ class PythonHandler(Handler):
             return True
         return self.worktrees is not None and self.worktrees.owns(alias)
 
+    def _code_anchor_repo(self, alias: str) -> str | None:
+        if alias in self.roots:
+            root = self.roots[alias]
+        elif self.worktrees is not None and alias in self._worktree_listing():
+            root = self.worktrees.main
+        else:
+            return None
+        # Multiple public aliases can name the same repository root.
+        for name in ("main", "precis", *sorted(self.roots)):
+            if self.roots.get(name) == root:
+                return name
+        return None
+
+    def _mint_code_anchor(self, id: str | int | None, note: Any) -> Response:
+        self._check_writes_enabled()
+        if note is not None and (not isinstance(note, str) or len(note) > 2000):
+            raise BadInput(
+                "note must be text of at most 2000 characters", next=anchors.MINT_NEXT
+            )
+        parsed = _parse_id(str(id or "/"))
+        lo, hi = parsed.start_line, parsed.end_line
+        if (
+            parsed.file is None
+            or lo is None
+            or hi is None
+            or lo < 1
+            or hi - lo not in (1, 2)
+        ):
+            raise BadInput(
+                "anchor mint requires a two- or three-line Python file range",
+                next=anchors.MINT_NEXT,
+            )
+        repo = self._code_anchor_repo(parsed.alias)
+        if repo is None:
+            raise BadInput(
+                "anchor mint requires a registered repository checkout",
+                next=anchors.MINT_NEXT,
+            )
+        store = self._store_or_none()
+        if store is None:
+            raise Unsupported(
+                "anchor mint requires a database",
+                next="use a database-backed Python server",
+            )
+        root = self._resolve_alias(parsed.alias)
+        idx = self._index(parsed.alias, root)
+        mod = idx.file(parsed.file)
+        if mod is None or mod.parse_error or hi > mod.module_symbol.end_line:
+            raise BadInput(
+                "anchor range is outside a parsed Python file", next=anchors.MINT_NEXT
+            )
+        sym = min(
+            (s for s in mod.symbols if s.start_line <= lo <= hi <= s.end_line),
+            key=lambda s: (s.line_count, s.kind == "module"),
+        )
+        snippet = (mod.source or "").splitlines()[lo - 1 : hi]
+        if len(snippet) != hi - lo + 1 or not any(line.strip() for line in snippet):
+            raise BadInput(
+                "anchor range must contain source code", next=anchors.MINT_NEXT
+            )
+        sha = impact_mod._Git(root, self.git_dir_for(root)).resolve_rev("HEAD")
+        observation = anchors.Observation(
+            repo,
+            mod.qualname,
+            sym.qualname,
+            mod.file,
+            lo,
+            snippet,
+            sha,
+            note,
+            mod.sha256,
+        )
+        handle, line, created = anchors.mint(store, observation, mod, sym)
+        verb = "minted" if created else "refreshed"
+        return Response(
+            body=f"{verb} {handle} — {parsed.alias}/{mod.file}:{line}",
+            reused=not created,
+        )
+
+    def _get_code_anchor(
+        self, handle: str, view: str | None, *, checkout: Any, expected_root: str | None
+    ) -> Response:
+        view = view or "bare"
+        if view not in anchors.VIEWS:
+            raise Unsupported(
+                f"unknown code anchor view {view!r}",
+                options=list(anchors.VIEWS),
+                next=f"get(kind='python', id={handle!r}, view='meta')",
+            )
+        store = self._store_or_none()
+        if store is None:
+            raise Unsupported(
+                "code anchor lookup requires a database",
+                next="use a database-backed Python server",
+            )
+        record = anchors.read(store, handle)
+        if record is None:
+            raise NotFound(f"unknown code anchor {handle}", next=anchors.MINT_NEXT)
+        observation, location = record
+        if observation is None:
+            if checkout is not None or expected_root is not None:
+                raise BadInput(
+                    "a legacy anchor has no recorded checkout to assert",
+                    next=f"get(kind='python', id={handle!r}, view='meta')",
+                )
+            body = f"{handle} stale: legacy location has no source observation — {location}"
+            if view == "meta":
+                body += f"\ngripe comments: {anchors.comments(store, handle)}"
+            return Response(body=body)
+
+        alias = checkout if checkout is not None else observation.repo
+        detail = ""
+        if view == "meta":
+            detail = (
+                f"\nrepo: {observation.repo}\nmodule: {observation.module}"
+                f"\nsymbol: {observation.qualname}\nobserved sha: {observation.sha}"
+                f"\nrecorded range: {observation.file}:{observation.start}"
+                f"-{observation.start + len(observation.snippet) - 1}"
+                f"\ngripe comments: {anchors.comments(store, handle)}"
+            )
+            if observation.note:
+                detail += f"\nnote: {observation.note}"
+        repo = self._code_anchor_repo(observation.repo)
+        if repo is None:
+            return Response(body=f"{handle} stale: repo not indexed{detail}")
+        if not isinstance(alias, str) or self._code_anchor_repo(alias) != repo:
+            if checkout is not None:
+                raise BadInput(
+                    "checkout must identify a checkout of the anchor's repo",
+                    next=f"get(kind='python', id={handle!r}, view='meta')",
+                )
+            return Response(body=f"{handle} stale: repo not indexed{detail}")
+        if expected_root is not None:
+            self._check_expected_root(alias, expected_root, selector=handle)
+        root = self._resolve_alias(alias)
+        if not root.is_dir():
+            return Response(body=f"{handle} stale: repo not indexed{detail}")
+        try:
+            idx = self._index(alias, root)
+        except NotFound:
+            return Response(body=f"{handle} stale: repo not indexed{detail}")
+        mod = idx.file(observation.file)
+        sym = mod.by_qualname(observation.qualname) if mod is not None else None
+        if sym is None:
+            sym = idx.symbol(observation.qualname)
+            mod = idx.file(sym.file) if sym is not None else None
+        review = anchors.review_status(
+            impact_mod._Git(root, self.git_dir_for(root)), observation
+        )
+        if not review and alias != observation.repo:
+            main = self._resolve_alias(observation.repo)
+            if root != main:
+                review = anchors.review_status(
+                    impact_mod._Git(main, self.git_dir_for(main)), observation
+                )
+        flag = f" — {review}" if review else ""
+        if sym is None:
+            candidates = anchors.relocate(root, observation.snippet, index=idx)
+            if not candidates:
+                reason = (
+                    "snippet not found"
+                    if candidates == []
+                    else "relocation search unavailable"
+                )
+                return Response(body=f"{handle} stale: {reason}{flag}{detail}")
+            shown = ", ".join(
+                f"{alias}/{path}:{line}" for path, line in candidates[:20]
+            )
+            overflow = ", …" if len(candidates) > 20 else ""
+            return Response(
+                body=f"{handle} moved: candidates {shown}{overflow}{flag}{detail}"
+            )
+
+        assert mod is not None
+        line, reason = anchors.matched_line(mod, sym, observation)
+        if line is None:
+            return Response(body=f"{handle} stale: {reason}{flag}{detail}")
+        note_file(idx, mod)
+        moved = (mod.file, line) != (observation.file, observation.start)
+        status = " — moved" if moved else " — current" if view == "meta" else ""
+        body = f"{handle} {alias}/{mod.file}:{line}{status}{flag}{detail}"
+        if view == "context":
+            body += "\n" + render.render_source(
+                mod.source or "",
+                file_label=f"{alias}/{mod.file}",
+                start_line=line - 3,
+                end_line=line + len(observation.snippet) + 2,
+            )
+        elif view == "fisheye":
+            body += (
+                "\n"
+                + self.eye(id=f"{alias}::{sym.qualname}", extent="fisheye+1hop").body
+            )
+        return Response(body=body)
+
+    def _code_anchor_listing(
+        self,
+        alias: str,
+        *,
+        mod: ModuleIndex,
+        sym: Symbol | None = None,
+        lo: int | None = None,
+        hi: int | None = None,
+    ) -> str:
+        store = self._store_or_none()
+        if store is None or not hasattr(store, "pool"):
+            return ""
+        repo = self._code_anchor_repo(alias)
+        if repo is None:
+            return ""
+        known = anchors.listed(
+            store,
+            repo,
+            file=mod.file if sym is None else None,
+            qualname=sym.qualname if sym is not None else None,
+        )
+        body = anchors.listing_lines(known)
+        target = None
+        if lo is not None and hi is not None and hi - lo in (1, 2):
+            target = f"{alias}/{mod.file}~L{lo}-L{hi}"
+        elif sym is not None and sym.line_count >= 2:
+            target = f"{alias}/{mod.file}~L{sym.start_line}-L{sym.start_line + 1}"
+        if target is not None:
+            body += render_next_section(
+                [
+                    (
+                        f"put(kind='python', mode='anchor', id={target!r})",
+                        "cite this range",
+                    )
+                ]
+            )
+        elif lo is None:
+            body += render_next_section(
+                [(anchors.MINT_NEXT, "cite a two- or three-line range")]
+            )
+        return "\n" + body if body else ""
+
     # ── anchor refs: linking notes to symbols (gr702978) ───────────
 
     def _store_or_none(self) -> Any | None:
@@ -2726,7 +2986,7 @@ class PythonHandler(Handler):
             )
         )
 
-    def _resolve_writable(self, alias: str) -> Path:
+    def _check_writes_enabled(self) -> None:
         if os.environ.get(_READONLY_ENV, "").strip().lower() in (
             "1",
             "true",
@@ -2737,6 +2997,9 @@ class PythonHandler(Handler):
                 f"python-kind writes are disabled on this server ({_READONLY_ENV}=1)",
                 next="reads (get/search) work; edit the repo from a local checkout",
             )
+
+    def _resolve_writable(self, alias: str) -> Path:
+        self._check_writes_enabled()
         root = self._resolve_alias(alias)
         if alias not in self.roots:
             raise BadInput(
@@ -2859,6 +3122,12 @@ class PythonHandler(Handler):
                 + write.range_line(text, parsed.start_line, end_line)
                 + "\n"
                 + _enclosing_note(parsed.alias, mod, parsed.start_line, end_line)
+                + self._code_anchor_listing(
+                    parsed.alias,
+                    mod=mod,
+                    lo=parsed.start_line,
+                    hi=end_line,
+                )
             )
 
         # Block selector → resolve a Track B symbol within this file.
@@ -2881,6 +3150,7 @@ class PythonHandler(Handler):
                     start_line=1,
                     end_line=mod.module_symbol.end_line,
                 )
+                + self._code_anchor_listing(parsed.alias, mod=mod)
             )
         if view == "toc":
             raise BadInput(
@@ -2888,7 +3158,10 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
             )
         # Default and view='outline'.
-        return Response(body=render.render_file_outline(parsed.alias, mod))
+        return Response(
+            body=render.render_file_outline(parsed.alias, mod)
+            + self._code_anchor_listing(parsed.alias, mod=mod)
+        )
 
     def _render_provenance_target(self, parsed, idx) -> Response:
         """Note the addressed file/symbol so the detail block lists its hash."""
@@ -3010,6 +3283,7 @@ class PythonHandler(Handler):
                 + "\n"
                 + write.range_line(text, sym.start_line, sym.end_line)
                 + "\n"
+                + self._code_anchor_listing(alias, mod=mod, sym=sym)
             )
         if view == "toc":
             raise BadInput(
@@ -3017,7 +3291,9 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={alias!r}, view='toc')",
             )
         # Default and view='outline'.
-        body = render.render_symbol(alias, sym, idx)
+        body = render.render_symbol(alias, sym, idx) + self._code_anchor_listing(
+            alias, mod=mod, sym=sym
+        )
         notes = self._notes_section(qualname)
         if notes is not None:
             body += "\n" + notes
@@ -3226,7 +3502,12 @@ class PythonHandler(Handler):
                 fallback_next=f"search(kind='python', q='{qn.split('.')[-1]}', "
                 f"scope={parsed.alias!r})",
             )
-            return Response(body=reverse.render_callers(parsed.alias, sym, idx))
+            mod = idx.file(sym.file)
+            assert mod is not None
+            return Response(
+                body=reverse.render_callers(parsed.alias, sym, idx)
+                + self._code_anchor_listing(parsed.alias, mod=mod, sym=sym)
+            )
         mod = idx.module(qn)
         if mod is None:
             raise NotFound(

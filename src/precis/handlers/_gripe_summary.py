@@ -16,8 +16,8 @@ spelling — both are gated), never paths, never snippets. A handle
 resolves through the ``alias`` kind — precis's durable short-string
 ledger: ``put(kind='alias', args={'a': 'an12', 'b':
 'src/precis/flux/parse.py::deflux_core', 'rel': 'short-for'})`` records
-the pair (gr595549's python-kind mechanism mints the same map once it
-lands; :func:`resolve_anchors` is the one seam to re-point).
+the provisional pair. Exact source observations minted by the Python
+kind use the same map, and :func:`resolve_anchors` reads both.
 
 Rebuilding is a small-model task — old summary + new entry → new
 summary (:func:`rebuild_summary`, ``Tier.SMALL`` via :func:`route_small`,
@@ -884,10 +884,8 @@ def resolve_anchors(store: Any, handles: set[str]) -> dict[str, str]:
     """``an<N>``/``co<N>`` → the code-location string each handle names.
 
     The map is the ``alias`` kind — precis's durable short-string
-    ledger (gr595549's python-kind mechanism mints the same
-    ``handle ⇄ <path>::<symbol>`` pairs once it lands; until then
-    ``put(kind='alias', args={'a': 'an12', 'b': '<path::sym>'})`` is
-    the mint). Whichever side was registered maps to the OTHER side,
+    ledger. It holds provisional pairs and explicit Python observations.
+    Whichever side was registered maps to the OTHER side,
     which is the location text the match scores. Live pairs only —
     expired ones are hidden like the kind's own lookup. Injectable:
     tests and workers may pass ``resolve=`` to :func:`match_rows`.
@@ -946,8 +944,7 @@ def mint_anchors(
 
     ``gripe`` stamps ``meta.alias.gripe`` and the ``related-to`` /
     ``provisional-alias`` link ``put`` adds — the pair is provisional by
-    design: it lands on ``/stale`` once the gripe closes and
-    gr595549's python-kind mechanism replaces the map. Callers on
+    design: it lands on ``/stale`` once the gripe closes. Callers on
     layers that cannot import :mod:`precis.handlers` reach this through
     the :mod:`precis.utils.gripe_summary` seam. Requires the ``alias``
     kind registered (any booted store has it).
@@ -974,17 +971,17 @@ def mint_anchors(
             "(retired_at IS NULL "
             " AND (meta->'alias'->>'expires_at' IS NULL "
             "      OR (meta->'alias'->>'expires_at')::timestamptz > now())) "
-            "AS live "
+            "AS live, meta ? 'code_anchor' "
             "FROM refs WHERE kind = 'alias'"
         ).fetchall()
         by_location: dict[str, str] = {}
         top = 0
-        for a, b, live in rows:
+        for a, b, live, has_observation in rows:
             if not isinstance(a, str) or not isinstance(b, str):
                 continue
             for side, other in ((a.strip(), b.strip()), (b.strip(), a.strip())):
                 if side and other and ANCHOR_TOKEN_RE.fullmatch(side.lower()):
-                    if live:
+                    if live and not has_observation:
                         by_location.setdefault(other.lower(), side)
                     top = max(top, int(side[2:]))
         n = top

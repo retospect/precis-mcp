@@ -323,6 +323,29 @@ the identical handler output with every caller/callee/test/member a
 link that re-centres the eye, plus the rung row, a `view='source'`
 toggle and a `mode='pattern'` search box at `/python/` (gr499107).
 
+## Cite a source range with a code anchor
+
+Read two or three lines by file range and use the mint call printed beneath
+the source. Outline, source and callers views list existing handles beside
+their symbols. Cite the `an<N>` handle in findings and gripe comments.
+
+```python
+put(kind="python", mode="anchor", id="main/src/precis/dispatch.py~L12-L14",
+    args={"note": "dispatch entry"})
+get(kind="python", id="an123", view="meta")
+```
+
+Mint reuses the handle when its recorded snippet still matches inside the
+same repository and symbol and overlaps the selected range. A separate
+range can name a separate observation.
+
+Use `bare` for the current location, `context` for surrounding source,
+`meta` for the recorded repository, symbol, commit and gripe comments,
+and `fisheye` for callers and callees. A registered worktree can be selected
+with `args={"checkout": "wt-<tree>"}` when it belongs to the recorded repo.
+Moved candidates, stale results and re-verification flags call for checking
+the current code before relying on the citation.
+
 ## Link a note to a Python symbol
 
 Write `python:<qualname>` (e.g. `python:precis.handlers.python.PythonHandler`)

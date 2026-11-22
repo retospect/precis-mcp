@@ -502,12 +502,39 @@ class AliasHandler(NumericRefHandler):
         gripe_ref = self._gripe_ref(gripe) if gripe not in (None, "") else None
         if gripe_ref is not None:
             payload["gripe"] = int(gripe_ref.id)
-        ref = self.store.insert_ref(
-            kind=self.kind,
-            slug=None,
-            title=_short(f"{side_a} ⇄ {side_b}", 200),
-            meta={META_KEY: payload},
-        )
+        from precis.handlers._gripe_summary import ANCHOR_MINT_LOCK_NAMESPACE
+        from precis.handlers._python_anchors import HANDLE
+
+        anchor_tokens = [
+            side.lower() for side in (side_a, side_b) if HANDLE.fullmatch(side)
+        ]
+        with self.store.tx() as conn:
+            if anchor_tokens:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s, %s)",
+                    (ANCHOR_MINT_LOCK_NAMESPACE, 0),
+                )
+                occupied = conn.execute(
+                    """
+                    SELECT 1 FROM refs WHERE kind = 'alias'
+                      AND (lower(meta->'alias'->>'a') = ANY(%s)
+                           OR lower(meta->'alias'->>'b') = ANY(%s))
+                    LIMIT 1
+                    """,
+                    (anchor_tokens, anchor_tokens),
+                ).fetchone()
+                if occupied is not None:
+                    raise BadInput(
+                        "code anchor handle is already allocated",
+                        next="look up the handle with get(kind='python', id='an<N>')",
+                    )
+            ref = self.store.insert_ref(
+                kind=self.kind,
+                slug=None,
+                title=_short(f"{side_a} ⇄ {side_b}", 200),
+                meta={META_KEY: payload},
+                conn=conn,
+            )
         if gripe_ref is not None:
             self.store.add_link(
                 src_ref_id=ref.id,
@@ -547,6 +574,11 @@ class AliasHandler(NumericRefHandler):
                 next="edit(kind='alias', id='as<N>', args={'expires': '30d'})",
             )
         ref = self._resolve_ref(id)
+        if (ref.meta or {}).get("code_anchor"):
+            raise BadInput(
+                "edit cannot change the alias pair of a code anchor",
+                next="put(kind='python', mode='anchor', id='<repo>/<file.py>~L12-L13') refreshes an overlapping observation",
+            )
         p = payload_of(ref)
         changed: list[str] = []
         if rel is not None:

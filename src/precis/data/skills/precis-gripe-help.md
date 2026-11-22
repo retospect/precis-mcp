@@ -526,13 +526,12 @@ each followed by the rebuild. A
 stage's fold walks the new entries one at a time and `through` only
 advances past an entry the model saw whole.
 
-An anchor handle mints as an `alias` pair until gr595549's
-python-kind mechanism lands — `put(kind='alias', args={'a': 'an12',
-'b': 'src/precis/flux/parse.py::deflux_core', 'rel': 'short-for'})`.
-A handle number is never re-minted — a dead pair's `an<N>` stays
-spent, so an old ledger cite can never retarget onto new code.
-That's what `id='/match'` resolves `an<N>`/`co<N>` against: an
-anchor-only ledger entry still identifies failing code.
+Mint an exact observation with
+`put(kind='python', mode='anchor', id='<repo>/<file.py>~L12-L14')`.
+Read it with `get(kind='python', id='an<N>', view='meta')`. Pipeline
+writers that have only a path or symbol can still issue provisional
+aliases. Python reads return their recorded location as unverified.
+`id='/match'` uses location text from both records to rank ledger cites.
 
 If the rebuild fails the entry still stands — the ack names the retry:
 

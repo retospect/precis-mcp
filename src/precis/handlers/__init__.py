@@ -34,7 +34,10 @@ checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace
 execution remain separate. Root inventory does not index; authorization stays
 in ``PRECIS_PYTHON_ROOTS``.
-Explicit Python link targets use static roots so persistent edges survive
+Explicit Python source anchors share the gripe ledger's alias namespace so
+legacy comment handles stay addressable. A worktree observation is recorded
+under its repository alias so the handle survives the worktree.
+Python symbol link targets use static roots so persistent edges survive
 session-scoped worktrees. Roots with the same qualname share its stored anchor.
 Python reads warn when an explicitly requested ``wt-*`` alias is absent,
 or when no worktrees are registered. Static aliases and the worktree registry

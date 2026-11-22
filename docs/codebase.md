@@ -40,6 +40,11 @@ Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
   carries a verdict block instead, and every judgment also lands an
   append-only `considerations` row (`store/_consideration_ops.py`) — the
   edge shows the latest verdict, the table keeps them all.
+- **Code anchors** reuse the gripe ledger's `alias` refs and `an<N>`
+  namespace. `refs.meta.code_anchor` adds the observed repo, symbol, source
+  lines and commit. The Python resolver computes the current location from
+  the index and literal search. Legacy pairs retain their recorded location
+  with an unverified status.
 - **`chunks` — the body text, append-only.** Body rows (`ord >= 0`) are
   **never mutated in place**; only `ord < 0` card variants may be
   DELETE+INSERTed by a registered synthesis pass. Derived data cascades off
