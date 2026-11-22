@@ -266,11 +266,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ask offers ``land again (no builder)``. A land the host refused for
    capacity (``red_class == "admission"``) is not counted there: it rides
    the free-failure backoff and asks only after
-   :data:`LAND_CAPACITY_WAIT_CAP` of unbroken refusals. **Mechanical reds** (gr604579,
+   :data:`LAND_CAPACITY_WAIT_CAP` of unbroken refusals. **Lint reds**:
+   a failed land with ruff or mypy diagnostics in its handoff gets one
+   same-rung retry with the gate's error lines in the brief. Consecutive
+   lint reds after the first climb the ladder with the lander's handoff.
+   **Mechanical reds** (gr604579,
    factory plan 3b): a builder task's newest failed attempt whose error
    text names a known mechanical cause — a stale or colliding migration
    number, an H2 chunk over 4000 chars, a skill file over its size cap, a
-   registry name in no skill, a rebase/merge conflict, squawk, ruff
+   registry name in no skill, a rebase/merge conflict, or squawk
    (:func:`_mechanical_brief`) — gets the mapped fix posted as a
    ``brief:`` comment and retries on the SAME rung the last builder ran
    (:func:`_mech_pin`), never the ladder climb: a mechanical red does
@@ -1124,11 +1128,14 @@ _MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
         "rebase on origin/main and resolve {paths}, keeping main's side "
         "for others' changes",
     ),
-    (
-        "ruff",
-        re.compile(r"\.py:\d+:\d+: [A-Z]{1,4}\d{2,5} |\d+ files? would be reformatted"),
-        "fix the named ruff rule (a reformat red just needs ruff format)",
-    ),
+)
+
+#: The error block header from land_slice.poll, restated to keep imports
+#: one-way. A test pins the spelling.
+_LAND_GATE_ERROR_HEADER = "The gate's error lines:"
+_LINT_ERROR_RE = re.compile(
+    r"^\S+\.py:\d+:(?:\d+: [A-Z]{1,4}\d{3,4} | error:)",
+    re.MULTILINE,
 )
 
 #: Where a conflict's file list hides in the failure text: git's own
@@ -6606,6 +6613,46 @@ def _node_land_target(store: Any, n: _Node) -> str:
     return _release.land_target_of(n.meta, body, latest) or "release/r<N>"
 
 
+def _lint_red_tail(plan: _Plan, store: Any, n: _Node) -> list[tuple[int, str]]:
+    """The last two consecutive lint reds, newest first.
+
+    Lander comments are unsigned. Use the newest lander handoff in each
+    attempt's time window so a red cannot inherit an older land's errors.
+    """
+    from precis.workers.job_types import run_slice
+
+    attempts = _attempt_jobs(plan, n)
+    if not attempts or attempts[-1].meta.get("job_type") != "land_slice":
+        return []
+    comments = _comments(store, n.id)
+    reds: list[tuple[int, str]] = []
+    before = None
+    for job in reversed(attempts[-2:]):
+        if job.status != "failed" or job.meta.get("job_type") != "land_slice":
+            break
+        handoff = next(
+            (
+                str(c.text)
+                for c in comments
+                if c.created_at >= job.created_at
+                and (before is None or c.created_at < before)
+                and str(c.text)
+                .lstrip()
+                .lower()
+                .startswith(run_slice._LANDER_HANDOFF_PREFIX)
+            ),
+            "",
+        )
+        errors = handoff.partition(f"\n{_LAND_GATE_ERROR_HEADER}\n")[2].split(
+            "\n\n", 1
+        )[0]
+        if not _LINT_ERROR_RE.search(errors):
+            break
+        reds.append((job.id, errors))
+        before = job.created_at
+    return reds
+
+
 def _mech_red(
     plan: _Plan, store: Any, n: _Node
 ) -> tuple[str, str, str, int, int] | None:
@@ -6641,6 +6688,24 @@ def _mech_red(
     return slug, brief, line, repeats, int(last.id)
 
 
+def _latest_builder_rung(
+    plan: _Plan, n: _Node, rungs: tuple[_lanes.Rung, ...]
+) -> int | None:
+    """The newest builder's launched rung, falling back to its mint params."""
+    for job in reversed(plan.jobs(n)):
+        if str(job.meta.get("job_type") or DEFAULT_OP) != DEFAULT_OP:
+            continue
+        params = _dict_of(job.meta.get("params"))
+        lane = job.meta.get("lane") or params.get("lane")
+        model = job.meta.get("model") or params.get("model")
+        return (
+            _lanes.rung_index(rungs, str(lane), str(model) if model else None)
+            if lane
+            else None
+        )
+    return None
+
+
 def _mech_pin(
     plan: _Plan,
     w: _Writer,
@@ -6659,16 +6724,7 @@ def _mech_pin(
     before, carrying the brief the caller posted."""
     if params.get("lane") or params.get("model"):
         return False
-    lane = model = None
-    for j in reversed(plan.jobs(n)):
-        if str(j.meta.get("job_type") or DEFAULT_OP) != DEFAULT_OP:
-            continue
-        lane = j.meta.get("lane") or (j.meta.get("params") or {}).get("lane")
-        model = j.meta.get("model") or (j.meta.get("params") or {}).get("model")
-        break
-    if not lane:
-        return False
-    idx = _lanes.rung_index(rungs, str(lane), str(model) if model else None)
+    idx = _latest_builder_rung(plan, n, rungs)
     if idx is None:
         return False
     target = rungs[idx]
@@ -7296,23 +7352,31 @@ def _rung_cap_usd(rung: _lanes.Rung, rules: dict[str, dict[str, Any]]) -> float 
 
 
 def _climb_start(
-    plan: _Plan, n: _Node, rungs: tuple[_lanes.Rung, ...], attempts: int
+    plan: _Plan,
+    n: _Node,
+    rungs: tuple[_lanes.Rung, ...],
+    attempts: int,
+    *,
+    previous_rung: int | None = None,
 ) -> int:
     """The ladder index the next attempt climbs from — one rung above
     where the newest REAL attempt ran (a no-attempt job is no rung to
     climb from, gr571395), else the attempt count, floored at the top.
     The ``_escalate`` floor, factored so :func:`_spend_hit` reads the
     same tail the climb does."""
-    ended = [
-        j
-        for j in plan.jobs(n)
-        if j.status in _JOB_ENDED and not _no_attempt(j) and not _is_conflict_job(j)
-    ]
-    pick = ended[-1].meta if ended else {}
-    # A validator can decline a rung before stamping a launched session.
-    rung = _dict_of(pick.get("diversity_retry")) or pick
-    prev = _lanes.rung_index(rungs, rung.get("lane"), rung.get("model"))
-    return min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
+    if previous_rung is None:
+        ended = [
+            j
+            for j in plan.jobs(n)
+            if j.status in _JOB_ENDED and not _no_attempt(j) and not _is_conflict_job(j)
+        ]
+        pick = ended[-1].meta if ended else {}
+        # A validator can decline a rung before stamping a launched session.
+        rung = _dict_of(pick.get("diversity_retry")) or pick
+        previous_rung = _lanes.rung_index(rungs, rung.get("lane"), rung.get("model"))
+    return min(
+        previous_rung + 1 if previous_rung is not None else attempts, len(rungs) - 1
+    )
 
 
 def _chain_floor(n: _Node) -> int:
@@ -7806,6 +7870,8 @@ def _escalate(
     params: dict[str, Any],
     lane_table: tuple[_lanes.Lane, ...],
     rules: dict[str, dict[str, Any]] | None = None,
+    *,
+    from_builder: bool = False,
 ) -> tuple[bool, str | None, dict[str, Any] | None]:
     """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
@@ -7863,7 +7929,13 @@ def _escalate(
     rungs = _task_rungs(lane_table, n, params)
     if not rungs:
         return True, None, None
-    start = max(_climb_start(plan, n, rungs, attempts), min(floor, len(rungs) - 1))
+    # A lint retry ran on the same rung, which the failed land job does
+    # not record. Climb from its builder's rung when it is known.
+    previous_rung = _latest_builder_rung(plan, n, rungs) if from_builder else None
+    start = max(
+        _climb_start(plan, n, rungs, attempts, previous_rung=previous_rung),
+        min(floor, len(rungs) - 1),
+    )
     backed = set(_lanes.lane_backoffs(w.store))
     spend = _node_spend_usd(plan, n, rules) if rules else 0.0
     spend_blocked = frozenset(
@@ -9967,6 +10039,7 @@ def _step_dispatch(
                 continue
             params["lane"] = lane_name
         mech_pinned = False
+        repeated_lint = False
         if conflict_try:
             go, pin_note, unusable = _conflict_pin(
                 plan, w, n, params, lane_table, rules, conflict_try
@@ -10000,14 +10073,24 @@ def _step_dispatch(
             and not _is_reviewer(n)
             and not conflict_try
         ):
-            # gr604579 (factory plan 3b): a red whose error line names a
-            # mechanical cause gets the fix as a ``brief:`` comment and
-            # retries on the SAME rung — not the lane-ladder climb that
-            # used to land a 4000-char skill chunk on swe-2-max. Two
-            # briefed retries, the third red asks instead:
-            # ``meta.mech_retries.exhausted`` makes the node read as
-            # capped to the hygiene step below.
-            mech = _mech_red(plan, w.store, n)
+            # Lint gets one briefed retry with the gate's error lines.
+            # A repeat uses the ordinary ladder and the lander's handoff.
+            # Other mechanical reds get two briefed same-rung retries
+            # (gr604579). The third stamps exhausted for the hygiene ask.
+            lint = _lint_red_tail(plan, w.store, n)
+            repeated_lint = len(lint) == 2
+            mech: tuple[str, str, str, int, int] | None = None
+            if len(lint) == 1:
+                lint_job, errors = lint[0]
+                mech = (
+                    "lint",
+                    "Fix the lint errors on this branch.",
+                    errors,
+                    1,
+                    lint_job,
+                )
+            elif not lint:
+                mech = _mech_red(plan, w.store, n)
             if mech is not None:
                 slug, brief, line, repeats, last_job = mech
                 stamp = {
@@ -10016,7 +10099,8 @@ def _step_dispatch(
                     "job": last_job,
                     "at": _iso(datetime.now(UTC)),
                 }
-                if repeats > MECH_RETRY_CAP:
+                brief_cap = 1 if lint else MECH_RETRY_CAP
+                if repeats > brief_cap:
                     w.stamp_meta(n, {MECH_RETRIES_KEY: {**stamp, "exhausted": True}})
                     res.dispatch_hold(
                         n,
@@ -10033,15 +10117,19 @@ def _step_dispatch(
                 # failed attempt next tick — the stamp says the brief is
                 # already up, so it does not re-post.
                 if not (isinstance(prev, dict) and prev.get("job") == last_job):
+                    detail = (
+                        f"\n{_LAND_GATE_ERROR_HEADER}\n{line}"
+                        if lint
+                        else f" {line[:200]}"
+                    )
                     w.comment(
                         n,
-                        f"brief: {brief}{_templates.MECH_BRIEF_MARK}{last_job}: "
-                        f"{line[:200]}",
+                        f"brief: {brief}{_templates.MECH_BRIEF_MARK}{last_job}:{detail}",
                     )
                 mech_pinned = _mech_pin(plan, w, n, rungs, params, rules)
                 res.notes.append(
                     f"td{n.id}: mechanical red '{slug}' (repeat "
-                    f"{repeats}/{MECH_RETRY_CAP}) — briefed, retry "
+                    f"{repeats}/{brief_cap}) — briefed, retry "
                     + (
                         "on the same rung"
                         if mech_pinned
@@ -10049,7 +10137,9 @@ def _step_dispatch(
                     )
                 )
         if job_type == DEFAULT_OP and not mech_pinned:
-            go, climbed, esc_stamp = _escalate(w, plan, n, params, lane_table, rules)
+            go, climbed, esc_stamp = _escalate(
+                w, plan, n, params, lane_table, rules, from_builder=repeated_lint
+            )
             if not go:
                 reason = climbed or "no eligible retry lane"
                 res.dispatch_hold(n, reason.removeprefix(f"td{n.id}: "))

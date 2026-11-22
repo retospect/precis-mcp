@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from inspect import getsource
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -2569,6 +2570,100 @@ def _brief_comments(store: Store, todo_id: int) -> list[str]:
     ]
 
 
+_MYPY_ERRORS = (
+    "src/precis/x.py:12: error: Incompatible return value type [return-value]\n"
+    "tests/test_x.py:8: error: Function is missing a return type annotation [no-untyped-def]"
+)
+_RUFF_ERRORS = (
+    "src/precis/x.py:12:5: E501 line too long\n"
+    "tests/test_x.py:8:1: F401 imported but unused"
+)
+
+
+def _post_land_errors(store: Store, task: int, errors: str) -> None:
+    run_slice._append_comment(
+        store,
+        task,
+        f"{run_slice._LANDER_HANDOFF_PREFIX} land FAILED on the branch.\n\n"
+        f"The gate's error lines:\n{errors}",
+    )
+
+
+def test_lint_red_header_matches_lander() -> None:
+    literal = rf"\n\n{pd._LAND_GATE_ERROR_HEADER}\n"
+    assert literal + "{errors}" in getsource(land_slice.poll)
+
+
+@pytest.mark.parametrize("errors", [_MYPY_ERRORS, _RUFF_ERRORS], ids=["mypy", "ruff"])
+def test_lint_red_retries_once_same_rung_with_error_lines(
+    store: Store, monkeypatch: pytest.MonkeyPatch, errors: str
+) -> None:
+    use_lanes(monkeypatch)
+    task = _one_task_plan(store).ids["task"]
+    job = _red_land(store, task, "✖ lint is RED")
+    _post_land_errors(store, task, errors)
+
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-high")
+    (brief,) = _brief_comments(store, task)
+    assert f"{T.MECH_BRIEF_MARK}{job}" in brief
+    assert brief.endswith(errors)
+    assert run_slice._wants_session(brief)
+
+
+def test_lint_red_second_red_climbs_the_ladder(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch)
+    task = _one_task_plan(store).ids["task"]
+    first = _red_land(store, task, "✖ lint is RED")
+    _post_land_errors(store, task, _RUFF_ERRORS)
+    assert pd.run_pass(store).dispatched == 1
+    retry = _jobs_under(store, task)[-1][0]
+    _set_job_status(store, retry, "succeeded")
+    _slice_job(store, task, "land_slice", "failed")
+    _post_land_errors(store, task, _MYPY_ERRORS)
+    briefs = _brief_comments(store, task)
+
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
+    assert len(briefs) == 1
+    assert _brief_comments(store, task) == briefs
+    stamp = _meta(store, task)["mech_retries"]
+    assert stamp["job"] == first and "exhausted" not in stamp
+    assert _MYPY_ERRORS in (run_slice._brief_parts(store, task)[1] or "")
+
+
+def test_lint_red_pytest_only_is_not_lint(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch)
+    task = _one_task_plan(store).ids["task"]
+    _red_land(store, task, "✖ tests are RED")
+    _post_land_errors(
+        store,
+        task,
+        "FAILED tests/test_x.py::test_x - AssertionError\n"
+        "E   src/precis/x.py:12: error: a string in a pytest assertion",
+    )
+
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
+    assert _brief_comments(store, task) == []
+
+
 @pytest.mark.parametrize(
     "line,want",
     [
@@ -2605,7 +2700,6 @@ def _brief_comments(store: Store, todo_id: int) -> list[str]:
             "CONFLICT (content): Merge conflict in src/precis/runtime/search.py",
             "rebase on origin/main",
         ),
-        ("src/precis/x.py:12:5: E501 line too long", "ruff"),
     ],
 )
 def test_mechanical_brief_maps_each_signature(line: str, want: str) -> None:
@@ -2871,11 +2965,11 @@ def test_mechanical_hit_prefers_the_tail_match() -> None:
     hit = pd._mech_hit(
         "chunk 'x' body exceeds the chunk-size budget (4100 > 4000 chars)\n"
         "noise between\n"
-        "src/precis/x.py:12:5: E501 line too long"
+        "✖ squawk found migration hazards"
     )
     assert hit is not None
-    assert hit[0] == "ruff"
-    assert hit[2] == "src/precis/x.py:12:5: E501 line too long"
+    assert hit[0] == "squawk"
+    assert hit[2] == "✖ squawk found migration hazards"
 
 
 def test_mechanical_red_held_mint_posts_one_brief(
