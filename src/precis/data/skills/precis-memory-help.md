@@ -927,8 +927,9 @@ Preview an anchored rewrite with `dry_run=True` (or `ops=[...]` plus
 `dry_run=True`). The receipt's `Links:` section lists net additions and
 removals by relation and handle, labels generated versus explicit/provenance
 edges, and gives a `link(...)` restoration call for each removal. Unchanged
-links produce no section. Whole-body `mode='replace'` has no dry-run;
-preview the equivalent whole-body anchored replacement before applying it.
+links produce no section. A whole-body `mode='replace'` takes
+`dry_run=True` too — the preview diffs the old body against the new one,
+and a metadata-only edit (no `text=`) previews the patch keys and title.
 Preview never mints a part ref: if a part has no live handle yet, it names
 the pending mention separately because apply may create that link.
 
@@ -1092,7 +1093,8 @@ A clean rewrite clears only system-set audit flags; hand-set flags stay.
 Unavailable checks preserve their flags, including `old-sha` when Git
 cannot be queried. Preview a grab-bag with `put(..., dry_run=True)` or an
 anchored edit's `dry_run=True` to see proposed atomic titles; these are
-suggestions, not writes. Whole-body `mode='replace'` has no dry-run.
+suggestions, not writes. Whole-body `mode='replace'` takes `dry_run=True`
+as well.
 
 `search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})`
 counts every live memory per space; untagged nodes land in an

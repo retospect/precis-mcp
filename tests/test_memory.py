@@ -1750,10 +1750,55 @@ def test_dry_run_diff_separates_last_lines_without_trailing_newline(
     assert _body(handler, store, mid) == "head\nold tail"
 
 
-def test_dry_run_on_replace_mode_is_rejected(handler: MemoryHandler) -> None:
+def test_dry_run_on_replace_mode_previews_without_writing(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr753021: a whole-body ``mode='replace'`` previews like the
+    anchored doors — the old "dry_run previews anchored edits only"
+    refusal kept failing on the call agents naturally reach for."""
     mid = _make(handler)
-    with pytest.raises(BadInput, match="dry_run"):
-        handler.edit(id=mid, mode="replace", text="whole new", dry_run=True)
+    before_ids = [c.id for c in store.chunks.list_chunks_for_ref(mid)]
+    out = handler.edit(id=mid, mode="replace", text="whole new", dry_run=True)
+    assert "DRY RUN" in out.body
+    assert "-alpha path /old/dir" in out.body
+    assert "+whole new" in out.body
+    assert _body(handler, store, mid) == _BODY
+    assert [c.id for c in store.chunks.list_chunks_for_ref(mid)] == before_ids
+    assert _body_events(store, mid) == 0
+
+
+def test_dry_run_on_replace_mode_previews_title_change(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _make(handler)
+    out = handler.edit(
+        id=mid,
+        mode="replace",
+        text="whole new",
+        title="new header",
+        dry_run=True,
+    )
+    assert "(title would become 'new header')" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "anchored"
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_dry_run_on_meta_patch_previews_the_patch(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The metadata-only door (no ``text=``) previews the patch keys and
+    title rather than refusing ``dry_run``."""
+    mid = _make(handler)
+    out = handler.edit(
+        id=mid, title="new header", meta={"hook": "one line"}, dry_run=True
+    )
+    assert "DRY RUN" in out.body
+    assert "hook" in out.body
+    assert "title would become 'new header'" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "anchored"
+    assert (ref.meta or {}).get("hook") is None
 
 
 def test_omitted_mode_with_text_only_still_replaces_whole_body(

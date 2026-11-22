@@ -2805,7 +2805,10 @@ class MemoryHandler(AuditedRetirementHandler):
         ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
         ``dry_run=True`` (unified diff, nothing written) — resolved by the
         shared :mod:`precis.utils.edit_resolve`, so a one-word fix in a large
-        body needs no re-send. A ``find`` that misses verbatim is retried
+        body needs no re-send. ``dry_run`` previews the other doors too:
+        a whole-body ``mode='replace'`` rewrite diffs old against new, and
+        a metadata-only call names the meta keys and title it would
+        change (gr753021). A ``find`` that misses verbatim is retried
         folded (whitespace, quotes, dashes, ligatures — gr688478) before
         the error fires, so a retyped span still lands. ``title=`` /
         ``rule=`` / ``warrant=`` /
@@ -3037,15 +3040,6 @@ class MemoryHandler(AuditedRetirementHandler):
                     delete_span=delete_span,
                 ),
             )
-        if dry_mode is not None:
-            raise BadInput(
-                "dry_run= previews mode='find-replace' / 'insert' / "
-                "'append' edits only",
-                next=(
-                    "edit(kind='memory', id=N, mode='find-replace', "
-                    "find='old', text='new', dry_run=True)"
-                ),
-            )
         if (
             not has_text
             and new_title is None
@@ -3084,6 +3078,17 @@ class MemoryHandler(AuditedRetirementHandler):
             new_title=new_title,
             meta_patch=meta_patch,
         )
+        if dry_mode is not None:
+            return self._replace_dry_preview(
+                ref,
+                text if has_text and text is not None else previous_body,
+                old_body=previous_body,
+                new_title=new_title,
+                meta_patch=meta_patch,
+                has_body=bool(has_text),
+                dry_mode=dry_mode,
+                shape=shape,
+            )
         final_shape: list[ShapeAudit | None] = []
         if not has_text:
             # Meta-only patch (rule=/warrant=/meta=, no body rewrite) — skip the
@@ -3973,6 +3978,62 @@ class MemoryHandler(AuditedRetirementHandler):
             misses,
             final_shape[0],
         )
+
+    def _replace_dry_preview(
+        self,
+        ref: Ref,
+        new_body: str,
+        *,
+        old_body: str,
+        new_title: str | None,
+        meta_patch: dict[str, Any],
+        has_body: bool,
+        dry_mode: str,
+        shape: ShapeAudit | None,
+    ) -> Response:
+        """``mode='replace'`` / meta-patch ``dry_run`` preview (gr753021).
+
+        A whole-body rewrite previews the same way an anchored edit does
+        — the ``DRY RUN`` header, a unified diff (or the ``'full'``
+        post-edit view), a ``(title would become …)`` note and the
+        ``## Dependants`` block — while a metadata-only call (``title=`` /
+        ``rule=`` / ``warrant=`` / ``meta=`` with no ``text=``) previews
+        the patch itself, since there is no body diff to show. Nothing
+        is written either way.
+        """
+        label = f"{self.kind} {ref.id}"
+        if has_body:
+            preview_link_effects(self.store, ref.id, new_body)
+            edited_spans = ((1, new_body.count("\n") + 1),)
+            header = render_dry_run_header(
+                region_label=label,
+                edited_spans=edited_spans,
+                match_policy="replace",
+            )
+            if dry_mode == "full":
+                body = render_dry_run_full(
+                    new_body, edited_spans=edited_spans, region_label=label
+                )
+            else:
+                diff = format_unified_diff(old_body, new_body, file_label=label)
+                body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            if new_title is not None:
+                body += f"\n(title would become {new_title!r})"
+            resp_body = "\n".join(
+                [*header, "", body, "", self._dependants_preview(ref.id)]
+            )
+            return self._with_shape_advisory(
+                Response(body=resp_body), shape, dry_run=True
+            )
+        changed = ", ".join(sorted(k for k in meta_patch if not k.startswith("_")))
+        lines = [
+            f"DRY RUN - would update {self._sense()} id={ref.id} "
+            f"meta: {changed or '(none)'}"
+        ]
+        if new_title is not None:
+            lines.append(f"(title would become {new_title!r})")
+        resp_body = "\n".join([*lines, "", self._dependants_preview(ref.id)])
+        return self._with_shape_advisory(Response(body=resp_body), shape, dry_run=True)
 
     def _edit_ops(
         self,

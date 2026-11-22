@@ -156,7 +156,8 @@ class TestEditPreview:
 class TestMemoryEditAckGaps:
     """Review td681243: two memory edit ack paths dropped the
     ``dependants:`` summary — metadata-only patches and whole-body
-    ``mode='replace'`` (both real-edit doors; dry_run refuses them)."""
+    ``mode='replace'`` (both real-edit doors; dry_run previews them
+    since gr753021)."""
 
     def test_meta_only_edit_ack_line(self, hub: Hub, store: Store) -> None:
         h = MemoryHandler(hub=hub)

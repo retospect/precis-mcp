@@ -119,8 +119,10 @@ edit(kind='memory', id='me12', mode='find-replace',
 get(kind='memory', id='me12', view='body')
 ```
 
-For terseness alone, use the same anchored edit and full readback without
-creating a child. Keep the title and hook accurate after either change.
+Add `dry_run=True` to preview the trim before writing — it works on a
+whole-body `mode='replace'` rewrite too. For terseness alone, use the
+same anchored edit and full readback without creating a child. Keep the
+title and hook accurate after either change.
 
 ## Repair links and verify the resulting graph
 
