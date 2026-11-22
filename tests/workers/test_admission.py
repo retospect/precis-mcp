@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -28,6 +29,12 @@ from precis.utils.llm import openai_tools
 from precis.workers import admission
 from precis.workers import capability_probe as cap
 from precis.workers.admission import Footprint
+
+#: The job-hold tests spawn a child in its own process group and kill it
+#: with os.killpg, which Windows lacks.
+posix_groups = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only process groups (os.killpg)"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1373,6 +1380,7 @@ def _seed_job_host(store: Store, monkeypatch: pytest.MonkeyPatch, host: str) -> 
     monkeypatch.setenv("PRECIS_HOST_NAME", host)
 
 
+@posix_groups
 def test_job_spawn_holds_name_the_job_and_its_child(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1391,6 +1399,7 @@ def test_job_spawn_holds_name_the_job_and_its_child(
         _kill_group(pid)
 
 
+@posix_groups
 def test_dead_launcher_holds_refunded_by_the_terminal_poll(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1412,6 +1421,7 @@ def test_dead_launcher_holds_refunded_by_the_terminal_poll(
     assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
 
 
+@posix_groups
 def test_running_job_poll_releases_a_dead_childs_hold(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1429,6 +1439,7 @@ def test_running_job_poll_releases_a_dead_childs_hold(
     assert _free(store, host) == {"cpu_milli": 8000, "mem_mb": 16384}
 
 
+@posix_groups
 def test_worker_exit_hook_keeps_a_running_jobs_holds(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1462,6 +1473,7 @@ def test_worker_exit_hook_keeps_a_running_jobs_holds(
         _kill_group(pid)
 
 
+@posix_groups
 def test_readopting_poll_renews_a_live_childs_hold(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1494,6 +1506,7 @@ def test_readopting_poll_renews_a_live_childs_hold(
         _kill_group(pid)
 
 
+@posix_groups
 def test_terminal_poll_leaves_a_live_childs_hold_to_the_graced_sweep(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

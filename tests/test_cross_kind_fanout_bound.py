@@ -218,9 +218,14 @@ def test_deadline_cancels_the_query_on_the_server(
         return []
 
     _patch_invoke(monkeypatch, rt, sleepy)
-    t0 = time.perf_counter()
-    out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
-    assert time.perf_counter() - t0 < budget(5.0)
+    # Own pool, one worker per kind: on a busy shared executor the sleepy job
+    # can be dropped unstarted at the deadline, so no query ever reaches the
+    # server and ``errors`` stays empty (r349 gate-fast flake).
+    with ThreadPoolExecutor(max_workers=len(kinds)) as pool:
+        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: pool)
+        t0 = time.perf_counter()
+        out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
+        assert time.perf_counter() - t0 < budget(5.0)
     deadline = time.perf_counter() + 5.0
     running = 1
     while time.perf_counter() < deadline:
