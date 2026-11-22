@@ -72,7 +72,13 @@ def test_first_attempt_starts_at_the_base_and_looks_for_legacy_work(
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
     assert handle is not None
-    assert _names(seams)[-3:] == ["resolve_start", "import_legacy", "cut"]
+    # the builder venv is synced (td763170) once the tree is cut
+    assert _names(seams)[-4:] == [
+        "resolve_start",
+        "import_legacy",
+        "cut",
+        "sync_build_env",
+    ]
     assert dict(seams["ws"])["cut"]["start"] is None
     assert ctx.meta_set["start"] is None and ctx.meta_set["base"] == "main"
 

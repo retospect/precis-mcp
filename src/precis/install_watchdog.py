@@ -768,8 +768,8 @@ def drain_then_exit(
             f"{stuck} of {pending} call(s) still running"
         ),
     )
-    # os._exit skips atexit: drop this instance's served-sha stamp here so
-    # the release confirm stops counting it now (gr762430) — the backstop
+    # The hard exit below skips atexit: drop this instance's served-sha stamp
+    # here so the release confirm stops counting it now (gr762430) — the backstop
     # for the drain signal's own forget at drain start, and the only one on
     # the checkout watchdog's bounce (its pending_sha attests until here).
     # Idempotent, bounded, never raises; a no-op in a process that does
