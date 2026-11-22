@@ -49,6 +49,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from psycopg.errors import QueryCanceled
+
 from precis.errors import (
     BadInput,
     Internal,
@@ -3122,9 +3124,8 @@ class SearchMixin(RuntimeShape):
                 result_ids=response.result_ids,
             )
 
-        # gr664954: kinds that only got a worker inside the deadline's
-        # last slice ran lexical-only — their hits stay merged, but the
-        # semantic leg they skipped must not read as fully searched.
+        # Kinds that started late or recovered from a canceled query ran
+        # lexical-only. Name the skipped semantic leg alongside their hits.
         # (Kinds that errored anyway are already named by the errored
         # tip; don't name them twice.)
         if lexical_fallback:
@@ -3133,8 +3134,8 @@ class SearchMixin(RuntimeShape):
                 tip = (
                     "_(semantic leg skipped for "
                     + ", ".join(fell_back)
-                    + " — the fan-out deadline left too little for the "
-                    "full hybrid legs, so they ran lexical-only this "
+                    + " — the fan-out budget prevented a full hybrid search, "
+                    "so they ran lexical-only this "
                     "turn; search each kind explicitly for the full "
                     "leg)_"
                 )
@@ -3593,8 +3594,8 @@ class SearchMixin(RuntimeShape):
                 if kind_overrides is not None and k in kind_overrides
                 else base_kwargs
             )
+            mode = str(kw.get("mode") or "").strip().lower()
             if remaining_ms < min_start:
-                mode = str(kw.get("mode") or "").strip().lower()
                 lexical_floor = min(
                     CROSS_KIND_LEXICAL_MIN_START_MS,
                     int(CROSS_KIND_DEADLINE_S * 100),
@@ -3611,6 +3612,7 @@ class SearchMixin(RuntimeShape):
                     # ('verbatim', 'literal') or 'semantic' is caller
                     # intent a lexical rewrite would silently change.
                     kw = {**kw, "mode": "lexical"}
+                    mode = "lexical"
                     lexical_fallback.add(k)
                 elif not (mode == "lexical" and remaining_ms >= lexical_floor):
                     return TimeoutError(
@@ -3631,7 +3633,21 @@ class SearchMixin(RuntimeShape):
             CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
             started = time.monotonic()
             try:
-                return self._cross_kind_invoke_search_hits(handler, k, kw)
+                result = self._cross_kind_invoke_search_hits(handler, k, kw)
+                if (
+                    isinstance(result, QueryCanceled)
+                    and lexical_fallback is not None
+                    and "mode" not in base_kwargs
+                    and mode in ("", "hybrid")
+                    and deadline_at - time.monotonic()
+                    >= CROSS_KIND_LEXICAL_MIN_START_MS / 1000
+                ):
+                    result = self._cross_kind_invoke_search_hits(
+                        handler, k, {**kw, "mode": "lexical"}
+                    )
+                    if not isinstance(result, Exception):
+                        lexical_fallback.add(k)
+                return result
             finally:
                 # Whatever the kind actually cost — hits, a caught
                 # exception, or a server-side cancel at the cap — is

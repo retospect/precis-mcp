@@ -55,6 +55,10 @@ Mixed-kind handle lists on get use scalar routing for each address in caller
 order, checking each resolved kind before reading. Same-kind lists retain
 their handler's native batch behavior; writes still require one shared kind.
 
+Cross-kind default searches can salvage a canceled kind with one lexical
+retry within the original deadline. Explicit kind lists and explicit modes
+retain the cancellation so caller-selected search semantics are preserved.
+
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.
 Call-local stage evidence retains pre-cut candidates (50 plus the total),

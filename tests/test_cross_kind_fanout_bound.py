@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from psycopg.errors import QueryCanceled
 
 from precis.runtime import search as search_mod
 from precis.runtime.core import PrecisRuntime
+from precis.utils.search_merge import SearchHit
 from tests._timing import budget
 
 
@@ -370,7 +373,6 @@ def test_dispatch_merges_and_names_lexical_fallback_kinds(
     lexical hits and names the degrade in a footer — the old behaviour
     dropped them to TimeoutError."""
     from precis.embedder import MockEmbedder
-    from precis.utils.search_merge import SearchHit
 
     rt = runtime_with_store
     store = rt.hub.store
@@ -426,6 +428,97 @@ def test_dispatch_merges_and_names_lexical_fallback_kinds(
     assert "beta xyzzy" in out.body  # the salvaged kind's hits merge
     assert f"semantic leg skipped for {kinds[1]}" in out.body
     assert "ran lexical-only this turn" in out.body
+
+
+def _stub_cancelled_fan_out(
+    monkeypatch: pytest.MonkeyPatch,
+    rt: PrecisRuntime,
+    search_hits: Callable[..., list[SearchHit]],
+) -> None:
+    handlers = {
+        "memory": SimpleNamespace(search_hits=search_hits),
+        "todo": SimpleNamespace(search_hits=lambda **kwargs: []),
+    }
+    original_handler_for = rt.hub.handler_for
+
+    def handler_for(kind: str) -> Any:
+        return handlers[kind] if kind in handlers else original_handler_for(kind)
+
+    monkeypatch.setattr(rt.hub, "handler_for", handler_for)
+    monkeypatch.setattr(type(rt), "_cross_kind_kinds", lambda self: list(handlers))
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "retry_fails", "expected_modes"),
+    [
+        (1.0, False, ["hybrid", "lexical"]),
+        (1.0, True, ["hybrid", "lexical"]),
+        (11.75, False, ["hybrid"]),
+    ],
+)
+def test_cancelled_kind_retries_lexical(
+    runtime_stateless: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    elapsed: float,
+    retry_fails: bool,
+    expected_modes: list[str],
+) -> None:
+    rt = runtime_stateless
+    clock = _frozen_clock(monkeypatch)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 12.0)
+    modes: list[str] = []
+
+    def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
+        modes.append(mode)
+        if mode == "hybrid":
+            clock["t"] += elapsed
+            raise QueryCanceled("hybrid leg canceled")
+        if retry_fails:
+            raise QueryCanceled("lexical leg canceled")
+        return [
+            SearchHit(
+                score=0.9,
+                kind="memory",
+                title="recovered xyzzy",
+                preview="p",
+                ref_id=None,
+                slug=None,
+            )
+        ]
+
+    _stub_cancelled_fan_out(monkeypatch, rt, search_hits)
+    out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+
+    assert modes == expected_modes
+    recovered = "lexical" in expected_modes and not retry_fails
+    assert ("recovered xyzzy" in out.body) == recovered
+    assert ("semantic leg skipped for memory" in out.body) == recovered
+    assert ("memory (QueryCanceled)" in out.body) != recovered
+
+
+@pytest.mark.parametrize(
+    ("kind", "args"),
+    [("memory,todo", {}), ("*", {"mode": "hybrid"})],
+)
+def test_cancelled_explicit_list_keeps_error(
+    runtime_stateless: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    args: dict[str, str],
+) -> None:
+    rt = runtime_stateless
+    modes: list[str] = []
+
+    def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
+        modes.append(mode)
+        raise QueryCanceled("hybrid leg canceled")
+
+    _stub_cancelled_fan_out(monkeypatch, rt, search_hits)
+    out = rt._dispatch_cross_kind(kind, {"q": "xyzzy", **args})
+
+    assert modes == ["hybrid"]
+    assert "memory (QueryCanceled)" in out.body
+    assert "semantic leg skipped for memory" not in out.body
 
 
 def test_starved_explicit_list_keeps_the_timeout(
