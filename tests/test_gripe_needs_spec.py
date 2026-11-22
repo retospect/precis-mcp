@@ -4,8 +4,8 @@ status (``STATUS:open``); a prod spec naming it closes it."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -30,19 +30,20 @@ def _verdict(fix: str = "code", size: str = "S") -> Any:
     )
 
 
-def _gripe(title: str = "t", body: str = "b") -> Any:
-    return SimpleNamespace(title=title, body=body)
-
-
 def test_needs_spec_signals() -> None:
-    # fix=spec always parks (open design call / unclear expected behaviour).
-    assert gt._needs_spec(_gripe(), _verdict(fix="spec"))
+    conn = Mock()
+    conn.execute.return_value.fetchall.return_value = []
+    gripe = Mock(spec=gt.ClaimedGripe, ref_id=1, title="t")
+    # fix=spec parks even a small gripe when no spec is recorded.
+    assert gt._needs_spec(conn, gripe, _verdict(fix="spec"))
     # size L without a named spec parks; S/M do not.
-    assert gt._needs_spec(_gripe(), _verdict(size="L"))
-    assert not gt._needs_spec(_gripe(), _verdict(size="M"))
+    assert gt._needs_spec(conn, gripe, _verdict(size="L"))
+    assert not gt._needs_spec(conn, gripe, _verdict(size="M"))
     # size L that already names a docs/backlog spec is not parked.
-    g = _gripe(body="see docs/backlog/foo-spec.md for the shape")
-    assert not gt._needs_spec(g, _verdict(size="L"))
+    conn.execute.return_value.fetchall.return_value = [
+        ("see docs/backlog/foo-spec.md for the shape",)
+    ]
+    assert not gt._needs_spec(conn, gripe, _verdict(size="L"))
 
 
 def test_needs_spec_status_commits(store: Store) -> None:

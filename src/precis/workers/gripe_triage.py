@@ -2041,23 +2041,31 @@ def _drop_lease(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k != "pipeline"}
 
 
-#: A docs/backlog spec path a gripe's text may already name — the "has a
-#: spec" signal for the size-L leg of needs-spec routing (gr543698).
+#: Explicit thread markers can carry the design or cite its graph memory.
+_SPEC_LINE_RE = re.compile(r"^spec(?::| \()", re.MULTILINE | re.IGNORECASE)
+#: Keep accepting retired spec paths cited by older gripes (gr543698).
 _BACKLOG_SPEC_RE = re.compile(r"docs/backlog/[\w.-]+\.md")
 
 
-def _needs_spec(g: ClaimedGripe, v: Verdict) -> bool:
-    """Ill-specified → ``STATUS:needs_spec`` (gr543698): the verdict's own
-    classification carries it — ``fix: spec`` (no clear expected
-    behaviour, or an open design call), or ``size: L`` with no
-    docs/backlog spec named anywhere on the gripe. Deterministic — no
-    new model call."""
-    if v.fix == "spec":
-        return True
-    if v.size != "L":
+def _needs_spec(conn: Any, g: ClaimedGripe, v: Verdict) -> bool:
+    """Park size-L and fix:spec verdicts that lack a recorded spec.
+
+    Read the live thread at verdict write time so a spec posted while
+    the model runs counts too.
+    """
+    if v.fix != "spec" and v.size != "L":
         return False
-    text = f"{g.title or ''}\n{g.body or ''}"
-    return _BACKLOG_SPEC_RE.search(text) is None
+    if _BACKLOG_SPEC_RE.search(g.title):
+        return False
+    rows = conn.execute(
+        "SELECT text FROM chunks WHERE ref_id = %s "
+        "AND chunk_kind IN ('gripe_body', 'gripe_comment') "
+        "AND retired_at IS NULL",
+        (g.ref_id,),
+    ).fetchall()
+    return not any(
+        _SPEC_LINE_RE.search(text) or _BACKLOG_SPEC_RE.search(text) for (text,) in rows
+    )
 
 
 def _next_ord(conn: Any, ref_id: int) -> int:
@@ -2304,7 +2312,7 @@ def _write_verdict(
         elif may_close and v.verdict in _DISPUTES:
             status = "wontfix"
             close.append(f"resolved: wontfix — {v.verdict}: {reason} ({day})")
-        elif status == "triaged" and v.verdict == "bug" and _needs_spec(g, v):
+        elif status == "triaged" and v.verdict == "bug" and _needs_spec(conn, g, v):
             if g.ruled:
                 # gr633601: a ``Reto <date>:`` ruling settled the
                 # pending question — the call the spec-park waits on
@@ -2318,13 +2326,9 @@ def _write_verdict(
                     "stays triaged, not needs_spec"
                 )
             else:
-                # gr543698: ill-specified — a spec must exist before a builder
-                # picks this. needs_spec parks it off the pick list; the
-                # deploy verifier closes it once a docs/backlog spec names it.
                 status = "needs_spec"
-                comments.append(
-                    f"{_NEEDS_SPEC_PREFIX}{recommendation or reason or '(see gripe)'}"
-                )
+                if reason:
+                    comments.append(f"{_NEEDS_SPEC_PREFIX}{reason}")
         # Replace the OPEN triage tags + a stale disagreement flag.
         conn.execute(
             """

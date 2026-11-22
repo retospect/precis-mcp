@@ -1480,6 +1480,49 @@ class TestVerdictSemantics:
         assert r.extra["reto"] == 1
         assert f"recommend: {recommend}" in _comments(store, gid)
 
+    @pytest.mark.parametrize(
+        ("title", "body", "comment", "fix"),
+        [
+            ("large change", "", "Design settled\nspec: me123", "code"),
+            (
+                "large change",
+                "Design settled\nspec (voice with Reto): use a queue",
+                "",
+                "spec",
+            ),
+            ("see docs/backlog/old-design.md", "", "", "code"),
+            ("large change", "See docs/backlog/old-design.md", "", "code"),
+        ],
+    )
+    def test_size_l_with_spec_stays_triaged(
+        self, store: Store, title: str, body: str, comment: str, fix: str
+    ) -> None:
+        gid = _gripe(store, title, body=body)
+        if comment:
+            _comment_on(store, gid, comment)
+        _light(store)
+        _run(store, llm=_llm({"verdicts": [_verdict(gid, size="L", fix=fix)]}))
+        assert _status(store, gid) == "triaged"
+        assert not any(c.startswith("needs-spec:") for c in _comments(store, gid))
+
+    @pytest.mark.parametrize("reason", ["", "the retry policy is undefined"])
+    def test_size_l_without_spec_parks(self, store: Store, reason: str) -> None:
+        gid = _gripe(store, "large change", body="We still need a spec: see me123.")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(gid, size="L", reason=reason, recommend="write it")
+                    ]
+                }
+            ),
+        )
+        assert _status(store, gid) == "needs_spec"
+        notes = [c for c in _comments(store, gid) if c.startswith("needs-spec:")]
+        assert notes == ([f"needs-spec: {reason}"] if reason else [])
+
     def test_needs_spec_and_recommend_dedup(self, store: Store) -> None:
         """gr595189: when the needs-spec note and the recommend note
         would carry the same text, only one comment is written — a
@@ -1502,7 +1545,7 @@ class TestVerdictSemantics:
                             gid,
                             fix="spec",
                             severity=4,
-                            recommend="write the spec before any builder starts",
+                            reason="the expected behavior is undefined",
                             dups=[{"parent": parent, "same": "unsure", "why": "?"}],
                         ),
                     ]
@@ -1512,8 +1555,8 @@ class TestVerdictSemantics:
         assert r.extra["reto"] == 1
         assert _status(store, gid) == "needs_spec"
         comments = _comments(store, gid)
-        assert "needs-spec: write the spec before any builder starts" in comments
-        assert not any(c.startswith("recommend: write the spec") for c in comments)
+        assert "needs-spec: the expected behavior is undefined" in comments
+        assert "recommend: the expected behavior is undefined" not in comments
 
     def test_not_a_bug_closes_wontfix(self, store: Store) -> None:
         """Dry-run ruling: a dispute verdict on a plain (non-owner)
