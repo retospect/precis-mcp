@@ -89,6 +89,7 @@ from precis.workers._claim import (
     band_ref_ids,
     claim_frontier,
     drop_band_ids,
+    enrich_chunk_context,
     note_claim_frontier,
 )
 from precis.workers._claim import random_chunk_anchor as _random_chunk_anchor
@@ -826,31 +827,7 @@ def unclassified_chunk_count(conn) -> int:
 
 
 def _enrich(conn, rows: list[dict]) -> None:
-    for row in rows:
-        ref_id, ord_ = row["ref_id"], row["ord"]
-        meta = conn.execute(
-            "SELECT r.title, (SELECT count(*) FROM chunks c2 "
-            "WHERE c2.ref_id=r.ref_id AND c2.ord>=0) FROM refs r WHERE r.ref_id=%s",
-            (ref_id,),
-        ).fetchone()
-        row["title"] = meta[0] if meta else ""
-        row["position"] = f"{ord_}/{meta[1] if meta else 0}"
-        row["section_path"] = " ▸ ".join(row["section_path"]) or "(none)"
-        neigh = {}
-        for nord in (ord_ - 1, ord_ + 1):
-            if nord < 0:
-                continue
-            nr = conn.execute(
-                "SELECT c.text, (SELECT s.text FROM chunk_summaries s "
-                "WHERE s.chunk_id=c.chunk_id AND s.summarizer='llm-v1' "
-                "AND s.status='ok' LIMIT 1) FROM chunks c "
-                "WHERE c.ref_id=%s AND c.ord=%s LIMIT 1",
-                (ref_id, nord),
-            ).fetchone()
-            if nr:
-                neigh[nord] = (nr[1] or nr[0] or "").strip().replace("\n", " ")[:160]
-        row["prev_gist"] = neigh.get(ord_ - 1, "")
-        row["next_gist"] = neigh.get(ord_ + 1, "")
+    enrich_chunk_context(conn, rows)
 
 
 # ---- the pass ---------------------------------------------------------

@@ -23,6 +23,11 @@ the claim INSERT are untouched — and it may advance only where the claim
 provably covered everything below the new mark; a TTL counted from the
 floor's first set keeps below-floor work reachable in bounded time.
 
+:func:`enrich_chunk_context` fills the prompt context of a claimed chunk
+batch (title, position, neighbour gists) for ``classify`` and the
+chunk-level ``axis_pass`` in two statements whatever the batch size
+(gr690600).
+
 Pure SQL plumbing; the caller owns the connection and its commit.
 """
 
@@ -46,6 +51,7 @@ __all__ = [
     "claim_batch",
     "claim_frontier",
     "drop_band_ids",
+    "enrich_chunk_context",
     "invalidate_band_ids",
     "invalidate_claim_frontiers",
     "note_claim_frontier",
@@ -520,3 +526,56 @@ def finding_text(title: str, meta: Any) -> str:
         if bits:
             parts.append("Scope: " + "; ".join(bits))
     return "\n".join(p for p in parts if p)
+
+
+def enrich_chunk_context(conn: Any, rows: list[dict[str, Any]]) -> None:
+    """Fill each claimed chunk row's prompt context in place: ``title``,
+    ``position`` (``ord/<body chunk count>``), the joined ``section_path``
+    and ``prev_gist`` / ``next_gist`` — the chunk at ``ord - 1`` /
+    ``ord + 1``, its ok ``llm-v1`` summary else its raw text, cut to 160
+    characters.
+
+    Two statements whatever the batch size (gr690600; it was up to three
+    per row): one over the batch's distinct refs, one over its distinct
+    neighbour keys. The neighbour read joins on the exact ``(ref_id, ord)``
+    unique key rather than a LAG/LEAD window: a window reads every chunk
+    of each ref and returns the nearest chunk across an ``ord`` gap, where
+    the per-row lookup this replaces returned none."""
+    if not rows:
+        return
+    meta = {
+        r[0]: (r[1], r[2])
+        for r in conn.execute(
+            "SELECT r.ref_id, r.title, (SELECT count(*) FROM chunks c2 "
+            "WHERE c2.ref_id=r.ref_id AND c2.ord>=0) FROM refs r "
+            "WHERE r.ref_id = ANY(%s)",
+            (sorted({row["ref_id"] for row in rows}),),
+        ).fetchall()
+    }
+    keys = sorted(
+        {
+            (row["ref_id"], nord)
+            for row in rows
+            for nord in (row["ord"] - 1, row["ord"] + 1)
+            if nord >= 0
+        }
+    )
+    gists = {
+        (r[0], r[1]): (r[3] or r[2] or "").strip().replace("\n", " ")[:160]
+        for r in conn.execute(
+            "SELECT c.ref_id, c.ord, c.text, (SELECT s.text FROM chunk_summaries s "
+            "WHERE s.chunk_id=c.chunk_id AND s.summarizer='llm-v1' "
+            "AND s.status='ok' LIMIT 1) FROM chunks c "
+            "JOIN unnest(%s::bigint[], %s::int[]) AS k(ref_id, ord) "
+            "ON c.ref_id=k.ref_id AND c.ord=k.ord",
+            ([k[0] for k in keys], [k[1] for k in keys]),
+        ).fetchall()
+    }
+    for row in rows:
+        ref_id, ord_ = row["ref_id"], row["ord"]
+        title, total = meta.get(ref_id, ("", 0))
+        row["title"] = title
+        row["position"] = f"{ord_}/{total}"
+        row["section_path"] = " ▸ ".join(row["section_path"]) or "(none)"
+        row["prev_gist"] = gists.get((ref_id, ord_ - 1), "")
+        row["next_gist"] = gists.get((ref_id, ord_ + 1), "")
