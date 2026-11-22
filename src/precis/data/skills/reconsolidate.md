@@ -1,12 +1,13 @@
 ---
 id: reconsolidate
 family: memory
-title: precis — bring repo-dev memory back to lint-clean
-summary: the periodic cleanup pass for the repo-dev memory graph — lint, fix mechanical findings in the main loop, delegate per-hub verify-and-recommend for judgment findings, then verify and record the pass
+title: precis — the live MCP gardening pass for repo-dev memory
+summary: the periodic live MCP gardening pass for the repo-dev memory graph — survey smells and shape per hub, fix mechanical findings in the main loop, delegate per-hub verify-and-recommend for judgment findings, then read back live and record the bounded scope
 answers:
   - how do I run the reconsolidation pass the SessionStart hook says is due?
-  - how do I fix memory-lint findings like orphan, no hub or flat hub?
-  - which memory-lint findings need a delegated agent vs a direct fix?
+  - how do I fix smells findings like orphan, no hub or flat hub over live MCP?
+  - which memory smells need a delegated agent vs a direct fix?
+  - what may a bounded live gardening pass claim about the graph?
   - where do I record a completed reconsolidation pass?
 applies-to: the repo-dev memory graph (memory nodes, their links and tags)
 status: active
@@ -15,7 +16,7 @@ kinds: [memory]
 governs: factory
 ---
 
-# reconsolidate — bring the repo-dev graph back to lint-clean
+# reconsolidate — the live MCP gardening pass for the repo-dev graph
 
 Writes from the [[remember]] skill keep the graph in shape; this pass catches
 what slipped. A finding that recurs means the write path has a gap — fix
@@ -98,22 +99,25 @@ For a scoped request ("garden this hub"), skip the export and work live:
 5. **Record.** Log entry per step 5: reviewed handles, changes, what is left
    unreviewed.
 
-"The graph is clean" is reserved for a complete fresh audit: a fresh export
-and a full-graph `scripts/memory-lint` with no findings. A bounded pass
-claims only its scope.
+A live pass claims only what it covered: the handles or hub subtree it
+read, the smells and shape reads that came back clean over that scope, and
+the coverage still unreviewed. Say it per hub; a graph-wide "clean" is not
+something a bounded live pass can truthfully report.
 
 ## Export vs refresh
 
 The authority is AGENTS.md "Repo-dev graph memory". Native graph edits and
-operator CLI mirror commands are distinct. Never import or export at task
-start, to answer a question, or automatically on an MCP outage. An export the
-operator asked for as part of a gardening pass is explicit and allowed:
+operator CLI mirror commands are distinct. The export is a diagnostic
+someone asks for, never part of a gardening pass: never import or export at
+task start, to answer a question, inside a pass, or automatically on an MCP
+outage. When an operator does ask for one:
 
 ```
 scripts/prod-precis memory index --budget-tok 20000 --export-dir <dir>
 ```
 
-A cache refresh a hook or a habit triggers is not. When in doubt, read live.
+A cache refresh a hook or a habit triggers is not asked for. When in doubt,
+read live.
 
 ## See also
 

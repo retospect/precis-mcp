@@ -2,7 +2,7 @@
 id: remember
 family: memory
 title: precis — file one durable fact in repo-dev memory
-summary: the write recipe for the repo-dev memory graph — search and reconcile before writing, then put or anchored-edit one claim per node with the right hub, type tag and links so memory-lint stays quiet
+summary: the write recipe for the repo-dev memory graph — search and reconcile before writing, then put or anchored-edit one claim per node with the right hub, type tag and links so the memory smells stay clean
 answers:
   - how do I file a durable fact into repo-dev graph memory?
   - a recalled memory is wrong — do I edit it, gripe it or add a node?
@@ -142,8 +142,9 @@ handles. One incident may need several narrative sections:
 Once the cause and fix are verified, compact the incident to a concise
 dated cause, the verified fix and any open uncertainty. Never invent a fix.
 Move still-true claims into gotchas or rulings before retiring the incident.
-`scripts/memory-lint` reports incidents older than 90 days for review;
-it never retires them. First examples: incident me564175, ruling me564176.
+The `compact` smell in `search(kind='memory', view='smells', args={'under':
+'me<hub>'})` lists incidents past their 90-day expiry for review
+([[precis-gardener-memory-help]]); it never retires them. First examples: incident me564175, ruling me564176.
 
 ## See also
 

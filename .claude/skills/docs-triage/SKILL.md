@@ -1,6 +1,6 @@
 ---
 name: docs-triage
-description: "Triage open work: when to retire a spec section (built, stale, parked), how far to compact, where surviving truth goes. Use when memory-lint or backlog-lint flags items."
+description: "Triage open work: when to retire a spec section (built, stale, parked), how far to compact, where surviving truth goes. Use when the live memory gardening pass or backlog-lint flags items."
 ---
 
 <!-- precis-stub: docs-triage -->

@@ -1,6 +1,6 @@
 ---
 name: remember
-description: "Use when you learned something durable for repo-dev memory (a gotcha, ruling, runbook step, thread state): file it into the graph in the right hub, type and links so memory-lint stays quiet."
+description: "Use when you learned something durable for repo-dev memory (a gotcha, ruling, runbook step, thread state): file it into the graph in the right hub, type and links so the memory smells stay clean."
 ---
 
 <!-- precis-stub: remember -->

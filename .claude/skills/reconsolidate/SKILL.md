@@ -1,6 +1,6 @@
 ---
 name: reconsolidate
-description: "Use when the SessionStart hook says reconsolidation is DUE, or memory-lint reports findings: lint the repo-dev memory graph, fix findings per hub with delegated agents, record the pass."
+description: "Use when the SessionStart hook says reconsolidation is DUE or you are asked to garden repo-dev memory: run the live MCP gardening pass, fix findings per hub with delegated agents, record the bounded pass."
 ---
 
 <!-- precis-stub: reconsolidate -->

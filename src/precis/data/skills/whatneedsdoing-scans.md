@@ -6,7 +6,7 @@ summary: the advisory-scan half of whatneedsdoing — migration collisions, back
 answers:
   - which repo-hygiene scans are due and what does a finding mean?
   - how do I read the cadence scripts' DUE/quiet output?
-  - what do I do when migration-check, coderef or memory-lint flags something?
+  - what do I do when migration-check or coderef flags something, and where does the memory gardening pass start?
   - when do token-review, surface-review, db-thrash, skill-search, gripe-gc, fda-grant and secrets-check run?
 applies-to: the repo-hygiene advisory scans bunched into the triage pass
 status: active
@@ -27,9 +27,11 @@ commands via `/skill:<name>`.
 Host names are not kept in the repo: find them with `search(kind='memory', tags=['SPACE:repo-dev'], q='cluster roster hosts')`.
 
 Live scan preview at invocation (migration collisions ⋅ code anchors ⋅
-memory index ⋅ skill-eval diff ⋅ backlog done-gunk ⋅ the cadence reviews ⋅
-nightly build ⋅ main on CI):
-!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— skill-eval —'; scripts/skill-eval --runner live --diff 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— secrets-check —'; scripts/secrets-check-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
+skill-eval diff ⋅ backlog done-gunk ⋅ the cadence reviews ⋅
+nightly build ⋅ main on CI). The memory graph has no shell preview: its
+live pass starts from `search(kind='memory', view='smells', args={'under':
+'me474312'})` ([[reconsolidate]]):
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— skill-eval —'; scripts/skill-eval --runner live --diff 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— secrets-check —'; scripts/secrets-check-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
 
 ## Structural scans
 

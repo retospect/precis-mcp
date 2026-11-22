@@ -31,8 +31,10 @@ The repo's own linters are advisory (they never delete and never fail a
 build); they surface candidates and you apply the judgment they can't. The
 spec inventory is generated, so nothing is hand-maintained:
 
-Repo-dev: `scripts/memory-lint` (stale current-state prose, orphans, expiry)
-and `scripts/backlog-lint` (the residual thread files); the
+Repo-dev memory: the live MCP gardening pass ([[reconsolidate]]; smells and
+shape reads for stale current-state prose, orphans, expiry), with
+`scripts/memory-lint` only as a diagnostic someone asks for. Backlog:
+`scripts/backlog-lint` (the residual thread files); the
 ship contract is `docs/README.md` §Spec lifecycle.
 
 ```python
