@@ -258,6 +258,81 @@ def finding_cited_error(conn: Connection, ref_id: int) -> BadInput | None:
     )
 
 
+def _lock_concept_cards(conn: Connection, concept_id: int) -> None:
+    """Freeze this concept's incoming card writes, then lock its cards.
+
+    A link writer locks the concept before the card. Wait for writers to
+    this concept before discovering its cards, then lock cards by id so
+    cascades for different concepts serialize on any shared card. The
+    cascade's next statement gets a fresh snapshot after both waits.
+    """
+    conn.execute(
+        "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE", (concept_id,)
+    )
+    conn.execute(
+        """
+        SELECT a.ref_id FROM refs a
+        WHERE a.kind = 'anki' AND a.retired_at IS NULL
+          AND COALESCE(a.meta->>'source', '') != 'anki-foreign'
+          AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
+          AND EXISTS (
+            SELECT 1 FROM links l
+            WHERE (l.dst_ref_id = a.ref_id AND l.src_ref_id = %s
+                   AND l.relation = 'represents')
+               OR (l.src_ref_id = a.ref_id AND l.dst_ref_id = %s
+                   AND l.relation = 'represented-by')
+          )
+        ORDER BY a.ref_id FOR NO KEY UPDATE OF a
+        """,
+        (concept_id, concept_id),
+    ).fetchall()
+
+
+def _retire_concept_cards(conn: Connection, concept_id: int) -> int:
+    """Cascade a concept's retire to its precis-authored cards (gr742735).
+
+    A card whose concept is gone has nothing left to represent: left live
+    it drops off ``/anki`` (its concept join requires a live concept) and
+    onto ``/learning``'s "No live concept" shelf — yet it keeps syncing to
+    the Anki mirror. Retiring it with the concept lets the next
+    ``anki_sync`` remove the note. Read-only foreign projections
+    (``meta.source='anki-foreign'`` / ``meta.readonly``) are untouched —
+    they were never pushed under a precis guid. A garden merge *re-homes*
+    cards by repointing their ``represents`` links to the winner before
+    the loser's retire runs, so this fires only where a live link still
+    names the retiring concept. A card that also represents another
+    *live* concept stays live: it still has a home —
+    :func:`_lock_concept_cards` serialises the two retires so the
+    "still live" read cannot miss a concurrent retire of that other
+    concept.
+    """
+    return conn.execute(
+        """
+        UPDATE refs a SET retired_at = now()
+        WHERE a.kind = 'anki' AND a.retired_at IS NULL
+          AND COALESCE(a.meta->>'source', '') != 'anki-foreign'
+          AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
+          AND EXISTS (
+            SELECT 1 FROM links l
+            WHERE (l.dst_ref_id = a.ref_id AND l.src_ref_id = %s
+                   AND l.relation = 'represents')
+               OR (l.src_ref_id = a.ref_id AND l.dst_ref_id = %s
+                   AND l.relation = 'represented-by')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM links l2
+            JOIN refs c2 ON c2.kind = 'concept' AND c2.retired_at IS NULL
+                        AND c2.ref_id <> %s
+                        AND c2.ref_id = CASE WHEN l2.src_ref_id = a.ref_id
+                                             THEN l2.dst_ref_id ELSE l2.src_ref_id END
+            WHERE (l2.dst_ref_id = a.ref_id AND l2.relation = 'represents')
+               OR (l2.src_ref_id = a.ref_id AND l2.relation = 'represented-by')
+          )
+        """,
+        (concept_id, concept_id, concept_id),
+    ).rowcount
+
+
 #: ``paper_authors`` column list, in the order every SELECT/row-dict in
 #: this module uses — keep :func:`_paper_author_row_to_dict` in sync.
 _PAPER_AUTHOR_COLS = (
@@ -3228,6 +3303,18 @@ class RefsMixin:
         base ``NumericRefHandler._delete``) *and* ``taproot.hub``'s merge
         apply (which retires a merge loser directly, bypassing the
         handler) — so the guard lives here once rather than at each door.
+
+        A ``kind='concept'`` ref cascades (gr742735):
+        :func:`_retire_concept_cards` retires its live precis-authored
+        ``anki`` cards in the same transaction — a card whose concept is
+        gone would leave ``/anki`` yet keep syncing to the mirror
+        (``/learning`` lists such legacy orphans on a shelf of their
+        own, but shelving does not stop the push). Same single-seam
+        reasoning: every concept-retiring door (the agent ``delete``
+        verb, gardening) lands here. The cascade spares a card that
+        still represents another live concept;
+        :func:`_lock_concept_cards` runs first so that "live"
+        check cannot miss a concurrent retire sharing the card.
         """
         sql = (
             "UPDATE refs SET retired_at = now() "
@@ -3241,7 +3328,12 @@ class RefsMixin:
             ).fetchone()
             if row is not None and row[0] == "finding":
                 _refuse_if_finding_cited(c, ref_id)
-            return c.execute(sql, (ref_id,)).rowcount
+            if row is not None and row[0] == "concept":
+                _lock_concept_cards(c, ref_id)
+            rowcount = c.execute(sql, (ref_id,)).rowcount
+            if rowcount and row is not None and row[0] == "concept":
+                _retire_concept_cards(c, ref_id)
+            return rowcount
 
         if conn is not None:
             rowcount = _do(conn)

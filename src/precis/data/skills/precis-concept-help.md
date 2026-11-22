@@ -106,6 +106,19 @@ re-`put` it; carry the old name inside the new definition or aliases if
 the old spelling should keep resolving — a rename preserves nothing on
 its own. Retire a wrong node with `delete(kind='concept', id='cn…')`.
 
+`delete` cascades to cards (gr742735): a live precis-authored `anki`
+card bound to the node by `represents`/`represented-by` retires with it,
+and the next `anki_sync` removes its notes from the mirror — one
+exception: a card that *also* represents another still-live concept
+keeps that home and stays live. That includes the delete-and-recreate
+reword path — the re-`put` node is a new `cn<id>` and the old cards do
+not follow, so recreate means re-authoring or re-linking cards, not just
+re-minting the concept. Concept-less cards that survive (never linked,
+or orphans from before the cascade) list under *No live concept* on
+`/learning`. A `represents` link onto a retired concept is refused —
+re-point the card at a live `cn<id>` instead — and so is one onto a
+retired card: re-homing cannot un-retire it, so `put` a fresh card.
+
 ## See also
 
 - [[precis-anki-help]] — the card forge: `represents` links, mastery refresh, leech rework

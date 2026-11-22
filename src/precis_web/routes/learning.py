@@ -12,8 +12,11 @@ Basic gate also checks Origin/Referer before any state-changing request.
 The page's *current context* panel (gr664414) reuses the card grouping
 (``precis_web.routes.anki._card_groups``): this login's live cards that
 represent a concept, grouped by that concept — every card authored in
-precis (forge, agent, or by hand), read-only Anki imports excepted
-(gr742681). That read is owner-scoped by ``refs.owner_login`` and never
+precis (forge, agent, or by hand), read-only projections excepted —
+``meta.source='anki-foreign'`` or ``meta.readonly``, the same authored
+bar the sync worker applies (gr742681) — plus a trailing "No live
+concept" shelf for cards with no live concept at all (gr742735; drop
+and boost apply, "I know this" does not). That read is owner-scoped by ``refs.owner_login`` and never
 touches the private learning ledger; the card writes it offers
 (drop / known / boost) are the ``/anki`` routes' own.
 """
@@ -137,8 +140,11 @@ def _render(
     # forge-, agent-, or hand-authored — grouped by concept, the same
     # grouping /anki renders but without the forge-only filter. Cards
     # carry no private learning data, and the panel's per-row writes go
-    # to the /anki routes.
-    groups = _card_groups(get_store(request), user.login, forge_only=False)
+    # to the /anki routes. ``ungrouped=True`` adds the gr742735 orphan
+    # shelf: precis-authored cards with no live concept.
+    groups = _card_groups(
+        get_store(request), user.login, forge_only=False, ungrouped=True
+    )
     answered = request.query_params.get("answered", "")
     selected = None
     if event:

@@ -20,8 +20,11 @@ A rest entry does not require or record study minutes.
 
 **Current context** leads the page and lists the cards you are learning right
 now — every live card authored in précis (by the card forge, an agent, or by
-hand) that represents a concept, grouped by concept. Read-only imports from
-Anki do not appear. Every cloze gap is
+hand) that represents a concept, grouped by concept. Cards whose concept was
+retired or never linked sit in a trailing **No live concept** group of their
+own: **boost** and **drop** work there, but **I know this** does not — there
+is no concept to mark mastered. Read-only imports from Anki do not appear.
+Every cloze gap is
 masked; hover it (or tab to it) to reveal the answer, so the list works as a
 self-quiz. Enter an answer and select **Check answer** to reveal the card and
 count the attempt. Your answer text is discarded.

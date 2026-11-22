@@ -135,16 +135,32 @@ def _memory_link(match: Any) -> dict[str, Any] | None:
     }
 
 
-def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str, Any]]:
-    """Live concept-representing cards, grouped by their ``represents``
+def _card_groups(
+    store: Store, owner: str, *, forge_only: bool, ungrouped: bool = False
+) -> list[dict[str, Any]]:
+    """Live precis-authored cards, grouped by their live ``represents``
     concept — newest card first inside each group, groups ordered by their
     newest card. ``(concept, mastery, state, memory, [(card_id, cloze_text, boosted), …])``.
 
     ``forge_only=True`` keeps the forge cohort (``meta.authored_by =
     'card_forge'``) for ``/anki``. ``forge_only=False`` — ``/learning``'s
     Current context (gr742681) — lists every card authored in precis:
-    forge, agent-put, or hand-made, i.e. anything that is not a read-only
-    Anki import (``meta.source != 'anki-foreign'``).
+    forge, agent-put, or hand-made. The authored bar is the sync worker's
+    own (``precis.anki.notes.spec_from_ref``): neither an ``anki-foreign``
+    source nor ``meta.readonly`` — a card the sync will never push must
+    not sit here offering drop/boost as if it mirrored.
+
+    ``ungrouped=True`` appends a trailing pseudo-group (``ungrouped=True``,
+    ``concept_id=None``) holding the listed cards that have no live
+    concept at all (gr742735) — /learning's orphan shelf. The caller's
+    template must not offer "I know this" on it: there is no concept to
+    mark mastered.
+
+    One query covers the grouped and ungrouped halves on a single
+    snapshot — two reads could each miss a card that gained a live
+    concept link between them. A card is shelved only when every join to
+    a live concept came back NULL: a ``represents``/``represented-by``
+    link to a *retired* concept counts as no live concept.
 
     ``memory`` is the stamped nearest research memory from
     ``concept.meta.memory_match`` (gr743229) — a link dict or ``None``;
@@ -157,60 +173,89 @@ def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str
     next ``anki_sync`` tick applies, so a list row can show "boost queued"
     instead of offering the same boost again."""
     sql = """
-        SELECT c.ref_id,
+        SELECT a.ref_id,
+               a.meta->'fields'->>'Text',
+               a.meta->>'anki_boost_due',
+               c.ref_id,
                c.meta->>'name',
                c.meta->>'mastery',
                c.meta->>'state',
-               a.ref_id,
-               a.meta->'fields'->>'Text',
-               a.meta->>'anki_boost_due',
                c.meta->'memory_match'
         FROM refs a
-        JOIN links l ON (
+        LEFT JOIN links l ON (
                  (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
               OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by'))
-        JOIN refs c ON c.kind = 'concept' AND c.retired_at IS NULL
+        LEFT JOIN refs c ON c.kind = 'concept' AND c.retired_at IS NULL
                    AND c.ref_id = CASE WHEN l.src_ref_id = a.ref_id
                                        THEN l.dst_ref_id ELSE l.src_ref_id END
         WHERE a.kind = 'anki' AND a.retired_at IS NULL
           AND a.owner_login = %s
-          AND (a.meta->>'authored_by' = %s
-               OR (NOT %s AND COALESCE(a.meta->>'source', '') != %s))
-        ORDER BY a.created_at DESC, a.ref_id DESC
+          AND COALESCE(a.meta->>'source', '') != %s
+          AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
+          AND (a.meta->>'authored_by' = %s OR NOT %s)
+        ORDER BY a.created_at DESC, a.ref_id DESC, c.ref_id
     """
-    groups: dict[int, dict[str, Any]] = {}
+    cards: dict[int, dict[str, Any]] = {}
     with store.pool.connection() as conn:
         for (
+            card_id,
+            cloze,
+            boost_due,
             cid,
             name,
             mastery,
             state,
-            card_id,
-            cloze,
-            boost_due,
             match,
         ) in conn.execute(
-            sql, (owner, _FORGE_AUTHOR, forge_only, _FOREIGN_SOURCE)
+            sql, (owner, _FOREIGN_SOURCE, _FORGE_AUTHOR, forge_only)
         ).fetchall():
-            g = groups.setdefault(
-                int(cid),
-                {
-                    "concept_id": int(cid),
-                    "name": name or f"cn{int(cid)}",
-                    "mastery": float(mastery) if mastery is not None else 0.0,
-                    "state": state or "candidate",
-                    "memory": _memory_link(match),
-                    "cards": [],
-                },
-            )
-            g["cards"].append(
+            card = cards.setdefault(
+                int(card_id),
                 {
                     "id": int(card_id),
                     "text": cloze or "",
                     "boosted": bool(boost_due),
-                }
+                    "concepts": {},
+                },
             )
-    return list(groups.values())
+            if cid is not None:
+                card["concepts"][int(cid)] = (name, mastery, state, match)
+
+    groups: dict[int, dict[str, Any]] = {}
+    shelf: list[dict[str, Any]] = []
+    for card in cards.values():
+        concepts = card.pop("concepts")
+        if not concepts:
+            shelf.append(card)
+            continue
+        for cid, (name, mastery, state, match) in concepts.items():
+            g = groups.setdefault(
+                cid,
+                {
+                    "concept_id": cid,
+                    "name": name or f"cn{cid}",
+                    "mastery": float(mastery) if mastery is not None else 0.0,
+                    "state": state or "candidate",
+                    "memory": _memory_link(match),
+                    "ungrouped": False,
+                    "cards": [],
+                },
+            )
+            g["cards"].append(card)
+    out = list(groups.values())
+    if ungrouped and shelf:
+        out.append(
+            {
+                "concept_id": None,
+                "name": "No live concept",
+                "mastery": 0.0,
+                "state": "ungrouped",
+                "memory": None,
+                "ungrouped": True,
+                "cards": shelf,
+            }
+        )
+    return out
 
 
 def _render(

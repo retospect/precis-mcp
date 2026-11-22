@@ -253,6 +253,75 @@ def canonical_relation(relation: Any) -> str | None:
     return _CANONICAL_FLIP.get(relation) if isinstance(relation, str) else None
 
 
+def _refuse_retired_represents_concept(
+    conn: Connection, src_ref_id: int, dst_ref_id: int
+) -> None:
+    """Refuse a ``represents`` edge against a retired concept (gr742735).
+
+    ``represents`` is the edge that homes an anki card under its concept;
+    attaching a card to a concept whose retire already ran — or is
+    mid-flight — strands the card on ``/learning``'s orphan shelf while
+    it keeps syncing to Anki: the cascade in ``RefsMixin.retire_ref``
+    already decided the card's homes. ``FOR SHARE`` makes this write wait
+    out an in-flight retire (the retiring transaction holds the row's
+    write lock through its cascade), then liveness is re-checked on the
+    fresh version — so the edge either lands while the concept is
+    provably live (and a later cascade sees it) or is refused. A
+    ``kind='anki'`` endpoint gets the same wait-then-recheck: a re-home
+    whose concept is live may still arrive behind a concurrent cascade
+    that retired the card itself. Endpoints of other kinds pass
+    untouched.
+    """
+    rows = conn.execute(
+        "SELECT ref_id, retired_at FROM refs "
+        "WHERE ref_id = ANY(%s) AND kind = 'concept' "
+        "ORDER BY ref_id FOR SHARE",
+        (sorted({src_ref_id, dst_ref_id}),),
+    ).fetchall()
+    dead = [int(r[0]) for r in rows if r[1] is not None]
+    if dead:
+        raise BadInput(
+            f"cannot link 'represents' — concept cn{dead[0]} is retired; "
+            "the edge would leave the card syncing to Anki with no live "
+            "concept listing it",
+            next=(
+                "re-point the card at a live concept — put(kind='concept') "
+                "a replacement first if the old one was deleted — then "
+                "link again"
+            ),
+        )
+
+    # Take the card lock after the concept lock, matching the cascade.
+    # A writer adding a second home and a cascade must see one another
+    # in commit order even though they lock different concept rows. The
+    # wait alone is not enough: a re-home onto a *live* concept can still
+    # wait behind the cascade of the card's other concept — which lets
+    # the card's retire commit first — so liveness is re-checked on the
+    # fresh row or the link reports success on a card the cascade just
+    # retired.
+    if rows:
+        dead_cards = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id, retired_at FROM refs "
+                "WHERE ref_id = ANY(%s) AND kind = 'anki' "
+                "ORDER BY ref_id FOR SHARE",
+                (sorted({src_ref_id, dst_ref_id}),),
+            ).fetchall()
+            if r[1] is not None
+        ]
+        if dead_cards:
+            raise BadInput(
+                f"cannot link 'represents' — card ak{dead_cards[0]} is "
+                "retired; re-homing it cannot bring it back and the next "
+                "anki_sync is already slated to remove its note",
+                next=(
+                    "put(kind='anki') a fresh card against the live "
+                    "concept instead of re-homing the retired one"
+                ),
+            )
+
+
 def _canonical_edge(
     relation: Any,
     src_ref_id: int,
@@ -1509,6 +1578,14 @@ class LinksMixin:
                         "within one ref, or pick a different target"
                     ),
                 )
+
+            # gr742735: a `represents`/`represented-by` edge (already
+            # canonicalised above) may not home a card on a retired —
+            # or mid-flight retiring — concept; the concept-row wait
+            # pairs with `retire_ref`'s lock pass so the write either
+            # beats the cascade into visibility or is refused.
+            if relation == "represents":
+                _refuse_retired_represents_concept(c, src_ref_id, dst_ref_id)
 
             # The garden_relink stamp is the apply door's own ledger —
             # a caller-supplied one (the `link` verb forwards meta= on

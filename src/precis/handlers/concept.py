@@ -18,6 +18,11 @@ graph edges — directly via the store, reusing the same
 ``precis.reading.concepts`` helpers so manual and promoted nodes are identical.
 Bodies are immutable (the numeric-ref contract): delete+put to reword. The
 mastery field mutates out-of-band (the mastery pass), never via ``put``.
+Deleting a concept retires its precis-authored anki cards with it — the
+cascade lives in ``store.retire_ref`` (gr742735), so a merge that
+re-homes the ``represents`` links first still leaves them attached to
+the survivor. A card that also represents another live concept keeps
+that home and survives.
 """
 
 from __future__ import annotations

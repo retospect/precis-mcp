@@ -19,6 +19,12 @@ trust itself; ``precis garden restore`` supplies the operator context and
 resolves the raw loser. No MCP/web restore door is exposed, and the store
 and worker layers never import handlers.
 
+Concept retirement locks the concept row, then its cards in id order,
+so card-link writers and concurrent retires serialize before the
+cascade reads each card's remaining live homes. A ``represents`` link
+re-checks both endpoints after its waits, refusing a re-home that
+lands behind the cascade.
+
 Grouped ref counts deduplicate facet membership per ref before aggregating
 numeric JSON values. Repeated join rows from tag facets therefore cannot
 weight a ref's contribution, and absent or non-numeric JSON values leave

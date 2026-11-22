@@ -46,6 +46,7 @@ from precis.anki.work_tracking import (
     is_work_item_text,
     is_work_title,
 )
+from precis.errors import NotFound
 from precis.handlers.anki import _split_extra, _strip_cloze
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
@@ -171,6 +172,14 @@ _REWORK_SYS = (
 )
 
 
+class ConceptGoneError(ValueError):
+    """``author_card``'s concept was retired or missing at write time
+    (gr742735). A ``ValueError`` so existing ``except ValueError``
+    callers keep catching it, but the mint/rework passes can tell "the
+    concept went away mid-write" apart from "the model wrote a bad
+    cloze" — only the second counts against the model."""
+
+
 @dataclass
 class CardDecision:
     """One rework decision — the observe-first audit record."""
@@ -238,7 +247,8 @@ def author_card(
     """Write one authored cloze card the way `AnkiHandler._create` does — ref +
     stripped `card_combined` + the concept `represents` link — plus the pass's
     provenance meta. Raises ``ValueError`` for missing deletions or acronym
-    hints that give the answer away."""
+    hints that give the answer away, and :class:`ConceptGoneError` (a
+    ``ValueError``) when the concept is retired or missing at write time."""
     cloze_text, extra = _split_extra(text)
     if not has_cloze(cloze_text):
         raise ValueError("card body has no {{cN::…}} cloze deletion")
@@ -259,6 +269,16 @@ def author_card(
     stripped = _strip_cloze(cloze_text)
     card_text = f"{stripped}\n\n{extra}".rstrip() if extra else stripped
     with store.tx() as conn:
+        # Row-lock the concept so a concurrent ``retire_ref`` (which cascades
+        # to its cards) either waits for this write or is seen here: no card
+        # is minted against a concept that retired meanwhile (gr742735).
+        live = conn.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s AND kind = 'concept' "
+            "AND retired_at IS NULL FOR SHARE",
+            (concept_id,),
+        ).fetchone()
+        if live is None:
+            raise ConceptGoneError(f"concept {concept_id} is retired or missing")
         ref = store.insert_ref(kind="anki", slug=None, title=text, meta=meta, conn=conn)
         store.chunks.upsert_card_combined(ref.id, card_text, conn=conn)
         store.add_link(
@@ -400,8 +420,14 @@ def mint_daily_cards(
             # Work tracking is not a fact (precis-cloze rule 0): refuse before
             # spending a model call, and stamp so the pass never retries it.
             why = "work tracking (a to-do or gap about our own system), not a fact"
-            store.update_ref(concept_id, meta_patch={"card_forge_skip": why})
-            report.refused.append((concept_id, why))
+            try:
+                store.update_ref(concept_id, meta_patch={"card_forge_skip": why})
+            except NotFound:
+                # Retired between the scan and the stamp (gr742735) —
+                # moot: nothing left to stamp or retry.
+                log.info("cards: concept %s retired mid-mint", concept_id)
+            else:
+                report.refused.append((concept_id, why))
             continue
         lines = [f"CONCEPT: {name}"]
         if definition:
@@ -419,6 +445,7 @@ def mint_daily_cards(
         cards = (data or {}).get("cards") or []
         skip_reason = str((data or {}).get("skip_reason") or "").strip()
         minted: list[int] = []
+        concept_gone = False
         for card in cards[:_MAX_CARDS_PER_CONCEPT]:
             if not isinstance(card, dict):
                 continue
@@ -450,19 +477,45 @@ def mint_daily_cards(
                         extra_meta={"recoverability_check": check or "unchecked"},
                     )
                 )
+            except ConceptGoneError:
+                # The concept retired mid-mint (gr742735) — not a model
+                # refusal: drop its remaining cards uncounted.
+                log.info("cards: concept %s retired mid-mint", concept_id)
+                concept_gone = True
+                break
             except ValueError as exc:
                 log.info("cards: dropped card for concept %s: %s", concept_id, exc)
+        if concept_gone:
+            if minted:
+                # Cards committed before the retire were swept by its
+                # cascade, but the audit still shows the pass minted
+                # them (gr742735).
+                report.minted.append((concept_id, minted))
+            continue
         if minted:
             report.minted.append((concept_id, minted))
             # A carded concept is being learned — it leaves the candidate pool.
-            store.update_ref(concept_id, meta_patch={"state": STATE_ACTIVE})
+            try:
+                store.update_ref(concept_id, meta_patch={"state": STATE_ACTIVE})
+            except NotFound:
+                # Retired after author_card committed (gr742735): the
+                # cascade retired the new cards with it; the stamp is
+                # moot and the pass must not die on it.
+                log.info("cards: concept %s retired mid-mint", concept_id)
+                continue
             backfill_memory_matches(store, concept_ids=[concept_id])
         elif skip_reason:
             # The model judged this concept un-cardable (a topic label, stock
             # phrase, or front-matter). Stamp it so the daily pass stops
             # re-spending a call to refuse it again — see `_cardless_concepts`.
-            store.update_ref(concept_id, meta_patch={"card_forge_skip": skip_reason})
-            report.refused.append((concept_id, skip_reason))
+            try:
+                store.update_ref(
+                    concept_id, meta_patch={"card_forge_skip": skip_reason}
+                )
+            except NotFound:
+                log.info("cards: concept %s retired mid-mint", concept_id)
+            else:
+                report.refused.append((concept_id, skip_reason))
         else:
             report.skipped += 1
     return report
@@ -472,17 +525,35 @@ def _stale_leeches(
     store: Store, *, min_age_days: float, now: datetime
 ) -> list[tuple[int, int, str, dict[str, Any]]]:
     """Precis-authored, concept-linked cards past their proving window that the
-    `/leeches` heuristic flags: ``(card_id, concept_id, cloze_text, stats)``."""
+    `/leeches` heuristic flags: ``(card_id, concept_id, cloze_text, stats)``.
+
+    One row per card even when several ``represents`` links home it: the
+    pass makes a single decision per leech — a second row would spend a
+    second model call reworking (or retiring) a card the first iteration
+    already handled. The reported concept is the card's authoring home
+    (``meta.concept_ref_id``) when that link is still live, else any live
+    home, else whatever link exists — the loop's ``get_ref`` then skips
+    a fully orphaned row."""
     sql = """
         SELECT a.ref_id,
-               CASE WHEN l.src_ref_id = a.ref_id THEN l.dst_ref_id
-                    ELSE l.src_ref_id END AS concept_id,
+               (SELECT CASE WHEN l.src_ref_id = a.ref_id
+                            THEN l.dst_ref_id ELSE l.src_ref_id END
+                FROM links l
+                LEFT JOIN refs c ON c.kind = 'concept'
+                    AND c.ref_id = CASE WHEN l.src_ref_id = a.ref_id
+                                        THEN l.dst_ref_id ELSE l.src_ref_id END
+                WHERE (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
+                   OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by')
+                ORDER BY (c.retired_at IS NULL) DESC NULLS LAST,
+                         (CASE WHEN l.src_ref_id = a.ref_id
+                               THEN l.dst_ref_id ELSE l.src_ref_id END
+                          = COALESCE((a.meta->>'concept_ref_id')::bigint, -1))
+                         DESC,
+                         1
+                LIMIT 1) AS concept_id,
                a.meta->'fields'->>'Text',
                a.meta->'anki_stats'
         FROM refs a
-        JOIN links l ON (
-                 (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
-              OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by'))
         WHERE a.kind='anki' AND a.retired_at IS NULL
           AND COALESCE(a.meta->>'source','') != 'anki-foreign'
           AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
@@ -490,6 +561,10 @@ def _stale_leeches(
           AND a.created_at <= %s - (%s * interval '1 day')
           AND ( (a.meta->'anki_stats'->>'lapses_total')::int >= %s
              OR (a.meta->'anki_stats'->>'ease_min')::float <= %s )
+          AND EXISTS (
+            SELECT 1 FROM links l
+            WHERE (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
+               OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by'))
         ORDER BY (a.meta->'anki_stats'->>'lapses_total')::int DESC NULLS LAST
     """
     with store.pool.connection() as conn:
@@ -524,6 +599,21 @@ def _weak_prereq(
         if val < threshold:
             return int(pid), name or ""
     return None
+
+
+def _concept_gone_decision(
+    store: Store, d: CardDecision, card_id: int, stat_str: str
+) -> None:
+    """Fold a mid-rework concept retire into the decision (gr742735):
+    the concept's cascade retired the original card iff it had no other
+    live concept home — report whichever end state holds rather than a
+    model-facing outcome."""
+    if store.get_ref(kind="anki", id=card_id) is None:
+        d.action = "retire"
+        d.applied = True
+        d.reason = f"concept retired mid-rework, original card retired ({stat_str})"
+    else:
+        d.reason = f"concept retired mid-rework, original card still live ({stat_str})"
 
 
 def rework_stale_cards(
@@ -566,7 +656,10 @@ def rework_stale_cards(
                 f"({stat_str})",
             )
             if act:
-                store.retire_ref(card_id)
+                try:
+                    store.retire_ref(card_id)
+                except NotFound:
+                    pass  # the concept's cascade already retired it
                 d.applied = True
             report.decisions.append(d)
             continue
@@ -582,8 +675,12 @@ def rework_stale_cards(
                 f"leave this card ({stat_str})",
             )
             if act:
-                store.update_ref(pid, meta_patch={"state": STATE_ACTIVE})
-                d.applied = True
+                try:
+                    store.update_ref(pid, meta_patch={"state": STATE_ACTIVE})
+                except NotFound:
+                    d.reason += " — prerequisite retired, nothing activated"
+                else:
+                    d.applied = True
             report.decisions.append(d)
             continue
 
@@ -598,10 +695,14 @@ def rework_stale_cards(
                 f"another card ({stat_str})",
             )
             if act:
-                store.update_ref(
-                    concept_id, meta_patch={"escalated_at": now.isoformat()}
-                )
-                d.applied = True
+                try:
+                    store.update_ref(
+                        concept_id, meta_patch={"escalated_at": now.isoformat()}
+                    )
+                except NotFound:
+                    d.reason += " — concept retired, nothing stamped"
+                else:
+                    d.applied = True
             report.decisions.append(d)
             continue
 
@@ -651,14 +752,64 @@ def rework_stale_cards(
                         "recoverability_check": check or "unchecked",
                     },
                 )
+            except ConceptGoneError:
+                _concept_gone_decision(store, d, card_id, stat_str)
+                report.decisions.append(d)
+                continue
             except ValueError:
                 d.reason += " — model gave no valid cloze, card left in place"
                 report.decisions.append(d)
                 continue
-            store.retire_ref(card_id)
-            store.update_ref(concept_id, meta_patch={"remunge_streak": streak_n + 1})
-            d.applied = True
-            d.new_card_id = new_id
+            # The follow-up (retire the original, stamp the streak) runs
+            # only while the concept — and with it the fresh replacement —
+            # is still live, and only while the concept row is locked
+            # (gr742735). ``FOR SHARE`` is author_card's own
+            # serialization: a concurrent concept retire either already
+            # committed (visible below, its cascade having decided the
+            # original's fate) or waits for this transaction — the pass
+            # can never retire a shared original the cascade just spared.
+            with store.tx() as conn:
+                live = conn.execute(
+                    "SELECT 1 FROM refs WHERE ref_id = %s AND kind='concept' "
+                    "AND retired_at IS NULL FOR SHARE",
+                    (concept_id,),
+                ).fetchone()
+                if live is not None:
+                    if (
+                        conn.execute(
+                            "SELECT 1 FROM refs WHERE ref_id = %s "
+                            "AND retired_at IS NULL",
+                            (new_id,),
+                        ).fetchone()
+                        is None
+                    ):
+                        d.reason += (
+                            " — replacement retired before the swap, "
+                            "original left in place"
+                        )
+                    else:
+                        try:
+                            store.retire_ref(card_id, conn=conn)
+                        except NotFound:
+                            # An independent drop (not the concept's
+                            # cascade — that door is shut above) already
+                            # retired the original. The replacement is
+                            # live, so the rewrite still stands and the
+                            # streak still counts.
+                            d.reason += " — original already retired"
+                        store.update_ref(
+                            concept_id,
+                            meta_patch={"remunge_streak": streak_n + 1},
+                            conn=conn,
+                        )
+                        d.applied = True
+                        d.new_card_id = new_id
+            if live is None:
+                # The concept's retire landed after author_card committed
+                # (gr742735): the cascade retired the rewrite — and the
+                # original unless another live concept homes it — so the
+                # follow-up must not run at all.
+                _concept_gone_decision(store, d, card_id, stat_str)
         report.decisions.append(d)
     return report
 
