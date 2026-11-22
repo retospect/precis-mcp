@@ -1261,18 +1261,13 @@ def check_status_done_artifact(
     """Reject ``STATUS:done`` from worker sources when no artifact landed.
 
     The planner-coroutine cascade can "cheat" by tagging itself
-    ``STATUS:done`` without producing any durable output — no file
-    written, no citation minted, no successful child job. The parent
-    re-tick then assumes the leaf finished its work and moves on, but
-    the actual deliverable doesn't exist. This guardrail prevents that
-    by demanding evidence of work before letting the worker close a
-    leaf.
+    ``STATUS:done`` without producing any durable output. The parent then moves on
+    without the deliverable. Workers must leave evidence before closing.
 
     Evidence is any one of:
 
-    * **A file written under the workspace** during this tick —
-      detected via ``ref_events`` of source ``write_file`` linked to
-      this ref.
+    * **A memory or draft chunk produced by the todo** and linked
+      to it with ``derived-into`` or its inverse ``derived-from``.
     * **A citation minted that points at this todo** — any
       ``kind='citation'`` ref linked from this todo or sharing its
       project tag.
@@ -1353,37 +1348,33 @@ def check_status_done_artifact(
         ).fetchone()
         if cur and cur[0]:
             return
-        # 4. File written under the workspace? Detected via ref_events
-        #    'put_file' source on a ref tagged the same project. (Best-effort;
-        #    the put handlers append these events when wired to.)
+        # 4. Mesh output linked to this specific todo?
         cur = conn.execute(
             """
-            SELECT EXISTS (
-                SELECT 1 FROM ref_events ev
-                  JOIN refs r ON r.ref_id = ev.ref_id
-                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
-                  JOIN tags t ON t.tag_id = rt.tag_id
-                 WHERE r.kind IN ('tex','markdown','plaintext','pic')
-                   AND r.retired_at IS NULL
-                   AND t.namespace = 'OPEN' AND t.value LIKE 'project:%%'
-                   AND t.value IN (
-                       SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
-                         WHERE rt2.ref_id = %s AND t2.namespace = 'OPEN'
-                           AND t2.value LIKE 'project:%%'
-                   )
-                   AND ev.ts > now() - interval '24 hours'
-            )
+            SELECT 1
+              FROM (
+                  SELECT dst_ref_id AS output_ref, dst_chunk_id AS output_chunk
+                    FROM links WHERE src_ref_id = %s AND relation = 'derived-into'
+                  UNION ALL
+                  SELECT src_ref_id, src_chunk_id
+                    FROM links WHERE dst_ref_id = %s AND relation = 'derived-from'
+              ) outputs
+              JOIN refs r ON r.ref_id = outputs.output_ref
+             WHERE r.retired_at IS NULL
+               AND (r.kind = 'memory'
+                    OR (r.kind = 'draft' AND outputs.output_chunk IS NOT NULL))
+             LIMIT 1
             """,
-            (ref_id,),
+            (ref_id, ref_id),
         ).fetchone()
-        if cur and cur[0]:
+        if cur:
             return
     raise BadInput(
         f"STATUS:done rejected on todo id={ref_id}: no artifact found "
-        "(no file written, no citation minted, no successful child job, "
-        "no resolved child todos in the last 24h)",
+        "(no linked memory or draft chunk, no recent project citation, no successful child job, "
+        "no resolved child todos)",
         next=(
-            "do the work first: put(kind='tex', name='<slug>', text='...') "
+            "link from this todo to the produced memory or draft chunk with rel='derived-into' "
             "OR put(kind='citation', text='<claim>', source_handle='...', ...) "
             "OR mint subtasks via put(kind='todo', meta={'llm_tier': '<model>'}, ...) "
             "and let them resolve. Yield via ask-user:<question> if blocked. "

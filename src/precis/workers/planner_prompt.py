@@ -29,6 +29,10 @@ Order matters: cached content goes first so the cache prefix is
 the longest possible across calls. Anything dynamic — clocks,
 ids, the body of *this* todo — lives in the variable layer.
 
+Plan ticks use project memories and bound drafts because the worker
+surface may have no file kinds. Links from the todo identify its outputs
+and serve as completion evidence.
+
 This module is pure: it reads the store, returns ``(system, user)``
 strings. The executor is responsible for actually invoking
 ``claude_agent.call_claude_agent`` with them.
@@ -366,7 +370,7 @@ move the work forward by exactly one of these output shapes:
    attempt before a permanent halt.
 
 6. **Finish** via `tag(id=<your id>, add=['STATUS:done'])`. Your
-   work is done; the parent will read your files on its next tick.
+   work is done; the parent can follow your linked outputs on its next tick.
 
 ## Runtime context (set in your env by the runner)
 
@@ -381,10 +385,8 @@ move the work forward by exactly one of these output shapes:
   `put(kind='todo', ...)` auto-defaults `parent_id=` to it. You
   do NOT need to pass `parent_id` when minting subtasks under
   yourself — the system reads the env.
-- **Your workspace is in `PRECIS_WORKSPACE`**. Everything you mint
-  (todos, citations, files) gets auto-tagged
-  `project:<workspace-slug>` so `search(tags=['project:<slug>'])`
-  surfaces the full project surface. You don't think about this.
+- **Use the project tag** to find the hub and related refs.
+  Follow its links to the relevant section memories.
 - **Broken tool? File a gripe.** If a precis tool errors, returns
   wrong results, or actively fights you, `search(kind='gripe',
   q='<the symptom>')` first (avoid dupes), then — if it's new —
@@ -403,13 +405,12 @@ move the work forward by exactly one of these output shapes:
   `STATUS:done` — reporting blocked is correct; a fabricated "done"
   is the worse failure.
 
-## Files (explicit import/export)
+## Project content
 
-Project prose lives in memories (the hub memory) or the bound draft.
-File kinds are export/import only. `meta.workspace` is the export home.
-Follow the hub's navigation before requesting a compiled/exported artifact.
-
-{file_exports}
+If an older brief asks for filesystem access or names a project file,
+follow the project hub's navigation or the bound draft for that content.
+If the source has yet to be imported, report the missing graph content
+as a blocker. For requested document artifacts, use draft export.
 
 **Paper not in corpus**: if you want to cite a paper that isn't in
 the corpus yet, **request it** — don't just flag a gap and move on.
@@ -507,10 +508,11 @@ You may **not** tag yourself `STATUS:done` unless one of these is
 true: (a) a successful child job exists under this todo,
 (b) all your live child todos are STATUS:done / won't-do,
 (c) you minted at least one citation tagged with your project,
-or (d) you wrote at least one file under your workspace in this
-tick (or the last 24h). The guardrail rejects worker-source
-`STATUS:done` calls that fail all four; the LLM doesn't get to
-declare victory without evidence. If you're genuinely blocked,
+or (d) you linked a memory or draft chunk you produced to this todo.
+From this todo, use `link(id='td<N>', target='me<N>', rel='derived-into')`
+for a memory or target the draft chunk's `dc<N>` handle.
+Keep the memory's separate `part-of` link to the project hub.
+If you're genuinely blocked,
 use `ask-user:<question>` or `halt:<reason>` instead.
 
 ## Re-ticked while a sibling is parked
@@ -560,7 +562,6 @@ Format (copy verbatim, fill in the values):
     summary: One paragraph synthesising what this tick produced —
              what was written, what was cited, what's left for
              the parent to do.
-    files: tex/intro.tex, tex/methods.tex
     === END ===
 
 Verdict semantics — `done`, `continue` and `yield` describe the state
@@ -577,9 +578,7 @@ Omit `halt-class:` and `blocked-on:` for other verdicts. Before a retry,
 the runner checks the full tool-call audit: uncertain write outcomes or
 missing audit require human review rather than an automatic re-tick.
 
-`files:` lists the workspace-relative paths you wrote this tick (or
-omit if you wrote none). `summary:` is your gist — what a reader
-who skips your stdout still needs to know.
+Include the handles of your outputs in `summary:`.
 
 ## Writing happens at any level — but the *shape* differs
 
@@ -675,17 +674,10 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     1. Identity (id + model)
     2. Ancestry chain (TOON)
     3. Body (the brief — what you're being asked to do)
-    4. Workspace status — current file inventory + per-file author/size
-       (so you see what's *already written* without re-reading every file)
-    5. Children status — id + status + 1-line Result hint per child
-       (NOT raw stdout dumps — that's gigantic and unstructured)
+    4. Children status — id, status and a one-line result hint per child
 
-    The big change from prior versions: child stdouts are NOT dumped
-    into the parent's prompt. We assume each child wrote either a
-    file (visible in the workspace status block) or a citation
-    (visible via search). The parent's job is to read those if it
-    needs them, not to re-process every word the children emitted.
-    Saves thousands of tokens per re-tick.
+    Follow linked memories or draft chunks for child outputs. The prompt
+    omits raw child stdout to keep re-ticks bounded.
 
     Assembled from :data:`_VARIABLE_MODULES` via the shared assembler
     (migration step 1). Each block keeps its prior text — the
@@ -1550,72 +1542,6 @@ def _render_section_style(store: Store, ref_id: int) -> str:
     )
 
 
-def _render_workspace_status(store: Store, ref_id: int) -> str:
-    """List files already written under this todo's workspace.
-
-    Reads the workspace path from this ref's ``meta.workspace`` and
-    walks the on-disk dir. Returns a slim listing — one line per
-    file with size + age — so the parent re-tick sees the state of
-    the deliverable without reading every file. If the file is
-    relevant, the LLM can ``get(kind='tex', id='tex--<slug>')`` it
-    explicitly.
-
-    No-op when there's no workspace on the ref. No-op when the dir
-    doesn't exist yet (init hasn't fired).
-    """
-    import os
-    from pathlib import Path
-
-    from precis.utils.workspace import Workspace
-
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
-        ).fetchone()
-    if not row:
-        return ""
-    workspace = Workspace.from_meta(row[0])
-    if workspace is None:
-        return ""
-    precis_root_str = os.environ.get("PRECIS_ROOT", "")
-    if not precis_root_str:
-        return ""
-    ws_root = workspace.absolute_root(Path(precis_root_str))
-    if not ws_root.exists():
-        return ""
-    lines: list[str] = [
-        "## Workspace status",
-        "",
-        f"Workspace: {workspace.path} (format={workspace.format}, "
-        f"entrypoint={workspace.entrypoint})",
-        "",
-        "Files present:",
-    ]
-    found = False
-    for sub in ("", "tex", "sections", "pics", "data"):
-        sub_root = ws_root / sub if sub else ws_root
-        if not sub_root.is_dir():
-            continue
-        for entry in sorted(sub_root.iterdir()):
-            if entry.is_dir() or entry.name.startswith("."):
-                continue
-            rel = entry.relative_to(ws_root)
-            try:
-                size = entry.stat().st_size
-            except OSError:
-                continue
-            kind_hint = ""
-            if entry.suffix == ".tex":
-                kind_hint = "  (get via id='tex--" + entry.stem + "')"
-            elif entry.suffix == ".md":
-                kind_hint = "  (get via id='markdown--" + entry.stem + "')"
-            lines.append(f"  - {rel} ({size} bytes){kind_hint}")
-            found = True
-    if not found:
-        lines.append("  (none yet — workspace empty)")
-    return "\n".join(lines)
-
-
 def _render_children_status(store: Store, ref_id: int) -> str:
     """Per-child digest: id, kind, STATUS, last result hint.
 
@@ -1782,31 +1708,8 @@ def _m_kinds(ctx: AssemblyContext) -> str:
     return kinds_table()
 
 
-def _planner_contract(*, file_kinds: bool) -> str:
-    """Offer explicit TeX exports only on a surface that supports them."""
-    exports = ""
-    if file_kinds:
-        exports = (
-            "### Explicit file exports\n\n"
-            "Only when no hub memory or bound draft exists and an export is requested, "
-            "use `put(kind='tex', name='<slug>', text='<export>')`; "
-            "read it back with `get(kind='tex', id='tex--<slug>')`."
-        )
-    return _PLANNER_CONTRACT.replace("{file_exports}", exports)
-
-
-def _m_contract(ctx: AssemblyContext) -> str:
-    from precis.config import load_config
-    from precis.kind_gate import parse_disabled
-    from precis.utils.surface_scope import surface_disabled_kinds
-
-    disabled = parse_disabled(load_config().kinds_disabled) | surface_disabled_kinds()
-    file_kinds = bool(os.environ.get("PRECIS_ROOT")) and "tex" not in disabled
-    # The subprocess kind overlay is installed after prompt assembly. Check
-    # the same draft binding here so its prompt never advertises a gated kind.
-    if file_kinds and ctx.store is not None and bound_draft(ctx.store, ctx.ref_id):
-        file_kinds = False
-    return _planner_contract(file_kinds=file_kinds)
+def _m_contract(_ctx: AssemblyContext) -> str:
+    return _PLANNER_CONTRACT
 
 
 def _m_identity(ctx: AssemblyContext) -> str:
@@ -2079,11 +1982,6 @@ def _m_backfill(ctx: AssemblyContext) -> str:
     return _render_backfill_workspace(
         ctx.store, list(targets), run_ref_id=ctx.ref_id, phase=phase
     )
-
-
-def _m_workspace(ctx: AssemblyContext) -> str:
-    assert ctx.store is not None
-    return _render_workspace_status(ctx.store, ctx.ref_id)
 
 
 def _m_children(ctx: AssemblyContext) -> str:
@@ -2456,7 +2354,6 @@ _VARIABLE_MODULES: list[Module] = [
         applies_when="has_backfill",
     ),
     Module(id="section-style", layer=Layer.VARIABLE, build=_m_section_style),
-    Module(id="workspace", layer=Layer.VARIABLE, build=_m_workspace),
     Module(id="children", layer=Layer.VARIABLE, build=_m_children),
 ]
 

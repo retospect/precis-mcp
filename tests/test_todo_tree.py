@@ -756,6 +756,34 @@ def test_done_event_carries_caller_source(
     assert events and events[0].source == "asa-worker"
 
 
+@pytest.mark.parametrize("output_kind", ["memory", "draft"])
+def test_worker_done_accepts_linked_mesh_output(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch, output_kind: str
+) -> None:
+    store = handler.store
+    todo = _id_of(handler.put(text="Write a section").body)
+    other = _id_of(handler.put(text="Unrelated task").body)
+    if output_kind == "memory":
+        memory = store.insert_ref(kind="memory", slug=None, title="Section")
+        target = f"me{memory.id}"
+    else:
+        draft, _ = store.drafts.create_draft(
+            name="mesh-output", title="Document", project_ref_id=todo
+        )
+        chunk = store.drafts.add_chunks(
+            ref_id=draft.id, chunk_kind="paragraph", text="Section", at={"last": True}
+        )[0]
+        target = chunk.dc
+
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    handler.link(id=other, target=target, rel="derived-into")
+    with pytest.raises(BadInput, match="no artifact found"):
+        handler.tag(id=todo, add=["STATUS:done"])
+
+    handler.link(id=todo, target=target, rel="derived-into")
+    handler.tag(id=todo, add=["STATUS:done"])
+
+
 # ── put-create ack mentions parent ────────────────────────────────
 
 
