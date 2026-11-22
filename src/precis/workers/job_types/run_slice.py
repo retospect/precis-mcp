@@ -370,6 +370,7 @@ claude or touch git.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import logging
@@ -3698,6 +3699,15 @@ def render_brief(
         deny_paths = _lanes.deny_paths_for(None)
     lines += _deny_lines(deny_paths)
     lines += _task_lines(body, latest, target)
+    if mcp and task_class == _outcome.TEST_TASK_CLASS:
+        lines += [
+            "",
+            "For live MCP evidence, record `served_sha` and `source_path` from "
+            "`get(kind='skill', id='precis-status')`. If you use Python source "
+            "to explain that evidence, inspect the alias's root and revision "
+            "and use `expected_root` to assert the served path. A checkout "
+            "at a different path or revision cannot establish what the MCP serves.",
+        ]
     if task_class == "skill":
         lines += [
             "",
@@ -6189,6 +6199,79 @@ def _preflight_mcp(tree: Path, token: str | None) -> None:
         raise RuntimeError(f"precis MCP preflight: HTTP {status} from {url}{hint}")
 
 
+class _ValidationMcpWait(RuntimeError):
+    """The validation endpoint has not attested the deployed revision."""
+
+
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def _status_served_sha(body: str) -> str | None:
+    """Read the Build field across the supported status table formats."""
+    _, marker, build = body.partition("\n**Build**\n")
+    if not marker:
+        return None
+    build = build.split("\n**Runtime**", 1)[0]
+    match = re.search(
+        r"^\s*(?:│\s*)?served_sha(?:\t|\s*│\s*)([0-9a-f]{40})(?=\s|$)"
+        r'|"field":\s*"served_sha",\s*"value":\s*"([0-9a-f]{40})"',
+        build,
+        re.MULTILINE,
+    )
+    return (match[1] or match[2]) if match else None
+
+
+async def _validation_mcp_sha(url: str, token: str) -> str | None:
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.types import TextContent
+
+    async with asyncio.timeout(15):
+        async with streamablehttp_client(
+            url, headers={"Authorization": f"Bearer {token}"}
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "get", {"kind": "skill", "id": "precis-status"}
+                )
+    if not result.isError:
+        for item in result.content:
+            if isinstance(item, TextContent):
+                sha = _status_served_sha(item.text)
+                if sha is not None:
+                    return sha
+    return None
+
+
+def _preflight_validation_mcp(store: Any, tree: Path, token: str | None) -> None:
+    """Check the slice's own endpoint with its own bearer before live validation."""
+    url = _mcp_url(tree)
+    if url is None:
+        return
+    if not token:
+        raise _ValidationMcpWait("the slice MCP bearer is unavailable")
+    head = (_release.read_prod_head(store) or {}).get("head")
+    if not isinstance(head, str) or not _COMMIT_SHA.fullmatch(head):
+        raise _ValidationMcpWait("the deployed revision is unavailable")
+    try:
+        served = asyncio.run(_validation_mcp_sha(url, token))
+    except Exception as exc:
+        # Transport exceptions can include request metadata. Keep the bearer
+        # and endpoint out of the job's visible failure details.
+        raise _ValidationMcpWait(
+            f"the slice MCP could not report its revision ({type(exc).__name__})"
+        ) from None
+    if served is None:
+        raise _ValidationMcpWait(f"the slice MCP reported no revision for prod {head}")
+    if served == head:
+        return
+    if _git(["merge-base", "--is-ancestor", head, served], tree).returncode != 0:
+        raise _ValidationMcpWait(
+            f"slice MCP revision {served} cannot prove it contains prod {head}"
+        )
+
+
 def _read_mcp_scope() -> str | None:
     """``PRECIS_SLICE_READ_MCP`` — the scope a ``read_mcp`` lane mints:
     ``reader`` or ``triage``. Unset, empty or any other value is today's
@@ -7838,7 +7921,10 @@ def submit(ctx: Any, spec: Any) -> Any:
             if isinstance(job, int) and not isinstance(job, bool):
                 _KIMI_SUBMIT_KEYS[job] = env["KIMI_MODEL_API_KEY"]
         if use_mcp:
-            _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
+            if task_class == _outcome.TEST_TASK_CLASS:
+                _preflight_validation_mcp(store, tree, env.get("PRECIS_MCP_TOKEN"))
+            else:
+                _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
         handle: dict[str, Any] = {
             "worktree": str(tree),
             "log": str(log_path),
@@ -7901,16 +7987,21 @@ def submit(ctx: Any, spec: Any) -> Any:
         _raise_lane_refusal(ctx.store, lane.name, str(exc), until)
         ctx.record_failure(f"run_slice: {exc}")
         return None
-    except _ReviewRefusal as exc:
-        # A reviewer has no work to burn an attempt on: the repo, the
-        # target or the tree is not ready. Same give-back as the host
-        # refusal; a sustained identical run is plan_dispatch's ask.
+    except (_ReviewRefusal, _ValidationMcpWait) as exc:
+        # The review target or the validation endpoint is not ready.
+        # Give back the lease without charging the task. The dispatcher
+        # backs off repeated waits and escalates a sustained failure.
         _drop_unlaunched(tree)
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
-        ctx.set_meta(**{ATTEMPT_FREE_KEY: REVIEW_WAIT_KEY})
-        ctx.record_failure(f"run_slice: td{todo_id} review not launched: {exc}")
+        reason, stage = (
+            ("validation-mcp", "validation")
+            if isinstance(exc, _ValidationMcpWait)
+            else (REVIEW_WAIT_KEY, "review")
+        )
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: reason})
+        ctx.record_failure(f"run_slice: td{todo_id} {stage} not launched: {exc}")
         return None
     except _slice_ws.WorkspaceError as exc:
         # gr741695: the hub could not be read, a recorded attempt ref moved,

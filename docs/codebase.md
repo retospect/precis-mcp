@@ -162,6 +162,9 @@ their place.
 Host executor claims enforce capacity and skip file overlaps with started,
 unlanded builds; gripe intake bounds minting by queued builds per free
 executor slot (`factory.gripe_dispatch.queue_depth`, default 2).
+Before launching MCP-backed validation, the slice worker verifies that
+the MCP endpoint the session will use serves the deployed revision or a
+descendant. An unverified endpoint delays validation without spending an attempt.
 A todo tagged `factory:build` is the factory's second source of work:
 `workers/todo_dispatch.py` (switch `factory.todo_dispatch.enabled`, off by
 default; runs after the gripe pass in its scheduler fire) mints its chain

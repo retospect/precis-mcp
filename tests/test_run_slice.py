@@ -12324,6 +12324,80 @@ def test_submit_validate_hops_lanes_and_re_resolves_the_adapter(
     )
 
 
+@pytest.mark.parametrize("fmt", ["toon", "table", "json"])
+def test_validation_reads_the_served_sha_from_status(fmt: str) -> None:
+    from precis.format import render_agent_table
+
+    sha = "a" * 40
+    table = render_agent_table(
+        [{"field": "served_sha", "value": sha}],
+        schema=["field", "value"],
+        format=fmt,
+    )
+    assert (
+        run_slice._status_served_sha(f"# precis-status\n\n**Build**\n\n{table}") == sha
+    )
+    assert (
+        run_slice._status_served_sha(f"\n**Build**\n\n**Runtime**\n\n{table}") is None
+    )
+
+
+@pytest.mark.parametrize("revision", ["stale", "current", "descendant"])
+def test_validate_waits_for_its_own_mcp_revision(
+    revision: str,
+    seams: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_lanes(monkeypatch, *SEED_LANES)
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (
+            frozenset({"swe-2-medium", "swe-2-high", "swe-2-max"}),
+            frozenset(),
+            None,
+        ),
+    )
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _write_mcp_json(tmp_path)
+    prod_sha = "a" * 40
+    served_sha = prod_sha if revision == "current" else "b" * 40
+    seams["ancestor_rc"] = 1 if revision == "stale" else 0
+    monkeypatch.setattr(
+        run_slice._release, "read_prod_head", lambda store: {"head": prod_sha}
+    )
+    seen: list[tuple[str, str]] = []
+
+    async def probe(url: str, token: str) -> str:
+        seen.append((url, token))
+        return served_sha
+
+    monkeypatch.setattr(run_slice, "_validation_mcp_sha", probe)
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    [(url, token)] = seen
+    assert url == "http://127.0.0.1:8765/mcp"
+    if revision != "current":
+        assert any(
+            args == ["merge-base", "--is-ancestor", prod_sha, served_sha]
+            for args, _ in seams["git"]
+        )
+    if revision != "stale":
+        assert handle is not None and ctx.failure is None
+        [(_argv, kw)] = seams["launch"]
+        assert token == kw["env"]["PRECIS_MCP_TOKEN"]
+    else:
+        assert handle is None and not seams["launch"]
+        assert ctx.meta_set["attempt_free"] == "validation-mcp"
+        assert served_sha in (ctx.failure or "") and prod_sha in (ctx.failure or "")
+        assert "STATUS:open" in store.tag_strings(42)
+        assert not (registry / "td42j900").exists()
+
+
 def test_submit_validate_refuses_when_no_model_differs(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

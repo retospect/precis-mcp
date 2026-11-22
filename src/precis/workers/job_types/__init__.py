@@ -65,6 +65,12 @@ Release fixers receive the pass and fix-loop briefs when the digest posts,
 so the owner can steer future iterations before their fix todos exist.
 Restamp reports the fixers' handoff decisions alongside its head check.
 
+MCP-backed validation checks the deployed revision against the slice's
+own endpoint and bearer at launch. The plan's deployment gate observes
+production rollout, and the launch check prevents a stale slice server
+from supplying evidence for a validation verdict. An endpoint that
+cannot prove the revision gives back the lease without spending an attempt.
+
 Build folders are disposable (gr741695, ``_slice_ws``): every ``run_slice``
 and ``land_slice`` job cuts its own clone of the host's hub (a bare
 repository, one ref ``refs/factory/build/<todo>/<job>`` per attempt) and no
