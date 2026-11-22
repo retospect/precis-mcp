@@ -383,6 +383,12 @@ def test_supported_or_default_project_dispatches(
         ("project:platform",),
         ("project:memory",),
         ("project:taproot",),
+        ("project:infra",),
+        ("project:cluster",),
+        ("project:dft",),
+        ("project:local-compute",),
+        ("project:ops",),
+        ("project:deploy",),
         ("project:quests", "project:precis"),
     ],
 )
@@ -398,16 +404,7 @@ def test_in_repo_area_project_dispatches(
     assert not any(c.startswith(gd._PROJECT_SKIP_PREFIX) for c in _comments(store, gid))
 
 
-_ELSEWHERE = (
-    "catpath",
-    "autocatpath",
-    "infra",
-    "cluster",
-    "dft",
-    "local-compute",
-    "ops",
-    "deploy",
-)
+_ELSEWHERE = ("catpath", "autocatpath")
 
 
 @pytest.mark.parametrize("project", _ELSEWHERE)

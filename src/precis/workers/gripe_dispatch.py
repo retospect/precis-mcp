@@ -100,8 +100,8 @@ Each fire:
   one constant both sides name. Order: ``dispatch_score`` (higher is
   hotter, :mod:`precis.utils.dispatch_score`, gr604593) then oldest.
   No ``project:`` tag may name a project in :data:`_ELSEWHERE_PROJECTS`
-  (another repository or operations work); any other value, or none, is
-  this repository. Those gripes receive one skip comment and consume no
+  (autocatpath, or its legacy spelling catpath: another repository); any
+  other value, or none, is this repository. Those gripes receive one skip comment and consume no
   build slots: the factory cannot land their code. A gripe skipped earlier
   is picked once its project leaves that set (the skip comment only
   limits the note, never the pick).
@@ -176,24 +176,16 @@ SERVICE_NAME = "gripe_dispatch"
 #: Wait after triage, not filing: an old report may only just have been
 #: classified as code work, and the filer needs time to retract that decision.
 _MIN_AGE_MINUTES = 15
-#: ``project:`` values that live in another repository or are operations
-#: work: the factory does not build them. Triage also labels areas inside
-#: this repository with ``project:`` (platform, memory, quests, ...), so every
-#: other value, and no tag at all, is this repository (gr752647).
-#: catpath/autocatpath is a separate checkout (gr611473). ``taproot`` is not
-#: listed: its code is ``precis.taproot``. ``todo_dispatch`` reads the same set.
-_ELSEWHERE_PROJECTS: frozenset[str] = frozenset(
-    {
-        "catpath",
-        "autocatpath",
-        "infra",
-        "cluster",
-        "dft",
-        "local-compute",
-        "ops",
-        "deploy",
-    }
-)
+#: ``project:`` values that live in another repository: the factory does not
+#: build them. Owner ruling (Reto, 2026-11-22): "taproot is precis, a
+#: subproject ... All these gripes should be either autocatpath or precis."
+#: So a gripe is this repository or autocatpath, a separate checkout the
+#: factory cannot land (gr611473); ``catpath`` is the legacy spelling of
+#: autocatpath. Every other value, and no tag at all, is this repository
+#: (gr752647), including infra/cluster/dft/local-compute/ops/deploy: those
+#: still pass the ``FIX_CLASS_TAGS`` filter and the builders' own stop rules for
+#: host steps. ``todo_dispatch`` reads the same set.
+_ELSEWHERE_PROJECTS: frozenset[str] = frozenset({"catpath", "autocatpath"})
 _PROJECT_SKIP_PREFIX = "dispatch: skipped unsupported project:"
 #: Gripe tags that mark fixable work: code, skill, docs, web or MCP-surface
 #: changes (Reto 2026-11-10). All of them land through the same

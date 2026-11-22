@@ -303,8 +303,8 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 
 A hand-minted chain also counts (the `related-to` link is the marker).
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
-A `project:` tag must name a landable project (`precis`, the default;
-`precis-mcp`, `dark-factory`); others get a `dispatch: skipped unsupported project:` comment, no slot.
+Every `project:` tag except `autocatpath` (or its legacy spelling `catpath`) is this
+repository; an autocatpath gripe gets a `dispatch: skipped unsupported project:` comment, no slot.
 
 ## What does a rescue:<class> tag mean?
 ## How do I read the rescue queue?
