@@ -26,6 +26,14 @@ routing: request pins and runtime gates can change where a call lands.
 outcomes rolled up per ``model@adapter`` × task kind × difficulty band
 by the nightly ``llm_suitability`` cadence (read-only; decide() never
 reads them).
+``/preview`` (gr681308) answers what the router would choose for a task
+kind: it runs the router's own ``decide()`` over the cached ledger
+snapshot and resolves the legacy ladder, then lists every candidate in
+the demanded tier, ranked, with the chosen one marked. Open to every
+caller because it builds no provider, places no call and writes nothing.
+The demand is a worker's (``work_class`` defaults to background, not the
+ambient MCP class), since the kinds asked about run unattended. It does
+not model request pins, keyword rules or the gates a real call meets.
 ``/accounts`` and ``/pools`` (migration 0280, S1a) read the owned-capacity
 ledger: an account is one credential at one provider under one plan
 (``llm_account``); a pool is a rate bucket with a reset rule and explicit
@@ -60,7 +68,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from precis import llm_catalog, secret_status, settings
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
@@ -269,6 +277,9 @@ class LlmHandler(NumericRefHandler):
             "id='/decisions' compares shadow decisions with executed routes per task kind. "
             "id='/suitability' shows per-offering outcome posteriors "
             "(label/n/interval) for the ten busiest task kinds. "
+            "id='/preview' with args={'task_kind': '<kind>'} lists the "
+            "candidates the router would rank for that kind, the chosen one "
+            "marked; no LLM call. "
             "put(kind='llm', args={'account': {...}}) is owner-only — for a "
             "hosted OpenAI-compatible provider, endpoint/limits/entitlement/"
             "privacy evidence makes it the whole onboarding door (created "
@@ -291,8 +302,21 @@ class LlmHandler(NumericRefHandler):
     sense: ClassVar[str] = "llm card"
 
     #: ``put(kind='llm', args={'account': {...}})`` — the owner-only
-    #: account/pool write (S1a step 4). No other verb reads ``args=`` here.
-    ARGS: ClassVar[dict[str, ArgsSpec]] = {"put": ArgsSpec({"account"})}
+    #: account/pool write (S1a step 4). ``get`` reads ``args=`` for
+    #: ``id='/preview'`` only: the demand whose routing is previewed.
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "put": ArgsSpec({"account"}),
+        "get": ArgsSpec(
+            {
+                "task_kind": str,
+                "source": str,
+                "tier": str,
+                "tools": bool,
+                "privacy": str,
+                "work_class": str,
+            }
+        ),
+    }
 
     #: The prose embeds so the card is a vector (search-by-capability). Emission
     #: itself runs through :func:`precis.llm_catalog.upsert_card`, not the base
@@ -365,10 +389,20 @@ class LlmHandler(NumericRefHandler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
+        if isinstance(id, str) and id.strip() == "/preview":
+            self._check_list_id_view(id, view)
+            return Response(body=self._render_preview(args or {}))
+        if args:
+            raise BadInput(
+                f"args= keys {sorted(args)} apply to id='/preview' only",
+                next="get(kind='llm', id='/preview', "
+                "args={'task_kind': '<task kind>'})",
+            )
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         # ``id='op:<source>'`` — per-op ``llm_call_log`` stats (gr502653):
@@ -436,6 +470,7 @@ class LlmHandler(NumericRefHandler):
             "pools",
             "decisions",
             "suitability",
+            "preview",
         )
 
     def _op_route(self, source: str) -> Response | None:
@@ -1461,6 +1496,167 @@ class LlmHandler(NumericRefHandler):
                     f"identity={'observed' if entry.get('identity') else 'requested only'} "
                     f"drift={entry.get('drift_at') or 'no'}"
                 )
+        return "\n".join(lines)
+
+    def _render_preview(self, args: dict[str, Any]) -> str:
+        """``id='/preview'`` — what the router would choose for a task kind.
+
+        The task kind's recipe names the source and the source's
+        registered operation the tier; ``source`` or ``tier`` in ``args``
+        replaces either. Every offering inside the demanded tier is
+        listed: the ranked ones in rank order (the first is the choice),
+        then the rejected ones with the filter that dropped them.
+        Offerings below the tier are counted, not listed.
+        """
+        from dataclasses import replace
+
+        from precis.utils.llm import decide, operations, recipes, router
+
+        example = "get(kind='llm', id='/preview', args={'task_kind': '<task kind>'})"
+        task_kind = str(args.get("task_kind") or "").strip()
+        source = str(args.get("source") or "").strip()
+        if not task_kind and not source:
+            raise BadInput(
+                "the router preview needs args={'task_kind': …} (or 'source', "
+                "an operation source tag)",
+                next=example,
+            )
+        siblings: list[str] = []
+        if not source:
+            siblings = recipes.sources_for(task_kind)
+            source = next(
+                (s for s in siblings if operations.resolve_op(s) is not None),
+                siblings[0] if siblings else "",
+            )
+        op = operations.resolve_op(source)
+        tiers = [t.value for t in reversed(router.Tier)]
+        asked = args.get("tier")
+        if asked is None and op is None:
+            raise BadInput(
+                f"no tier for task kind {task_kind or source!r}: no recipe "
+                "source of it is a registered operation — name the tier",
+                options=tiers,
+                next=f"get(kind='llm', id='/preview', args={{'task_kind': "
+                f"{task_kind or '<task kind>'!r}, 'tier': 'small'}})",
+            )
+        try:
+            tier = router.Tier(str(asked).strip().lower()) if asked else None
+        except ValueError:
+            raise BadInput(
+                f"unknown tier {asked!r}", options=tiers, next=example
+            ) from None
+        tier_note = ""
+        if tier is None:
+            assert op is not None
+            tier = op[0]
+        elif op is not None and op[0] is not tier:
+            tier_note = f" (asked; the operation runs {op[0].value})"
+        tools = args.get("tools")
+        if tools not in (None, True, False):
+            raise BadInput(
+                f"tools must be true or false, got {tools!r}",
+                options=["true", "false"],
+                next=example,
+            )
+        choices = {
+            "privacy": ("default", "local-only"),
+            "work_class": ("background", "deliverable", "interactive"),
+        }
+        picked: dict[str, str] = {}
+        for key, allowed in choices.items():
+            picked[key] = str(args.get(key) or allowed[0])
+            if picked[key] not in allowed:
+                raise BadInput(
+                    f"unknown {key} {picked[key]!r}",
+                    options=list(allowed),
+                    next=example,
+                )
+        demand = recipes.resolve(source, task_kind or None, None, picked["privacy"])
+        req = router.LlmRequest(
+            tier=tier,
+            source=source,
+            tools_needed=bool(tools),
+            task_kind=demand.task_kind,
+            consequence=demand.consequence,
+            privacy_class=demand.privacy_class,
+            work_class=picked["work_class"],
+        )
+        ledger = decide.ledger_from_store(self.store, now=datetime.now(UTC))
+        if ledger is None:
+            raise Upstream(
+                "the routing ledger could not be read; no preview",
+                next="retry in a minute: " + example,
+            )
+        backend = router.resolve_backend()
+        ladder = operations.resolve_op_chain(
+            source, tools_needed=req.tools_needed, backend=backend
+        ) or router.resolve_chain(tier, tools_needed=req.tools_needed, backend=backend)
+        model = (op[1] if op else None) or router.resolve_model(tier)
+        if ladder:
+            # The tie-break the router applies: a dead-even pick lands on
+            # the lane the legacy ladder runs first.
+            ledger = replace(
+                ledger,
+                legacy_adapter=ladder[0].transport.value,
+                legacy_model=ladder[0].model or model,
+            )
+        mode = decide.mode_for(demand.task_kind)
+        result = decide.decide(req, decide.requirement_for(req), ledger, mode)
+        listed = [r for r in result.rejected if r.reason not in decide.TIER_REJECTIONS]
+        below = len(result.rejected) - len(listed)
+        effect = {
+            "on": "this choice executes; the legacy ladder is its fallback",
+            "shadow": "the legacy ladder executes; this choice is only logged",
+        }.get(mode, "the legacy ladder executes; this choice is not consulted")
+        lines = [
+            f"# llm route preview — task kind {demand.task_kind}",
+            f"demand: source={source or '(none)'} tier={tier.value}{tier_note} "
+            f"tools={'yes' if req.tools_needed else 'no'} "
+            f"privacy={demand.privacy_class} work_class={picked['work_class']} "
+            f"consequence={demand.consequence}",
+        ]
+        if len(siblings) > 1:
+            lines.append(
+                "other sources of this kind: "
+                + ", ".join(s for s in siblings if s != source)
+                + " — args={'source': '<source>'} previews one"
+            )
+        lines.append(f"decide mode: {mode} — {effect}")
+        lines.append(
+            f"chosen: {result.chosen.key}"
+            if result.chosen is not None
+            else f"chosen: none — no offering survives; the tier model "
+            f"{result.fallback_model} runs"
+        )
+        lines.append(
+            f"candidates ({len(result.ranked)} ranked, {len(listed)} rejected):"
+        )
+        for i, r in enumerate(result.ranked, 1):
+            # The reason is ``band; billing; pool state`` plus a demotion
+            # (``unhealthy: …``, ``saturated: …``, ``over-ceiling: …``).
+            demotion = r.reason.split("; ")[3:]
+            word = demotion[0].split(":")[0] if demotion else "healthy"
+            price = r.offering.price_in
+            lines.append(
+                f"  {i}. {'*' if r.offering is result.chosen else ' '} "
+                f"{r.offering.key} — {word}: {r.reason}"
+                + (f"; price_in={price:g}" if price is not None else "")
+            )
+        lines.extend(f"  -   {r.offering_key} — {r.filter}: {r.reason}" for r in listed)
+        if below:
+            lines.append(
+                f"{below} offering{'s' if below != 1 else ''} below the "
+                f"{tier.value} tier floor not listed"
+            )
+        lines.append(
+            "legacy ladder: "
+            + ", ".join(decide.rung_key(rung, model) for rung in ladder)
+        )
+        lines.append(
+            "No LLM call made, nothing written. Pools and health are a "
+            "15-second snapshot; request pins, keyword rules and runtime "
+            "gates can change the route."
+        )
         return "\n".join(lines)
 
     def _render_pools(self) -> str:

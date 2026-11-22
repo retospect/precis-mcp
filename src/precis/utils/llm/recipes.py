@@ -116,6 +116,12 @@ def lookup(source: str) -> Recipe | None:
     return rows[key] if key is not None else None
 
 
+def sources_for(task_kind: str) -> list[str]:
+    """The recipe sources declaring ``task_kind``, sorted — the reverse of
+    :func:`lookup`, for a read that starts from the kind (``/preview``)."""
+    return sorted(s for s, r in _rows().items() if r.task_kind == task_kind)
+
+
 def covers(recipe_sources: Collection[str], source: str) -> bool:
     """True when ``recipe_sources`` — a ``task_recipes.source`` set — covers
     ``source`` under :func:`lookup`'s rules (exact, ``:local`` base, longest

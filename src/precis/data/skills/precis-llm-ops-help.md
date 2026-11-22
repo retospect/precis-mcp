@@ -10,6 +10,7 @@ answers:
   - which model chain is stored for an operation, and when was it set?
   - how do I add a hosted provider account or profile, and enable it?
   - how do I list llm accounts?
+  - which model would the router choose for a task kind, without making a call?
 applies-to: get/search (kind='llm'); reason_class; deferred_llm_call job; /budget
 tags: troubleshooting, workflow
 kinds: llm
@@ -98,6 +99,27 @@ background calls (`subscription_cap`).
 `llm:openrouter:credits` accumulates per-call dollar cost and never
 resets. Neither has a known limit and both are estimates, not
 provider-reported balances, so both read `pacing=unknown` by design.
+
+## What would the router choose for a task kind? /preview
+
+`get(kind='llm', id='/preview', args={'task_kind': 'claim.verify'})`
+ranks the offerings for that kind the way the router does and places no
+LLM call. It prints the demand it assumed, the decide mode in force for
+the kind (in `legacy` and `shadow` the legacy ladder executes, in `on`
+the marked choice does), then every candidate in the demanded tier: the
+ranked ones in order with `*` on the choice and one word each (`healthy`,
+`unhealthy`, `saturated`, `over-ceiling`), the rejected ones with the
+filter that dropped them (`entitlement`, `privacy`, `capability`,
+`availability`) and its reason, e.g. `availability: pool exhausted`.
+The last lines give the legacy ladder for the same demand.
+
+The kind's recipe names the source and the source's operation the tier.
+`args={'source': '<source>'}` picks one source when several share the
+kind; `'tier'` (`small`, `medium`, `big`, `frontier`) is needed when no
+source of the kind is a registered operation, and otherwise asks "what if
+this ran at another tier". `'tools': true`, `'privacy': 'local-only'` and
+`'work_class'` (default `background`) shape the demand. Request pins,
+keyword rules and the gates a real call meets are not modelled.
 
 ## What would the new router have chosen? /decisions
 

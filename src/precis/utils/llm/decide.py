@@ -161,6 +161,13 @@ _TIER_ORDER = {
     for rank, tier in enumerate((Tier.SMALL, Tier.MEDIUM, Tier.BIG, Tier.FRONTIER))
 }
 
+_TIER_UNSET = "tier floor unset"
+_TIER_BELOW = "offering tier below demanded tier floor"
+#: The tier-floor rejection reasons: an offering rejected for one of these
+#: is outside the demanded tier, not a candidate that lost (the ``/preview``
+#: view counts these instead of listing them).
+TIER_REJECTIONS = frozenset({_TIER_UNSET, _TIER_BELOW})
+
 #: The health guard's window and sample floor (td568209): an offering
 #: whose ``llm_call_log`` rows over the window show at least this many
 #: calls and zero successes sorts after every healthy one.
@@ -410,9 +417,9 @@ def _rejection(
     demand = _TIER_ORDER.get(r.tier_floor, 0)
     if o.tier_floor is None:
         if demand > 0:
-            return "capability", "tier floor unset"
+            return "capability", _TIER_UNSET
     elif (_TIER_ORDER.get(o.tier_floor) or 0) < demand:
-        return "capability", "offering tier below demanded tier floor"
+        return "capability", _TIER_BELOW
     ordinal = o.capability.get(r.axis, 0) if r.axis else 0
     if ordinal and ordinal < r.min_ordinal - 1:
         return "capability", "axis ordinal below marginal"
