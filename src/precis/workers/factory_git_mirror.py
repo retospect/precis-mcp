@@ -79,6 +79,18 @@ local-main advance with :func:`advance_local_main` only after the sync
 verifies — a phantom main survives a crashed repair, a refused call
 does not (finding 4, second pass).
 
+A worker that dies mid-write leaves 0-byte files in a mirror or its tips
+record (gr762423). Every git call on a mirror therefore names it with
+``--git-dir`` — never ``-C``, which for a mirror git no longer accepts
+(a 0-byte ``HEAD``) walks up into the enclosing main checkout and
+operates on that. Before use :func:`_init_bare` vets the mirror (non-empty
+``HEAD``, ``rev-parse --git-dir`` accepts it, each present land ref
+resolves to a commit) and renames a failing one aside to
+``<name>.broken-<UTC stamp>`` — never deletes it — before initialising
+afresh; :func:`read_launch_tips` treats an empty or unparseable record
+as absent and sets it aside the same way. Each is logged as a warning
+naming the path and the reason.
+
 A crashed or raced land's unsynced squash lives only in that launch's
 mirror: the next populate of the same launch force-updates the refs from
 GitHub again — the objects stay (``gc.auto`` is off), the ref moves on,
@@ -88,6 +100,8 @@ re-squashes it.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -96,7 +110,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 from precis.utils.secret_scan import mask_secrets
@@ -193,17 +207,34 @@ def write_launch_tips(root: Path, launch_id: str, tips: Mapping[str, str]) -> bo
 
 def read_launch_tips(root: Path, launch_id: str) -> dict[str, str] | None:
     """The persisted launch tips. ``None`` when no record exists — the
-    launch was not mirrored; a dict — possibly empty — when it does, so
-    an unreadable or malformed record fails the caller closed instead of
-    reading as "no mirror"."""
+    launch was not mirrored — or when the file is empty or not a JSON
+    object: a record a dying worker left half-written is no record, and
+    is renamed aside (``<name>.broken-<UTC stamp>``, never deleted) so it
+    cannot keep reading as one (gr762423). A dict — possibly empty — when
+    a record parses, and ``{}`` when the file cannot be read at all, so
+    an unreadable record fails the caller closed."""
+    path = launch_tips_path(root, launch_id)
     try:
-        raw = json.loads(launch_tips_path(root, launch_id).read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return None
-    except (OSError, ValueError):
+    except OSError:
         return {}
+    raw: object = None
+    reason = "empty record"
+    if text.strip():
+        try:
+            raw = json.loads(text)
+        except ValueError:
+            reason = "unparseable record"
+        else:
+            reason = "record is not a JSON object"
     if not isinstance(raw, dict):
-        return {}
+        try:
+            _set_aside(path, reason)
+        except OSError as exc:
+            log.warning("factory tips record %s is corrupt (%s): %s", path, reason, exc)
+        return None
     return {
         str(k): str(v)
         for k, v in raw.items()
@@ -211,12 +242,46 @@ def read_launch_tips(root: Path, launch_id: str) -> dict[str, str] | None:
     }
 
 
+def has_broken_tips(root: Path, launch_id: str) -> bool:
+    """Whether a corrupt launch record was set aside for this launch
+    (``<launch>.tips.json.broken-*``, see :func:`read_launch_tips`) — the
+    evidence that the launch ran mirrored though its record now reads as
+    absent."""
+    prefix = launch_tips_path(root, launch_id).name + ".broken-"
+    try:
+        return any(p.name.startswith(prefix) for p in mirror_root(root).iterdir())
+    except OSError:
+        return False
+
+
 def drop_launch(root: Path, launch_id: str) -> None:
     """Forget this launch's mirror-mode record and mirror — after a
     verified sync, and before a token-less launch that must not read a
-    predecessor's state as its own. Best-effort."""
+    predecessor's state as its own. Best-effort.
+
+    A ``<launch>.tips.json.broken-*`` sibling (:func:`has_broken_tips`) is
+    evidence of a mirrored launch, so it is retired with the rest: renamed
+    to ``<launch>.tips.json.dropped-<UTC stamp>`` — which
+    :func:`has_broken_tips` does not match — never deleted."""
     launch_tips_path(root, launch_id).unlink(missing_ok=True)
     shutil.rmtree(mirror_dir(root, launch_id), ignore_errors=True)
+    prefix = launch_tips_path(root, launch_id).name + ".broken-"
+    try:
+        broken = [p for p in mirror_root(root).iterdir() if p.name.startswith(prefix)]
+    except OSError:
+        return
+    for path in broken:
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        base = path.name.replace(".broken-", ".dropped-", 1)
+        target = path.with_name(base)
+        n = 1
+        while target.exists():
+            target = path.with_name(f"{base}-{stamp}-{n}")
+            n += 1
+        try:
+            path.rename(target)
+        except OSError as exc:
+            log.warning("factory tips record %s not retired: %s", path, exc)
 
 
 def land_refs(onto: str | None) -> tuple[str, ...]:
@@ -330,13 +395,17 @@ def local_env(env: Mapping[str, str]) -> dict[str, str]:
     return trusted_env(out)
 
 
-def _local_fetch_args(dest: Path, ops: Path, *refspecs: str) -> list[str]:
-    """Copy explicit refs from a fresh ops repo without invoking receive-pack."""
+def _local_fetch_args(
+    dest: Path, ops: Path, *refspecs: str, bare: bool = False
+) -> list[str]:
+    """Copy explicit refs from a fresh ops repo without invoking receive-pack.
+    ``bare`` marks ``dest`` as a bare gitdir (a mirror) addressed with
+    ``--git-dir`` — never ``-C``, which would walk up out of a broken one
+    into the enclosing checkout (gr762423)."""
     return [
         "git",
         *TRUSTED_ARGS,
-        "-C",
-        str(dest),
+        *(("--git-dir", str(dest)) if bare else ("-C", str(dest))),
         "fetch",
         "--quiet",
         "--atomic",
@@ -353,12 +422,130 @@ def _local_fetch_args(dest: Path, ops: Path, *refspecs: str) -> list[str]:
     ]
 
 
+def _stamped_aside(path: Path) -> Path:
+    """``<name>.broken-<UTC stamp>`` beside ``path`` — a name not yet taken."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    aside = path.with_name(f"{path.name}.broken-{stamp}")
+    n = 1
+    while aside.exists() or aside.is_symlink():
+        aside = path.with_name(f"{path.name}.broken-{stamp}-{n}")
+        n += 1
+    return aside
+
+
+def _set_aside(path: Path, reason: str) -> Path:
+    """Rename a corrupt mirror file or dir to ``<name>.broken-<UTC stamp>``
+    — never deleted, so the wreckage stays for a post-mortem — and warn
+    naming it and the reason. Raises :class:`OSError` when the rename fails."""
+    aside = _stamped_aside(path)
+    path.rename(aside)
+    log.warning(
+        "factory mirror %s is corrupt (%s); set aside as %s", path, reason, aside.name
+    )
+    return aside
+
+
+def _ref_present(path: Path, ref: str) -> bool:
+    """Whether the bare repo at ``path`` carries ``refs/heads/<ref>`` — as a
+    loose file (a 0-byte one included: that is the corruption to catch) or
+    a packed-refs row."""
+    if (path / "refs" / "heads" / ref).exists():
+        return True
+    try:
+        packed = (path / "packed-refs").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(
+        line.rpartition(" ")[2].strip() == f"refs/heads/{ref}"
+        for line in packed.splitlines()
+    )
+
+
+def _bare_defect(
+    path: Path, refs: tuple[str, ...], *, env: Mapping[str, str]
+) -> str | None:
+    """Why the bare repo at ``path`` cannot be used — an empty ``HEAD``, a
+    ``git --git-dir`` that does not accept it, a land ref that is present
+    but does not resolve to a commit — or ``None`` when it is sound. Every
+    call names the gitdir with ``--git-dir``: a broken mirror under the
+    main checkout must never resolve to the enclosing repo (gr762423).
+    Only called for a path whose ``HEAD`` exists."""
+    try:
+        if (path / "HEAD").stat().st_size == 0:
+            return "HEAD is empty"
+    except OSError as exc:
+        return f"HEAD unreadable: {refresh_error(exc)}"
+    cp = _refresh_run(
+        ["git", *TRUSTED_ARGS, "--git-dir", str(path), "rev-parse", "--git-dir"],
+        cwd=path.parent,
+        env=trusted_env(env),
+        timeout=30.0,
+    )
+    if cp.returncode != 0:
+        return f"not a git repository (rev-parse --git-dir rc={cp.returncode}: {_tail(cp)})"
+    for ref in refs:
+        if not _ref_present(path, ref):
+            continue
+        cp = _refresh_run(
+            [
+                "git",
+                *TRUSTED_ARGS,
+                "--git-dir",
+                str(path),
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{ref}^{{commit}}",
+            ],
+            cwd=path.parent,
+            env=trusted_env(env),
+            timeout=30.0,
+        )
+        if cp.returncode != 0:
+            return f"refs/heads/{ref} does not resolve to a commit"
+    return None
+
+
+@contextlib.contextmanager
+def _cache_lock(cache: Path) -> Iterator[None]:
+    """Exclusive ``flock`` on ``<cache>.lock`` (a sibling file, created on
+    first use and left in place) for the span of one vet/init/set-aside of
+    the shared cache. Raises :class:`OSError` when the lock file cannot be
+    opened."""
+    lock = cache.with_name(cache.name + ".lock")
+    with lock.open("a", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def _init_bare(
-    path: Path, *, env: Mapping[str, str], why: list[str] | None = None
+    path: Path,
+    *,
+    env: Mapping[str, str],
+    why: list[str] | None = None,
+    refs: tuple[str, ...] = MIRROR_REFS,
 ) -> bool:
     """``git init --bare`` (idempotent) plus ``gc.auto 0``: objects a
     later force-refresh unrefs must stay readable for a recovering
-    sync's explicit shas."""
+    sync's explicit shas.
+
+    An existing repo is vetted first (:func:`_bare_defect`): one that is
+    unusable — a 0-byte ``HEAD`` left by a worker that died mid-write, a
+    land ref that does not resolve — is renamed aside
+    (:func:`_set_aside`) and initialised afresh. A ``HEAD`` merely
+    existing is not "initialised" (gr762423)."""
+    if (path / "HEAD").exists():
+        defect = _bare_defect(path, refs, env=env)
+        if defect is not None:
+            try:
+                _set_aside(path, defect)
+            except OSError as exc:
+                if why is not None:
+                    why.append(f"corrupt mirror ({defect}) not set aside: {exc}")
+                return False
     if not (path / "HEAD").exists():
         cp = _refresh_run(
             ["git", *TRUSTED_ARGS, "init", "--bare", str(path)],
@@ -371,7 +558,7 @@ def _init_bare(
                 why.append(f"bare init rc={cp.returncode}: {_tail(cp)}")
             return False
     cp = _refresh_run(
-        ["git", *TRUSTED_ARGS, "-C", str(path), "config", "gc.auto", "0"],
+        ["git", *TRUSTED_ARGS, "--git-dir", str(path), "config", "gc.auto", "0"],
         cwd=path,
         env=trusted_env(env),
         timeout=30.0,
@@ -464,7 +651,14 @@ def _tip(
     repo: Path, ref: str, *, env: Mapping[str, str], why: list[str] | None = None
 ) -> str | None:
     cp = _refresh_run(
-        ["git", *TRUSTED_ARGS, "-C", str(repo), "rev-parse", f"refs/heads/{ref}"],
+        [
+            "git",
+            *TRUSTED_ARGS,
+            "--git-dir",
+            str(repo),
+            "rev-parse",
+            f"refs/heads/{ref}",
+        ],
         cwd=repo,
         env=trusted_env(env),
         timeout=30.0,
@@ -639,9 +833,15 @@ def _populate(
     # tmp→mirror fetch, the tip reads — runs credential-free so no
     # planted hook/filter meets the token (review td660513).
     local = local_env(env)
-    for repo in (cache, mirror):
+    for repo, repo_refs in ((cache, ()), (mirror, refs)):
         details: list[str] = []
-        if not _init_bare(repo, env=local, why=details):
+        # The cache is shared by every launch: a first-time ``git init``
+        # writes HEAD before objects/, so an unserialised sibling's vet
+        # could set aside a half-built healthy cache, and two launches
+        # could rename one corrupt cache. The per-launch mirror is ours.
+        with _cache_lock(repo) if repo == cache else contextlib.nullcontext():
+            ok = _init_bare(repo, env=local, why=details, refs=repo_refs)
+        if not ok:
             return refuse(
                 details[-1] if details else f"bare init of {repo.name} failed"
             )
@@ -693,7 +893,10 @@ def _populate(
             return refuse(f"{reason} (after {POPULATE_TRIES} tries)")
         into = _refresh_run(
             _local_fetch_args(
-                mirror, ops, *(f"+{oracle[r]}:refs/heads/{r}" for r in refs)
+                mirror,
+                ops,
+                *(f"+{oracle[r]}:refs/heads/{r}" for r in refs),
+                bare=True,
             ),
             cwd=mirror,
             env=local,
@@ -779,7 +982,7 @@ def _descends(repo: Path, ancestor: str, sha: str, *, env: Mapping[str, str]) ->
         [
             "git",
             *TRUSTED_ARGS,
-            "-C",
+            "--git-dir",
             str(repo),
             "merge-base",
             "--is-ancestor",
@@ -860,9 +1063,11 @@ def fetch_ref_into(
     ops_parent: Path,
     env: Mapping[str, str],
     object_dirs: tuple[Path, ...] = (),
+    bare: bool = False,
 ) -> str | None:
     """Fetch branch ``ref`` of ``url`` under the factory credential into
-    ``dest`` — a clone a builder session can write — without running one
+    ``dest`` (``bare``: a bare mirror gitdir, addressed with ``--git-dir``)
+    — a clone a builder session can write — without running one
     credential-bearing git inside it. The fetch lands in a fresh
     :func:`_ops_repo`, its tip is compared with the :func:`ls_remote`
     oracle, and only then does a credential-free fetch into the destination
@@ -895,7 +1100,7 @@ def fetch_ref_into(
         if cp.returncode != 0 or _tip(ops, ref, env=local) != oracle:
             return None
         into = _run(
-            _local_fetch_args(dest, ops, f"+{oracle}:{dest_ref}"),
+            _local_fetch_args(dest, ops, f"+{oracle}:{dest_ref}", bare=bare),
             cwd=dest,
             env=local,
             timeout=120.0,
@@ -933,7 +1138,7 @@ def fetch_source_mirror(
     local = local_env(env)
     try:
         mirror.parent.mkdir(parents=True, exist_ok=True)
-        if not _init_bare(mirror, env=local):
+        if not _init_bare(mirror, env=local, refs=(ref,)):
             return None
         tip = fetch_ref_into(
             mirror,
@@ -942,6 +1147,7 @@ def fetch_source_mirror(
             f"refs/heads/{ref}",
             ops_parent=mirror.parent,
             env=env,
+            bare=True,
         )
         if tip is None:
             return None
@@ -949,7 +1155,7 @@ def fetch_source_mirror(
             [
                 "git",
                 *TRUSTED_ARGS,
-                "-C",
+                "--git-dir",
                 str(mirror),
                 "symbolic-ref",
                 "HEAD",
@@ -1635,6 +1841,7 @@ __all__ = [
     "changed_refs",
     "drop_launch",
     "github_url",
+    "has_broken_tips",
     "land_refs",
     "launch_tips_path",
     "local_env",

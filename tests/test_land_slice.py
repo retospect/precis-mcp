@@ -1261,7 +1261,7 @@ def test_ship_env_is_token_free_with_mirrored_git_credentials(
     def _sub(args: list[str]) -> str:
         # every call goes `git <TRUSTED_ARGS> [-C dir] <sub>`
         rest = args[1 + len(land_slice._factory_git_mirror.TRUSTED_ARGS) :]
-        if rest[:1] == ["-C"]:
+        if rest[:1] in (["-C"], ["--git-dir"]):
             rest = rest[2:]
         return rest[0]
 
@@ -3548,17 +3548,26 @@ def test_poll_green_adopted_ship_with_missing_tips_fails_closed(
     assert "landed_sha" not in pctx.meta_set
 
 
+@pytest.mark.parametrize("with_mirror_dir", [False, True])
 def test_poll_green_adopted_ship_with_malformed_tips_record_fails_closed(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    with_mirror_dir: bool,
 ) -> None:
-    """A launch record that exists but cannot be read as tips is mirror
-    mode with no CAS basis — fail closed, never a blind land."""
+    """A launch record that cannot be parsed is set aside and reads as
+    absent (gr762423), but the ``.broken-*`` sibling it leaves is evidence
+    of a mirrored launch exactly like the mirror dir or the meta stamp —
+    with no dir and no stamp too — so poll fails closed with no CAS basis,
+    never a blind land."""
     seen = _patch_sync_seams(monkeypatch)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     ctx, handle = _submit(store, seams)
     record = tmp_path / "scratch" / "factory-mirror" / "td42.tips.json"
     record.parent.mkdir(parents=True, exist_ok=True)
+    if with_mirror_dir:
+        (record.parent / "td42.git").mkdir()
     record.write_text("not json\n", encoding="utf-8")
     assert "factory_mirror_tips" not in handle
     _finish(handle, 0, GREEN_LOG)
@@ -3567,6 +3576,26 @@ def test_poll_green_adopted_ship_with_malformed_tips_record_fails_closed(
     assert pctx.status == "failed"
     assert seen["sync"] == []
     assert "STATUS:done" not in store.tag_strings(42)
+
+
+def test_drop_launch_retires_the_broken_tips_evidence(tmp_path: Path) -> None:
+    """gr762423 review: a token-less launch or a no_land submit drops the
+    launch's mirror state; the set-aside ``.broken-*`` record is part of
+    it, or every later land of the todo would still read "mirrored" and
+    fail with "mirror launch record is unreadable". Retired by rename,
+    never deleted."""
+    store = _Store()
+    store.add_todo(42, tags=())
+    mirror = land_slice._factory_git_mirror
+    record = mirror.launch_tips_path(tmp_path, "td42")
+    record.parent.mkdir(parents=True)
+    record.write_text("not json\n", encoding="utf-8")
+    assert mirror.read_launch_tips(tmp_path, "td42") is None
+    assert land_slice._mirror_in_play(tmp_path, 42, {}, store) is True
+    mirror.drop_launch(tmp_path, "td42")
+    assert land_slice._mirror_in_play(tmp_path, 42, {}, store) is False
+    (kept,) = record.parent.glob("td42.tips.json.dropped-*")
+    assert kept.read_text(encoding="utf-8") == "not json\n"
 
 
 def test_poll_green_unmirrored_ship_ignores_a_planted_tips_file(

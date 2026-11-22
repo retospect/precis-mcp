@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def _proc(
 def _sub(args: list[str]) -> str:
     """The git subcommand under ``git <TRUSTED_ARGS> [-C <dir>] <sub> ...``."""
     rest = args[1 + len(fgm.TRUSTED_ARGS) :]
-    if rest[:1] == ["-C"]:
+    if rest[:1] in (["-C"], ["--git-dir"]):
         rest = rest[2:]
     return rest[0]
 
@@ -101,17 +102,15 @@ def test_launch_tips_record_lives_beside_the_mirror_and_drops(
     assert not fgm.mirror_dir(tmp_path, "td1").exists()
 
 
-def test_read_launch_tips_present_but_unreadable_is_not_absent(
+def test_read_launch_tips_filters_a_parsed_record_to_valid_shas(
     tmp_path: Path,
 ) -> None:
-    """A record that exists but cannot be read as tips answers ``{}`` —
-    mirror mode with no CAS basis (the caller fails closed) — while a
-    missing record answers ``None`` ("no mirror")."""
+    """A record that parses as an object answers the valid ``{ref: sha}``
+    rows (possibly ``{}`` — mirror mode with no CAS basis, the caller
+    fails closed); a missing or corrupt one answers ``None``."""
     path = fgm.launch_tips_path(tmp_path, "td1")
     path.parent.mkdir(parents=True)
-    path.write_text("not json\n", encoding="utf-8")
-    assert fgm.read_launch_tips(tmp_path, "td1") == {}
-    path.write_text(json.dumps(["main", SHA_A]) + "\n", encoding="utf-8")
+    path.write_text("{}\n", encoding="utf-8")
     assert fgm.read_launch_tips(tmp_path, "td1") == {}
     path.write_text(
         json.dumps({"main": SHA_A, "prod": "not-a-sha", "x": None}) + "\n",
@@ -1953,3 +1952,193 @@ def test_populate_final_tip_exception_is_a_refresh_refusal(
     )
     assert "rev-parse" in why[-1] and "tip unreadable" in why[-1]
     assert list(tmp_path.glob("ops-*")) == []
+
+
+# ── corrupt per-launch mirror (gr762423) ───────────────────────────
+
+
+def _checkout_with_remote(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    """A 'GitHub' bare repo with main + prod, and a separate main checkout
+    (main checked out) under whose ``scratch/`` the mirrors live — the
+    layout where a broken mirror's ``-C`` walked up into the checkout."""
+    remote, dest, _tip = _lander_repos(tmp_path)
+    prod = _commit(dest, "prod-only")
+    _git(dest, "push", "-q", str(remote), f"{prod}:refs/heads/prod")
+    _git(dest, "push", "-q", str(remote), f"{prod}:refs/heads/main")
+    checkout = tmp_path / "checkout"
+    _git(tmp_path, "clone", "-q", "-b", "main", str(remote), str(checkout))
+    tips = {
+        "main": _git(remote, "rev-parse", "refs/heads/main"),
+        "prod": _git(remote, "rev-parse", "refs/heads/prod"),
+    }
+    return remote, checkout, tips
+
+
+def _populate_real(
+    monkeypatch: pytest.MonkeyPatch, remote: Path, checkout: Path
+) -> tuple[dict[str, str] | None, list[tuple[list[str], Path, dict[str, str]]]]:
+    calls = _record_real(monkeypatch)
+    tips = fgm.populate(
+        fgm.mirror_dir(checkout, "td1"),
+        fgm.cache_dir(checkout),
+        str(remote),
+        None,
+        env=_real_env(),
+    )
+    return tips, calls
+
+
+def _asides(checkout: Path) -> list[Path]:
+    return sorted(fgm.mirror_root(checkout).glob("td1.git.broken-*"))
+
+
+def _assert_fetch_never_targets_the_checkout(
+    calls: list[tuple[list[str], Path, dict[str, str]]], checkout: Path, mirror: Path
+) -> None:
+    local = [
+        a
+        for a, _c, _e in calls
+        if "fetch" in a and "--atomic" in a  # the tmp→mirror local fetch
+    ]
+    assert local
+    for args in local:
+        assert "--git-dir" in args and args[args.index("--git-dir") + 1] == str(mirror)
+        assert "-C" not in args
+    for args, _cwd, _env in calls:
+        if "-C" in args:
+            assert args[args.index("-C") + 1] not in (str(mirror), str(checkout))
+
+
+def test_zero_byte_head_mirror_is_set_aside_and_reinitialised(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """gr762423: a 0-byte ``HEAD`` is not a git repo, so ``-C <mirror>``
+    walked up into the main checkout (main checked out) and the fetch was
+    refused. The mirror is renamed aside, rebuilt, and every mirror call
+    names it with ``--git-dir``."""
+    remote, checkout, want = _checkout_with_remote(tmp_path)
+    mirror = fgm.mirror_dir(checkout, "td1")
+    first, _ = _populate_real(monkeypatch, remote, checkout)
+    assert first == want
+    (mirror / "HEAD").write_text("", encoding="utf-8")
+    main_before = _git(checkout, "rev-parse", "refs/heads/main")
+    with caplog.at_level("WARNING", logger=fgm.log.name):
+        tips, calls = _populate_real(monkeypatch, remote, checkout)
+    assert tips == want
+    (aside,) = _asides(checkout)
+    assert (aside / "HEAD").stat().st_size == 0  # kept, not deleted
+    assert (mirror / "HEAD").stat().st_size > 0
+    assert (
+        _git(mirror.parent, "--git-dir", str(mirror), "rev-parse", "main")
+        == (want["main"])
+    )
+    assert _git(checkout, "rev-parse", "refs/heads/main") == main_before
+    _assert_fetch_never_targets_the_checkout(calls, checkout, mirror)
+    warned = [r.getMessage() for r in caplog.records if "set aside" in r.getMessage()]
+    assert warned and str(mirror) in warned[0] and "HEAD is empty" in warned[0]
+
+
+def test_zero_byte_main_ref_mirror_is_set_aside_and_rebuilt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr762423: 0-byte ``refs/heads/main`` and ``refs/heads/prod`` read as
+    ``bad object refs/heads/main``; such a mirror is renamed aside and
+    rebuilt rather than reused."""
+    remote, checkout, want = _checkout_with_remote(tmp_path)
+    mirror = fgm.mirror_dir(checkout, "td1")
+    assert _populate_real(monkeypatch, remote, checkout)[0] == want
+    for ref in ("main", "prod"):
+        (mirror / "refs" / "heads" / ref).write_text("", encoding="utf-8")
+    tips, calls = _populate_real(monkeypatch, remote, checkout)
+    assert tips == want
+    (aside,) = _asides(checkout)
+    assert (aside / "refs" / "heads" / "main").stat().st_size == 0
+    assert (
+        _git(mirror.parent, "--git-dir", str(mirror), "rev-parse", "prod")
+        == (want["prod"])
+    )
+    _assert_fetch_never_targets_the_checkout(calls, checkout, mirror)
+
+
+def test_healthy_mirror_is_reused_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    remote, checkout, want = _checkout_with_remote(tmp_path)
+    mirror = fgm.mirror_dir(checkout, "td1")
+    assert _populate_real(monkeypatch, remote, checkout)[0] == want
+    marker = mirror / "marker"
+    marker.write_text("kept\n", encoding="utf-8")
+    assert _populate_real(monkeypatch, remote, checkout)[0] == want
+    assert marker.read_text(encoding="utf-8") == "kept\n"
+    assert _asides(checkout) == []
+
+
+def test_mirror_without_head_is_initialised_in_place(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bare directory with no ``HEAD`` at all is just uninitialised:
+    nothing to set aside."""
+    remote, checkout, want = _checkout_with_remote(tmp_path)
+    mirror = fgm.mirror_dir(checkout, "td1")
+    mirror.mkdir(parents=True)
+    assert _populate_real(monkeypatch, remote, checkout)[0] == want
+    assert _asides(checkout) == []
+
+
+def test_concurrent_cache_vets_set_aside_a_corrupt_cache_once(
+    tmp_path: Path,
+) -> None:
+    """The shared cache is vetted/initialised under an exclusive lock: two
+    launches meeting one corrupt cache rename it aside once, and the second
+    finds the first's rebuilt (healthy) cache instead of renaming that."""
+    cache = fgm.cache_dir(tmp_path)
+    cache.mkdir(parents=True)
+    _git(cache.parent, "init", "-q", "--bare", str(cache))
+    (cache / "HEAD").write_text("", encoding="utf-8")
+    env = fgm.local_env({"PATH": os.environ["PATH"]})
+    results: list[bool] = []
+
+    def vet() -> None:
+        with fgm._cache_lock(cache):
+            results.append(fgm._init_bare(cache, env=env, refs=()))
+
+    threads = [threading.Thread(target=vet) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [True] * 4
+    assert len(list(cache.parent.glob("cache.git.broken-*"))) == 1
+    assert (cache / "HEAD").stat().st_size > 0
+
+
+def test_drop_launch_retires_broken_tips_by_rename(tmp_path: Path) -> None:
+    path = fgm.launch_tips_path(tmp_path, "td1")
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+    assert fgm.read_launch_tips(tmp_path, "td1") is None
+    assert fgm.has_broken_tips(tmp_path, "td1")
+    fgm.drop_launch(tmp_path, "td1")
+    assert not fgm.has_broken_tips(tmp_path, "td1")
+    assert len(list(path.parent.glob("td1.tips.json.dropped-*"))) == 1
+
+
+@pytest.mark.parametrize("body", ["", "  \n", "{not json", '["main"]'])
+def test_empty_or_unparseable_tips_record_reads_as_absent(
+    tmp_path: Path, body: str
+) -> None:
+    """gr762423: a 0-byte record (worker died mid-write) is "no mirror",
+    not mirror mode with an empty CAS basis; it is renamed aside."""
+    path = fgm.launch_tips_path(tmp_path, "td1")
+    path.parent.mkdir(parents=True)
+    assert not fgm.has_broken_tips(tmp_path, "td1")
+    path.write_text(body, encoding="utf-8")
+    assert fgm.read_launch_tips(tmp_path, "td1") is None
+    assert fgm.has_broken_tips(tmp_path, "td1")
+    assert not fgm.has_broken_tips(tmp_path, "td10")
+    assert not path.exists()
+    (aside,) = path.parent.glob("td1.tips.json.broken-*")
+    assert aside.read_text(encoding="utf-8") == body
+    assert fgm.read_launch_tips(tmp_path, "td1") is None

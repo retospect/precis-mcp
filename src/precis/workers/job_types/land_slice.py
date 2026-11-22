@@ -5364,9 +5364,12 @@ def _mirror_in_play(
     if root is None or not todo_id:
         return False
     launch_id = f"td{todo_id}"
+    # read_launch_tips sets a corrupt record aside and answers None, so
+    # the broken sibling it leaves is checked after it (gr762423).
     return (
         _factory_git_mirror.read_launch_tips(root, launch_id) is not None
         or _factory_git_mirror.mirror_dir(root, launch_id).exists()
+        or _factory_git_mirror.has_broken_tips(root, launch_id)
     )
 
 
