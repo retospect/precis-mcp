@@ -19,6 +19,7 @@ from precis.handlers.pcb import PcbHandler
 from precis.pcb import catalog
 from precis.pcb import drc as pcb_drc
 from precis.pcb import session as pcb_session
+from precis.store import Store
 from tests._pcb_outline import closed_outline
 
 # A tiny but real board: an MCU + a bypass cap + a pull-up, on an I2C net.
@@ -4723,16 +4724,20 @@ def test_topo_view_against_diffs_two_runs(pcb, store):
     assert "B:" in body and "rot 90 side B" in body
 
 
-def test_topo_view_route_renders_the_run_fisheye(pcb, store):
+@pytest.mark.parametrize("legalise_rounds", [None, 2])
+def test_topo_view_route_renders_the_run_fisheye(
+    pcb: PcbHandler, store: Store, legalise_rounds: int | None
+) -> None:
     """gr513871: ``part='route'`` renders a run's route stage in fisheye —
     the run's counts centered, rings for the failed nets and the binding
     constraints off the digest, and the previous run with its diff."""
     pcb.put(id="topo-route", args=_CROSSED)
     ref = store.get_ref(kind="pcb", id="topo-route")
     assert ref is not None
-    job_id = _topo_job(
-        store, int(ref.id), _topo_files(crossings=0), route=_topo_route_meta()
-    )
+    meta = _topo_route_meta()
+    if legalise_rounds is not None:
+        meta.update(route_legalise_rounds=legalise_rounds, route_legalise_mm=0.75)
+    job_id = _topo_job(store, int(ref.id), _topo_files(crossings=0), route=meta)
 
     body = pcb.get(
         id="topo-route", view="topo", args={"run": job_id, "part": "route"}
@@ -4741,6 +4746,7 @@ def test_topo_view_route_renders_the_run_fisheye(pcb, store):
     assert "3 realized, 1 failed" in body
     assert "7 track(s), 2 via(s)" in body
     assert "shove 1 round(s) +1.5 mm" in body
+    assert ("legalise 2 round(s) +0.75 mm" in body) == (legalise_rounds is not None)
     assert "2 shoved pose(s) committed" in body
     assert "widened: VDD→0.5mm" in body
     # ring: the digest's failed nets

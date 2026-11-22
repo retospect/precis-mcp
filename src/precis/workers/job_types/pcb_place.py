@@ -1032,8 +1032,8 @@ def _topo_route(
     # A board that routes clean the first time takes the zero-cost path
     # (failed empty -> break before any re-route); a pose that stops
     # moving, overflows the mesh, or stops improving gives up.
-    route_shove_mm = 0.0
-    route_shove_rounds = 0
+    route_legalise_mm = 0.0
+    route_legalise_rounds = 0
     pose = td_route.pose0
     prev_pose = pose
     # every cause that ended a recovery axis while nets still failed,
@@ -1054,14 +1054,14 @@ def _topo_route(
         if best_failed == 0 or _round >= len(legalise_poses):
             break
         pose = legalise_poses[_round]
-        route_shove_mm += float(
+        route_legalise_mm += float(
             np.abs(np.asarray(pose)[:, :2] - np.asarray(prev_pose)[:, :2]).sum()
         )
-        route_shove_rounds += 1
+        route_legalise_rounds += 1
         prev_pose = pose
         ctx.append_chunk(
             "job_event",
-            f"topo-route: legalise round {route_shove_rounds} — "
+            f"topo-route: legalise round {route_legalise_rounds} — "
             f"{best_failed} unresolved, re-routing at the shoved pose",
         )
         pose_sink.clear()
@@ -1120,6 +1120,8 @@ def _topo_route(
     # doubled budget stays inside the 5-minute route ruling). Each try
     # re-routes the same pose; a kept plan still gets LP pushes next
     # round.
+    route_shove_mm = 0.0
+    route_shove_rounds = 0
     last_shove: Any = None
     track_shove = {"tries": 0, "moved_mm": 0.0}
     if not legalise_poses or best_failed > 0:
@@ -1675,6 +1677,8 @@ def _topo_route(
         "vias": len(rres.vias),
         "crossings": len(plan.crossings),
         "unreachable": len(plan.unreachable),
+        "route_legalise_rounds": route_legalise_rounds,
+        "route_legalise_mm": round(route_legalise_mm, 3),
         "route_shove_rounds": route_shove_rounds,
         "route_shove_mm": round(route_shove_mm, 3),
         # the LAST failure-driven shove's own report — rounds/mm on the

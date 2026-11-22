@@ -6,12 +6,15 @@ search, before emission. Homotopy is the contract: ``edges``/``tris``/
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
 
 from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.topoplace import legalise_route as lr
+from precis.pcb.topoplace import realise
 from precis.pcb.topoplace import wires as wm
 from precis.pcb.topoplace.crossings import edge_xy
 from precis.pcb.topoplace.design import TopoDesign
@@ -132,9 +135,8 @@ def test_moved_via_stays_plantable() -> None:
         assert b1.edges == b0.edges and b1.tris == b0.tris
 
 
-def test_route_design_still_realizes_example_a() -> None:
-    """End-to-end smoke: the K3 board routes through the new stage and
-    the applied result keeps every branch's corridor identical."""
+def test_legalise_preserves_example_a_corridors() -> None:
+    """Applying legalisation keeps every branch's corridor identical."""
     d = example_a()
     mesh, wires, rules_t = _wires_for(d)
     pose = np.asarray(d.pose0, dtype=np.float64)
@@ -147,6 +149,110 @@ def test_route_design_still_realizes_example_a() -> None:
         assert b1.edges == b0.edges
         assert b1.tris == b0.tris
         assert b1.layers == b0.layers
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_route_design_corridor_recovery(
+    monkeypatch: pytest.MonkeyPatch, recovers: bool
+) -> None:
+    d = example_a()
+    original = wm.CorridorOverflow(())
+    stale = d.pose0.copy()
+    legalise_poses = [stale]
+    routed_poses: list[np.ndarray] = []
+    calls: list[np.ndarray] = []
+    clean = realise.RoutePlan(pieces=(), vias=(), layers=())
+    copper = object()
+
+    def route_once(
+        design: TopoDesign,
+        ir: object,
+        *,
+        pose: np.ndarray | None,
+        legalise_sink: list[np.ndarray],
+        **kwargs: Any,
+    ) -> tuple[realise.RoutePlan, object]:
+        current = design.pose0 if pose is None else pose
+        calls.append(current)
+        assert len(calls) <= 5, "corridor recovery exceeded four retries"
+        moved = current.copy()
+        moved[0, 0] += 1
+        legalise_sink.append(moved)
+        if len(calls) == 1:
+            raise original
+        if len(calls) == 2:
+            return dataclasses.replace(clean, unreachable=(0,)), copper
+        if recovers:
+            return clean, copper
+        raise wm.CorridorOverflow(())
+
+    monkeypatch.setattr(realise, "_route_design_once", route_once)
+    if recovers:
+        plan, result = realise.route_design(
+            d, object(), legalise_sink=legalise_poses, pose_sink=routed_poses
+        )
+        assert plan is clean and result is copper
+        assert len(calls) == 3
+        assert len(routed_poses) == 1 and routed_poses[0] is calls[-1]
+    else:
+        with pytest.raises(wm.CorridorOverflow) as raised:
+            realise.route_design(
+                d, object(), legalise_sink=legalise_poses, pose_sink=routed_poses
+            )
+        assert raised.value is original
+        assert len(calls) == 5
+        assert not routed_poses
+    assert legalise_poses[0] is stale
+    assert all(pose is legalise_poses[i] for i, pose in enumerate(calls[1:], 1))
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_route_pass_drops_short_risk_placements(
+    monkeypatch: pytest.MonkeyPatch, persistent: bool
+) -> None:
+    d = example_a()
+    pieces = tuple(
+        realise.RoutePiece(net=i, branch=i, layer=0, points=((0, 0), (1, 1)))
+        for i in range(9)
+    )
+    initial = realise.RoutePlan(pieces=pieces, vias=(), layers=(0,) * len(pieces))
+    placed = {(i, 0): (0.25, 0.5) for i in range(len(pieces))}
+    work = SimpleNamespace(
+        d=d,
+        mesh=None,
+        wires=SimpleNamespace(branches=pieces, overflow=()),
+        pose=d.pose0,
+        rules={},
+        via_cur={},
+        placed=placed,
+        reroute=(),
+    )
+    attempts: list[set[tuple[int, int]]] = []
+
+    def offsets(
+        *args: Any, placed: dict[tuple[int, int], object] | None, **kwargs: Any
+    ) -> None:
+        attempts.append(set(placed or ()))
+
+    def guard(*args: Any) -> dict[int, set[int]]:
+        branch = len(attempts) - 1
+        return {branch: {branch}} if persistent or branch == 0 else {}
+
+    monkeypatch.setattr(realise, "_route_head", lambda *a, **kw: work)
+    monkeypatch.setattr(realise, "_spoke_offsets", offsets)
+    monkeypatch.setattr(realise, "plan_route", lambda *a, **kw: initial)
+    monkeypatch.setattr(realise, "_via_need", lambda *a: {})
+    monkeypatch.setattr(realise, "_emit_shapes", lambda plan, *a, **kw: plan)
+    monkeypatch.setattr(realise, "_guarded_branches", guard)
+    monkeypatch.setattr(realise, "_severed_nets", lambda *a: {})
+    monkeypatch.setattr(realise, "realize_result", lambda emit, *a, **kw: emit)
+
+    plan, emitted = realise._route_pass(d, SimpleNamespace(n_layers=2))
+
+    rounds = 8 if persistent else 2
+    assert attempts == [{(i, 0) for i in range(start, 9)} for start in range(rounds)]
+    assert plan.guarded == ((7,) if persistent else ())
+    assert emitted.pieces == (pieces[:7] + pieces[8:] if persistent else pieces)
 
 
 def _covered_edge(d: TopoDesign, mesh, r_ref: float) -> int:

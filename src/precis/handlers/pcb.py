@@ -920,6 +920,11 @@ def _topo_route_center(run: Any, meta: dict[str, Any]) -> list[str]:
         f"{meta.get('unreachable', 0)} unreachable"
     )
     extras = []
+    if meta.get("route_legalise_rounds"):
+        extras.append(
+            f"legalise {meta['route_legalise_rounds']} round(s) "
+            f"+{meta.get('route_legalise_mm', 0)} mm"
+        )
     if meta.get("route_shove_rounds"):
         extras.append(
             f"shove {meta['route_shove_rounds']} round(s) "

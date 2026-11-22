@@ -1034,7 +1034,10 @@ def test_topo_route_legalise_pose_skips_the_failure_push(
     # the LP re-route ran once; the push round was skipped whole
     # (_route_failure_pushes never ran; a post-route shove_pose call
     # would have raised inside the job)
-    assert calls["route"] == 2 and route_meta["route_shove_rounds"] == 1
+    assert calls["route"] == 2 and route_meta["route_legalise_rounds"] == 1
+    assert route_meta["route_legalise_mm"] > 0
+    assert route_meta["route_shove_rounds"] == 0
+    assert route_meta["route_shove_mm"] == 0
     assert calls["pushes"] == 0
     # the legalise pose commits like a kept shove pose (gr541685)
     routed = calls["poses"][1]
@@ -1045,15 +1048,14 @@ def test_topo_route_legalise_pose_skips_the_failure_push(
         assert stored[refdes] == pytest.approx(xy, abs=1e-6)
 
 
-def test_topo_route_legalise_pose_without_improvement_still_pushes(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("legalise_rounds", [1, 3])
+def test_topo_route_legalise_keep_best_then_pushes(
+    store: Store, monkeypatch: pytest.MonkeyPatch, legalise_rounds: int
 ) -> None:
-    """td598637 (round-3 ruling): an LP pose that does NOT improve the
-    failed count leaves the board no better than main — the push round
-    still runs, and it starts from the KEPT plan's pose (``best_pose``,
-    call 1's pose0), not the rejected LP pose. Calls: route1 (fails,
-    emits the LP pose) → route2 at the LP pose (still fails, rejected)
-    → push shove from pose0 → route3 clean."""
+    """Stop on a tie or after three improving rounds with candidates left.
+
+    The fallback starts from the best pose and then commits its own winner.
+    """
     import types
 
     import numpy as np
@@ -1090,7 +1092,7 @@ def test_topo_route_legalise_pose_without_improvement_still_pushes(
         blocked_by=None,
         width_mm=0.2,
     )
-    failing = (_plan(no_via=(0,)), pcb_realize.RealizeResult((), (), ()))
+    empty_copper = pcb_realize.RealizeResult((), (), ())
     later = (_plan(), pcb_realize.RealizeResult((marker,), (), ()))
     sentinel_push = object()
 
@@ -1100,8 +1102,8 @@ def test_topo_route_legalise_pose_without_improvement_still_pushes(
         "routing": False,
         "pushes": 0,
         "shove": [],
-        "pose0": None,
-        "lp_pose": None,
+        "best_pose": None,
+        "best_plan": None,
     }
     dx, dy = 0.5, -0.25
 
@@ -1121,8 +1123,9 @@ def test_topo_route_legalise_pose_without_improvement_still_pushes(
             lp_optimum_mm=1.0,
         )
 
-    def _pushes(*a: Any, **k: Any) -> list[Any]:
+    def _pushes(design: Any, plan: Any, *args: Any) -> list[Any]:
         calls["pushes"] += 1
+        assert plan is calls["best_plan"]
         return [sentinel_push]
 
     def _fake_route(d: Any, ir: Any, **kw: Any) -> Any:
@@ -1137,18 +1140,18 @@ def test_topo_route_legalise_pose_without_improvement_still_pushes(
         )
         if kw.get("pose_sink") is not None:
             kw["pose_sink"].append(pose)
-        if calls["route"] == 1:
-            calls["pose0"] = pose.copy()
+        round_index = calls["route"] - 1
+        if round_index <= legalise_rounds:
             moved = pose.copy()
             moved[:, 0] += dx
-            moved[:, 1] += dy
-            calls["lp_pose"] = moved
             kw["legalise_sink"].append(moved)
-            return failing
-        if calls["route"] == 2:
-            # the LP re-route at the moved pose does NOT improve — the
-            # kept plan stays call 1's at pose0
-            return failing
+            if legalise_rounds == 1 and round_index == 1:
+                return _plan(no_via=(1,)), empty_copper
+            failed = 1 if legalise_rounds == 1 else 4 - round_index
+            plan = _plan(no_via=tuple(range(failed)))
+            calls["best_plan"] = plan
+            calls["best_pose"] = pose.copy()
+            return plan, empty_copper
         return later
 
     monkeypatch.setattr(_tpshove, "shove_pose", _fake_shove)
@@ -1163,19 +1166,18 @@ def test_topo_route_legalise_pose_without_improvement_still_pushes(
     job_id = _latest_job(store, ref.id)
     route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
     assert route_meta is not None and "error" not in route_meta, side.note
-    # initial route + LP re-route + push re-route; the counter sums
-    # both remedy kinds (1 LP round + 1 push round)
-    assert calls["route"] == 3 and route_meta["route_shove_rounds"] == 2
-    # the push round ran exactly once, handed the built pushes
+    assert calls["route"] == legalise_rounds + 2
+    assert route_meta["route_legalise_rounds"] == legalise_rounds
+    assert route_meta["route_shove_rounds"] == 1
     assert calls["pushes"] == 1 and len(calls["shove"]) == 1
     shove_pose_arg, shove_push = calls["shove"][0]
     assert shove_push == [sentinel_push]
-    # and it started from the KEPT plan's pose (pose0), not the
-    # rejected LP pose
-    assert np.allclose(shove_pose_arg, calls["pose0"])
-    assert not np.allclose(shove_pose_arg, calls["lp_pose"])
-    # the shove-won pose commits like any kept route pose (gr541685)
-    routed = calls["poses"][2]
+    np.testing.assert_allclose(shove_pose_arg, calls["best_pose"])
+    assert route_meta["route_legalise_mm"] == legalise_rounds * abs(dx) * len(
+        shove_pose_arg
+    )
+    assert route_meta["route_shove_mm"] == (abs(dx) + abs(dy)) * len(shove_pose_arg)
+    routed = calls["poses"][-1]
     stored = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref.id)["instances"]
     }

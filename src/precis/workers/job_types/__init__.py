@@ -17,6 +17,11 @@ Each job_type module exports:
   wrapper. Plugin job_types ship their own; built-ins keep their
   dispatch logic inside the executor module for now.
 
+``pcb_place`` reports outer LP legalisation re-route attempts separately
+from failure-driven part shoves. The two counters and their translation
+distances describe attempted work, including candidates discarded by
+keep-best. Corridor retries inside a route call have their own progress events.
+
 The runtime registry below imports each built-in type and bundles
 its metadata into a :class:`JobTypeSpec`. Third-party packages can
 register additional job_types via the ``precis.job_types``
