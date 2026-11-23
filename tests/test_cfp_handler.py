@@ -276,6 +276,34 @@ def test_cfp_browse_via_dispatch_extras(
     assert "BadInput" in paper
 
 
+def test_cfp_browse_lists_status_from_saved_dates(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_AGENT_TABLE_FORMAT", "toon")
+    calls = [
+        ("closed", {"deadline": "2000-01-01"}),
+        ("open", {"deadline": "2099-01-01"}),
+        ("upcoming", {"opens_on": "2099-01-01", "deadline": "2099-02-01"}),
+        ("unknown", {"deadline": "2000-02-30"}),
+    ]
+    refs = [
+        store.insert_ref(
+            kind="cfp", slug=f"{status}-call", title=f"Call {index}", meta=meta
+        )
+        for index, (status, meta) in enumerate(calls)
+    ]
+    h = CfpHandler(hub=Hub(store=store))
+    for sort in ("deadline", "opens_on", "recency"):
+        lines = h.search(sort=sort).body.splitlines()
+        for index, ((status, _), ref) in enumerate(zip(calls, refs, strict=True)):
+            rows = [
+                line.split("\t") for line in lines if line.startswith(f"cf{ref.id}\t")
+            ]
+            assert len(rows) == 1
+            assert rows[0][2:4] == [status, f"Call {index}"]
+            assert "deadline" in rows[0][1]
+
+
 def _tool_body(out: Any) -> str:
     """The text of an MCP tool result (a bare string, or a
     ``CallToolResult`` once a deprecation note is appended)."""

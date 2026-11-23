@@ -373,6 +373,10 @@ _CROSS_KIND_COST_PRIOR_S: dict[str, float] = {
 
 
 def _cross_kind_prior(kind: str, query: str) -> float:
+    if kind == "cfp" and re.search(
+        r"\b(?:cfps?|open calls?|calls? for proposals?)\b", query, re.I
+    ):
+        return 1.0
     domain = _CROSS_KIND_DOMAIN_PRIORS.get(kind)
     if domain is not None:
         return 1.0 if re.search(rf"\b(?:{domain})\b", query, re.I) else 0.15
@@ -2974,11 +2978,9 @@ class SearchMixin(RuntimeShape):
         for k in kinds:
             hits_or_exc = fanned.get(k)
             if hits_or_exc is None:
-                per_kind_counts.append((k, 0))
                 continue
             if isinstance(hits_or_exc, Exception):
                 errored[k] = hits_or_exc
-                per_kind_counts.append((k, 0))
                 continue
             hits = hits_or_exc
             # Defensive post-filter: handler search_hits
@@ -3111,7 +3113,7 @@ class SearchMixin(RuntimeShape):
         # ``search(kind='paper,memory', q='...')`` that surfaces only
         # paper hits looks identical to a single-kind paper call —
         # the agent has no way to know memory was searched and empty.
-        if len(per_kind_counts) >= 2:
+        if per_kind_counts and len(kinds) >= 2:
             breakdown = ", ".join(f"{k}: {n}" for k, n in per_kind_counts)
             lines = response.body.splitlines()
             if lines:
@@ -3673,6 +3675,12 @@ class SearchMixin(RuntimeShape):
         def run(
             handler: Handler, k: str, deadline_at: float, cap: float
         ) -> list[SearchHit] | Exception:
+            if (
+                tiered
+                and lexical_fallback is not None
+                and k not in _CROSS_KIND_PRIORITY
+            ):
+                deadline_at = min(deadline_at, time.monotonic() + cap)
             # A worker must not share a pinned (atomic-scope) connection.
             _PINNED.set(None)
             # … and its pool checkouts may not outwait the call deadline:
@@ -3683,7 +3691,7 @@ class SearchMixin(RuntimeShape):
             remaining_ms = int((deadline_at - time.monotonic()) * 1000)
             min_start = min(
                 CROSS_KIND_MIN_START_MS,
-                int((cap if tiered else CROSS_KIND_DEADLINE_S) * 100),
+                int(cap * 750 if tiered else CROSS_KIND_DEADLINE_S * 100),
             )
             kw = (
                 {**base_kwargs, **kind_overrides[k]}
@@ -3694,10 +3702,11 @@ class SearchMixin(RuntimeShape):
             if remaining_ms < min_start:
                 lexical_floor = min(
                     CROSS_KIND_LEXICAL_MIN_START_MS,
-                    int((cap if tiered else CROSS_KIND_DEADLINE_S) * 100),
+                    int(cap * 250 if tiered else CROSS_KIND_DEADLINE_S * 100),
                 )
                 if (
                     lexical_fallback is not None
+                    and "mode" not in base_kwargs
                     and mode in ("", "hybrid")
                     and remaining_ms >= lexical_floor
                 ):
@@ -3711,7 +3720,7 @@ class SearchMixin(RuntimeShape):
                     mode = "lexical"
                     lexical_fallback.add(k)
                 elif not (mode == "lexical" and remaining_ms >= lexical_floor):
-                    return TimeoutError(
+                    return KindSearchDeadlineMissed(
                         f"fan-out deadline left {remaining_ms}ms — too late to start"
                     )
                 # An already-lexical kind needs no degrade — the smaller
@@ -3722,7 +3731,7 @@ class SearchMixin(RuntimeShape):
                 and mode in ("", "hybrid")
             )
             attempt_deadline = deadline_at
-            retry_s = CROSS_KIND_LEXICAL_MIN_START_MS / 1000
+            retry_s = min(CROSS_KIND_LEXICAL_MIN_START_MS / 1000, cap / 4)
             if tiered and can_retry:
                 attempt_deadline = max(
                     time.monotonic() + 0.001, deadline_at - 1.25 * retry_s
@@ -3788,7 +3797,13 @@ class SearchMixin(RuntimeShape):
         for k, handler in jobs:
             priority = tiered and k in _CROSS_KIND_PRIORITY
             cap = CROSS_KIND_PRIORITY_S if priority else CROSS_KIND_PER_KIND_S
-            end = min(deadline_at, submitted_at + cap) if tiered else deadline_at
+            # A wildcard's best-effort workers can drain more than one
+            # wave within the existing priority window. Each running
+            # kind still gets only its own cap.
+            window = (
+                max(cap, CROSS_KIND_PRIORITY_S) if lexical_fallback is not None else cap
+            )
+            end = min(deadline_at, submitted_at + window) if tiered else deadline_at
             executor = _cross_kind_priority_pool if priority else pool
             futures[k] = executor.submit(
                 contextvars.copy_context().run, run, handler, k, end, cap

@@ -28,9 +28,10 @@ declared, not duplicated:
 * Typed call dates — ``meta.deadline`` / ``meta.opens_on`` (ISO
   ``YYYY-MM-DD``, set via ``edit(args=…)``) and ``meta.source_url``
   (the page ``workers/cfp_watch.py`` re-checks). A queryless
-  ``search`` browses the corpus deadline-sorted.
+  ``search`` browses the corpus deadline-sorted and derives each call's
+  status from its saved dates and the current UTC day.
 
-Everything else (``get`` overview + chunk rendering, ``search`` /
+Everything else (``get`` overview + chunk rendering, passage ``search`` /
 ``search_hits``, ``edit`` metadata repair, ``tag`` / ``link``) is the
 paper machinery verbatim, parameterised on ``self.spec.kind`` so it
 addresses the ``cfp`` corpus.
@@ -42,10 +43,11 @@ The inverse of the proposal-project ``has-requirement`` link
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.errors import BadInput
+from precis.format import render_agent_table
 from precis.handlers.paper import PaperHandler
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
@@ -53,12 +55,23 @@ from precis.utils import handle_registry
 from precis.utils.idem import idem_lock_key
 from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.match_all import fold_match_all_q
+from precis.utils.title_views import title_md
 from precis.utils.url import slug_from_url
 
 if TYPE_CHECKING:
     from precis.store import Ref
 
 _PUT_EXAMPLE = "put(kind='cfp', args={'url': 'https://example.org/call'})"
+
+
+def _call_date(raw: Any) -> date | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        day = date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return day if day.isoformat() == raw else None
 
 
 def _source_url(raw: Any, *, next: str) -> str:
@@ -281,11 +294,7 @@ class CfpHandler(PaperHandler):
                 labels.append(f"{key} cleared")
                 continue
             day = str(raw).strip()
-            try:
-                parsed = date.fromisoformat(day)
-            except ValueError:
-                parsed = None
-            if parsed is None or parsed.isoformat() != day:
+            if _call_date(day) is None:
                 raise BadInput(
                     f"{key} must be an ISO date (YYYY-MM-DD), got {raw!r}",
                     next=f"edit(kind='cfp', id=<slug|id>, "
@@ -382,6 +391,34 @@ class CfpHandler(PaperHandler):
             # the forward the browse would widen past the named cohort.
             ids=kw.get("ids"),
         )
+
+    def _render_browse_rows(self, refs: list[Ref], date_key: str | None) -> str:
+        today = datetime.now(UTC).date()
+        rows = []
+        for ref in refs:
+            meta = ref.meta or {}
+            deadline = _call_date(meta.get("deadline"))
+            opens_on = _call_date(meta.get("opens_on"))
+            if deadline is not None and deadline < today:
+                status = "closed"
+            elif opens_on is not None and opens_on > today:
+                status = "upcoming"
+            elif deadline is not None:
+                status = "open"
+            else:
+                status = "unknown"
+            row = {
+                "handle": handle_registry.format_handle("cfp", ref.id),
+                "deadline": f"deadline {deadline}" if deadline else "(no deadline)",
+                "status": status,
+                "title": title_md(ref.title) or "(untitled)",
+            }
+            if date_key == "opens_on":
+                row["opens_on"] = (
+                    f"opens_on {opens_on}" if opens_on else "(no opens_on)"
+                )
+            rows.append(row)
+        return render_agent_table(rows, schema=list(rows[0]))
 
 
 __all__ = ["CfpHandler"]

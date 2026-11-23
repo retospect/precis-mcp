@@ -8,6 +8,7 @@ answers:
   - what does the planner do automatically on each proposal tick?
   - why is a cfp its own kind instead of just a paper?
   - how do I add a call that is a web page, with no PDF to ingest?
+  - which calls for proposals are still open, and when are their deadlines?
 applies-to: kind='cfp' (get/search/put), kind='draft' (put/edit get view='wordcount'), kind='todo' (meta.llm_tier project), link rel='has-requirement'
 tags: workflow, drafting
 kinds: cfp, draft, todo
@@ -118,10 +119,17 @@ Set the call's dates as typed fields, not tags:
 `edit(kind='cfp', id='<slug>', args={'deadline': '2026-11-15',
 'opens_on': '2026-08-01'})` — ISO `YYYY-MM-DD`, a bad value is refused,
 an empty string clears. They show on `get(kind='cfp', id='<slug>')`.
-`search(kind='cfp')` browses all calls deadline-sorted (undated last);
-`args={'sort': 'opens_on'|'recency'}` picks another order; `sort=` is
-browse-only (with `q=` the hits rank by relevance). No `due:` tag — a
-tag is free text and cannot sort by date.
+
+Use `search(kind='cfp', page_size=25)` to see one row per call, with
+its handle, title, deadline and status. The listing sorts by deadline
+with undated calls last. Status uses the current UTC date. A past
+deadline is **closed**. A future opening date is **upcoming**. A call
+with a deadline today or later and no future opening date is **open**.
+With no valid deadline or future opening date, its status is **unknown**.
+These statuses reflect the saved dates. Open a row with `get(id='cf3')`.
+
+Use `args={'sort': 'opens_on'}` or `args={'sort': 'recency'}` to change
+the browse order. Use `q=` to search passages within calls by relevance.
 
 ## Watching a call for changes
 

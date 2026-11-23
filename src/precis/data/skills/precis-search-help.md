@@ -316,8 +316,9 @@ modestly — the chase-tree finding underneath a hub never appears on
 its own, only the hub itself.
 
 The fan-out runs in two tiers: `finding`, `memory`, `todo`, `gripe`,
-`quest` and `paper` are priority kinds — each holds a 5 s budget the
-merge waits on; every other kind is best-effort at 2 s. Omissions are
+`quest` and `paper` are priority kinds with a 5 s budget and reserved
+workers. Other wildcard kinds get up to 2 s once started, within the
+same 5 s window. Per-kind counts cover completed searches. Omissions are
 never silent — the result header names each one: `dropped at deadline,
 omitted from this merge:` a kind that missed its budget, `⚠ errored,
 omitted from this merge:` a kind that failed, `semantic leg skipped for

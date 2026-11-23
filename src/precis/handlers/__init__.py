@@ -32,6 +32,8 @@ Structure edit previews share relax validation with apply so invalid requests
 never appear eligible for dispatch. Preview TOCs omit saved relax fields
 because those fields describe the stored coordinates.
 Abstract checks never queue paper ingest.
+Queryless CFP search derives status from saved dates at read time so a call
+closes on schedule without a metadata write.
 An unheld DOI lookup offers acquisition without minting. A viewless get
 can opt into the capped queue with ``queue='bounded'`` or bypass the daily
 cap with ``queue='explicit'``. Batch passage searches keep their mint limit.

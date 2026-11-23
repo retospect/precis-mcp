@@ -353,8 +353,8 @@ Pareto, slab and pathway renders as MCP images in caption order
 (`src/precis/quest/synthesis.py::render_synthesis`).
 
 Cross-kind search reserves worker capacity for finding, memory, todo, gripe,
-quest and paper. The priority kinds have five seconds to answer and the
-best-effort kinds have two. The result header identifies missed deadlines,
+quest and paper. Within the five-second wildcard window, best-effort kinds
+have up to two seconds from worker start. The result header identifies missed deadlines,
 errors and skipped semantic legs. The release database post-check tracks the
 draft and quest partial HNSW indexes — revived from the gr575086 drop
 (gr698809: their zero-scan window was the fan-out skipping their ANN legs,

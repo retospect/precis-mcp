@@ -30,6 +30,9 @@ aliases the kind-wide metadata key inventory.
 Licensed live responses opt out of pagination caching while retaining the
 frame limit. The tool ledger already stores only call metadata, not content.
 
+Wildcard best-effort searches share the priority harvest window so queueing
+behind slow kinds does not consume the entire per-kind execution budget.
+
 Labelled memory search batches expand before shared subtree filters resolve.
 Each child uses ordinary dispatch and keeps its own ranking and error envelope;
 shared tags are ANDed with item tags so a batch cannot drop its SPACE scope.

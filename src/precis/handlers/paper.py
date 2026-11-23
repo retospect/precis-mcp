@@ -12710,19 +12710,7 @@ class PaperHandler(Handler):
             f"# {len(refs)} {kind}{'s' if len(refs) != 1 else ''}"
             f"{tag_scope}{sort_scope}{suffix}"
         ]
-        table_rows = []
-        for r in refs:
-            year = (r.meta or {}).get("year") or ""
-            preview = _excerpt(title_md(r.title), limit=80)
-            if date_key:
-                day = (r.meta or {}).get(date_key)
-                when = f"{date_key} {day}" if day else f"(no {date_key})"
-            else:
-                when = f"({year})" if year else ""
-            table_rows.append({"handle": _pa(r), "when": when, "preview": preview})
-        lines.append(
-            render_agent_table(table_rows, schema=["handle", "when", "preview"])
-        )
+        lines.append(self._render_browse_rows(refs, date_key))
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
         # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
@@ -12731,22 +12719,46 @@ class PaperHandler(Handler):
         # 100-row search cap (tools/core.py refuses above it), and at the
         # cap itself nothing is offered.
         if offset + len(refs) < total and page_size < 100:
-            ids_arg = f", args={{'ids': {ids!r}}}" if ids is not None else ""
+            browse_args: dict[str, Any] = {}
+            if ids is not None:
+                browse_args["ids"] = ids
+            if sort is not None:
+                browse_args["sort"] = sort
+            extras = f", args={browse_args!r}" if browse_args else ""
             next_ops.append(
                 (
                     f"search(kind='{kind}', tags={normalized_tags!r}, "
-                    f"page_size={min(100, page_size * 2)}{ids_arg})",
+                    f"page_size={min(100, page_size * 2)}{extras})",
                     "see more entries (raise page_size)",
                 )
             )
         next_ops.append(
             (
                 f"get(id='{_pa(refs[0])}')",
-                "open one paper from the list (paste any handle above)",
+                f"open one {kind} from the list (paste any handle above)",
             )
         )
         body += render_next_section(next_ops)
         return Response(body=body)
+
+    def _render_browse_rows(self, refs: list[Ref], date_key: str | None) -> str:
+        rows = []
+        for ref in refs:
+            meta = ref.meta or {}
+            if date_key:
+                day = meta.get(date_key)
+                when = f"{date_key} {day}" if day else f"(no {date_key})"
+            else:
+                year = meta.get("year")
+                when = f"({year})" if year else ""
+            rows.append(
+                {
+                    "handle": _pa(ref),
+                    "when": when,
+                    "preview": _excerpt(title_md(ref.title), limit=80),
+                }
+            )
+        return render_agent_table(rows, schema=["handle", "when", "preview"])
 
 
 # ---------------------------------------------------------------------------

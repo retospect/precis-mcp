@@ -382,11 +382,8 @@ def test_dispatch_merges_and_names_dropped_kinds(
     that cannot fit its tier budget is dropped at deadline and named in
     the header — never read as zero matches — while the kinds that
     answered inside their budget keep their hits in the merge. (The
-    gr664954 lexical-salvage floor survives for non-tiered fan-outs:
-    ``test_starved_kind_runs_lexical_instead_of_timing_out``; under
-    per-kind caps a kind either starts with enough budget for its full
-    legs or is dropped — the floor window between the two bounds is
-    empty by construction.)"""
+    shorter per-kind execution cap still applies inside the shared
+    window.)"""
     rt = runtime_with_store
     store = rt.hub.store
     assert store is not None
@@ -403,7 +400,7 @@ def test_dispatch_merges_and_names_dropped_kinds(
 
     def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
         if kind == "web":
-            released.wait(2)  # blows the 0.2 s best-effort budget
+            released.wait(2)  # exceeds the 0.2 s execution cap
             return []
         if kind == "agentlog":
             return [
@@ -428,6 +425,43 @@ def test_dispatch_merges_and_names_dropped_kinds(
     dropped = [line for line in out.body.splitlines() if "dropped at deadline" in line]
     assert dropped and "web" in dropped[0]
     assert "errored, omitted" not in out.body  # a miss is not an error
+    counts = next(line for line in out.body.splitlines() if "(per kind:" in line)
+    assert "agentlog: 1" in counts
+    assert "web:" not in counts
+
+
+def test_wildcard_best_effort_kind_can_start_after_first_wave(
+    runtime_stateless: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = runtime_stateless
+    clock = _frozen_clock(monkeypatch)
+    hit = SearchHit(
+        score=0.9,
+        kind="skill",
+        title="Call deadlines",
+        preview="p",
+        ref_id=None,
+        slug=None,
+    )
+
+    def fake(kind: str) -> list[SearchHit]:
+        if kind == "anki":
+            clock["t"] += 2.1
+            return []
+        return [hit]
+
+    monkeypatch.setattr(rt.hub, "handler_for", lambda kind: SimpleNamespace())
+    _patch_invoke(monkeypatch, rt, fake)
+    with _fresh_cost_memory(), ThreadPoolExecutor(max_workers=1) as pool:
+        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: pool)
+        monkeypatch.setitem(search_mod._cross_kind_costs, "anki", 0.0)
+        monkeypatch.setitem(search_mod._cross_kind_costs, "skill", 1.0)
+        out = rt._cross_kind_fan_out(
+            ["anki", "skill"], {"q": "open calls"}, lexical_fallback=set(), tiered=True
+        )
+
+    assert isinstance(out["anki"], search_mod.KindSearchDeadlineMissed)
+    assert out["skill"] == [hit]
 
 
 def _stub_cancelled_fan_out(
