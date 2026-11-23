@@ -89,6 +89,12 @@ the trigger). Live and superseded rows move together so the merge guard
 counts zero. Reviews on the moved rows refuse the run — the measure sha
 covers ``measurand_ref_id``, a re-point stales them.
 
+**Writer correction (gr727770).** The measure freeze trigger permits a transaction-local writer correction
+for gr727770. It admits only the stale-to-actual model pair on the affected
+UTC day and preserves every other column. The operator supplies verified
+measure IDs because rows lack client provenance. The runner locks the review
+ledger during apply because changing the model would stale SHA-pinned reviews.
+
 **Legacy taxa.** A taxon seeded from a legacy registry (``meta.legacy_source``)
 has a ``measure_unit_compat`` row: the unit the registry kept (``legacy_unit``),
 its SI unit and the linear map. A ``reported_unit`` equal to the legacy unit

@@ -308,9 +308,15 @@ points at the old one (`supersedes`); the old row stays as history and drops out
 of live reads. The replacement must state the same number under the same
 conditions: same subject, subject label, measurand, direction and condition
 set — a row measured under different conditions is a new run, not a
-replacement. Only `trusted`, the first `superseded_by` /
-`superseded_at` pair and `extraction_status` set to `human_checked` ever change
-on a stored row. `meta.extra_anchors` is written when the row is written.
+replacement. The measure API allows changes to `trusted`, the first
+`superseded_by` / `superseded_at` pair and `extraction_status` set to
+`human_checked`. `meta.extra_anchors` is written when the row is written.
+
+The database has an operator-only exception for gr727770. With the
+transaction-local `precis.allow_writer_relabel` flag, `model` may change
+from `gpt-6-astra` to `gpt-6.2-astra` on rows created on 2026-11-18 UTC.
+The repair script requires verified measure IDs and refuses to invalidate a
+review pinned to the current measure SHA.
 
 A measurand's canonical unit, dimension kind and SI vector cannot be changed
 while it has live measures. Measures are never deleted, and a ref with measures
