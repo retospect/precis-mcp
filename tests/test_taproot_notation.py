@@ -527,7 +527,14 @@ def test_range_unit_repeated_does_not_fire_on_orbital_label() -> None:
         assert "range-unit-repeated" not in codes
 
 
-def test_range_unit_repeated_still_fires_on_spaced_seconds() -> None:
+@pytest.mark.parametrize("span", ["1930s-1950s", "1930s–1950s", "1890s – 1910s"])
+def test_range_unit_repeated_preserves_decade_span(span: str) -> None:
+    sentence = f"The paper surveys {span} switching theory."
+    assert lint_notation(sentence) == []
+    assert normalize_notation(sentence) == (sentence, [])
+
+
+def test_range_unit_repeated_still_fires_on_seconds() -> None:
     # The orbital-label guard must not shield a real unit duplication:
     # canonically spaced seconds, and a multi-digit unspaced value (the
     # guard anchors to a single digit -- principal quantum numbers run 1-7),
@@ -536,6 +543,8 @@ def test_range_unit_repeated_still_fires_on_spaced_seconds() -> None:
         "The pulse lasts 9 s-12 s in the control run.",
         "The pulse lasts 12s-15s in the control run.",
         "The pulse lasts 4s–5s in the control run.",
+        "The run lasts 1930 s–1950 s in the control run.",
+        "The run lasts 1931s–1950s in the control run.",
     ):
         assert any("range-unit-repeated" in w for w in lint_notation(sentence)), (
             sentence
@@ -552,6 +561,7 @@ def test_range_unit_repeated_still_fires_on_orbital_like_units() -> None:
         "The jitter budget is 2ps–3ps across channels.",
         "The gate holds 4ds–5ds before release.",
         "Rates rose from 4s⁻¹-9s⁻¹ during the ramp.",
+        "Rates rose from 1930s⁻¹–1950s⁻¹ during the ramp.",
         "The sweep ran 4dB-5dB above threshold.",
     ):
         assert any("range-unit-repeated" in w for w in lint_notation(sentence)), (

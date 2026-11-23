@@ -669,9 +669,13 @@ _ASCII_X_MULT_RE = re.compile(r"(?<!(?i:slice) )\b(\d+)x\b(?!\s+(?i:board))")
 #: between the value and the letter already rules out an orbital label.
 #: The second label must repeat the first verbatim (`4s–4s`); two
 #: different labels (`4s–5s`) are a genuine seconds range and still fire.
+#: Two four-digit decade labels (`1930s–1950s`, gr779327) also keep both
+#: suffixes. Require both values to end in zero and touch a bare `s`,
+#: so spaced seconds and longer unit symbols still match.
 _RANGE_UNIT_REPEATED_RE = re.compile(
     r"(?<![-\w.])"
     r"(?!(?P<orb>\d[spdf][¹²³⁴⁵⁶⁷⁸⁹⁰]*)\s?[–-]\s?(?P=orb)(?!\w))"
+    r"(?![1-9][0-9]{2}0s\s?[–-]\s?[1-9][0-9]{2}0s(?![\w°%⁻/]))"
     r"(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
