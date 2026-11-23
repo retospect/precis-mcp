@@ -45,6 +45,12 @@ JSON `scripts/fleet`'s `wait_mcp` installs. It never edits
 A RUNNING session does not reload user-scope MCP config: a re-added
 entry takes effect at that session's next start, never mid-session.
 
+For Kimi Code, run `scripts/kimi-setup` to sync the user MCP entry,
+then start a fresh session through `scripts/kimi-tree`. The setup
+translates Claude's bearer environment reference to Kimi's
+`bearerTokenEnvVar`, and the launcher reads the same client token file.
+In the new session, `/mcp` shows the connection and tool discovery status.
+
 ## Restart a session — check before you kill it
 
 Sessions hold state a restart destroys. Before restarting any session

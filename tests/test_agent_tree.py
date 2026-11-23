@@ -166,14 +166,14 @@ exit 0
 """
 
 FAKE_KIMI = """#!/usr/bin/env bash
+[[ ${PRECIS_MCP_TOKEN:-} == fixture-client-token ]] || exit 42
 printf '%s\\n' "$*" >> "$KIMI_LOG"
 """
 
 
 def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
     """Env for a kimi-tree launch: fake bins first on PATH, kimi-setup's
-    writes aimed at throwaway paths (a precis entry with a bearer env var,
-    so no secrets file is touched)."""
+    writes and token lookup aimed at throwaway paths."""
     repo = tmp_path / "fakerepo"
     (repo / ".git").mkdir(parents=True)
     (repo / ".claude" / "worktrees").mkdir(parents=True)
@@ -185,7 +185,7 @@ def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
                 "mcpServers": {
                     "precis": {
                         "url": "https://mcp.invalid",
-                        "bearerTokenEnvVar": "PRECIS_MCP_TOKEN",
+                        "headers": {"Authorization": "Bearer ${PRECIS_MCP_TOKEN}"},
                     }
                 }
             }
@@ -201,6 +201,11 @@ def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
         f.chmod(0o755)
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
+    env.pop("PRECIS_MCP_TOKEN", None)
+    token_path = tmp_path / "client-token"
+    token_path.touch(mode=0o600)
+    token_path.write_text("fixture-client-token\n", encoding="utf-8")
+    env["PRECIS_MCP_TOKEN_FILE"] = str(token_path)
     env["PATH"] = f"{bins}:{env['PATH']}"
     env["FAKE_ROOT"] = str(repo)
     env["FAKE_WT"] = str(repo / ".claude" / "worktrees" / "k-fake")

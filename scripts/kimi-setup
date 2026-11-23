@@ -4,14 +4,13 @@
     scripts/kimi-setup            write ~/.kimi-code/{mcp.json,config.toml}
     scripts/kimi-setup --check    report drift only; exit 1 when stale
 
-Idempotent; scripts/kimi-tree runs it before every launch, so a rotated
-precis token reaches Kimi the next time a tree starts.
+Idempotent. scripts/kimi-tree checks for drift before launch and loads
+the client token into the new session's environment.
 
 - mcp.json: the `precis` server, copied from the user-scope entry in
-  ~/.claude.json (same URL; a `Bearer` Authorization header is converted —
-  the token is written to ~/.secrets/pw/PRECIS_MCP_TOKEN, mode 600, and
-  the entry carries `bearerTokenEnvVar` instead, so no credential sits in
-  mcp.json itself). Other servers are left alone.
+  ~/.claude.json (same URL). A `Bearer ${VAR}` header becomes Kimi's
+  `bearerTokenEnvVar` reference. A legacy literal bearer goes to
+  ~/.secrets/pw/PRECIS_MCP_TOKEN, mode 600. Other servers are left alone.
 - config.toml: merged structurally (tomlkit), never by comment markers —
   Kimi re-serializes the file on its own saves and drops comments, so
   marker-delimited blocks were lost and re-appended as duplicate keys.
@@ -213,19 +212,20 @@ def precis_entry() -> dict:
         )
     entry = {"url": src["url"]}
     bearer_env = src.get("bearerTokenEnvVar")
-    auth = (src.get("headers") or {}).get("Authorization", "")
+    headers = dict(src.get("headers") or {})
+    auth = headers.get("Authorization", "")
+    env_ref = re.fullmatch(r"Bearer \$\{([a-zA-Z_][a-zA-Z_0-9]*)\}", auth)
     if bearer_env:
         entry["bearerTokenEnvVar"] = bearer_env
+    elif env_ref:
+        entry["bearerTokenEnvVar"] = env_ref.group(1)
     elif auth.startswith("Bearer "):
-        # Secret-clean output: the token moves to the user's secrets
-        # file and the entry references it by env var — the same
-        # Authorization header on the wire, nothing credentialled in
-        # mcp.json itself (kimi-setup rewrites it on every tree launch,
-        # so an inline token would live forever on disk).
         _secrets_token(auth.removeprefix("Bearer ").strip())
         entry["bearerTokenEnvVar"] = "PRECIS_MCP_TOKEN"
-    elif src.get("headers"):
-        entry["headers"] = src["headers"]
+    if "bearerTokenEnvVar" in entry:
+        headers.pop("Authorization", None)
+    if headers:
+        entry["headers"] = headers
     return entry
 
 

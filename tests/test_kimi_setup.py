@@ -25,13 +25,17 @@ MANAGED = "scripts/hooks/kimi-"
 REASON = "mirrors the Claude Code allow list"
 
 
-def run_setup(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[str]:
+def run_setup(
+    tmp_path: Path, *argv: str, entry: dict[str, object] | None = None
+) -> subprocess.CompletedProcess[str]:
     claude_json = tmp_path / "claude.json"
     claude_json.write_text(
         json.dumps(
             {
                 "mcpServers": {
-                    "precis": {
+                    "precis": entry
+                    if entry is not None
+                    else {
                         "url": "https://mcp.invalid",
                         "bearerTokenEnvVar": "PRECIS_MCP_TOKEN",
                     }
@@ -46,6 +50,7 @@ def run_setup(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
     )
     env = os.environ.copy()
+    env["HOME"] = str(tmp_path / "home")
     env["KIMI_CODE_HOME"] = str(tmp_path / "kimi-home")
     env["CLAUDE_JSON"] = str(claude_json)
     env["CLAUDE_SETTINGS"] = str(settings)
@@ -135,3 +140,29 @@ def test_repairs_legacy_half_marked_file(tmp_path: Path) -> None:
     data = assert_single_managed(config(tmp_path).read_text(encoding="utf-8"))
     assert data["default_permission_mode"] == "ask"
     assert {"event": "Stop", "command": "echo bye"} in data["hooks"]
+
+
+def test_translates_claude_bearer_reference_without_writing_token(
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "home" / ".secrets" / "pw" / "PRECIS_MCP_TOKEN"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("fixture-client-token\n", encoding="utf-8")
+    entry: dict[str, object] = {
+        "url": "https://mcp.invalid",
+        "headers": {
+            "Authorization": "Bearer ${PRECIS_MCP_TOKEN}",
+            "X-Fixture": "keep",
+        },
+    }
+    for argv in [("--check",), ()]:
+        proc = run_setup(tmp_path, *argv, entry=entry)
+        assert proc.returncode == int(bool(argv)), proc.stderr
+        assert token_path.read_text(encoding="utf-8") == "fixture-client-token\n"
+
+    mcp_path = tmp_path / "kimi-home" / "mcp.json"
+    assert json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]["precis"] == {
+        "url": "https://mcp.invalid",
+        "bearerTokenEnvVar": "PRECIS_MCP_TOKEN",
+        "headers": {"X-Fixture": "keep"},
+    }

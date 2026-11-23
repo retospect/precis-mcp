@@ -87,7 +87,9 @@ if [[ ${1:-} == --exec ]]; then
 		echo "kimi-tree: leaving a shell in $tree so this window stays open." >&2
 		exec "${SHELL:-/bin/bash}"
 	fi
-	exec "$kimi_bin" "$@"
+	# Kimi reads bearerTokenEnvVar from its own environment. Load the
+	# client token here, where both direct and tmux launches converge.
+	exec "$at_here/mcp-token-env" "$kimi_bin" "$@"
 fi
 
 usage() { sed -n '4,6p' "$0" | sed 's/^# *//' >&2; exit 2; }
