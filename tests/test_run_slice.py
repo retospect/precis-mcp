@@ -506,6 +506,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             # the verdict-hold's restore (gr681208) also reads the
             # ``refs/remotes/origin/`` tracking tip.
             return _proc(calls.get("tips", {}).get(args[1], ""))
+        landed_commit = calls.get("landed_commit")
+        if landed_commit is not None:
+            short_sha, full_sha = landed_commit
+            if args == ["rev-parse", f"{short_sha}^{{commit}}"]:
+                return _proc(full_sha)
         if args == ["symbolic-ref", "-q", "HEAD"]:
             head_ref = calls.get("head_ref", "")
             return _proc(head_ref, rc=0 if head_ref else 1)
@@ -3278,12 +3283,13 @@ def test_submit_runs_a_reviewer_on_a_lane_without_mcp(
         codex,
     )
     store = _Store()
+    landed_sha = "abc1234def"
     store.add_todo(
         7,
         "Build the fix for gr1",
         body="Fix the widget leak in a.py.",
         status="done",
-        comments=("handoff: committed the fix with its test", "landed: abc1234def"),
+        comments=("handoff: committed the fix with its test", f"landed: {landed_sha}"),
     )
     store.add_todo(
         42,
@@ -3291,6 +3297,10 @@ def test_submit_runs_a_reviewer_on_a_lane_without_mcp(
         body="Review td7.",
         meta={"generate": {"role": "reviewer", "from": "td7"}, "task_class": "review"},
     )
+    # The landed-squash readability gate (td770732) expands the sha the
+    # `landed:` comment names in the reviewer clone; give the seam the full
+    # hex so the squash reads as held.
+    seams["landed_commit"] = (landed_sha, landed_sha + "0" * 30)
     ctx, handle = _submit(store, seams)
     assert handle is not None and ctx.meta_set["lane"] == "codex"
     tree = _job_tree(tmp_path, 42)
