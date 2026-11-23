@@ -167,6 +167,24 @@ def test_memory_review_requires_explicit_opt_in() -> None:
         assert detector not in cand.detectors_for(("all", "memory"))
 
 
+def test_memory_change_selects_only_event_driven_review_detectors() -> None:
+    from precis.workers.job_types.graph_garden import PARAMS_SCHEMA
+
+    single, multiple = PARAMS_SCHEMA["properties"]["pass"]["anyOf"]
+    assert "memory-change" in single["enum"]
+    assert "memory-change" in multiple["items"]["enum"]
+    change = ["entity_claim_stale", "source_drift"]
+    assert cand.detectors_for(("memory-change",)) == change
+
+    recurring = ("merge", "relink", "paper-identity", "memory")
+    assert cand.detectors_for((*recurring, "memory-change")) == sorted(
+        cand.detectors_for(recurring) + change
+    )
+    assert cand.detectors_for(("memory-review", "memory-change")) == cand.detectors_for(
+        ("memory-review",)
+    )
+
+
 @pytest.mark.parametrize("limit", [1, 50])
 def test_review_due_priority_does_not_skip_lower_ids(store: Store, limit: int) -> None:
     aged = _memory(store, age_days=40)

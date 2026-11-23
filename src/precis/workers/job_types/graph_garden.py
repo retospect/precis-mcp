@@ -62,6 +62,7 @@ _PASS_CHOICES = (
     "siblings",
     "paper-identity",
     "memory",
+    "memory-change",
     "memory-review",
     "memory-grounding",
     "host-facts",
@@ -71,8 +72,8 @@ _PASS_CHOICES = (
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        # Which detectors run this tick. "all" (default) runs every
-        # pass; a single pass name runs just that slice.
+        # "all" (default) skips opt-in passes. A name or list of names
+        # selects the union of the corresponding detectors.
         "pass": {
             "anyOf": [
                 {"type": "string", "enum": list(_PASS_CHOICES)},

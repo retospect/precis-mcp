@@ -204,7 +204,9 @@ cohort (`workers/halt_policy.py`, `workers/halt_recovery.py`).
 Memory capture (`precis-make-memory`) and graph-gardener judgments share the
 packaged memory-help reconciliation policy. The interactive agent resolves new
 claims before writing; the gardener evaluates existing maintenance candidates
-through its reviewed apply paths. The opt-in gardener grounding pass records
+through its reviewed apply paths. The `memory-change` pass selects the two
+recorded-change detectors independently of the full `memory-review` pass
+(`graph/garden/candidates.py`). The opt-in gardener grounding pass records
 claim classifications, evidence judgments and premise lineage in SHA-pinned
 review rows (target, cited sources, consulted passages and premise
 judgments) outside the apply queue. The pass

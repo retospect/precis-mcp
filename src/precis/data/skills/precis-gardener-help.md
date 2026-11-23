@@ -66,11 +66,13 @@ run ids) for a judge to verify.
   thread shape, anchor rot and more). Null replacement text needs
   evaluation; it is never a deletion instruction. Detail:
   [[precis-gardener-memory-help]].
-- **memory-review** — proposal-only read-only checks on live memory bodies:
-  review debt (`review_due`), title shape (`title_shape`), undated absence
-  claims (`negative_undated`) and notation-canon violations (`notation` —
-  one anchored fix per memory per pass, skipping quoted spans, code and
-  math). Detail: [[precis-gardener-memory-help]].
+- **memory-change** — selects `source_drift` and `entity_claim_stale` for
+  the recurring gardener after a consumer-off trial. The existing `memory`
+  pass covers `anchor_rot`.
+- **memory-review** — opt-in, proposal-only checks on live memory bodies.
+  Its remaining detectors (`review_due`, `title_shape`, `negative_undated`,
+  `notation` and `restated_claim`) stay off the cadence pending gr732278.
+  See [[precis-gardener-memory-help]] for the detector details.
 - **relink** — a `taxon` reaching no start node gets a `specialises`-edge
   proposal naming the nearest start node as candidate parent, only when that
   parent sits past the `+recall` distance floor: inside it the index already
@@ -106,7 +108,8 @@ A candidate whose target was `considered` within the last 30 days is
 dropped before the proposer, provided the node is unchanged: the consider
 act's `expected_sha` must still equal the node's content sha and the stamp
 must still read `considered` (a demote or a content edit re-opens it).
-Expiry-driven memory review and reader complaints (`griped`) are exempt.
+Reader complaints (`griped`) and the opt-in `review_due` detector are
+exempt.
 Reviewers stamp with the structured `kg-review:<model>:
 <YYYY-MM-DD>:ok|fixed` reason on `edit(mode='trust')`; the stamp's date
 decides freshness (a backdated review stays old).

@@ -90,9 +90,10 @@ this workflow and never a reflex refresh. The repo-dev periodic pass
 ## Which detectors run
 
 The memory passes are opt-in: a `graph_garden` job must name the pass —
-`all` skips them and nothing schedules one by itself. Names here are
-the detector each proposal's evidence and the `view='smells'` grouping
-carry.
+`all` skips them. The recurring gardener already names `memory`, which
+includes `anchor_rot`. The cadence adds `memory-change` after a
+consumer-off trial. Check the job's `params.pass` for the passes it selected.
+Proposal evidence and `view='smells'` carry detector names.
 
 - `memory` — `dangling_mention` (a handle naming a retired ref; the
   consolidation log and its archive are skipped, their handles record
@@ -106,7 +107,11 @@ carry.
   `project:memory` complaints, newest first: one candidate per memory
   a `fix: me<N> (<what is wrong>)` line names; a handle mentioned in
   prose mints nothing).
-- `memory-review` — proposal-only; nothing applies these:
+- `memory-change` — selects just the proposal-only `source_drift` and
+  `entity_claim_stale` checks described below.
+- `memory-review` — explicit opt-in for the full set of proposal-only checks.
+  Its other detectors, including `review_due`, stay off the cadence
+  pending gr732278.
   `entity_claim_stale` (a state sentence's entity handle or repo anchor
   changed on record since the memory's last touch — use the change
   evidence to check whether the claim still holds), `negative_undated`

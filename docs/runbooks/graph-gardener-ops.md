@@ -52,6 +52,33 @@ read for the key yet (gr548280); until then `scripts/prod-psql --ro
   `precis-worker-agent.log` is a retired unit's frozen 0-byte file —
   gr508975, gr638954).
 
+## Trial and schedule memory-change
+
+After the worker serves the code with the `memory-change` pass, queue a
+single bounded job under the rollout todo between recurring ticks. The
+normal service and cooling gates still apply.
+
+```python
+put(kind='job', args={'parent_id': rollout_todo_id, 'job_type': 'graph_garden',
+                      'params': {'pass': 'memory-change', 'consume': False}})
+```
+
+Check the completed job's `meta.garden` for candidates, per-detector
+proposals, errors, skipped or unavailable checks, and cursor progress.
+Inspect the proposal evidence for the recorded source or entity changes.
+This trial runs the proposer and can write proposals for later review.
+If a check was skipped or unavailable, resolve the cause before using its
+yield to judge the trial.
+
+After reviewing the trial, read the current `meta.params` on td504852.
+Preserve its other keys and append `memory-change` to its pass list. The
+observed list becomes `["merge", "relink", "paper-identity", "memory",
+"memory-change"]`. Update the whole params object with
+`edit(kind='todo', id='td504852', meta={'params': updated_params})`.
+Confirm the next spawned job carries the new list and check both
+detectors' results. Removing `memory-change` from the list rolls back
+cadence selection.
+
 ## Undo a merge
 
 A gardener merge keeps the prior in `links.meta.prior_relation` /

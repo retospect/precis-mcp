@@ -308,6 +308,7 @@ _DETECTOR_BY_PASS = {
         "grab_bag",
         "griped",
     ),
+    "memory-change": ("entity_claim_stale", "source_drift"),
     "memory-review": (
         "entity_claim_stale",
         "negative_undated",
@@ -327,10 +328,10 @@ _DETECTOR_BY_PASS = {
 }
 
 #: Passes ``all`` skips. Memory detectors spend proposer calls, so a job
-#: must name their pass explicitly; memory-review is independent of memory;
-#: host-facts is a one-off hand-run pass over the machine census.
+#: must name their pass explicitly. The cadence can select memory-change
+#: independently of the full memory-review pass (gr732277).
 OPT_IN_PASSES: frozenset[str] = frozenset(
-    {"memory", "memory-review", "host-facts", "memory-grounding"}
+    {"memory", "memory-change", "memory-review", "host-facts", "memory-grounding"}
 )
 
 #: Job ``params.pass`` values → detectors. ``all`` runs everything not opt-in.

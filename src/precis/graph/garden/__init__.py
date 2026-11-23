@@ -82,17 +82,12 @@ trust acts retain the original model string.
    (open ``project:memory`` complaints, newest first; it mints only for
    memories a ``fix: me<N> (<reason>)`` line names, never for a handle in
    prose — gr682861). The opt-in
-   ``memory-review`` pass is proposal-only — no apply door — and adds
-   ``review_due`` (expired, unreviewed, sha- or version-moved, or aged:
-   30 days for reference/gotchas, 60 for runbooks, ``meta.review_by``
-   for workflow/rulings, threads never; expiry shapes give threads and
-   snapshots 14 days, incidents/campaigns 90), ``restated_claim`` (a
-   sentence of eight or more words restating a hub sibling's claim; the
-   keeper ranks reference, gotchas, threads, then the lower ref id),
-   ``title_shape``, ``negative_undated``, ``notation``,
-   ``source_drift`` and ``entity_claim_stale``; the one-off
-   ``host-facts`` pass flags census-machine state claims with no date
-   or machine handle. Per-detector thresholds, caps, sha/key pins and
+   ``memory-review`` pass adds proposal-only checks for review debt,
+   restated claims, title shape, undated absence and notation. It also
+   includes ``source_drift`` and ``entity_claim_stale``. The opt-in
+   ``memory-change`` pass selects just these two for the cadence
+   (gr732277). The one-off ``host-facts`` pass flags undated or unanchored
+   census-machine state claims. Detector thresholds, caps, sha/key pins and
    evidence shapes: :mod:`precis.graph.garden.candidates`.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate returns structured ``accept``/rationale. Memory detectors'
@@ -158,9 +153,9 @@ doors. Sampled reviews read bounded body excerpts; merge repointing
 never synthesizes loser's unique claims into the winner.
 
 **Scheduling.** ``graph_garden`` job_type (``job_inproc`` executor) runs one
-bounded pass per tick. ``params.pass`` selects detectors
-(``merge|split|relink|prune|tag-sweep|siblings|paper-identity|memory|all`` or
-list); ``limit`` bounds scans, ``max_proposals`` bounds writes. Per-detector
+bounded tick. ``params.pass`` accepts a pass name or a list of names
+(:data:`precis.graph.garden.candidates.PASS_CHOICES`).
+``limit`` bounds scans, ``max_proposals`` bounds writes. Per-detector
 wall-clock deadlines skip that detector, preserving the tick (gr503580).
 Wide scans resume per-kind cursors in job ``meta.garden.cursors``
 (:func:`precis.graph.garden.service.saved_cursors`), covering the corpus
