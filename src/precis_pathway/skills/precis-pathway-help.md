@@ -493,7 +493,10 @@ neb→verify takes any live neb-tier candidate with a **trusted barrier**
 the rest best-first — a trusted barrier is the evidence that earns the
 authoritative pass, and it is deliberately not gated on the frontier being
 populated (an axis only verify can measure would otherwise deadlock the
-ladder). `meta.fidelity_restale_cap=0` is the master hold: it stops every
+ladder). The caps are counts per pass, not time-windowed rates: cap=N
+admits up to N promotions each time the pass runs, whatever the quest's
+tick cadence — cap=1 is not "one a day" on a faster cadence (gr649534).
+`meta.fidelity_restale_cap=0` is the master hold: it stops every
 automatic pathway re-mint on the quest — both promote passes, the restale
 pass, harvest repair re-dispatches, the reconciler's wrongful-kill arm and
 the tick's `reruns` entries — while `put(mode='rerun')` and

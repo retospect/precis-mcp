@@ -106,10 +106,13 @@ _DEFAULT_TIER_PROMOTE_NEB = 2
 _DEFAULT_TIER_PROMOTE_VERIFY = 3
 #: Re-dispatches per pass of candidates whose competitor-set measures sit on
 #: an older reaction network (``meta.fidelity_restale_cap``, same human-set
-#: convention) — see :func:`promote_tiers`' third pass. ``0`` is a wider
-#: hold than the restale pass alone: it stops EVERY automatic pathway
-#: re-mint on the quest (gr543908, :func:`_automatic_rerun_hold`), promote
-#: passes and repair re-dispatches included.
+#: convention) — see :func:`promote_tiers`' third pass. A COUNT per pass,
+#: not a time-windowed rate: cap=N permits up to N restale promotions each
+#: time the pass runs, whatever the quest's tick cadence (gr649534).
+#: ``0`` is a wider hold than the restale pass alone: it stops EVERY
+#: automatic pathway re-mint on the quest (gr543908,
+#: :func:`_automatic_rerun_hold`), promote passes and repair re-dispatches
+#: included.
 _DEFAULT_TIER_RESTALE = 2
 #: How far into the provisional band (beyond the merged frontier) the restale
 #: pass looks (``meta.fidelity_restale_band``): a catpath bump re-measures what
@@ -7854,7 +7857,9 @@ def promote_tiers(
       ranking here and in the frontier
       (:func:`precis.quest.frontier.apply_network_demotion`); up to
       ``meta.fidelity_restale_cap`` (default :data:`_DEFAULT_TIER_RESTALE`)
-      such live, non-ruled-out candidates, best-first over their MERGED
+      such live, non-ruled-out candidates (a COUNT per pass, not a
+      time-windowed rate — gr649534, so cap=1 is not "one a day" on a
+      faster cadence), best-first over their MERGED
       (stale-included) measures, are re-dispatched at their own tier so the
       stale keys re-measure on the current network. The "current" basis is
       the PINNED engine's (:func:`_pinned_network_basis` — the dist pin /

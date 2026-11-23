@@ -243,13 +243,13 @@ serving it under `Roadmap:`, with the findings, papers and structures
 that serve it (`served-by`, sub-quests then findings first) capped at 8
 per group, see
 `precis-fisheye-help`. The table views (`results`, `frontier`, `series`,
-`measures`) are in the next section.
-A *deed* is not a view — the milestone-typed slice of the log. Bare
+`measures`) live in the next section.
+A *deed* is not a view — the milestone-typed log slice. Bare
 `get(id=N)` digests the logbook **tail** (last 10 entries, cheap even on a
 quest with thousands); `view='logbook'` is the append-only
 notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
-'until': '2026-10-01', 'limit': 100}` bounds the window, and each page's
-`next:` names the call for the older page); `view='log'` is the raw
+'until': '2026-10-01', 'limit': 100}` bounds the window; each page's
+`next:` names the older-page call); `view='log'` is the raw
 ref-events ledger, a different
 (generic) thing.
 `view='status'` is the one-call orientation read (~1 kB): the lifecycle
@@ -258,8 +258,8 @@ candidates by band and fidelity tier, trusted-per-axis coverage
 (including declared axes at zero coverage), the frontier handles — then
 momentum, the open gaps, the last `quest_tick` coordinator tick (`never`
 while every minted job is still queued), and the
-operator holds in force (`fidelity_restale_cap=0` — mechanical
-reruns on the pinned engine excepted; `compute_lane`/`lit_lane`
+operator holds in force (`fidelity_restale_cap=0` — a per-pass count, not
+a rate; mechanical reruns on the pinned engine excepted; `compute_lane`/`lit_lane`
 `off`). It replaces a frontier+gaps+results
 round-trip for "where does this quest stand". `view='rubric'` prints just
 the measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows

@@ -120,8 +120,8 @@ if TYPE_CHECKING:
 #: alias keeps the friendlier quest-specific error in ``tag()`` below.
 _LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 
-#: The fidelity-ladder hold keys (ints >= 0), validated by
-#: :func:`_check_fidelity_meta`.
+#: Fidelity metadata keys that require non-negative integers. The separate
+#: GPU-hour budget also accepts floats (see :func:`_check_fidelity_meta`).
 _FIDELITY_INT_KEYS: tuple[str, ...] = (
     "fidelity_restale_cap",
     "fidelity_restale_band",
@@ -146,17 +146,20 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: ``lit_gate`` (the lit-search relevance gate's term lists —
 #: ``{"host": [...], "reaction": [...]}``,
 #: :func:`_check_lit_gate`, :mod:`precis.quest.lit_gate`, gr592951).
-#: ``fidelity_restale_cap`` / ``fidelity_restale_band`` /
-#: ``fidelity_promote_neb`` / ``fidelity_promote_verify`` (the ladder's
-#: human-set holds, read by ``quest.compute`` ``promote_tiers``; each a
-#: non-negative int, ``0`` = that pass off — gr537835; and
-#: ``fidelity_restale_cap=0`` is wider still — it holds EVERY automatic
-#: pathway re-mint on the quest, promote passes and repair re-dispatches
-#: included — ``compute._automatic_rerun_hold``, gr543908; the one exemption
-#: is the mechanical-rerun arm, gr593138: untrusted barriers that classify
-#: mechanical requeue on the pinned engine under
-#: ``fidelity_mechanical_retry_cap`` / ``fidelity_mechanical_gpu_h_budget``
-#: even under the hold — Reto ruling 2026-11-12).
+#: ``fidelity_restale_cap`` / ``fidelity_promote_neb`` /
+#: ``fidelity_promote_verify`` (the ladder's human-set per-pass dispatch
+#: caps, read by ``quest.compute`` ``promote_tiers``; each a non-negative
+#: int and a COUNT per pass, not a time-windowed rate — gr649534; ``0`` =
+#: that pass off — gr537835; and ``fidelity_restale_cap=0`` is wider still
+#: — it holds EVERY automatic pathway re-mint on the quest, promote passes
+#: and repair re-dispatches included — ``compute._automatic_rerun_hold``,
+#: gr543908; the one exemption is the mechanical-rerun arm, gr593138:
+#: untrusted barriers that classify mechanical requeue on the pinned
+#: engine under ``fidelity_mechanical_retry_cap`` /
+#: ``fidelity_mechanical_gpu_h_budget`` even under the hold — Reto ruling
+#: 2026-11-12). ``fidelity_restale_band`` sets how far past the merged
+#: frontier the restale pass reaches into the provisional band
+#: (``compute._restale_scope``). At ``0`` the merged frontier stays in scope.
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
@@ -579,7 +582,10 @@ def _check_axis_map(
 
 def _check_fidelity_meta(meta: dict[str, Any]) -> None:
     """Reject a ``fidelity_*`` hold key unless it is an int >= 0 (a bool is
-    not one). ``0`` switches that ladder pass off (gr537835)."""
+    not one). ``0`` switches that ladder pass off (gr537835).
+
+    ``fidelity_restale_cap`` counts promotions per pass (gr649534).
+    """
     for key in _FIDELITY_INT_KEYS:
         if key not in meta:
             continue
