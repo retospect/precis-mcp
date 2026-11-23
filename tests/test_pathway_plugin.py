@@ -1420,7 +1420,10 @@ def test_handler_roundtrip(pathway_store: Store) -> None:
     blocks = pathway_store.chunks.list_chunks_for_ref(ref.id)
     assert blocks and blocks[0].text.startswith("# Methods")
 
-    assert "States (relative energy" in h.get(id=slug, view="profile").body
+    assert (
+        "Relative energies and activation barriers"
+        in h.get(id=slug, view="profile").body
+    )
     assert "Ea=" in h.get(id=slug, view="network").body
     assert "substrate" in h.get(id=slug, view="config").body
 
@@ -1874,7 +1877,11 @@ def test_get_views_at_potential(pathway_store: Store) -> None:
     assert "V vs RHE" not in h.get(id="lever-pd", view="analysis").body
 
     prof = h.get(id="lever-pd", view="profile", args={"U": 0.5}).body
-    assert "at U = +0.50 V vs RHE" in prof and "n_H=1" in prof and "n_H=0" in prof
+    # the graph-path profile folds n_H·eU into the state rows themselves
+    # (B/C carry n_H=1 → +0.5 eV; A carries n_H=0 → unshifted) and stamps
+    # the applied potential on its trailing line.
+    assert "at U=0.5 V vs RHE" in prof
+    assert "A: 0.0 ± ?" in prof and "B: 1.0 ± ?" in prof and "C: 0.7 ± ?" in prof
 
     cmp_out = h.get(id="lever-pd", view="compare", args={"U": 0.5}).body
     assert "ranked by SPAN at U" in cmp_out
@@ -1910,7 +1917,8 @@ def test_get_views_at_potential(pathway_store: Store) -> None:
         )
     with pytest.raises(BadInput, match="no n_H"):
         h.get(id="lever-pd", view="profile", args={"U": 0.5})
-    assert "States" in h.get(id="lever-pd", view="profile").body  # unlevered still fine
+    # unlevered still fine
+    assert "Relative energies" in h.get(id="lever-pd", view="profile").body
 
 
 def test_native_structure_ingest(pathway_store: Store) -> None:
