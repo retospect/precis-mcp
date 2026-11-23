@@ -307,7 +307,7 @@ _COHORT_SQL = """
            l.src_chunk_id, c.ord, c.text,
            (SELECT id_value FROM ref_identifiers
              WHERE ref_id = s.ref_id AND id_kind = 'cite_key'
-             ORDER BY created_at DESC LIMIT 1) AS cite_key,
+             ORDER BY created_at, id_value LIMIT 1) AS cite_key,
            h.title, h.meta->'scope', l.meta->>'verified_claim_sha',
            l.meta->>'rejected_claim_sha'
       FROM links l

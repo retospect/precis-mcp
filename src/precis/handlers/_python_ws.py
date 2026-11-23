@@ -58,9 +58,9 @@ _FOLDER_SQL = """
 SELECT r.ref_id, r.meta FROM refs r
 WHERE r.kind = 'folder' AND r.retired_at IS NULL
   AND (r.meta->'workspace'->>'slug' = %s
-       OR (SELECT ri.id_value FROM ref_identifiers ri
-            WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
-            LIMIT 1) = %s)
+       OR EXISTS (SELECT 1 FROM ref_identifiers ri
+                   WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
+                     AND ri.id_value = %s))
 """
 
 #: File children of the folder — the ``plaintext`` refs
@@ -78,7 +78,7 @@ _DESIGNS_SQL = """
 SELECT r.ref_id, r.kind,
        (SELECT ri.id_value FROM ref_identifiers ri
          WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
-         LIMIT 1) AS slug,
+         ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
        r.meta->'workspaces'->%s AS entry
   FROM refs r
  WHERE r.retired_at IS NULL AND r.meta->'workspaces' ? %s

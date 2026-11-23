@@ -125,8 +125,9 @@ def claim_si_parents(
         SELECT r.ref_id,
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'doi'),
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1),
                r.meta->'si_fetch'->>'requested_at'
           FROM refs r
          WHERE r.kind = 'paper'

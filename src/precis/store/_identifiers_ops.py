@@ -1101,6 +1101,14 @@ class IdentifiersMixin:
     ) -> list[str]:
         """All ``cite_key`` aliases for ``ref_id`` (oldest first).
 
+        Element 0 is the canonical key (gr763051): a ref may hold
+        several live ``cite_key`` rows — a .bib import registers the
+        entry's own key additively (gr517275) — and every "the key"
+        projection (``ref.slug``, status/bibtex views, ``v_refs``)
+        names the first-minted one: ``ORDER BY created_at, id_value``.
+        Any other pick (``min(id_value)``, newest, a bare ``LIMIT 1``)
+        makes views disagree on which key is the paper's.
+
         A paper commonly carries more than one ``cite_key`` — e.g. its
         author-year key plus a book's own bib key registered additively
         by ``tex-import`` (:mod:`precis.draftimport.resolve`). The on-disk

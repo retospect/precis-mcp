@@ -111,8 +111,9 @@ _STUB_IDS = """
       WHERE ref_id = %(rid)s AND id_kind = 'arxiv'),
     (SELECT min(id_value) FROM ref_identifiers
       WHERE ref_id = %(rid)s AND id_kind = 's2'),
-    (SELECT min(id_value) FROM ref_identifiers
-      WHERE ref_id = %(rid)s AND id_kind = 'cite_key')
+    (SELECT id_value FROM ref_identifiers
+      WHERE ref_id = %(rid)s AND id_kind = 'cite_key'
+      ORDER BY created_at, id_value LIMIT 1)
 """
 
 
@@ -141,8 +142,9 @@ def _backfill_batch(store: Store, *, limit: int) -> list[StubRef]:
                  WHERE ref_id = r.ref_id AND id_kind = 'arxiv')    AS arxiv,
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 's2')       AS s2,
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1) AS cite_key
           FROM refs r
          WHERE r.kind = 'paper'
            AND r.pdf_sha256 IS NULL

@@ -301,7 +301,7 @@ def retitle_plan(store: Store) -> tuple[int, list[Retitle]]:
             "SELECT r.ref_id, r.title, r.meta, "
             "(SELECT ri.id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) "
+            " ORDER BY ri.created_at, ri.id_value LIMIT 1) "
             "FROM refs r WHERE r.kind = 'pathway' AND r.retired_at IS NULL "
             "ORDER BY r.ref_id"
         ).fetchall()

@@ -925,7 +925,7 @@ def bound_draft(store: Store, ref_id: int) -> tuple[str, str, str] | None:
             SELECT l.src_ref_id, dr.title,
                    (SELECT id_value FROM ref_identifiers ri
                      WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
-                     LIMIT 1) AS slug,
+                     ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
                    dr.meta->'workspace'->>'format' AS fmt
               FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
              WHERE l.relation = 'draft-of'
@@ -1253,7 +1253,7 @@ def _render_requirements(store: Store, ref_id: int) -> str:
             SELECT cf.ref_id, cf.title,
                    (SELECT id_value FROM ref_identifiers ri
                      WHERE ri.ref_id = cf.ref_id AND ri.id_kind = 'cite_key'
-                     LIMIT 1) AS slug
+                     ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug
               FROM links l JOIN refs cf ON cf.ref_id = l.dst_ref_id
              WHERE l.relation = 'has-requirement'
                AND l.src_ref_id IN (SELECT ref_id FROM anc)

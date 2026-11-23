@@ -105,7 +105,7 @@ def _opted_in_drafts(store: Store) -> list[tuple[int, str, dict[str, Any]]]:
             "SELECT r.ref_id, "
             "       (SELECT id_value FROM ref_identifiers ri "
             "         WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            "         LIMIT 1) AS slug, "
+            "         ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug, "
             "       r.meta "
             "  FROM refs r "
             " WHERE r.kind = 'draft' AND r.retired_at IS NULL "

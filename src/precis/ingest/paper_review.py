@@ -191,8 +191,9 @@ def consolidate_legacy_paper_reviews(store: Store) -> None:
             review._lock(conn)
             legacy = conn.execute(
                 "SELECT t.ref_id, t.meta, p.title, "
-                "(SELECT min(i.id_value) FROM ref_identifiers i "
-                " WHERE i.ref_id = p.ref_id AND i.id_kind = 'cite_key') "
+                "(SELECT i.id_value FROM ref_identifiers i "
+                " WHERE i.ref_id = p.ref_id AND i.id_kind = 'cite_key' "
+                " ORDER BY i.created_at, i.id_value LIMIT 1) "
                 "FROM refs t LEFT JOIN refs p ON p.ref_id::text = t.meta->>'paper_ref_id' "
                 "WHERE t.kind = 'todo' AND t.retired_at IS NULL AND t.meta->>'source' = %s "
                 f"AND NOT EXISTS ({_status_query(f'tg.value IN {terminal_todo_sql()}')}) "

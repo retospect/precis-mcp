@@ -384,7 +384,11 @@ _CHUNKS_COLS_LEN = 14
 #   ``ref_identifiers`` with ``id_kind='cite_key'``. Every
 #   slug-addressed kind stores its agent-facing slug there (the
 #   slug-as-identifier convention). Numeric kinds (memory/todo/gripe/anki)
-#   have no row and slug comes back ``NULL``.
+#   have no row and slug comes back ``NULL``. A ref may hold several live
+#   ``cite_key`` rows (a .bib import registers the entry's own key
+#   additively); the pick is the canonical first-minted one —
+#   ``ORDER BY created_at, id_value``, the same row ``v_refs`` and every
+#   other "the key" projection names (gr763051).
 # - ``corpus_id`` is gone — the v1 corpus isolation didn't survive
 #   the v2 redesign (single-corpus deployment).
 # - New v2 columns (set_by/authors/year/human_verified_*/
@@ -399,7 +403,7 @@ _REFS_COLS = (
     "ref_id AS id, "
     "(SELECT id_value FROM ref_identifiers "
     " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key'"
-    " ORDER BY created_at DESC LIMIT 1) AS slug, "
+    " ORDER BY created_at, id_value LIMIT 1) AS slug, "
     "kind, title, provider, meta, "
     "created_at, updated_at, retired_at, "
     "set_by, authors, year, "
@@ -415,7 +419,7 @@ _REFS_COLS_ALIASED = (
     "r.ref_id AS id, "
     "(SELECT id_value FROM ref_identifiers "
     " WHERE ref_id = r.ref_id AND id_kind = 'cite_key'"
-    " ORDER BY created_at DESC LIMIT 1) AS slug, "
+    " ORDER BY created_at, id_value LIMIT 1) AS slug, "
     "r.kind, r.title, r.provider, r.meta, "
     "r.created_at, r.updated_at, r.retired_at, "
     "r.set_by, r.authors, r.year, "

@@ -36,6 +36,16 @@ def _seed(store: Store, key: str) -> int:
     ).id
 
 
+def _add_cite_key(store: Store, ref_id: int, value: str) -> None:
+    """A second live cite_key row — the .bib-import shape (gr517275)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('cite_key', %s, %s, 'test')",
+            (value, ref_id),
+        )
+
+
 def _attach_pdf(store: Store, ref_id: int, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"%PDF-1.4\nrekey fixture\n")
@@ -98,6 +108,59 @@ def test_rekey_replaces_old_key_and_audits_reason(
         "new": "smith24",
         "reason": _REASON,
     }
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_rekey_names_every_displaced_key(
+    store: Store, handler: PaperHandler, dry_run: bool
+) -> None:
+    """gr763051: a rekey demotes EVERY live cite_key row to an alias —
+    the preview and the receipt must name them all, not just the slug."""
+    ref_id = _seed(store, "apatru2019design")
+    _add_cite_key(store, ref_id, "design19")
+
+    response = handler.edit(
+        id=f"pa{ref_id}",
+        args={"cite_key": "burkhardt19", "reason": _REASON},
+        dry_run=dry_run,
+    )
+
+    assert "apatru2019design" in response.body
+    assert "design19" in response.body
+    assert "burkhardt19" in response.body
+    assert "cite_key_alias" in response.body
+    if dry_run:
+        # The preview writes nothing: both keys stay live.
+        assert store.find_ref_by_identifier("cite_key", "design19") == ref_id
+        assert store.find_ref_by_identifier("cite_key", "apatru2019design") == ref_id
+        return
+    assert store.find_ref_by_identifier("cite_key", "burkhardt19") == ref_id
+    for old in ("apatru2019design", "design19"):
+        assert store.find_ref_by_identifier("cite_key", old) is None
+        assert store.find_ref_by_identifier("cite_key_alias", old) == ref_id
+    event = store.events_for(ref_id, event="cite_key_changed")[0]
+    assert event.payload["demoted"] == ["design19"]
+
+
+def test_rekey_no_change_names_remaining_live_keys(
+    store: Store, handler: PaperHandler
+) -> None:
+    """gr763051: rekeying TO a key the ref already holds alongside others
+    changes nothing, and the receipt says the rest stay live."""
+    ref_id = _seed(store, "apatru2019design")
+    _add_cite_key(store, ref_id, "design19")
+
+    response = handler.edit(
+        id=f"pa{ref_id}",
+        args={"cite_key": "design19", "reason": _REASON},
+    )
+
+    assert "no change" in response.body
+    assert "design19" in response.body
+    assert "apatru2019design" in response.body
+    assert store.find_ref_by_identifier("cite_key", "design19") == ref_id
+    assert store.find_ref_by_identifier("cite_key", "apatru2019design") == ref_id
+    assert store.events_for(ref_id, event="cite_key_changed") == []
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

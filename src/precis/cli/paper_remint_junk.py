@@ -47,7 +47,7 @@ _CANDIDATES_SQL = """
       JOIN ref_identifiers ri
         ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
      WHERE r.kind = 'paper' AND r.retired_at IS NULL
-     ORDER BY r.ref_id, ri.created_at DESC
+     ORDER BY r.ref_id, ri.created_at, ri.id_value
 """
 
 

@@ -891,7 +891,7 @@ class RefsMixin:
             "SELECT r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) AS slug, r.pdf_role, "
+            " ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug, r.pdf_role, "
             "r.meta->>'converted_from_kind' "
             "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL AND "
             + secret_fence("r", path="resolve")
@@ -1115,7 +1115,8 @@ class RefsMixin:
             "SELECT c.ref_id, c.ord, r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) AS slug, r.pdf_role, r.meta->>'converted_from_kind' "
+            " ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug, "
+            " r.pdf_role, r.meta->>'converted_from_kind' "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
             "WHERE c.chunk_id = %s AND r.retired_at IS NULL AND "
             + secret_fence("r", path="resolve")
@@ -1639,11 +1640,13 @@ class RefsMixin:
         sql = f"""
             WITH stubs AS (
                 SELECT r.ref_id,
-                       -- min(): a ref can carry >1 value of a kind (PK is
-                       -- (id_kind,id_value)); a bare scalar subquery would
-                       -- raise CardinalityViolation on a dedup-merged ref.
-                       (SELECT min(id_value) FROM ref_identifiers
-                         WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+                       -- collapse >1 same-kind row (PK is (id_kind,id_value),
+                       -- so a bare scalar subquery raises CardinalityViolation
+                       -- on a dedup-merged ref); the cite_key pick is the
+                       -- canonical first-minted one (gr763051).
+                       (SELECT id_value FROM ref_identifiers
+                         WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                         ORDER BY created_at, id_value LIMIT 1) AS cite_key,
                        COALESCE(
                          (SELECT min(id_value) FROM ref_identifiers
                            WHERE ref_id = r.ref_id AND id_kind = 'doi'),
@@ -1856,8 +1859,9 @@ class RefsMixin:
             return []
         sql = """
             SELECT r.ref_id,
-                   (SELECT min(id_value) FROM ref_identifiers
-                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+                   (SELECT id_value FROM ref_identifiers
+                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                     ORDER BY created_at, id_value LIMIT 1),
                    COALESCE(
                      (SELECT min(id_value) FROM ref_identifiers
                        WHERE ref_id = r.ref_id AND id_kind = 'doi'),
@@ -1991,8 +1995,9 @@ class RefsMixin:
         """
         sql = """
             SELECT r.ref_id,
-                   (SELECT min(id_value) FROM ref_identifiers
-                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+                   (SELECT id_value FROM ref_identifiers
+                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                     ORDER BY created_at, id_value LIMIT 1),
                    r.title,
                    r.meta->>'part_lcsc',
                    r.meta->>'source_url',
@@ -2041,8 +2046,9 @@ class RefsMixin:
         """
         sql = f"""
             SELECT r.ref_id,
-                   (SELECT min(id_value) FROM ref_identifiers
-                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+                   (SELECT id_value FROM ref_identifiers
+                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                     ORDER BY created_at, id_value LIMIT 1) AS cite_key,
                    COALESCE(
                      (SELECT min(id_value) FROM ref_identifiers
                        WHERE ref_id = r.ref_id AND id_kind = 'doi'),
@@ -3212,7 +3218,8 @@ class RefsMixin:
 
         retracted_slug_row = conn.execute(
             "SELECT id_value FROM ref_identifiers "
-            "WHERE id_kind = 'cite_key' AND ref_id = %s LIMIT 1",
+            "WHERE id_kind = 'cite_key' AND ref_id = %s "
+            "ORDER BY created_at, id_value LIMIT 1",
             (retracted_ref_id,),
         ).fetchone()
         retracted_handle = (
@@ -3649,7 +3656,8 @@ class RefsMixin:
         if adopted is not None:
             cur = c.execute(
                 "SELECT id_value FROM ref_identifiers "
-                "WHERE ref_id = %s AND id_kind = 'cite_key' LIMIT 1",
+                "WHERE ref_id = %s AND id_kind = 'cite_key' "
+                "ORDER BY created_at, id_value LIMIT 1",
                 (survivor_id,),
             ).fetchone()
             cur_key = str(cur[0]) if cur is not None else None

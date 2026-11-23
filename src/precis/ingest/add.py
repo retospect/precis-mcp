@@ -1646,8 +1646,9 @@ def _load_si_parent(ref_id: int, *, conn: Any) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT r.title, r.authors, r.year, r.meta,
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1),
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'doi')
           FROM refs r

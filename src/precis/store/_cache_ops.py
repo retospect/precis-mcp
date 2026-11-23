@@ -840,7 +840,7 @@ _REFS_COLS_FOR_CACHE = (
     "refs.ref_id AS id, "
     "(SELECT id_value FROM ref_identifiers "
     " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key'"
-    " ORDER BY created_at DESC LIMIT 1) AS slug, "
+    " ORDER BY created_at, id_value LIMIT 1) AS slug, "
     "refs.kind, refs.title, refs.provider, refs.meta, "
     "refs.created_at, refs.updated_at, refs.retired_at, "
     "refs.set_by, refs.authors, refs.year, "
@@ -866,10 +866,13 @@ _CACHE_COLS_LEN = 9
 # loud, immediate, instead of cascading dozens of "tuple index out of
 # range" failures across the cache_state / perplexity / web caches.
 # v8.7.1 patched the same drift class in ``_chunks_ops.py``; this is
-# the equivalent guard for the cache path.
-assert _REFS_COLS_FOR_CACHE.count(",") + 1 == _REFS_COLS_LEN, (
+# the equivalent guard for the cache path. The comma inside the slug
+# subquery's ``ORDER BY created_at, id_value`` is not a column separator
+# — subtract it before counting columns.
+_SLUG_SUBQUERY_COMMAS = 1
+assert _REFS_COLS_FOR_CACHE.count(",") + 1 - _SLUG_SUBQUERY_COMMAS == _REFS_COLS_LEN, (
     f"_REFS_COLS_FOR_CACHE drift: projects "
-    f"{_REFS_COLS_FOR_CACHE.count(',') + 1} columns but "
+    f"{_REFS_COLS_FOR_CACHE.count(',') + 1 - _SLUG_SUBQUERY_COMMAS} columns but "
     f"_REFS_COLS_LEN={_REFS_COLS_LEN}. Update the projection above to "
     f"match the columns added to refs in the latest migration."
 )

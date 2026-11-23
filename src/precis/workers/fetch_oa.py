@@ -944,8 +944,9 @@ def claim_stubs_to_fetch(
                  WHERE ref_id = r.ref_id AND id_kind = 'arxiv')    AS arxiv,
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 's2')       AS s2_id,
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1) AS cite_key,
                r.retraction_status                                 AS retraction_status,
                r.title,
                {arxiv_fallback},

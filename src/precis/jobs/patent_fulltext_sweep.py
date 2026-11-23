@@ -124,8 +124,9 @@ def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str
     """
     sql = """
         SELECT r.ref_id,
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1) AS cite_key
         FROM   refs r
         JOIN   ref_tags rt ON rt.ref_id = r.ref_id
         JOIN   tags t       ON t.tag_id  = rt.tag_id

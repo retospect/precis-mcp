@@ -13913,7 +13913,8 @@ def _retire_cite_pattern(conn: Any, ref: Ref) -> str:
     without one simply gets no ``§`` alternative)."""
     row = conn.execute(
         "SELECT id_value FROM ref_identifiers "
-        "WHERE ref_id = %s AND id_kind = 'cite_key'",
+        "WHERE ref_id = %s AND id_kind = 'cite_key' "
+        "ORDER BY created_at, id_value LIMIT 1",
         (ref.id,),
     ).fetchone()
     handle = handle_registry.format_handle(ref.kind, ref.id)

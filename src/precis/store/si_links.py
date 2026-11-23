@@ -49,8 +49,9 @@ def supplement_parent(conn: Any, ref_id: int) -> tuple[int, str | None] | None:
     row = conn.execute(
         """
         SELECT p.ref_id,
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = p.ref_id AND id_kind = 'cite_key')
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = p.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1)
           FROM refs s
           JOIN links l ON l.src_ref_id = s.ref_id
                       AND l.relation = %s
@@ -75,8 +76,9 @@ def supplement_children(
     rows = conn.execute(
         """
         SELECT s.ref_id,
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = s.ref_id AND id_kind = 'cite_key'),
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = s.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1),
                s.title
           FROM links l
           JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL

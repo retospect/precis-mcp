@@ -51,7 +51,7 @@ def entity_states(store: Store, handles: Iterable[str]) -> dict[str, str]:
             "SELECT r.ref_id, r.kind, r.title, r.meta, r.retired_at, h.ts, "
             "(SELECT ri.id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " ORDER BY ri.created_at DESC LIMIT 1) AS slug, "
+            " ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug, "
             "(SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
             " WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
             " ORDER BY t.value LIMIT 1) "

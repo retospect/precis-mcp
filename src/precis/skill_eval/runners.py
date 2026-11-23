@@ -564,7 +564,7 @@ def fetch_record(dsn: str, kind: str | None, ident: str) -> dict[str, Any] | Non
                 "SELECT kind, title, meta,"
                 " (SELECT id_value FROM ref_identifiers ri"
                 "  WHERE ri.ref_id = refs.ref_id AND ri.id_kind = 'cite_key'"
-                "  ORDER BY id_value LIMIT 1)"
+                "  ORDER BY ri.created_at, ri.id_value LIMIT 1)"
                 " FROM refs WHERE ref_id=%s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()

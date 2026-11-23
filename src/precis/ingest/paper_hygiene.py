@@ -2664,9 +2664,10 @@ def repair_junk_title_papers(
                    coalesce(r.meta->>'entry_type', '') AS entry_type,
                    (SELECT min(d.id_value) FROM ref_identifiers d
                      WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi') AS doi,
-                   COALESCE((SELECT min(ck.id_value) FROM ref_identifiers ck
+                   COALESCE((SELECT ck.id_value FROM ref_identifiers ck
                               WHERE ck.ref_id = r.ref_id
-                                AND ck.id_kind = 'cite_key'), '') AS cite_key
+                                AND ck.id_kind = 'cite_key'
+                              ORDER BY ck.created_at, ck.id_value LIMIT 1), '') AS cite_key
               FROM refs r
              WHERE r.kind = 'paper'
                AND r.retired_at IS NULL
@@ -3219,9 +3220,10 @@ def raise_junk_title_papers(
             """
             SELECT r.ref_id, r.title, r.owner_login,
                    coalesce(r.meta->>'entry_type', '') AS entry_type,
-                   COALESCE((SELECT min(ck.id_value) FROM ref_identifiers ck
+                   COALESCE((SELECT ck.id_value FROM ref_identifiers ck
                               WHERE ck.ref_id = r.ref_id
-                                AND ck.id_kind = 'cite_key'), ''),
+                                AND ck.id_kind = 'cite_key'
+                              ORDER BY ck.created_at, ck.id_value LIMIT 1), ''),
                    EXISTS (SELECT 1 FROM ref_identifiers d
                             WHERE d.ref_id = r.ref_id AND d.id_kind = 'doi'),
                    EXISTS (SELECT 1 FROM ref_events e

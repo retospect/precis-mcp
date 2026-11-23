@@ -1245,11 +1245,12 @@ def _fetch_ref(conn: Connection, ref_id: int) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT r.ref_id,
-               -- min(): a ref can carry >1 cite_key (PK is (id_kind,id_value),
-               -- not (ref_id,id_kind)), so a bare scalar subquery raises
-               -- CardinalityViolation on a dedup-merged ref.
-               (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS slug,
+               -- >1 cite_key is legal (PK is (id_kind,id_value), not
+               -- (ref_id,id_kind)); pick the canonical first-minted one
+               -- (gr763051).
+               (SELECT id_value FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
+                 ORDER BY created_at, id_value LIMIT 1) AS slug,
                r.retired_at,
                COALESCE(
                  (SELECT jsonb_object_agg(id_kind, id_value)

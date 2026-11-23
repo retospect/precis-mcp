@@ -705,7 +705,7 @@ class ComponentMixin:
                 "SELECT r.ref_id AS ref_id, "
                 "  (SELECT id_value FROM ref_identifiers ri "
                 "   WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-                "   LIMIT 1) AS slug, "
+                "   ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug, "
                 "  r.title AS title, r.meta AS meta "
                 "FROM refs r "
                 "WHERE r.kind = 'component' AND r.retired_at IS NULL AND ("

@@ -217,7 +217,7 @@ class MakeHandler(Handler):
                           COALESCE((SELECT id_value FROM ref_identifiers
                                      WHERE ref_id = r.ref_id
                                        AND id_kind = 'cite_key'
-                                     ORDER BY created_at DESC LIMIT 1),
+                                     ORDER BY created_at, id_value LIMIT 1),
                                    r.ref_id::text)
                      FROM refs r WHERE r.ref_id = ANY(%s)""",
                 ([lk.src_ref_id for lk in links],),

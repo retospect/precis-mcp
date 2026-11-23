@@ -17,6 +17,7 @@ from precis.corpus_layout import (
 )
 from precis.errors import BadInput, NotFound
 from precis.identity import is_junk_cite_key
+from precis.store._identifiers_ops import DROPPED_IDENTIFIERS_META_KEY
 from precis.utils.handle_registry import try_format
 
 if TYPE_CHECKING:
@@ -109,25 +110,65 @@ def rekey_paper(
         )
     if new_key == old_key:
         return f"no change: {handle} already has cite_key={new_key!r}."
+    # A ref can hold several live cite_key rows (a .bib import registers
+    # the entry's own key additively, gr517275); the rekey deletes them
+    # ALL and re-homes each displaced value as a cite_key_alias — name
+    # every one so the preview and receipt never silently demote a key
+    # (gr763051).
+    extras = [k for k in store.ref_cite_keys(ref_id) if k != old_key]
     change = f"{handle} cite_key: {old_key!r} → {new_key!r}"
     if dry_run:
-        return f"dry run: {change}; would move its local PDF and log the reason."
+        suppressed = _suppressed_dropped_values(ref)
+        displaced = _displaced_clause(
+            [k for k in extras if k not in suppressed],
+            [k for k in extras if k in suppressed],
+        )
+        return (
+            f"dry run: {change}{displaced}"
+            "; would move its local PDF and log the reason."
+        )
 
     roots = corpus_roots_from_env() if corpus_dirs is None else corpus_dirs
     sha = ref.pdf_sha256
     stored_path = store.pdf_storage_path(sha) if sha else None
-    old_pdf = resolve_local_pdf(roots, stored_path, [old_key]) or old_pdf
+    # The on-disk file may sit under ANY of the ref's live keys (the
+    # fetcher names it by whichever key it saw), so probe them all.
+    old_pdf = resolve_local_pdf(roots, stored_path, [old_key, *extras]) or old_pdf
     try:
         with store.pool.connection() as conn:
+            extras = [k for k in store.ref_cite_keys(ref_id, conn=conn) if k != old_key]
             changed = store.set_ref_identifier(
                 ref_id, "cite_key", new_key, source=source, conn=conn
             )
+            demoted: list[str] = []
+            lost: list[str] = []
+            if changed and extras:
+                landed = {
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT id_value FROM ref_identifiers "
+                        "WHERE ref_id = %s AND id_kind = 'cite_key_alias' "
+                        "AND id_value = ANY(%s)",
+                        (ref_id, extras),
+                    ).fetchall()
+                }
+                demoted = [k for k in extras if k in landed]
+                lost = [k for k in extras if k not in landed]
             if changed:
+                payload: dict[str, Any] = {
+                    "old": old_key,
+                    "new": new_key,
+                    "reason": reason.strip(),
+                }
+                if demoted:
+                    payload["demoted"] = demoted
+                if lost:
+                    payload["suppressed"] = lost
                 store.append_event(
                     ref_id,
                     source=source,
                     event="cite_key_changed",
-                    payload={"old": old_key, "new": new_key, "reason": reason.strip()},
+                    payload=payload,
                     conn=conn,
                 )
     except BadInput as exc:
@@ -141,7 +182,15 @@ def rekey_paper(
             next=next_call,
         ) from exc
     if not changed:
-        return f"no change: {handle} already has cite_key={new_key!r}."
+        # Nothing was written — e.g. this ref already holds new_key among
+        # several live cite_key rows. Say so: the other rows stay live.
+        still = [old_key, *[k for k in extras if k != new_key]]
+        others = (
+            "; still live as cite_key: " + ", ".join(repr(k) for k in still)
+            if still
+            else ""
+        )
+        return f"no change: {handle} already has cite_key={new_key!r}.{others}"
     note = ""
     if old_pdf is not None:
         # The destination lives under the corpus root holding the file —
@@ -201,7 +250,52 @@ def rekey_paper(
             note = " PDF not moved: filesystem unavailable; old storage path kept."
     else:
         note = " No local PDF found; not moved."
-    return f"updated {change} (ref_event 'cite_key_changed' logged).{note}"
+    return (
+        f"updated {change}{_displaced_clause(demoted, lost)} "
+        f"(ref_event 'cite_key_changed' logged).{note}"
+    )
+
+
+def _suppressed_dropped_values(ref: Any) -> set[str]:
+    """cite_key-ish values the drop-door marker keeps suppressed on ``ref``.
+
+    ``refs.meta.dropped_identifiers`` (gr517591) is ``{scheme: {value:
+    {...}}}``: a displaced live cite_key row whose ``cite_key`` or
+    ``cite_key_alias`` pair is marked is NOT re-homed as an alias — the
+    operator's suppression stands. Lets the dry run predict exactly what
+    :meth:`Store.set_ref_identifier` will skip.
+    """
+    meta = ref.meta if isinstance(getattr(ref, "meta", None), dict) else {}
+    dropped = meta.get(DROPPED_IDENTIFIERS_META_KEY)
+    out: set[str] = set()
+    if isinstance(dropped, dict):
+        for scheme in ("cite_key", "cite_key_alias"):
+            values = dropped.get(scheme)
+            if isinstance(values, dict):
+                out.update(str(v) for v in values)
+    return out
+
+
+def _displaced_clause(demoted: list[str], suppressed: list[str]) -> str:
+    """``;``-clauses naming every OTHER live key a rekey displaces (gr763051).
+
+    ``demoted`` re-homes to ``cite_key_alias``; ``suppressed`` loses its
+    live row with no redirect because its drop-door mark stands.
+    """
+    out = ""
+    if demoted:
+        out += (
+            "; "
+            + ", ".join(repr(k) for k in demoted)
+            + " also demoted to cite_key_alias"
+        )
+    if suppressed:
+        out += (
+            "; "
+            + ", ".join(repr(k) for k in suppressed)
+            + " also displaced — drop-door suppression stands, no cite_key_alias"
+        )
+    return out
 
 
 def remint_junk_cite_key(
@@ -357,7 +451,7 @@ def _remint_in_tx(
     row = conn.execute(
         "SELECT (SELECT id_value FROM ref_identifiers "
         " WHERE ref_id = refs.ref_id AND id_kind = 'cite_key' "
-        " ORDER BY created_at DESC LIMIT 1), authors, year "
+        " ORDER BY created_at, id_value LIMIT 1), authors, year "
         "FROM refs WHERE ref_id = %s AND retired_at IS NULL AND kind = 'paper'",
         (ref_id,),
     ).fetchone()
@@ -373,7 +467,7 @@ def _remint_in_tx(
         loser_row = conn.execute(
             "SELECT id_value FROM ref_identifiers "
             "WHERE ref_id = %s AND id_kind = 'cite_key' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY created_at, id_value LIMIT 1",
             (adopt_from_ref_id,),
         ).fetchone()
         if loser_row is not None and not is_junk_cite_key(str(loser_row[0])):
@@ -413,11 +507,26 @@ def _remint_in_tx(
         new_key = _remint_target(store, ref_id, old_key, row[1], row[2], conn=conn)
     if new_key is None:
         return None
+    extras = [k for k in store.ref_cite_keys(ref_id, conn=conn) if k != old_key]
     changed = store.set_ref_identifier(
         ref_id, "cite_key", new_key, source=source, conn=conn
     )
     if not changed:
         return None
+    demoted: list[str] = []
+    lost: list[str] = []
+    if extras:
+        landed = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key_alias' "
+                "AND id_value = ANY(%s)",
+                (ref_id, extras),
+            ).fetchall()
+        }
+        demoted = [k for k in extras if k in landed]
+        lost = [k for k in extras if k not in landed]
     if adopted_from is not None:
         record_rehomed_cite_keys(
             conn,
@@ -435,7 +544,12 @@ def _remint_in_tx(
             "new": new_key,
             "reason": AUTO_REMINT_REASON,
             **({"adopted_from": adopted_from} if adopted_from else {}),
+            **({"demoted": demoted} if demoted else {}),
+            **({"suppressed": lost} if lost else {}),
         },
         conn=conn,
     )
-    return f"pa{ref_id} cite_key: {old_key!r} → {new_key!r} (auto re-mint)"
+    return (
+        f"pa{ref_id} cite_key: {old_key!r} → {new_key!r}"
+        f"{_displaced_clause(demoted, lost)} (auto re-mint)"
+    )

@@ -134,7 +134,8 @@ def apply_pres_convert(
     # otherwise keep the writer's stable fallback (including any suffix).
     original_key = conn.execute(
         "SELECT id_value FROM ref_identifiers "
-        "WHERE ref_id = %s AND id_kind = 'cite_key' ORDER BY id_value LIMIT 1",
+        "WHERE ref_id = %s AND id_kind = 'cite_key' "
+        "ORDER BY created_at, id_value LIMIT 1",
         (ref_id,),
     ).fetchone()
     if original_key is not None:

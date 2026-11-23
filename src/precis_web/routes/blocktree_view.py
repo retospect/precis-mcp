@@ -960,7 +960,7 @@ _LIST_SQL = {
         SELECT r.ref_id,
                (SELECT id_value FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1)             AS slug,
+                 ORDER BY created_at, id_value LIMIT 1)             AS slug,
                r.title,
                (SELECT count(*) FROM se_blocks b
                  WHERE b.ref_id = r.ref_id AND b.retired_at IS NULL) AS n_blocks,

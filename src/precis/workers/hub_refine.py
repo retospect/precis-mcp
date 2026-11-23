@@ -2366,7 +2366,7 @@ def _fisheye_edges(conn: Connection, hub_ref_id: int) -> list[_FisheyeEdge]:
                r.kind,
                (SELECT id_value FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1) AS cite_key
+                 ORDER BY created_at, id_value LIMIT 1) AS cite_key
           FROM links l
           JOIN refs r ON r.ref_id = l.src_ref_id
           LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id

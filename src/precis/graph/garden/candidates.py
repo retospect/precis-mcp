@@ -2948,7 +2948,8 @@ def _cited_sections(store: Store, rid: int, body: str) -> Iterator[dict[str, Any
         rows = conn.execute(
             "SELECT l.link_id, l.meta->>'source_handle', r.title, "
             "(SELECT i.id_value FROM ref_identifiers i WHERE i.ref_id = r.ref_id "
-            "AND i.id_kind = 'cite_key' LIMIT 1), c.section_path "
+            "AND i.id_kind = 'cite_key' "
+            "ORDER BY i.created_at, i.id_value LIMIT 1), c.section_path "
             "FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id "
             "LEFT JOIN chunks c ON c.chunk_id = l.dst_chunk_id "
             "WHERE l.src_ref_id = %s AND l.relation = 'cites' "
@@ -3281,7 +3282,8 @@ def _machine_hosts(store: Store) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT r.ref_id, r.meta, r.updated_at, "
             "(SELECT i.id_value FROM ref_identifiers i WHERE i.ref_id = r.ref_id "
-            "AND i.id_kind = 'cite_key' LIMIT 1) "
+            "AND i.id_kind = 'cite_key' "
+            "ORDER BY i.created_at, i.id_value LIMIT 1) "
             "FROM refs r WHERE r.kind = 'machine' AND r.retired_at IS NULL "
             "ORDER BY r.ref_id"
         ).fetchall()

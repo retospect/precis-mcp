@@ -119,7 +119,7 @@ def _list_rows(store: Store) -> list[dict[str, Any]]:
         SELECT r.ref_id,
                (SELECT id_value FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1)             AS slug,
+                 ORDER BY created_at, id_value LIMIT 1)             AS slug,
                r.title,
                COALESCE((r.meta->>'version')::int, 0)          AS version,
                (SELECT count(*) FROM struct_atoms a
@@ -910,7 +910,7 @@ def _slug_of(store: Store, ref_id: int) -> str | None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
-            "AND id_kind = 'cite_key' ORDER BY created_at DESC LIMIT 1",
+            "AND id_kind = 'cite_key' ORDER BY created_at, id_value LIMIT 1",
             (ref_id,),
         ).fetchone()
     return row[0] if row else None

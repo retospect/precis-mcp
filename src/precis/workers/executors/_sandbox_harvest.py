@@ -517,7 +517,7 @@ def _reconstruct_from_plaintext_refs(
         rows = conn.execute(
             "SELECT (SELECT id_value FROM ref_identifiers "
             "         WHERE ref_id = refs.ref_id AND id_kind = 'cite_key' "
-            "         ORDER BY created_at DESC LIMIT 1) AS slug, "
+            "         ORDER BY created_at, id_value LIMIT 1) AS slug, "
             "       meta "
             "  FROM refs WHERE parent_id = %s "
             "   AND kind = 'plaintext' AND retired_at IS NULL",

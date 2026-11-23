@@ -1950,7 +1950,8 @@ class SeHandler(Handler):
         with self.store.pool.connection() as c:
             row = c.execute(
                 "SELECT id_value FROM ref_identifiers "
-                "WHERE ref_id = %s AND id_kind = 'cite_key'",
+                "WHERE ref_id = %s AND id_kind = 'cite_key' "
+                "ORDER BY created_at, id_value LIMIT 1",
                 (ref_id,),
             ).fetchone()
         return str(row[0]) if row is not None else f"ref {ref_id}"

@@ -66,7 +66,7 @@ def _touched_chunks(store: Store, log_id: int) -> list[dict[str, Any]]:
         SELECT d.ref_id,
                (SELECT ri.id_value FROM ref_identifiers ri
                  WHERE ri.ref_id = d.ref_id AND ri.id_kind = 'cite_key'
-                 LIMIT 1) AS slug,
+                 ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
                d.kind,
                c.handle,
                left(c.text, 200) AS clip

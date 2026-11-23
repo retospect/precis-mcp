@@ -183,7 +183,7 @@ def _project_plan(ctx: AssemblyContext) -> tuple[int, str] | None:
                 SELECT l.src_ref_id,
                        (SELECT id_value FROM ref_identifiers ri
                          WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
-                         LIMIT 1) AS slug
+                         ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug
                   FROM links l JOIN refs pl ON pl.ref_id = l.src_ref_id
                  WHERE l.relation = 'plan-of'
                    AND l.dst_ref_id IN (SELECT ref_id FROM anc)
@@ -237,7 +237,7 @@ def _bound_draft_ref(ctx: AssemblyContext) -> tuple[int, str, str] | None:
                 SELECT l.src_ref_id, dr.title,
                        (SELECT id_value FROM ref_identifiers ri
                          WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
-                         LIMIT 1) AS slug
+                         ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug
                   FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
                  WHERE l.relation = 'draft-of'
                    AND l.dst_ref_id IN (SELECT ref_id FROM anc)

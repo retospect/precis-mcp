@@ -3068,7 +3068,7 @@ class ChunkStore:
                 "SELECT c.ref_id, c.ord, r.kind, "
                 "(SELECT id_value FROM ref_identifiers ri "
                 " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-                " LIMIT 1) AS slug "
+                " ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug "
                 "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
                 "WHERE c.chunk_id = %s AND r.retired_at IS NULL AND c.ord >= 0",
                 (chunk_id,),

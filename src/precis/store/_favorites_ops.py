@@ -90,7 +90,7 @@ class FavoritesMixin:
                 "       r.updated_at, r.retired_at, f.created_at, "
                 "       (SELECT i.id_value FROM ref_identifiers i "
                 "         WHERE i.ref_id = r.ref_id AND i.id_kind = 'cite_key' "
-                "         ORDER BY i.created_at DESC LIMIT 1) AS slug "
+                "         ORDER BY i.created_at, i.id_value LIMIT 1) AS slug "
                 "FROM ref_favorites f JOIN refs r ON r.ref_id = f.ref_id "
                 "WHERE f.login = %s"
                 # another owner's profile never lists (gr490266) — a

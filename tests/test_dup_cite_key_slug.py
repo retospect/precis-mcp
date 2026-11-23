@@ -45,6 +45,20 @@ def test_duplicate_cite_keys_resolve_to_one_slug(store: Store) -> None:
     assert any(r.id == ref.id for r, _ in hits)
 
 
+def test_multi_key_ref_agrees_on_the_canonical_key(store: Store) -> None:
+    """gr763051: every "the key" projection names the first-minted
+    cite_key (the ``v_refs`` rule) — ``ref.slug``, the fetch-status row
+    and ``ref_cite_keys[0]`` all pick the same row."""
+    ref = store.insert_ref(kind="paper", slug="alpha2020", title="Dup")
+    _add_cite_key(store, ref.id, "beta2020")
+
+    fetched = store.fetch_refs_by_ids([ref.id])[ref.id]
+    assert fetched.slug == "alpha2020"
+    assert store.ref_cite_keys(ref.id)[0] == "alpha2020"
+    status = store.paper_fetch_status([ref.id])
+    assert status and status[0]["cite_key"] == "alpha2020"
+
+
 def test_soft_deleted_slug_is_reclaimed_by_new_ref(store: Store) -> None:
     """Soft-delete must not orphan a later same-slug re-creation (gr201814).
 

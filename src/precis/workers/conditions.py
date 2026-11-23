@@ -909,7 +909,7 @@ def _probe_settings_env_shadowed(store: Store) -> list[ConditionFinding]:
 _ANALYSIS_STALE_SQL = """
 SELECT COALESCE((SELECT id_value FROM ref_identifiers
                   WHERE ref_id = src.ref_id AND id_kind = 'cite_key'
-                  ORDER BY created_at DESC LIMIT 1),
+                  ORDER BY created_at, id_value LIMIT 1),
                 src.ref_id::text) AS slug,
        src.title, l.dst_ref_id,
        l.meta->>'sha' AS pinned, l.meta->>'at' AS pinned_at, e.sha AS current

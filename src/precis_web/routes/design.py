@@ -61,7 +61,7 @@ def _se_rows(store: Store) -> list[tuple[Any, ...]]:
         SELECT r.ref_id,
                (SELECT id_value FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1)             AS slug,
+                 ORDER BY created_at, id_value LIMIT 1)             AS slug,
                r.title,
                r.updated_at,
                b.id, b.parent_block_id, b.name, b.envelope, b.dof,
@@ -84,7 +84,7 @@ def _structure_rows(store: Store) -> list[tuple[Any, ...]]:
         SELECT r.ref_id,
                (SELECT id_value FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1)             AS slug,
+                 ORDER BY created_at, id_value LIMIT 1)             AS slug,
                r.title,
                COALESCE((r.meta->>'version')::int, 0)          AS version,
                (SELECT sr.fidelity FROM struct_runs sr

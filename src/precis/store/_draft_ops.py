@@ -1316,7 +1316,7 @@ class DraftStore(_AbbrevMixin):
                    o.ref_id, o.kind,
                    (SELECT ri.id_value FROM ref_identifiers ri
                      WHERE ri.ref_id = o.ref_id AND ri.id_kind = 'cite_key'
-                     LIMIT 1) AS slug,
+                     ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
                    o.title
               FROM chunks c
               JOIN links l
@@ -1362,7 +1362,7 @@ class DraftStore(_AbbrevMixin):
                    o.ref_id, o.kind,
                    (SELECT ri.id_value FROM ref_identifiers ri
                      WHERE ri.ref_id = o.ref_id AND ri.id_kind = 'cite_key'
-                     LIMIT 1) AS slug,
+                     ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
                    o.title
               FROM links l
               JOIN refs o
@@ -1815,7 +1815,7 @@ class DraftStore(_AbbrevMixin):
             SELECT l.meta, l.relation, o.ref_id, o.kind, l.dst_chunk_id,
                    (SELECT ri.id_value FROM ref_identifiers ri
                      WHERE ri.ref_id = o.ref_id AND ri.id_kind = 'cite_key'
-                     LIMIT 1) AS slug,
+                     ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
                    o.title
               FROM links l
               JOIN refs o ON o.ref_id = l.dst_ref_id

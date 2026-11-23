@@ -814,7 +814,7 @@ _CHILD_COLS = """
     r.ref_id, r.kind, r.title,
     (SELECT ri.id_value FROM ref_identifiers ri
       WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key'
-      LIMIT 1) AS slug,
+      ORDER BY ri.created_at, ri.id_value LIMIT 1) AS slug,
     r.updated_at, r.meta
 """
 
