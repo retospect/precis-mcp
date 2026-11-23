@@ -110,7 +110,7 @@ def _dangling_rewrite(store: Store) -> tuple[int, int, str]:
     old = _memory(store, "Former source.")
     store.stamp_ref_meta(old, {"superseded_by": successor})
     store.retire_ref(old)
-    body = f"See me{old} for the source.  {KEPT_A}\n{KEPT_B}\n"
+    body = f"See [me{old}] for the source.  {KEPT_A}\n{KEPT_B}\n"
     target = _memory(store, body)
     candidate = next(
         c for c in cand.dangling_mention_candidates(store) if c.target_id == target

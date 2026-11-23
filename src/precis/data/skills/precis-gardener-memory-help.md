@@ -95,9 +95,11 @@ includes `anchor_rot`. The cadence adds `memory-change` after a
 consumer-off trial. Check the job's `params.pass` for the passes it selected.
 Proposal evidence and `view='smells'` carry detector names.
 
-- `memory` — `dangling_mention` (a handle naming a retired ref; the
-  consolidation log and its archive are skipped, their handles record
-  past actions),
+- `memory` — `dangling_mention` checks retired handles. Cite a short
+  handle as `[pa3]`, `[source](pa3)`, or `pa3~2`. Use `[[PA3]]` for an
+  uppercase address. Bare `pa1234` counts on its own. A URL containing
+  `PA3` or a measurement like `PA3~2mm` stays literal. The consolidation
+  log and archive keep historical references. This pass also checks
   `thread_shape` (a thread node whose `Left:` is missing or done),
   `anchor_rot` (a cited path/symbol/section/commit no longer resolves
   on main), `compact` (expired, cold-decaying or half-history, or

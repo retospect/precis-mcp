@@ -376,7 +376,7 @@ def test_anchor_rejections_do_not_hide_mentions_or_repo_changes(
 ) -> None:
     retired = _memory(store, "Old facts")
     store.retire_ref(retired)
-    target = _memory(store, f"scripts/missing me{retired}")
+    target = _memory(store, f"scripts/missing [me{retired}]")
     (anchor,) = cand.anchor_rot_candidates(store)
     (mention,) = cand.dangling_mention_candidates(store)
     record_rejection(

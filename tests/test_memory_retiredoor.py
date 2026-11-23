@@ -92,7 +92,7 @@ def test_unlinked_live_mention_refuses_with_both_ways_out(hub: Hub) -> None:
 def test_force_lists_sentence_and_leaves_successorless_candidate(hub: Hub) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     old = _memory(store, "Old truth.")
-    sentence = f"Use me{old} for the current build procedure."
+    sentence = f"Use [me{old}] for the current build procedure."
     source = _memory(store, "Unrelated first sentence. " + sentence)
 
     ack = handler.delete(id=old, force=True, reason="The procedure is obsolete").body
@@ -443,7 +443,7 @@ def test_md_section_successor_redirects_and_preserves_tombstone(
     )
     MdHandler(hub=runtime.hub, roots={"main": tmp_path})._register_with(runtime.hub)
     old = _memory(store, "Obsolete procedure kept for audit.")
-    source = _memory(store, f"Use me{old} for builds.")
+    source = _memory(store, f"Use [me{old}] for builds.")
     address = "md:main/docs/example.md~current"
 
     ack = handler.delete(id=old, superseded_by=address).body
@@ -535,7 +535,7 @@ def test_python_successor_redirects_and_preserves_tombstone(
     _python_repo(tmp_path)
     PythonHandler(hub=runtime.hub, roots={"main": tmp_path})._register_with(runtime.hub)
     old = _memory(store, "Obsolete procedure kept for audit.")
-    source = _memory(store, f"Use me{old} for builds.")
+    source = _memory(store, f"Use [me{old}] for builds.")
 
     ack = handler.delete(id=old, superseded_by=address).body
 

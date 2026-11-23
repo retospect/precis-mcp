@@ -143,7 +143,7 @@ def _proposal(
         successor = _memory(store, "Current source.")
         retired = _memory(store, "Former source.", meta={"superseded_by": successor})
         store.retire_ref(retired)
-        body = f"Résumé: use me{retired}.\r\nCompare me{retired}.  \n\n"
+        body = f"Résumé: use [me{retired}].\r\nCompare [me{retired}].  \n\n"
         target = _memory(store, body, origin=origin)
         candidates = cand.dangling_mention_candidates(store)
     else:
@@ -311,6 +311,8 @@ def test_rewrite_undo_restores_bytes_and_outgoing_provenance(
 ) -> None:
     route = _memory(store, "Source route.")
     evidence = _memory(store, "Evidence supporting the retained claim.")
+    with store.pool.connection() as conn:
+        conn.execute("ALTER SEQUENCE refs_ref_id_seq RESTART WITH 1000")
     old = _memory(store, "Old source.")
     successor = _memory(store, "Current source.")
     store.stamp_ref_meta(old, {"superseded_by": successor})
@@ -565,7 +567,7 @@ def test_undo_recomputes_shape_flags_for_restored_body(store: Store, hub: Hub) -
     successor = _memory(store, "Current evidence.")
     old = _memory(store, "Former evidence.", meta={"superseded_by": successor})
     store.retire_ref(old)
-    body = f"The evidence remains at me{old}."
+    body = f"The evidence remains at [me{old}]."
     handler = MemoryHandler(hub=hub)
     target = id_of(
         handler.put(title="Memory writes retain their evidence", text=body).body
@@ -662,7 +664,7 @@ def test_rewrite_undo_preserves_header_card_links(store: Store, direction: str) 
     successor = _memory(store, "Current evidence.")
     old = _memory(store, "Former evidence.", meta={"superseded_by": successor})
     store.retire_ref(old)
-    body = f"The evidence remains at me{old}."
+    body = f"The evidence remains at [me{old}]."
     target = _memory(store, body)  # The fixed title differs from the body lead.
     neighbour = _memory(store, "An adjacent source.")
     with revision_context(trust_origin="generated", trust_actor_type="agent"):
@@ -763,7 +765,7 @@ def test_rewrite_refuses_links_anchoring_measures_before_mutation(
     successor = _memory(store, "Current source.")
     old = _memory(store, "Former source.", meta={"superseded_by": successor})
     store.retire_ref(old)
-    target = _memory(store, f"Recorded temperature 300 K. Source me{old}.")
+    target = _memory(store, f"Recorded temperature 300 K. Source [me{old}].")
     candidate = next(
         c for c in cand.dangling_mention_candidates(store) if c.target_id == target
     )
@@ -1287,7 +1289,7 @@ def test_rewrite_derived_title_remaps_header_links_and_undo_restores_identity(
     successor = _memory(store, "Current source.")
     old = _memory(store, "Former source.", meta={"superseded_by": successor})
     store.retire_ref(old)
-    body = f"Source me{old}."
+    body = f"Source [me{old}]."
     target = _memory(store, body)
     neighbour = _memory(store, "An adjacent source.")
     source = neighbour if direction == "incoming" else target
@@ -1314,7 +1316,7 @@ def test_rewrite_derived_title_remaps_header_links_and_undo_restores_identity(
         store, review_id, actor="garden-consumer", model="fixture-reviewer"
     )
 
-    expected_body = f"Source me{successor}."
+    expected_body = f"Source [me{successor}]."
     assert _body(store, target) == expected_body
     ref = store.get_ref(kind="memory", id=target)
     assert ref is not None and ref.title == expected_body
@@ -1406,6 +1408,8 @@ def test_rewrite_refuses_missing_header_mapping_before_any_write(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     successor = _memory(store, "Current source.")
+    with store.pool.connection() as conn:
+        conn.execute("ALTER SEQUENCE refs_ref_id_seq RESTART WITH 1000")
     old = _memory(store, "Former source.", meta={"superseded_by": successor})
     store.retire_ref(old)
     body = f"me{old}"
@@ -2080,7 +2084,7 @@ def test_duplicate_successor_swap_applies_without_review(
     else:
         store.add_link(src_ref_id=successor, dst_ref_id=retired, relation="supersedes")
         store.retire_ref(retired)
-    body = f"Résumé: use me{retired}.\nCompare me{retired}."
+    body = f"Résumé: use [me{retired}].\nCompare [me{retired}]."
     target = _memory(store, body)
     candidate, review_id = _mention_proposal(store, target)
     assert [
@@ -2091,7 +2095,7 @@ def test_duplicate_successor_swap_applies_without_review(
 
     assert (report.attempts, report.reviewed, report.applied) == (0, 0, 1)
     assert _body(store, target) == (
-        f"Résumé: use me{successor}.\nCompare me{successor}."
+        f"Résumé: use [me{successor}].\nCompare [me{successor}]."
     )
     rewrite_id = f"garden-rewrite:{target}:{review_id}"
     assert report.mentions == [rewrite_id]
@@ -2120,7 +2124,7 @@ def test_different_title_supersedes_stays_on_the_reviewed_path(
     retired = _memory(store, "Former facts.")
     store.add_link(src_ref_id=successor, dst_ref_id=retired, relation="supersedes")
     store.retire_ref(retired)
-    target = _memory(store, f"Résumé: use me{retired}.")
+    target = _memory(store, f"Résumé: use [me{retired}].")
     candidate, review_id = _mention_proposal(store, target)
     assert candidate.evidence["mentions"][0]["duplicate_successor"] is None
 
@@ -2131,7 +2135,7 @@ def test_different_title_supersedes_stays_on_the_reviewed_path(
     garden = _applied_decision(store, target, review_id)
     assert garden["applied"] == f"garden-rewrite:{target}:{review_id}"
     assert "spans" not in garden
-    assert _body(store, target) == f"Résumé: use me{successor}."
+    assert _body(store, target) == f"Résumé: use [me{successor}]."
 
 
 def test_meta_successor_without_merge_or_edge_stays_reviewed(
@@ -2155,7 +2159,7 @@ def test_duplicate_successor_apply_is_gated_by_memory_apply_flag(
     winner = _memory(store, "Current facts.")
     loser = _memory(store, "Former facts.")
     doors.apply_merge(store, loser, winner, actor="fixture")
-    body = f"Résumé: use me{loser}."
+    body = f"Résumé: use [me{loser}]."
     target = _memory(store, body)
     _candidate, review_id = _mention_proposal(store, target)
 
@@ -2176,7 +2180,7 @@ def test_mixed_mentions_stay_on_the_reviewed_path(
     other = _memory(store, "Other source.")
     plain = _memory(store, "Plain source.", meta={"superseded_by": other})
     store.retire_ref(plain)
-    target = _memory(store, f"Résumé: use me{loser}; compare me{plain}.")
+    target = _memory(store, f"Résumé: use [me{loser}]; compare [me{plain}].")
     candidate, review_id = _mention_proposal(store, target)
     assert [
         mention["duplicate_successor"] for mention in candidate.evidence["mentions"]
@@ -2197,7 +2201,7 @@ def test_duplicate_successor_swap_holds_a_protected_memory(
     winner = _memory(store, "Current facts.")
     loser = _memory(store, "Former facts.")
     doors.apply_merge(store, loser, winner, actor="fixture")
-    body = f"Résumé: use me{loser}."
+    body = f"Résumé: use [me{loser}]."
     target = _memory(store, body, origin="human")
     _candidate, review_id = _mention_proposal(store, target)
 
@@ -2233,7 +2237,7 @@ def test_merge_then_redirect_past_winner_stays_reviewed(
         store.retire_ref(winner)
     else:
         doors.apply_merge(store, winner, final, actor="fixture")
-    target = _memory(store, f"Résumé: use me{loser}.")
+    target = _memory(store, f"Résumé: use [me{loser}].")
     candidate, review_id = _mention_proposal(store, target)
     mention = candidate.evidence["mentions"][0]
     assert mention["successor"] == f"me{final}"
@@ -2246,4 +2250,4 @@ def test_merge_then_redirect_past_winner_stays_reviewed(
     garden = _applied_decision(store, target, review_id)
     assert garden["applied"] == f"garden-rewrite:{target}:{review_id}"
     assert "spans" not in garden
-    assert _body(store, target) == f"Résumé: use me{final}."
+    assert _body(store, target) == f"Résumé: use [me{final}]."

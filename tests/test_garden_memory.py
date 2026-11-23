@@ -60,7 +60,8 @@ def test_retired_mentions_pin_spans_and_record_rewrite(
         store.add_link(src_ref_id=successor, dst_ref_id=retired, relation="supersedes")
     store.retire_ref(retired)
     body = (
-        "Unrelated preamble. " * 40 + f"Facts are at me{retired}; compare me{retired}."
+        "Unrelated preamble. " * 40
+        + f"Facts are at [me{retired}]; compare [me{retired}]."
     )
     target = _memory(store, body)
 
@@ -99,12 +100,50 @@ def test_mentions_ignore_live_wrong_kind_retired_body_and_dream(store: Store) ->
     retired = _memory(store, "Old")
     store.retire_ref(retired)
     live = _memory(store, "Current")
-    _memory(store, f"Live me{live}; wrong kind gr{retired}; partial xme{retired}.")
-    old_source = _memory(store, f"me{retired}")
+    _memory(
+        store, f"Live [me{live}]; wrong kind [gr{retired}]; partial [xme{retired}]."
+    )
+    old_source = _memory(store, f"[me{retired}]")
     store.retire_ref(old_source)
-    dream = _memory(store, f"me{retired}")
+    dream = _memory(store, f"[me{retired}]")
     store.add_tag(dream, Tag.closed("DREAM", "speculative"), set_by="system")
     assert cand.dangling_mention_candidates(store) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Marks PA1 to PA3, PB0 and PB1 unused.", []),
+        ("Pins pa3, Pa3 and pA3.", []),
+        ("Labelled [PA3] in the pin table.", []),
+        ("[datasheet](https://example.com/PA3)", []),
+        ("[pa3](https://example.com/pa1234) [[folder/pa1234]]", []),
+        ("Approximate: PA3~2mm, pa3~1..3mm and pa1234~2mm.", []),
+        ("Invalid ranges: PA3~1.. and [see](PA3~1..3mm).", []),
+        ("PA3~2#fragment and PA3~2/path.", []),
+        ("[pa3] [[ PA3 ]] [the source]( PA3~p2 )", ["pa3", "PA3", "PA3"]),
+        ("See PA3~2, PA3~p2 and PA3~1..3.", ["PA3", "PA3", "PA3"]),
+        ("Bare citations pa123, PA1234 and pa1234.", ["pa1234"]),
+    ],
+)
+def test_reference_handle_spans(body: str, expected: list[str]) -> None:
+    matches = cand._reference_handle_matches(body)
+    assert [body[slice(*match.span())] for match in matches] == expected
+
+
+def test_mentions_require_reference_context_for_short_handles(store: Store) -> None:
+    retired = store.insert_ref(kind="paper", slug="old-paper", title="Old paper")
+    store.retire_ref(retired.id)
+    handle = f"pa{retired.id}"
+    pin = handle.upper()
+    _memory(store, f"Pin {pin} stays free in the pin table ({handle}).")
+    _memory(store, f"[datasheet](https://example.com/{pin}) and {pin}~2mm.")
+    cited = _memory(store, f"See [{handle}] and [the source]({pin}) plus {pin}~2.")
+
+    (candidate,) = cand.dangling_mention_candidates(store)
+
+    assert candidate.target_id == cited
+    assert [op["find"] for op in candidate.payload["ops"]] == [handle, pin, pin]
 
 
 def test_mentions_keep_retired_handles_in_consolidation_history(
@@ -115,7 +154,7 @@ def test_mentions_keep_retired_handles_in_consolidation_history(
     retired = _memory(store, "Former scope")
     store.retire_ref(replaced)
     store.retire_ref(retired)
-    body = f"2026-11-05: moved me{replaced}; both now qualify me{retired}."
+    body = f"2026-11-05: moved [me{replaced}]; both now qualify [me{retired}]."
     log = _memory(store, body)
     archive = _memory(store, "Consolidation log archive")
     year = _memory(store, "2026 entries")
@@ -123,7 +162,7 @@ def test_mentions_keep_retired_handles_in_consolidation_history(
     store.add_link(src_ref_id=year, dst_ref_id=archive, relation="part-of")
     store.add_link(src_ref_id=entry, dst_ref_id=year, relation="part-of")
     monkeypatch.setattr(cand, "_CONSOLIDATION_LOG_ROOTS", (log, archive))
-    reference = _memory(store, f"Current scope: me{replaced} and me{retired}.")
+    reference = _memory(store, f"Current scope: [me{replaced}] and [me{retired}].")
     for rid in (entry, reference):
         store.add_tag(rid, Tag.open("section:reference"), set_by="system")
     store.add_link(src_ref_id=reference, dst_ref_id=archive, relation="cites")
@@ -149,7 +188,7 @@ def test_successor_chain_only_rewrites_to_live_end(
         store, "Old", meta={"superseded_by": f"me{middle}" if as_handle else middle}
     )
     store.retire_ref(old)
-    _memory(store, f"Source me{old}")
+    _memory(store, f"Source [me{old}]")
     (candidate,) = cand.dangling_mention_candidates(store)
     expected = f"me{end}" if live_end else None
     assert candidate.payload["ops"][0]["text"] == expected
@@ -179,7 +218,7 @@ def test_converted_meta_successor_uses_current_handle(store: Store) -> None:
     )
     old = _memory(store, "Old", meta={"superseded_by": f"pa{successor.id}"})
     store.retire_ref(old)
-    _memory(store, f"Use me{old} for builds.")
+    _memory(store, f"Use [me{old}] for builds.")
 
     (candidate,) = cand.dangling_mention_candidates(store)
 
@@ -221,7 +260,7 @@ def test_mentions_cap_bounds_evidence_and_ops(store: Store, extra: int) -> None:
     old = _memory(store, "Old")
     store.retire_ref(old)
     live = _memory(store, "Live")
-    body = (f"me{live} " * 25) + (f"me{old} " * (cand.MENTION_MATCH_CAP + extra))
+    body = (f"[me{live}] " * 25) + (f"[me{old}] " * (cand.MENTION_MATCH_CAP + extra))
     _memory(store, body)
     (candidate,) = cand.dangling_mention_candidates(store)
     assert len(candidate.evidence["mentions"]) == cand.MENTION_MATCH_CAP
@@ -235,7 +274,7 @@ def test_mentions_cap_bounds_evidence_and_ops(store: Store, extra: int) -> None:
 def test_mentions_cursor_does_not_skip_when_limit_fills(store: Store) -> None:
     retired = _memory(store, "Old")
     store.retire_ref(retired)
-    targets = [_memory(store, f"me{retired}") for _ in range(3)]
+    targets = [_memory(store, f"[me{retired}]") for _ in range(3)]
     cursor: dict[str, int] = {}
     seen: list[int] = []
     for _ in targets:
@@ -264,7 +303,7 @@ def test_chunk_mention_joins_retired_owner_without_guessing_replacement(
         ).fetchone()
     assert row is not None
     store.retire_ref(paper.id)
-    target = _memory(store, f"Evidence pc{row[0]}.")
+    target = _memory(store, f"Evidence [pc{row[0]}].")
     found = cand.dangling_mention_candidates(store)
     assert len(found) == 1 and found[0].target_id == target
     op = found[0].payload["ops"][0]

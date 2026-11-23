@@ -69,7 +69,9 @@ tombstone successor must resolve to a live ref within 16 cycle-checked
 hops, keeping converted kinds' redirect, and a successor that is a verified
 duplicate (merge-made redirect to the recorded winner, or a same-title
 ``supersedes`` — ``evidence.mentions[].duplicate_successor``) applies with
-no model call (``garden.applied='mention'``, gr564554). ``grab_bag`` flags a
+no model call (``garden.applied='mention'``, gr564554). Short handle-shaped
+tokens need reference context because GPIO pins and other domain terms can
+share their spelling (gr761704). ``grab_bag`` flags a
 multi-claim title smell or >=4 top-level items whose sentence embeddings
 cluster into >=3 groups; the reviewed split mints atomic children pinned to
 the detector's sentence spans, then retires the parent
@@ -163,8 +165,13 @@ from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline, deadline_at
+from precis.utils.handle_registry import (
+    CODE_LEN,
+    NAV_SEL_PATTERN,
+    TABLE_SEL_PATTERN,
+    try_format,
+)
 from precis.utils.handle_registry import parse as parse_handle
-from precis.utils.handle_registry import try_format
 from precis.utils.lexical import content_words, lexical_overlap
 from precis.utils.memory_threads import (
     CAMPAIGN_RANGE_TITLE,
@@ -175,6 +182,7 @@ from precis.utils.memory_threads import (
     left_is_done,
     memory_expiry_shape,
 )
+from precis.utils.mentions import BARE_HANDLE_PATTERN, DRAFT_MARKUP_PATTERN
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -718,12 +726,54 @@ def memory_handle_mentions(body: str, handle: str) -> list[re.Match[str]]:
 
     Bare prose tokens count as mentions product-wide (gr702966): the
     web reader autolinks them, the write-time sync links and warns on
-    them, and the retire guard here counts them.
+    them, and the retire guard here counts them. The
+    :func:`dangling_mention_candidates` sweep is stricter — see
+    :func:`_reference_handle_matches`.
     """
     wanted = parse_handle(handle)
     return [
         m for m in _MEMORY_HANDLE.finditer(body) if parse_handle(m.group()) == wanted
     ]
+
+
+# Match complete markup first so its labels and external destinations do
+# not fall through to the prose grammar. Reuse the shared bare-token
+# boundaries to keep path segments and hyphenated compounds literal.
+_REFERENCE_CONTEXT = re.compile(
+    DRAFT_MARKUP_PATTERN.pattern + "|" + BARE_HANDLE_PATTERN.pattern
+)
+_REFERENCE_SELECTOR = rf"~(?:{NAV_SEL_PATTERN}|{TABLE_SEL_PATTERN})"
+_MARKUP_HANDLE = re.compile(rf"[A-Za-z]{{2}}[0-9]{{1,19}}(?:{_REFERENCE_SELECTOR})?")
+# A sentence-ending period is fine. A dotted suffix or incomplete range
+# is still part of the address, as are units in e.g. PA3~2mm.
+_PROSE_SELECTOR = re.compile(
+    rf"""~{NAV_SEL_PATTERN}(?=$|[\s,;:!?)}}\]'"`]|\.(?![\w.]))"""
+)
+
+
+def _reference_handle_matches(body: str) -> list[re.Match[str]]:
+    """Return the base handle spans eligible for a dangling-mention rewrite."""
+    found: list[re.Match[str]] = []
+    for context in _REFERENCE_CONTEXT.finditer(body):
+        bare = context.group("bhandle")
+        if bare is not None:
+            start, end = context.span("bhandle")
+            if body.startswith("~", end):
+                if _PROSE_SELECTOR.match(body, end) is None:
+                    continue
+            elif len(bare) - CODE_LEN < 4 or not bare.islower():
+                # Match the four-digit floor used for bare export citations.
+                continue
+        else:
+            group = next(g for g in ("auth", "tgt", "bare") if context[g] is not None)
+            address = context.group(group)
+            if _MARKUP_HANDLE.fullmatch(address.strip()) is None:
+                continue
+            start = context.start(group) + len(address) - len(address.lstrip())
+        match = _MEMORY_HANDLE.match(body, start)
+        if match is not None:
+            found.append(match)
+    return found
 
 
 #: Bound redirect reads and per-memory prompt evidence independently of scan_cap.
@@ -1060,6 +1110,10 @@ def dangling_mention_candidates(
     semantic review — except a verified ``duplicate_successor`` mention
     (``"merge"``/``"same_title"``; see :func:`_duplicate_successor`), whose
     bare handle swap the consumer applies with no model call (gr564554).
+    The token scan is narrower than the shared mention grammar
+    (:func:`_reference_handle_matches`, gr761704): short handles need a
+    complete reference address, so GPIO pin names such as ``PA3`` do
+    not re-flag retired ``pa3`` every pass.
     No write/apply path is invoked here. The dispatcher
     supplies the same deadline as every other wide scan.
     """
@@ -1070,7 +1124,7 @@ def dangling_mention_candidates(
         store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
     )
     bodies = _memory_bodies(store, window, exclude_subtrees=_CONSOLIDATION_LOG_ROOTS)
-    matches = {rid: list(_MEMORY_HANDLE.finditer(body)) for rid, body, _ in bodies}
+    matches = {rid: _reference_handle_matches(body) for rid, body, _ in bodies}
     retired = _retired_mentions(
         store, {m.group() for spans in matches.values() for m in spans}
     )

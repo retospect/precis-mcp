@@ -69,9 +69,13 @@ trust acts retain the original model string.
    ``untagged`` (a ref missing a namespace its kind already uses),
    ``polysemy`` (split signals), ``sibling_confusion`` (exclusive-axis
    siblings one classification run can't tell apart).
-   The ``memory`` pass adds ``dangling_mention`` (a handle naming a
-   retired ref outside the consolidation log and archive, where historical
-   handles document past actions), ``grab_bag`` (one memory carrying many independent
+   The ``memory`` pass adds ``dangling_mention``. A retired handle counts
+   in prose when lowercase with four or more digits. Short handles and
+   handles with uppercase letters need a citation, a complete internal link
+   destination, or a complete navigation selector. This keeps GPIO
+   pin names out of recurring reviews (gr761704). The consolidation log
+   and archive keep their historical references. The pass also adds
+   ``grab_bag`` (one memory carrying many independent
    claims — a split candidate), ``thread_shape`` (a thread ``Left:``
    missing or done, or a Left-line sha confirmed on ``origin/prod``),
    ``anchor_rot`` (a cited file/symbol, path, section or sha anchor no
