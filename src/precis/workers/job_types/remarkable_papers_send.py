@@ -154,7 +154,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         name = e.title or e.slug
         ctx.append_chunk("job_event", f"uploading {i}/{total}: {name}")
         sres = send_pdf(
-            e.local_path, folder=folder, display_name=name, store=ctx.store, login=login
+            e.local_path,
+            folder=folder,
+            display_name=name,
+            store=ctx.store,
+            login=login,
+            on_retry=lambda delay: ctx.append_chunk(
+                "job_event", f"reMarkable upload retry in {delay:.2f}s"
+            ),
         )
         if sres.skipped:
             ctx.record_failure(f"remarkable_papers_send: {sres.error}")

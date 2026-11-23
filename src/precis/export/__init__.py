@@ -19,6 +19,11 @@ and retain the retraction year in the reference list for full retractions.
 A verdict is scoped to the notice, cited paper and exact revision of its
 citing block. Edits require the revised claim to be judged again.
 
+reMarkable uploads share the cloud backoff policy across local and
+container rmapi runs. Only rate limits and connection-establishment
+failures allow replay because an interrupted upload may already have
+created the document.
+
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published
 claim artifacts" (:mod:`._nanopub_appendix`), and the "Data package"

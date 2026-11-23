@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -97,7 +98,17 @@ def main() -> int:
         if folder not in ("", "/"):
             parts = [p for p in folder.strip("/").split("/") if p]
             for i in range(len(parts)):
-                _run([rmapi, "mkdir", "/" + "/".join(parts[: i + 1])], env, timeout_s)
+                mkdir = _run([rmapi, "mkdir", "/" + "/".join(parts[: i + 1])], env, timeout_s)
+                if mkdir is None:
+                    return fail(f"rmapi timed out after {timeout_s}s")
+                output = ((mkdir.stdout or "") + (mkdir.stderr or "")).strip()
+                # Surface cloud failures to the host before attempting put.
+                if mkdir.returncode and re.search(
+                    r"\b(?:status(?: code)?[: ]+(?:401|403|429|5[0-9]{2})|dial tcp|TLS handshake timeout)\b",
+                    output,
+                    re.IGNORECASE,
+                ):
+                    return fail("rmapi mkdir failed", mkdir.returncode, output)
         proc = _run([rmapi, "put", str(staged), folder], env, timeout_s)
         if (
             proc is not None

@@ -447,6 +447,114 @@ def _stub_container(
     return script
 
 
+@_needs_posix_stub
+@pytest.mark.parametrize("container", [False, True], ids=["local", "container"])
+@pytest.mark.parametrize(
+    ("operation", "failure", "failures", "attempts", "ok"),
+    [
+        ("put", "auth.go:53: request failed with status 429", 2, 3, True),
+        ("mkdir", "request failed with status 429", 1, 2, True),
+        ("put", "request failed with status 429", 4, 4, False),
+        ("put", "request failed with status 503", 1, 1, False),
+        ("mkdir", "request failed with status 401", 1, 1, False),
+        ("put", "dial tcp: connect: connection refused", 1, 2, True),
+    ],
+)
+def test_send_pdf_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vault_box: dict[str, str],
+    container: bool,
+    operation: str,
+    failure: str,
+    failures: int,
+    attempts: int,
+    ok: bool,
+) -> None:
+    from precis.utils.http import reset_circuit
+
+    reset_circuit("remarkable")
+    calls = tmp_path / "attempts.log"
+    rmapi = tmp_path / "rmapi"
+    rmapi.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env python3
+            import sys
+            from pathlib import Path
+
+            log = Path({str(calls)!r})
+            previous = log.read_text() if log.exists() else ""
+            operation = sys.argv[1]
+            log.write_text(previous + operation + "\\n")
+            if operation == {operation!r} and previous.splitlines().count(operation) < {failures!r}:
+                print({failure!r}, file=sys.stderr)
+                sys.exit(1)
+            """
+        ),
+        encoding="utf-8",
+    )
+    rmapi.chmod(0o700)
+    monkeypatch.setenv("PRECIS_RMAPI_BIN", str(rmapi))
+    monkeypatch.delenv("PRECIS_REMARKABLE_IMAGE", raising=False)
+    if container:
+        runner = (
+            Path(__file__).resolve().parents[1]
+            / "docker/remarkable/precis-remarkable-run"
+        )
+        stub = tmp_path / "container"
+        stub.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env python3
+                import os
+                import sys
+
+                for arg in sys.argv:
+                    if arg.endswith(":/work/in:ro"):
+                        os.environ["PRECIS_RM_IN"] = arg.removesuffix(":/work/in:ro")
+                    if arg.endswith(":/work/out"):
+                        os.environ["PRECIS_RM_OUT"] = arg.removesuffix(":/work/out")
+                os.execv(sys.executable, [sys.executable, {str(runner)!r}])
+                """
+            ),
+            encoding="utf-8",
+        )
+        stub.chmod(0o700)
+        monkeypatch.setenv("PRECIS_CONTAINER_BIN", str(stub))
+        monkeypatch.setenv("PRECIS_REMARKABLE_IMAGE", "precis-remarkable:test")
+
+    def fake_sleep(delay: float) -> bool:
+        sleeps.append(delay)
+        return False
+
+    sleeps: list[float] = []
+    events: list[float] = []
+    monkeypatch.setattr(rm.liveness, "drain_sleep", fake_sleep)
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
+    try:
+        result = rm.send_pdf(
+            _pdf(tmp_path),
+            folder="/Precis",
+            store=_fake_store(),
+            login="reto",
+            on_retry=events.append,
+        )
+    finally:
+        reset_circuit("remarkable")
+
+    assert result.ok is ok
+    if not ok:
+        assert failure in result.output
+    commands = calls.read_text(encoding="utf-8").splitlines()
+    assert commands.count(operation) == attempts
+    if operation == "mkdir":
+        assert commands.count("put") == int(ok)
+    assert events == sleeps
+    assert len(sleeps) == attempts - 1
+    assert all(0 <= delay <= 2.0 * 2**index for index, delay in enumerate(sleeps))
+
+
 def test_build_container_argv_invariants(tmp_path) -> None:
     ind, outd = tmp_path / "in", tmp_path / "out"
     argv = rm.build_container_argv(

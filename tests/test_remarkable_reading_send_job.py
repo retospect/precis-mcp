@@ -144,7 +144,13 @@ def _stub_send(
     calls: list[dict[str, Any]] = []
 
     def fake_send_pdf(
-        path: Any, *, folder: str, display_name: str, store: Any, login: Any
+        path: Any,
+        *,
+        folder: str,
+        display_name: str,
+        store: Any,
+        login: Any,
+        on_retry: Any,
     ) -> SendResult:
         calls.append(
             {

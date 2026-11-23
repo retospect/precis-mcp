@@ -182,6 +182,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 display_name=f"{name} — reading",
                 store=ctx.store,
                 login=login,
+                on_retry=lambda delay: ctx.append_chunk(
+                    "job_event", f"reMarkable upload retry in {delay:.2f}s"
+                ),
             )
         if sres.skipped:
             ctx.record_failure(f"remarkable_reading_send: {sres.error}")

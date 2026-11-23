@@ -169,7 +169,8 @@ def test_dispatch_happy_path_two_present_sources(hub: Hub, monkeypatch: Any) -> 
 
     calls: list[dict[str, Any]] = []
 
-    def fake_send_pdf(path, *, folder, display_name, store, login):
+    def fake_send_pdf(path, *, folder, display_name, store, login, on_retry):
+        on_retry(1.5)
         calls.append(
             {
                 "path": path,
@@ -195,6 +196,7 @@ def test_dispatch_happy_path_two_present_sources(hub: Hub, monkeypatch: Any) -> 
 
     assert not ctx.failures, ctx.failures
     assert len(calls) == 2
+    assert ctx.events.count(("job_event", "reMarkable upload retry in 1.50s")) == 2
     assert calls[0]["folder"] == f"/Precis/{slug}"
     assert calls[0]["display_name"] == "Title of smith2024"
     assert calls[1]["display_name"] == "Title of jones2022"
@@ -262,7 +264,7 @@ def test_dispatch_one_upload_fails_names_the_slug(hub: Hub, monkeypatch: Any) ->
 
     seen_slugs: list[str] = []
 
-    def fake_send_pdf(path, *, folder, display_name, store, login):
+    def fake_send_pdf(path, *, folder, display_name, store, login, on_retry):
         seen_slugs.append(display_name)
         ok = "smith" not in display_name
         return SendResult(
@@ -301,7 +303,7 @@ def test_dispatch_mid_run_credential_or_binary_loss(
 
     monkeypatch.setattr(sources_mod, "collect_cited_sources", lambda store, ref: bundle)
 
-    def fake_send_pdf(path, *, folder, display_name, store, login):
+    def fake_send_pdf(path, *, folder, display_name, store, login, on_retry):
         return SendResult(
             ok=False,
             folder=folder,

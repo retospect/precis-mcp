@@ -43,11 +43,17 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from email.message import Message
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.error import HTTPError
 
-from precis import secrets
+import httpx
+
+from precis import liveness, secrets
+from precis.utils.http import VendorUnavailable, call_with_backoff
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -286,6 +292,60 @@ class SendResult:
     error: str = ""
 
 
+# rmapi reports HTTP status and Go connection errors as process output.
+_STATUS_RE = re.compile(
+    r"\bstatus(?: code)?[: ]+(401|403|429|5[0-9]{2})\b", re.IGNORECASE
+)
+_CONNECT_RE = re.compile(r"\b(?:dial tcp|TLS handshake timeout)\b", re.IGNORECASE)
+
+
+class _RmapiHttpError(HTTPError):
+    def __init__(self, status: int, result: SendResult) -> None:
+        super().__init__("", status, result.error, Message(), None)
+        self.result = result
+
+
+class _RmapiConnectError(httpx.ConnectError):
+    def __init__(self, result: SendResult) -> None:
+        super().__init__(result.error)
+        self.result = result
+
+
+def _raise_classified_failure(result: SendResult, output: str) -> None:
+    if result.ok:
+        return
+    if match := _STATUS_RE.search(output):
+        raise _RmapiHttpError(int(match[1]), result)
+    if _CONNECT_RE.search(output):
+        raise _RmapiConnectError(result)
+
+
+def _send_with_backoff(
+    attempt: Callable[[], SendResult],
+    *,
+    folder: str,
+    name: str,
+    on_retry: Callable[[float], None] | None,
+) -> SendResult:
+    def wait(seconds: float) -> None:
+        if on_retry is not None:
+            on_retry(seconds)
+        liveness.drain_sleep(seconds)
+
+    try:
+        return call_with_backoff(
+            attempt,
+            service="remarkable",
+            idempotent=False,
+            retry_if=lambda exc: isinstance(exc, (_RmapiHttpError, _RmapiConnectError)),
+            sleep=wait,
+        )
+    except (_RmapiHttpError, _RmapiConnectError) as exc:
+        return exc.result
+    except VendorUnavailable as exc:
+        return SendResult(False, folder, name, -1, "", error=str(exc))
+
+
 def send_pdf(
     pdf_path: Path | str,
     *,
@@ -294,6 +354,7 @@ def send_pdf(
     store: Store | None = None,
     login: str | None = None,
     timeout_s: int | None = None,
+    on_retry: Callable[[float], None] | None = None,
 ) -> SendResult:
     """Upload a compiled PDF to the reMarkable cloud under ``folder``.
 
@@ -305,7 +366,8 @@ def send_pdf(
     so the tablet doesn't show ``main``. ``login`` is required to resolve a
     credential — it identifies whose paired device (see :func:`_config_body`)
     to upload to; without it the result is ``skipped=True, error="no
-    reMarkable device paired for this user"``.
+    reMarkable device paired for this user"``. ``on_retry`` receives the
+    backoff delay in seconds before each retry.
     """
     pdf_path = Path(pdf_path)
     name = _safe_name(display_name or pdf_path.stem)
@@ -353,6 +415,7 @@ def send_pdf(
             body=body,
             image=image,
             timeout_s=timeout_s,
+            on_retry=on_retry,
         )
 
     # In-process path: rmapi must be on PATH (dev + tests, via the stub).
@@ -378,39 +441,59 @@ def send_pdf(
         staged = tmp / f"{name}.pdf"
         shutil.copyfile(pdf_path, staged)
         env = {**os.environ, "RMAPI_CONFIG": str(cfg)}
-        # Best-effort create the destination folder (root always exists).
-        # rmapi's mkdir is NOT recursive, so a nested folder like
-        # "/Precis/173020" needs each ancestor created in turn; an "already
-        # exists" failure at any step is fine — the put is what matters.
-        if folder not in ("", "/"):
-            parts = [p for p in folder.strip("/").split("/") if p]
-            for i in range(len(parts)):
-                _run(
-                    [_rmapi_bin(), "mkdir", "/" + "/".join(parts[: i + 1])],
-                    env,
-                    timeout_s,
-                )
-        proc = _run([_rmapi_bin(), "put", str(staged), folder], env, timeout_s)
 
+        def attempt() -> SendResult:
+            # rmapi mkdir is nonrecursive. Existing ancestors are harmless,
+            # but a transient failure should stop the attempt before put.
+            parts = [part for part in folder.split("/") if part]
+            for depth in range(1, len(parts) + 1):
+                ancestor = "/" + "/".join(parts[:depth])
+                mkdir = _rmapi_result(
+                    _run([_rmapi_bin(), "mkdir", ancestor], env, timeout_s),
+                    folder,
+                    name,
+                    timeout_s,
+                    operation="mkdir",
+                )
+                if not mkdir.ok and mkdir.returncode == -1:
+                    return mkdir
+            return _rmapi_result(
+                _run([_rmapi_bin(), "put", str(staged), folder], env, timeout_s),
+                folder,
+                name,
+                timeout_s,
+                operation="put",
+            )
+
+        return _send_with_backoff(attempt, folder=folder, name=name, on_retry=on_retry)
+
+
+def _rmapi_result(
+    proc: subprocess.CompletedProcess[str] | None,
+    folder: str,
+    name: str,
+    timeout_s: int,
+    *,
+    operation: str,
+) -> SendResult:
     if proc is None:
         return SendResult(
-            ok=False,
-            folder=folder,
-            name=name,
-            returncode=-1,
-            output="",
-            error=f"rmapi timed out after {timeout_s}s",
+            False, folder, name, -1, "", error=f"rmapi timed out after {timeout_s}s"
         )
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     ok = proc.returncode == 0
-    return SendResult(
+    result = SendResult(
         ok=ok,
         folder=folder,
         name=name,
         returncode=proc.returncode,
         output=out[-2000:],
-        error="" if ok else "rmapi upload failed",
+        error=""
+        if ok
+        else ("rmapi upload failed" if operation == "put" else "rmapi mkdir failed"),
     )
+    _raise_classified_failure(result, out)
+    return result
 
 
 def _run(
@@ -430,6 +513,8 @@ def _run(
         )
     except subprocess.TimeoutExpired:
         return None
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, -1, stderr=str(exc))
 
 
 # ── Container path (docker/remarkable) ─────────────────────────────
@@ -502,8 +587,9 @@ def send_via_container(
     body: str,
     image: str,
     timeout_s: int,
+    on_retry: Callable[[float], None] | None = None,
 ) -> SendResult:
-    """Upload a PDF by running the ``precis-remarkable`` image one-shot.
+    """Upload a PDF by running the ``precis-remarkable`` image once per attempt.
 
     Stages the PDF + a params blob under a scratch ``in``/``out`` pair (under
     ``PRECIS_REMARKABLE_SCRATCH`` when set — a colima-shared path on macOS),
@@ -511,7 +597,29 @@ def send_via_container(
     ``out/result.json`` into a :class:`SendResult`. Never raises — a missing
     result / non-zero exit becomes ``ok=False`` with the captured output.
     """
-    pdf_path = Path(pdf_path)
+
+    def attempt() -> SendResult:
+        return _container_attempt(
+            Path(pdf_path),
+            folder=folder,
+            name=name,
+            body=body,
+            image=image,
+            timeout_s=timeout_s,
+        )
+
+    return _send_with_backoff(attempt, folder=folder, name=name, on_retry=on_retry)
+
+
+def _container_attempt(
+    pdf_path: Path,
+    *,
+    folder: str,
+    name: str,
+    body: str,
+    image: str,
+    timeout_s: int,
+) -> SendResult:
     scratch_root = os.environ.get("PRECIS_REMARKABLE_SCRATCH") or None
     network = (os.environ.get("PRECIS_REMARKABLE_NETWORK") or "").strip() or None
     with tempfile.TemporaryDirectory(prefix="rm-send-", dir=scratch_root) as td:
@@ -565,15 +673,19 @@ def send_via_container(
             output=out[-2000:],
             error="container produced no result.json",
         )
+
+    out = str(data.get("output") or "")
     ok = bool(data.get("ok"))
-    return SendResult(
+    result = SendResult(
         ok=ok,
         folder=str(data.get("folder") or folder),
         name=str(data.get("name") or name),
         returncode=int(data.get("returncode", proc.returncode)),  # type: ignore[call-overload]
-        output=str(data.get("output") or "")[-2000:],
+        output=out[-2000:],
         error="" if ok else str(data.get("error") or "rmapi upload failed"),
     )
+    _raise_classified_failure(result, out)
+    return result
 
 
 __all__ = [

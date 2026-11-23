@@ -192,7 +192,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             return
         ctx.append_chunk("job_event", f"uploading {cres.pdf.name!r} to reMarkable")
         sres = send_pdf(
-            cres.pdf, folder=folder, display_name=title, store=ctx.store, login=login
+            cres.pdf,
+            folder=folder,
+            display_name=title,
+            store=ctx.store,
+            login=login,
+            on_retry=lambda delay: ctx.append_chunk(
+                "job_event", f"reMarkable upload retry in {delay:.2f}s"
+            ),
         )
 
     if sres.ok:
