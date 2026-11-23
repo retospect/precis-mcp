@@ -59,6 +59,17 @@ cannot queue ahead of another session's call. See `_offload_sync`'s
 docstring for how it preserves the wire schema FastMCP derives from
 the wrapped function's introspected signature.
 
+MCP annotations describe the full verb; a client receives them before it
+chooses a kind or mode. ``get`` and ``search`` carry
+``readOnlyHint=true`` — the same two verbs ``READ_ONLY_VERBS`` serves
+alone under ``--read-only``; the only writes behind them are lookup
+cache refreshes, telemetry, and a ``get`` DOI-ingest mint that is
+opt-in and refuses under a read-only scope
+(``handlers/paper.py::_queue_doi_ingest``). The four additive write
+verbs (``put``/``edit``/``tag``/``link``) carry
+``destructiveHint=false``; ``delete`` keeps ``destructiveHint=true``
+because its file-removal mode destroys a stored file.
+
 The runtime — including the postgres connection pool — is built before
 `mcp.run()` and torn down after it returns. The FastMCP loop and the
 `_offload_sync` wrappers are the only async code; everything below
@@ -129,14 +140,15 @@ if TYPE_CHECKING:
 # cause / options / next`` text.
 _TOOL_KW: dict[str, Any] = {"structured_output": False}
 
-#: MCP ``ToolAnnotations`` per verb, only where the hint holds for every
-#: kind behind the verb (docs/conventions/mcp-authoring.md § Tool
-#: annotations). put/edit/tag/link are mixed per kind and carry none.
-#: Client UX hints, not a gate — the dispatcher is the gate.
+#: MCP tool-wide hints. See docs/conventions/mcp-authoring.md.
 _VERB_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "get": ToolAnnotations(readOnlyHint=True),
     "search": ToolAnnotations(readOnlyHint=True),
-    "delete": ToolAnnotations(destructiveHint=True),
+    "put": ToolAnnotations(readOnlyHint=False, destructiveHint=False),
+    "edit": ToolAnnotations(readOnlyHint=False, destructiveHint=False),
+    "delete": ToolAnnotations(readOnlyHint=False, destructiveHint=True),
+    "tag": ToolAnnotations(readOnlyHint=False, destructiveHint=False),
+    "link": ToolAnnotations(readOnlyHint=False, destructiveHint=False),
 }
 
 

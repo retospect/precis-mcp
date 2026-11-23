@@ -42,6 +42,10 @@ plugins and bridges sharing the repo:
   so the instructions are reachable with the credential that received them.
   The live voice skill pointer also rides both surfaces because some
   connectors hide initialize instructions and any connection can carry voice.
+  Typed MCP annotations mark ``get``/``search`` read-only (the same two
+  verbs the ``--read-only`` serve keeps), the additive write verbs
+  non-destructive, and ``delete`` destructive. See
+  ``docs/conventions/mcp-authoring.md`` for the permission hints.
 - *Storage.* ``store/`` (psycopg3 pool, forward-only ``Migrator``, composed
   sub-stores) over ``migrations/``; ``settings.py`` / ``secrets.py`` are the
   DB-resident config and vault layers.

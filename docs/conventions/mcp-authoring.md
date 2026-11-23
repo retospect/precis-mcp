@@ -64,13 +64,32 @@ never a cursor to page through (`src/precis/_result_budget.py`,
 
 ## Tool annotations
 
-The seven verbs carry MCP `ToolAnnotations` only where the hint is true
-for every kind behind the verb: `get` and `search` are
-`readOnlyHint=true`; `delete` is `destructiveHint=true`; `put`, `edit`,
-`tag`, `link` carry none (mixed per kind). Hints are client UX (a
-read-only tool skips the permission prompt), not a gate — the gate is the
-dispatcher (principal, slice scope, confirm doors). Set them in
-`server.py::_register_tools_from_registry`, nowhere per handler.
+MCP publishes `ToolAnnotations` once per tool, before the caller chooses
+a kind or mode. Set them in `server.py::_VERB_ANNOTATIONS`. Clients use
+the hints in their permission UI; the dispatcher enforces principals,
+slice scope and confirmations.
+
+`get` and `search` advertise `readOnlyHint=true`. The server already
+serves exactly these two verbs and no others on a `--read-only` serve
+(`server.py::READ_ONLY_VERBS`), which is the strongest evidence the
+hint is real. The writes behind a lookup are incidental: identifier
+lookups fetch and refresh an expired cached result, and `get` can incur
+a paid Perplexity charge or meter spend — caching and metering do not
+change the read-only classification. The one heavier effect, minting a
+`paper_ingest` job on a DOI miss, requires the caller's explicit
+`args={'queue': …}` opt-in and itself refuses under a read-only scope
+(`src/precis/handlers/paper.py::_queue_doi_ingest`).
+
+`put`, `edit`, `tag` and `link` advertise `readOnlyHint=false` and
+`destructiveHint=false`. Their supported updates are additive — mint
+refs, append body chunks, add tags, add edges. Targeted replacements
+exist (`untags`/`unlink` on a ref, a file-content rewrite), but they
+replace one field of an existing ref and leave the ref itself intact.
+
+`delete` advertises `readOnlyHint=false` and `destructiveHint=true`.
+Numeric-ref retirement is a recoverable soft delete, but the same tool
+removes a stored file in its file-removal mode, so the verb keeps the
+destructive hint.
 
 ## Declaring `args=` keys: `ARGS` → `ARGS_KEYS`
 
@@ -92,7 +111,7 @@ inherits its parent's.
 | 8 | `runtime/dispatch.py::_boundary_rows` (psycopg lock/pool/timeout/operational, httpx timeout/status/transport, `TimeoutError`, `ConnectionError`) and `scrub_upstream`; `tests/test_dispatch_boundary_map.py` has a case per row. A new row needs a case or `test_every_row_has_a_case` fails. |
 | 1, 3–6 | per-handler tests; reviewers check the ack against the effect. |
 | 9 | per-pattern tests, each with an ambiguous input that still refuses (`tests/test_forgiving_inputs.py`). |
-| annotations | `tests/test_tool_annotations.py`: the registered verb → hint table above, and no hint on the mixed verbs. |
+| annotations | `tests/test_tool_annotations.py`: the typed tool hints serialized for `tools/list`. |
 
 Whether an agent *plans* the right calls from a skill is a separate,
 advisory check: `skill-evals.md` (`scripts/skill-eval`).
