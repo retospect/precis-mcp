@@ -758,6 +758,46 @@ def _or_retry(q: str, scope_ref_id: int | None) -> bool:
     return len(q.split()) >= min_words
 
 
+def _rare_paper_refs(conn: Connection, q: str) -> list[int]:
+    """Find live papers carrying the rarest indexed terms of an OR retry.
+
+    Cap work at 32 lexemes and 65 matching chunks per lexeme. A term
+    that exhausts the chunk budget is too expensive to classify as rare.
+    Count distinct papers so repeated mentions do not increase frequency.
+    """
+    rows = conn.execute(
+        f"""
+        WITH terms AS MATERIALIZED (
+            SELECT unnest(tsvector_to_array(to_tsvector('english', %s))) AS term
+            LIMIT 33
+        ), rare AS (
+            SELECT hits.ids
+            FROM terms
+            CROSS JOIN LATERAL (
+                SELECT array_agg(DISTINCT ref_id) AS ids
+                FROM (
+                    SELECT c.ref_id
+                    FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+                    WHERE c.tsv @@ array_to_tsvector(ARRAY[terms.term])::text::tsquery
+                      AND c.retired_at IS NULL AND r.retired_at IS NULL
+                      AND r.kind = 'paper' AND (c.ord >= 0 OR c.ord = -1)
+                      AND {secret_fence("r", path="search")}
+                    LIMIT 65
+                ) AS sample
+                HAVING count(*) < 65
+                   AND count(DISTINCT ref_id) BETWEEN 1 AND 3
+            ) AS hits
+            WHERE (SELECT count(*) FROM terms) <= 32
+        )
+        SELECT DISTINCT unnest(ids)
+        FROM rare
+        WHERE cardinality(ids) = (SELECT min(cardinality(ids)) FROM rare)
+        """,
+        [q],
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
 def _or_corroborates(q: str) -> bool:
     """Whether a partial-term (OR) match counts as lexical corroboration.
 
@@ -1068,6 +1108,7 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         chunk_kinds: list[str] | None = None,
         distinct_refs: bool = False,
+        totals_out: dict[str, int] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
     ) -> int:
@@ -1083,6 +1124,7 @@ class ChunkStore:
         honest denominator for ref-grouped body-chunk search
         (:meth:`NumericRefHandler._best_body_hits`), where one ref's many
         chunks would otherwise over-state the result-row total.
+        The optional totals_out receives both counts from the same scan.
 
         ``kinds`` takes precedence over single ``kind`` (pass one or
         neither). ``since``/``until`` filter ``refs.created_at``, ``until``
@@ -1091,6 +1133,8 @@ class ChunkStore:
         """
         # Optional metadata preserves the integer API while exposing the executed leg.
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
+        if totals_out is not None:
+            count_expr = "count(*), count(DISTINCT c.ref_id)"
         clauses = [
             secret_fence("r", path="lexical_count"),
             "r.retired_at IS NULL",
@@ -1164,6 +1208,9 @@ class ChunkStore:
                     [q, *params[1:]],
                 ).fetchone()
         assert row is not None
+        if totals_out is not None:
+            totals_out.update(chunks=int(row[0]), refs=int(row[1]))
+            return totals_out["refs" if distinct_refs else "chunks"]
         return int(row[0])
 
     def count_chunks_keywords(
@@ -1404,6 +1451,7 @@ class ChunkStore:
         has_body: bool | None = None,
         lexical_info_out: dict[str, bool] | None = None,
         prioritize_refs: bool = False,
+        rare_refs_out: set[int] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -1480,8 +1528,15 @@ class ChunkStore:
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         source = _lexical_chunk_source(kind if kinds is None else None)
 
-        def _sql(tsquery_expr: str) -> str:
+        def _sql(tsquery_expr: str, *, promote_rare: bool = False) -> str:
             rank = f"ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION})"
+            if promote_rare:
+                # The fraction stays below one, so a rare paper's tier
+                # survives score-based resorting by the handler.
+                rank = (
+                    f"ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION | 32}) "
+                    "+ (c.ref_id = ANY(%s))::int"
+                )
             source_sql = (
                 f"FROM {source}, {tsquery_expr} qq(qq) WHERE {' AND '.join(clauses)}"
             )
@@ -1542,8 +1597,15 @@ class ChunkStore:
                     # Same re-derive before the retry itself — the AND
                     # leg (and the probe) already spent budget.
                     apply_checkout_budget(conn)
+                    rare_refs: list[int] = []
+                    if kind == "paper" and kinds is None and scope_ref_id is None:
+                        rare_refs = _rare_paper_refs(conn, q)
+                        if rare_refs_out is not None:
+                            rare_refs_out.update(rare_refs)
+                        apply_checkout_budget(conn)
                     rows = conn.execute(
-                        _sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
+                        _sql(f"(SELECT {_OR_TSQUERY})", promote_rare=bool(rare_refs)),
+                        [*([rare_refs] if rare_refs else []), q, *params[1:]],
                     ).fetchall()
         unpacked = [_unpack_search_row(r) for r in rows]
         if search_trace.active():
@@ -2098,6 +2160,7 @@ class ChunkStore:
         lexical_source = _lexical_chunk_source(kind)
         from precis.store.pool import apply_checkout_budget
 
+        rare_refs: list[int] = []
         with self.pool.connection() as conn:
             route, route_kind = _ann_route(conn, kind, None)
             if or_leg and (scope_ref_id is None or lexical_info_out is not None):
@@ -2113,6 +2176,9 @@ class ChunkStore:
                 ).fetchone()
                 assert row is not None
                 or_leg = not bool(row[0])
+            if or_leg and kind == "paper" and scope_ref_id is None:
+                apply_checkout_budget(conn)
+                rare_refs = _rare_paper_refs(conn, q)
         if lexical_info_out is not None:
             lexical_info_out["or_fallback"] = or_leg
         sem_core, order_vec = _ann_core_sql(
@@ -2132,10 +2198,11 @@ class ChunkStore:
         lex_any_union = ""
         lex_any_score = ""
         if or_leg:
+            rare_order = "(c.ref_id = ANY(%s)) DESC, " if rare_refs else ""
             lex_any_cte = f"""lex_any AS (
                 SELECT c.chunk_id AS cid,
                        row_number() OVER (
-                           ORDER BY ts_rank_cd(c.tsv, oq.oq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
+                           ORDER BY {rare_order}ts_rank_cd(c.tsv, oq.oq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
                 FROM {lexical_source},
                      (SELECT {_OR_TSQUERY}) oq(oq)
@@ -2208,13 +2275,16 @@ class ChunkStore:
         # ``k`` constants end (see the param sequence below). Inactive, the
         # SQL text is the pre-canon text exactly.
         canon_ids = boost_ref_ids()
-        score_sql, order_sql = "fused.score", "fused.score"
+        score_sql = "fused.score"
         if canon_ids:
-            score_sql = (
-                "fused.score + CASE WHEN c.ref_id = ANY(%s) "
-                f"THEN {float(RANK_BONUS)!r} ELSE 0 END AS canon_score"
+            score_sql += (
+                f" + CASE WHEN c.ref_id = ANY(%s) THEN {float(RANK_BONUS)!r} ELSE 0 END"
             )
-            order_sql = "canon_score"
+        if rare_refs:
+            # RRF contributes at most two live legs for each hit.
+            score_sql += (
+                f" + CASE WHEN c.ref_id = ANY(%s) THEN {2.0 / (k + 1)!r} ELSE 0 END"
+            )
         trace_cols = ""
         if collect_pool:
             lex_rank = "(SELECT l.rnk FROM lex l WHERE l.cid = fused.cid)"
@@ -2266,12 +2336,12 @@ class ChunkStore:
                     {lex_any_union}SELECT cid FROM {sem_union}
                 ) u
             )
-            SELECT {proj}, {_REFS_COLS_ALIASED}, {score_sql}{fold_cols}{trace_cols}
+            SELECT {proj}, {_REFS_COLS_ALIASED}, {score_sql} AS search_score{fold_cols}{trace_cols}
             FROM fused
             JOIN chunks c ON c.chunk_id = fused.cid
             JOIN refs r ON r.ref_id = c.ref_id
             {sem_only_where}
-            ORDER BY {order_sql} DESC
+            ORDER BY search_score DESC
             {outer_page}
         """
 
@@ -2284,12 +2354,12 @@ class ChunkStore:
 
         # Param construction sequence:
         #   lex: q + WHERE params + inner_limit
-        #   lex_any (OR fallback only): q + WHERE params + inner_limit
+        #   lex_any (OR fallback only): [rare refs] + q + WHERE params + inner_limit
         #   sem: query_vec + embedder + WHERE params
         #        + query_vec (unless the exact route) + inner_limit
         #        + [optional: max_distance]
         #   fused: k + [k] + k
-        #   outer: [optional: canon boost ids] + [optional: q for fold]
+        #   outer: [canon ids] + [rare refs] + [optional: q for fold]
         #          + [optional: semantic_only_max_distance] + limit + offset
         full_params: list[Any] = []
         full_params.append(lexical_q(q))
@@ -2297,6 +2367,8 @@ class ChunkStore:
         qv = _vec_param(query_vec)
         full_params.append(inner_limit)
         if or_leg:
+            if rare_refs:
+                full_params.append(rare_refs)
             full_params.append(q)
             full_params.extend(params)
             full_params.append(inner_limit)
@@ -2311,6 +2383,8 @@ class ChunkStore:
         full_params.extend([k] * (3 if or_leg else 2))
         if canon_ids:
             full_params.append(canon_ids)
+        if rare_refs:
+            full_params.append(rare_refs)
         if (fold_info_out is not None or collect_pool) and or_corrob:
             full_params.append(q)
         if semantic_only_max_distance is not None and not collect_pool:
@@ -2541,6 +2615,8 @@ class ChunkStore:
         pool = max(pool_per_leg, (offset + limit) * 2)
         clean_q = [qt for qt in q_texts if qt and qt.strip()]
 
+        rare_refs: set[int] = set()
+
         def _fetch_legs() -> list[tuple[str, list[tuple[ChunkRow, Ref, float]]]]:
             legs: list[tuple[str, list[tuple[ChunkRow, Ref, float]]]] = []
             if run_lexical:
@@ -2567,6 +2643,7 @@ class ChunkStore:
                                 chunk_ids=chunk_ids,
                                 card_kinds=card_kinds,
                                 has_body=has_body,
+                                rare_refs_out=rare_refs if i == 0 else None,
                             ),
                         )
                     )
@@ -2608,6 +2685,7 @@ class ChunkStore:
         # the legs are exhausted, or the widen cap bites (_MULTI_POOL_*).
         pool_cap = pool * _MULTI_POOL_WIDEN_MAX
         while True:
+            rare_refs.clear()
             legs = _fetch_legs()
 
             fused, leg_hits = reciprocal_rank_fusion(
@@ -2621,6 +2699,15 @@ class ChunkStore:
             for _name, leg in legs:
                 for block, ref, _score in leg:
                     seen.setdefault(block.id, (block, ref))
+
+            # Keep primary-query rare papers ahead after fusion and
+            # per-paper collapse, including when their abstract card
+            # yields to a quotable body chunk.
+            if rare_refs:
+                bonus = len(legs) / (k + 1)
+                for cid, (_block, ref) in seen.items():
+                    if ref.id in rare_refs:
+                        fused[cid] += bonus
 
             # Sort by fused score desc; deterministic tiebreak on chunk id.
             ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))

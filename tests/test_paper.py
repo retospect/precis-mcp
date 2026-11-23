@@ -281,20 +281,16 @@ class TestResolveDoi:
         assert verb == "put"
         assert kwargs == {"kind": "paper", "doi": "10.9999/nope"}
 
-    def test_unknown_doi_hint_leads_with_mint_and_names_the_spend(
-        self, store: Store
-    ) -> None:
-        """gr494831 step 2: get does not auto-queue the fetch (the cascade
-        can end on the paid OpenAlex Content leg), so the hint opens with
-        the exact mint call and says why it was left to the caller. Nothing
-        is written by the refused get."""
+    def test_unknown_doi_hint_leads_with_mint(self, store: Store) -> None:
+        """gr739681: get is a read and does not queue ingest by default,
+        so the hint opens with the exact mint call. Nothing is written by
+        the refused get."""
         before = len(store.list_refs(kind="paper", limit=50))
         with pytest.raises(NotFound) as exc_info:
             _maybe_resolve_doi(store, "10.9999/nope")
         hint = exc_info.value.next
         assert isinstance(hint, str)
-        assert hint.startswith("put(kind='paper', doi='10.9999/nope')  ")
-        assert "paid OpenAlex Content" in hint
+        assert hint.startswith("put(kind='paper', doi='10.9999/nope') to request")
         assert len(store.list_refs(kind="paper", limit=50)) == before
 
     def test_unknown_doi_hint_stays_bounded(self, store: Store) -> None:
@@ -1318,6 +1314,41 @@ class TestBatchGet:
 
 
 class TestSearch:
+    @pytest.mark.parametrize("unique_per", ["paper", "chunk"])
+    @pytest.mark.parametrize("mode", ["hybrid", "lexical"])
+    def test_or_retry_promotes_rare_abstract_term(
+        self, store: Store, handler: PaperHandler, unique_per: str, mode: str
+    ) -> None:
+        rare = _seed_paper(
+            store,
+            slug="coined-method",
+            title="A method for finding paths",
+            blocks=["Minima are connected by paths."],
+        )
+        card = store.chunks.upsert_card_combined(
+            rare, "The NEBscape method explores paths."
+        )
+        for index in range(6):
+            _seed_paper(
+                store,
+                slug=f"common-{index}",
+                title="A common result",
+                doi=None,
+                blocks=["minima hopping nudged elastic band"] * 3,
+            )
+        response = handler.search(
+            q="NEBscape minima hopping nudged elastic band permutation",
+            page_size=1,
+            unique_per=unique_per,
+            mode=mode,
+        )
+        if unique_per == "paper":
+            assert "1 of 7 paper" in response.body
+        assert any(
+            handle in response.body
+            for handle in (f"pc{card}", chunk_handle(store, "coined-method"))
+        )
+
     def test_search_basic(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(
             store,

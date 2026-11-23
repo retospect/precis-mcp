@@ -127,9 +127,10 @@ bar.
 
 **Queue last.** `put(kind='paper', doi='<verified DOI>')` (or
 `arxiv=`/`title=`) only *after* the candidate clears the identity bar.
-A single or batch paper `get` without a view can queue bounded ingest
-for unheld DOIs. Supplying `view=` disables that queueing, including
-with `meta`, `text`, `body`, or `full`. Queueing before verification
+A paper `get` on an unheld DOI queues nothing by default; it answers not
+held with the `put` hint. Only `args={'queue': 'bounded'}` (or
+`'explicit'`) makes a view-less `get` queue ingest; `view=` always
+disables it. Queueing before verification
 can burn a fetch slot and leave a stub for the wrong paper.
 
 ## Which providers are native, and what when one can't answer?

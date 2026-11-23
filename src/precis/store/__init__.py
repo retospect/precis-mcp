@@ -56,6 +56,7 @@ Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered
 matches while retaining strict-AND eligibility and the existing RRF weights;
 multi-query search inherits the same ranking through its lexical legs.
+Unscoped paper OR retries promote papers matching the rarest lexemes.
 Taxon lexical legs fetch chunks by ref first so an OR retry over common
 terms only tests taxon chunks.
 

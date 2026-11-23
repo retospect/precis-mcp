@@ -91,7 +91,7 @@ search(kind="paper", q="<title from the entry>")  # fallback when unresolved
 ```
 
 The status row names the held `pa<id>` and its body state, or reports
-`unresolved`. A plain DOI get can queue ingest on a miss.
+`unresolved`. A plain DOI get on a miss reports not held and hints the `put`; it queues ingest only with `args={'queue': 'bounded'}`.
 
 Held → keep its `pa<id>` handle. Not held → request it; the stub
 lands and fills in on its own (see [[precis-stubs-help]]):

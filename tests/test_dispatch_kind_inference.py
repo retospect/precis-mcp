@@ -85,12 +85,11 @@ class TestSkillSlugAndDoi:
         assert "orientation, verbs, addressing" in out
 
     def test_kindless_get_doi(self, runtime: PrecisRuntime) -> None:
-        """A bare DOI routes to the paper handler (unheld DOIs queue
-        an ingest job — gr551840); the full DOI stays on id=."""
+        """A bare DOI routes to the read-only paper lookup."""
         out = runtime.dispatch("get", {"id": DOI})
-        assert "[error" not in out
-        assert "missing kind" not in out
-        assert f"for {DOI}" in out
+        assert "[error:NotFound]" in out
+        assert "not ingested" in out
+        assert f"put(kind='paper', doi='{DOI}')" in out
 
     def test_unknown_string_still_reaches_missing_kind(
         self, runtime: PrecisRuntime

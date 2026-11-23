@@ -1459,6 +1459,7 @@ class FusedBlockSearch:
                     # didn't search" invariant even though it isn't an
                     # exact fused total. mode='lexical' has no such caveat
                     # (this *is* its exact universe).
+                    lexical_totals: dict[str, int] = {}
                     total = self.store.chunks.count_chunks_lexical(
                         q=q,
                         kind=self.kind,
@@ -1468,31 +1469,12 @@ class FusedBlockSearch:
                         include_ref_ids=include_ref_ids,
                         card_kinds=("card_combined",),
                         chunk_kinds=chunk_kinds,
+                        totals_out=lexical_totals if paper_rows else None,
                     )
                     if paper_rows:
-                        # Paper mode's headline is "N papers of M matched
-                        # (K chunk hits)": ``total`` is K — the chunk-hit
-                        # universe the headline's suffix reports — and
-                        # this second count is M, the same WHERE clause
-                        # over DISTINCT ref_id (the
-                        # ``NumericRefHandler._best_body_hits``
-                        # denominator). Same lower-bound caveat as K: a
-                        # semantic-only paper isn't counted, so floor at
-                        # the rows actually shown.
-                        paper_total = max(
-                            len(hits),
-                            self.store.chunks.count_chunks_lexical(
-                                q=q,
-                                kind=self.kind,
-                                scope_ref_id=scope_ref_id,
-                                tags=normalized_tags,
-                                exclude_ref_ids=exclude_ref_ids or None,
-                                include_ref_ids=include_ref_ids,
-                                card_kinds=("card_combined",),
-                                distinct_refs=True,
-                                chunk_kinds=chunk_kinds,
-                            ),
-                        )
+                        # Get both headline denominators without scanning
+                        # the broad OR match set twice.
+                        paper_total = max(len(hits), lexical_totals["refs"])
                 _log.debug(
                     "paper search: SQL legs stage (total count, mode=%s) took %.3fs",
                     m,

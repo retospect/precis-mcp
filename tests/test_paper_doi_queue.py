@@ -1,19 +1,4 @@
-"""gr551840 — ``get(kind='paper', id='<unheld DOI>')`` queues a
-``paper_ingest`` job instead of raising NotFound (Reto ruling
-2026-11-02: "a DOI someone requests should be pursued, even if it is
-not already ingested").
-
-Covered here: the queue ack + idempotent reuse (the 30×-a-day probe
-loop that filed the gripe), the recent-failure requeue gate, the
-untouched non-DOI/malformed/held paths, and the job's own dispatch
-(mint-or-collapse the stub, pin it for ``fetch_oa``) — the get itself
-does no network work. The review pass adds the spend/refusal bounds:
-the fleet rolling-24h mint cap, the 5-per-batch cap, the read-only and
-retired doors, and the real-dispatch ``finished_at`` stamp the requeue
-window reads. gr715493 adds the view door: a get naming a view is a
-read, so an unheld DOI answers the NotFound (no mint) — plain and
-batch, including aliases for the default renderer.
-"""
+"""Paper DOI lookup and explicit acquisition, through the worker dispatch."""
 
 from __future__ import annotations
 
@@ -155,17 +140,40 @@ def test_doi_status_reports_availability_without_queuing(
     assert _stub_for_doi(store, DOI) is None
 
 
+@pytest.mark.parametrize("q", [None, "band gap"])
+def test_unheld_doi_get_offers_acquisition_without_writing(
+    store: Store, handler: PaperHandler, q: str | None
+) -> None:
+    with pytest.raises(NotFound, match="not ingested") as miss:
+        handler.get(id=DOI, q=q)
+    assert f"put(kind='paper', doi='{DOI}')" in str(miss.value.next)
+    assert _jobs(store) == []
+    assert _stub_for_doi(store, DOI) is None
+
+
+@pytest.mark.parametrize("q", [None, "band gap"])
+def test_unheld_doi_batch_get_offers_acquisition_without_writing(
+    store: Store, handler: PaperHandler, q: str | None
+) -> None:
+    ids: list[str | int] = [f"10.1234/missing-{i}" for i in range(7)]
+    response = handler.get(id=ids, q=q, args={"confirm_bulk": True})
+    assert response.body.count("not ingested") == len(ids)
+    for doi in ids:
+        assert f"put(kind='paper', doi='{doi}')" in response.body
+    assert _jobs(store) == []
+
+
 class TestUnheldDoiGetQueues:
     @pytest.mark.parametrize("batch", [False, True])
     def test_arxiv_doi_queues_and_reuses_job(
         self, store: Store, handler: PaperHandler, batch: bool
     ) -> None:
         paper_id: str | list[str | int] = [DOI, ARXIV_DOI] if batch else ARXIV_DOI
-        resp = handler.get(id=paper_id)
+        resp = handler.get(id=paper_id, args={"queue": "bounded"})
         doi = ARXIV_DOI.lower()
         assert "queued ingest job" in resp.body
         assert f"for {doi}" in resp.body
-        retry = handler.get(id=f"doi:{doi}")
+        retry = handler.get(id=f"doi:{doi}", args={"queue": "bounded"})
         jobs = [job for job in _jobs(store) if job["meta"]["params"] == {"doi": doi}]
         assert len(jobs) == 1
         assert f"jo{jobs[0]['id']}" in retry.body
@@ -204,7 +212,7 @@ class TestUnheldDoiGetQueues:
         assert _jobs(store) == []
 
     def test_queues_job_and_names_it(self, store: Store, handler: PaperHandler) -> None:
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         jobs = _jobs(store)
         assert len(jobs) == 1
         meta = jobs[0]["meta"]
@@ -221,8 +229,8 @@ class TestUnheldDoiGetQueues:
     def test_repeat_get_reuses_the_job(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        first = handler.get(id=DOI)
-        second = handler.get(id=DOI)
+        first = handler.get(id=DOI, args={"queue": "bounded"})
+        second = handler.get(id=DOI, args={"queue": "bounded"})
         jobs = _jobs(store)
         assert len(jobs) == 1
         assert "already queued/running" in second.body
@@ -238,19 +246,19 @@ class TestUnheldDoiGetQueues:
             f"https://doi.org/{DOI}",
             f"doi.org/{DOI.upper()}",
         ):
-            resp = handler.get(id=raw)
+            resp = handler.get(id=raw, args={"queue": "bounded"})
             assert "queued ingest job" in resp.body or "already queued" in resp.body
         assert len(_jobs(store)) == 1
 
     def test_find_in_ref_on_unheld_doi_queues(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        resp = handler.get(id=DOI, q="band gap")
+        resp = handler.get(id=DOI, q="band gap", args={"queue": "bounded"})
         assert len(_jobs(store)) == 1
         assert "queued ingest job" in resp.body
 
     def test_batch_element_queues(self, store: Store, handler: PaperHandler) -> None:
-        resp = handler.get(id=[DOI, "no-such-slug"])
+        resp = handler.get(id=[DOI, "no-such-slug"], args={"queue": "bounded"})
         assert len(_jobs(store)) == 1
         assert "queued ingest job" in resp.body
         assert "no-such-slug  not found" in resp.body
@@ -270,7 +278,7 @@ class TestUnheldDoiGetQueues:
             "_registry_lookup",
             lambda doi: pytest.fail("get ran the DOI registries inline"),
         )
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         assert "queued ingest job" in resp.body
 
 
@@ -284,7 +292,7 @@ class TestUnheldDoiGate:
             finished=datetime.now(UTC) - timedelta(hours=1),
             error="did not resolve via Semantic Scholar or the DOI registries",
         )
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         assert len(_jobs(store)) == 1
         assert f"jo{job_id}" in resp.body
         assert "not requeueing" in resp.body
@@ -298,7 +306,7 @@ class TestUnheldDoiGate:
             finished=datetime.now(UTC)
             - timedelta(hours=paper_ingest.REQUEUE_WINDOW_HOURS + 1),
         )
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         jobs = _jobs(store)
         assert len(jobs) == 2
         assert "queued ingest job" in resp.body
@@ -308,7 +316,7 @@ class TestUnheldDoiGate:
         self, store: Store, handler: PaperHandler
     ) -> None:
         _mint_terminal_job(store, DOI, status="cancelled", finished=datetime.now(UTC))
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         assert len(_jobs(store)) == 1
         assert "STATUS:cancelled" in resp.body
         assert "not requeueing" in resp.body
@@ -317,7 +325,7 @@ class TestUnheldDoiGate:
 class TestViewGetDoesNotQueue:
     """gr715493: a get that names a view is a read of stored data — for
     an unheld DOI there is nothing to render, so the miss answers the
-    NotFound with the acquire hint ("does not queue") and no job row
+    NotFound with the acquire hint and no job row
     lands. The gr551840 queue door opens only for a view-less get."""
 
     def test_bibtex_view_miss_does_not_queue(
@@ -327,7 +335,7 @@ class TestViewGetDoesNotQueue:
             handler.get(id=DOI, view="bibtex")
         nxt = excinfo.value.next
         assert isinstance(nxt, str)
-        assert "does not queue" in nxt
+        assert "to request ingest" in nxt
         assert f"put(kind='paper', doi='{DOI}')" in nxt
         assert _jobs(store) == []
 
@@ -344,7 +352,7 @@ class TestViewGetDoesNotQueue:
     ) -> None:
         with pytest.raises(NotFound, match="not ingested") as excinfo:
             handler.get(id=DOI, view=view)
-        assert "does not queue" in (excinfo.value.next or "")
+        assert "to request ingest" in (excinfo.value.next or "")
         assert _jobs(store) == []
 
     def test_find_in_ref_with_view_does_not_queue(
@@ -375,15 +383,15 @@ class TestViewGetDoesNotQueue:
         """A view batch is a read: no confirm_bulk pre-scan demand and
         no per-element mints — every unheld DOI reads as not-found."""
         dois: list[str | int] = [f"10.1021/viewcap{i}" for i in range(7)]
-        resp = handler.get(id=dois, view=view)
+        resp = handler.get(id=dois, view=view, args={"queue": "bounded"})
         assert "confirm_bulk" not in resp.body
         assert resp.body.count("not found") == 7
         assert _jobs(store) == []
 
-    def test_batch_without_view_still_queues(
+    def test_batch_opt_in_without_view_queues(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        resp = handler.get(id=[DOI])
+        resp = handler.get(id=[DOI], args={"queue": "bounded"})
         assert "queued ingest job" in resp.body
         assert len(_jobs(store)) == 1
 
@@ -620,9 +628,9 @@ class TestEndToEnd:
     ) -> None:
         """The loop the gripe wanted: get → queue → (dispatch ran) → get
         finds the held paper through ``ref_identifiers``."""
-        handler.get(id=DOI)
+        handler.get(id=DOI, args={"queue": "bounded"})
         ref_id = _seed_paper(store, slug="ingested2026", doi=DOI)
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         assert f"pa{ref_id}" in resp.body
         assert "queued ingest job" not in resp.body
 
@@ -649,8 +657,11 @@ class TestGetQueueBounds:
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "3")
         dois = [f"10.1021/capbound{i}" for i in range(4)]
         for doi in dois[:3]:
-            assert "queued ingest job" in handler.get(id=doi).body
-        resp = handler.get(id=dois[3])
+            assert (
+                "queued ingest job"
+                in handler.get(id=doi, args={"queue": "bounded"}).body
+            )
+        resp = handler.get(id=dois[3], args={"queue": "bounded"})
         assert "daily get-queue cap reached" in resp.body
         assert f"put(kind='paper', doi='{dois[3]}')" in resp.body
         jobs = _jobs(store)
@@ -664,8 +675,8 @@ class TestGetQueueBounds:
         ``put`` by DOI was itself broken in prod (gr740076), so the
         answer names the same-call resubmit too."""
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
-        handler.get(id="10.1021/capmsg0")
-        resp = handler.get(id="10.1021/capmsg1")
+        handler.get(id="10.1021/capmsg0", args={"queue": "bounded"})
+        resp = handler.get(id="10.1021/capmsg1", args={"queue": "bounded"})
         assert "daily get-queue cap reached" in resp.body
         assert "args={'queue': 'explicit'}" in resp.body
         assert "put(kind='paper', doi='10.1021/capmsg1')" in resp.body
@@ -680,7 +691,10 @@ class TestGetQueueBounds:
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "4")
         dois = [f"10.1021/expcap{i}" for i in range(5)]
         for doi in dois[:3]:
-            assert "queued ingest job" in handler.get(id=doi).body
+            assert (
+                "queued ingest job"
+                in handler.get(id=doi, args={"queue": "bounded"}).body
+            )
         resp = handler.get(id=dois[3], args={"queue": "explicit"})
         assert "queued ingest job" in resp.body
         jobs = _jobs(store)
@@ -689,15 +703,18 @@ class TestGetQueueBounds:
         # The explicit mint did not count toward the 'get' cap — the
         # fourth implicit mint still fits under cap=4 (only then does
         # the fifth read as capped).
-        assert "queued ingest job" in handler.get(id=dois[4]).body
-        resp = handler.get(id="10.1021/expcap5")
+        assert (
+            "queued ingest job"
+            in handler.get(id=dois[4], args={"queue": "bounded"}).body
+        )
+        resp = handler.get(id="10.1021/expcap5", args={"queue": "bounded"})
         assert "daily get-queue cap reached" in resp.body
 
     def test_explicit_batch_resubmit_queues_past_daily_cap(
         self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
-        handler.get(id="10.1021/expbatch0")
+        handler.get(id="10.1021/expbatch0", args={"queue": "bounded"})
         dois: list[str | int] = [f"10.1021/expbatch{i}" for i in range(1, 3)]
         resp = handler.get(id=dois, args={"queue": "explicit"})
         assert resp.body.count("queued ingest job") == 2
@@ -707,7 +724,7 @@ class TestGetQueueBounds:
         self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
-        handler.get(id="10.1021/expfind0")
+        handler.get(id="10.1021/expfind0", args={"queue": "bounded"})
         resp = handler.get(id=DOI, q="band gap", args={"queue": "explicit"})
         assert "queued ingest job" in resp.body
         assert len(_jobs(store)) == 2
@@ -739,9 +756,9 @@ class TestGetQueueBounds:
         instead of silently minting a partial batch and capping the
         rest one "cap reached" message at a time — nothing queues yet."""
         dois: list[str | int] = [f"10.1021/batchcap{i}" for i in range(7)]
-        resp = handler.get(id=dois)
+        resp = handler.get(id=dois, args={"queue": "bounded"})
         assert "7 of 7 ids are unheld DOIs" in resp.body
-        assert "args={'confirm_bulk': True}" in resp.body
+        assert "'confirm_bulk': True" in resp.body
         assert _jobs(store) == []
 
     def test_batch_over_cap_confirm_bulk_queues_all(
@@ -750,7 +767,7 @@ class TestGetQueueBounds:
         """Resubmitting with ``confirm_bulk`` queues every element in
         the one call, past the per-call cap."""
         dois: list[str | int] = [f"10.1021/batchcap{i}" for i in range(7)]
-        resp = handler.get(id=dois, args={"confirm_bulk": True})
+        resp = handler.get(id=dois, args={"queue": "bounded", "confirm_bulk": True})
         assert resp.body.count("queued ingest job") == 7
         assert "cap reached" not in resp.body
         assert len(_jobs(store)) == 7
@@ -761,7 +778,7 @@ class TestGetQueueBounds:
         """At or under the cap, the batch still queues in one call —
         no confirmation needed."""
         dois: list[str | int] = [f"10.1021/batchcap{i}" for i in range(5)]
-        resp = handler.get(id=dois)
+        resp = handler.get(id=dois, args={"queue": "bounded"})
         assert resp.body.count("queued ingest job") == 5
         assert len(_jobs(store)) == 5
 
@@ -771,13 +788,13 @@ class TestGetQueueBounds:
         """``get`` sits in ``READ_ONLY_VERBS`` — under a read scope
         (read-only serve / read-only DB role) the unheld-DOI door
         must not mint: the call keeps the pre-queue NotFound with the
-        acquire hint ("does not queue"), and no job row lands."""
+        acquire hint, and no job row lands."""
         monkeypatch.setattr("precis.runtime.scope.current_scope", lambda: "read")
         with pytest.raises(NotFound, match="not ingested") as excinfo:
-            handler.get(id=DOI)
+            handler.get(id=DOI, args={"queue": "bounded"})
         nxt = excinfo.value.next
         assert isinstance(nxt, str)
-        assert "does not queue" in nxt
+        assert "to request ingest" in nxt
         assert "put(kind='paper'" in nxt
         assert _jobs(store) == []
 
@@ -790,7 +807,7 @@ class TestGetQueueBounds:
         paper is not the get's call."""
         ref_id = _seed_paper(store, doi=DOI)
         store.retire_ref(ref_id)
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         assert "deleted paper" in resp.body
         assert "not queueing" in resp.body
         assert f"pa{ref_id}" in resp.body
@@ -805,14 +822,14 @@ class TestGetQueueBounds:
         instead of minting a second job."""
         monkeypatch.setattr(paper_ingest, "_s2_lookup", lambda doi: None)
         monkeypatch.setattr(paper_ingest, "_registry_lookup", lambda doi: None)
-        handler.get(id=DOI)
+        handler.get(id=DOI, args={"queue": "bounded"})
         assert run_job_inproc_pass(store, limit=1)["claimed"] == 1
         jobs = _jobs(store)
         assert len(jobs) == 1
         meta = jobs[0]["meta"]
         assert meta.get("finished_at")
         assert "did not resolve" in (meta.get("error") or "")
-        resp = handler.get(id=DOI)
+        resp = handler.get(id=DOI, args={"queue": "bounded"})
         assert len(_jobs(store)) == 1
         assert "STATUS:failed" in resp.body
         assert "not requeueing" in resp.body
@@ -833,7 +850,14 @@ class TestExplicitResubmitThroughDispatch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
-        runtime_with_store.dispatch("get", {"kind": "paper", "id": "10.1021/disp0"})
+        runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "paper",
+                "id": "10.1021/disp0",
+                "__extras__": {"queue": "bounded"},
+            },
+        )
         out = runtime_with_store.dispatch(
             "get",
             {
@@ -859,7 +883,14 @@ class TestExplicitResubmitThroughDispatch:
         whitelist must let the flag through to the one kind whose
         find declares it."""
         monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
-        runtime_with_store.dispatch("get", {"kind": "paper", "id": "10.1021/dfind0"})
+        runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "paper",
+                "id": "10.1021/dfind0",
+                "__extras__": {"queue": "bounded"},
+            },
+        )
         out = runtime_with_store.dispatch(
             "get",
             {

@@ -30,8 +30,9 @@ Structure edit previews share relax validation with apply so invalid requests
 never appear eligible for dispatch. Preview TOCs omit saved relax fields
 because those fields describe the stored coordinates.
 Abstract checks never queue paper ingest.
-An unheld DOI lookup can queue ingest. Explicit retries bypass the daily
-cap, while batch passage searches keep their per-call mint limit.
+An unheld DOI lookup offers acquisition without minting. A viewless get
+can opt into the capped queue with ``queue='bounded'`` or bypass the daily
+cap with ``queue='explicit'``. Batch passage searches keep their mint limit.
 arXiv DataCite DOIs can use stored arXiv aliases. On an alias miss,
 paper reads check the DOI itself before considering acquisition.
 An acquire that lands on a tracked paper registers the identifiers it

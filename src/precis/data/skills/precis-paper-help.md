@@ -52,38 +52,38 @@ held handle (possibly a stub) or not held. Pass `id=[...]` to check a batch.
 
 ## The DOI isn't indexed yet — how do I get the paper?
 
-`get` without a view on a well-formed unheld DOI queues a `paper_ingest` job
-and returns its handle — `not ingested yet; queued ingest job jo<N> for
-<doi>; retry get in a few minutes`. Repeating the `get` reuses the same
-job (any DOI spelling — bare, `doi:`, doi.org URL, any case), so polling
-is safe; a job that already failed inside the 24h window reports its
-failure instead of requeueing. The worker verifies the DOI against
-Semantic Scholar / the DOI registries, mints the stub, and pins it to
-the open-access fetch pass — no fetch runs inside the `get` call.
+A `get` is a read: on a well-formed unheld DOI it answers not held and
+names the acquisition call (`put(kind="paper", doi=…)`); it queues nothing
+by default. To acquire, use that `put` — it mints the stub and pins it to
+the open-access fetch pass; no fetch runs inside the call. Check first
+whether a published or preprint version of the same work is already held
+(`search(kind="paper", q="<title>")`) so you do not ingest a duplicate.
 
-An explicit `view=` makes a single or batch DOI lookup read-only for
-ingest, including the default-renderer aliases `meta`, `text`, `body`,
-and `full`. An unheld DOI returns a miss. Omit the view or use
-`put(kind="paper", doi=…)` to request acquisition.
+To have the `get` itself queue a `paper_ingest` job, opt in with
+`args={"queue": "bounded"}`: the answer is `not ingested yet; queued
+ingest job jo<N> for <doi>; retry get in a few minutes`. Repeating the
+same opted-in `get` reuses the job (any DOI spelling), so polling is safe;
+a job that already failed inside the 24h window reports its failure
+instead of requeueing. The worker verifies the DOI against Semantic
+Scholar / the DOI registries before minting.
 
-The queue is bounded — an ingest job can reach the paid OpenAlex fetch
-leg, so spend stays caller-controlled: at most 5 mints per batch `get`,
-a fleet-wide 50 per rolling 24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no
-queue at all for a DOI whose paper was deleted, on a read-only serve,
-or behind a `view=` (a view is a read: an unheld DOI answers not found,
-single or batch, with or without `confirm_bulk`). To acquire, use a
-plain `get` or an explicit `put`.
-Past the daily bound the `get` answers `not ingested; daily get-queue cap
-reached` — resubmit the same `get` with `args={"queue": "explicit"}` to queue the
-ingest anyway (a deliberate ask rides the unbounded-explicit lane, like
-`put`), or `put(kind="paper", doi=…)` to mint the stub directly. The
-flag lifts the daily cap only. Without `q=`, a batch over the per-call
-mint bound asks for `args={"confirm_bulk": True}` up front. With `q=`,
-the call can queue up to five jobs before reporting capped IDs. Retry
-those IDs with the same query in batches of at most five.
+An explicit `view=` never queues, even with the opt-in (`meta`, `text`,
+`body`, `full` included): an unheld DOI answers not found.
+
+The opt-in queue is bounded — an ingest job can reach the paid OpenAlex
+fetch leg: at most 5 mints per batch `get`, a fleet-wide 50 per rolling
+24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no queue for a DOI whose paper was
+deleted or on a read-only serve. Past the daily bound the `get` answers
+`not ingested; daily get-queue cap reached` — resubmit with
+`args={"queue": "explicit"}` (the unbounded-explicit lane, like `put`) or
+use `put(kind="paper", doi=…)`. The flag lifts the daily cap only. A
+batch over the per-call mint bound asks for
+`args={"queue": "bounded", "confirm_bulk": True}` up front (echo the
+`queue` value you used). With `q=`, the call can queue up to five jobs
+before reporting capped IDs; retry those in batches of at most five.
 
 ```python
-get(kind="paper", id="10.1126/sciadv.aeh2779")  # → queued ingest job jo<N>
+get(kind="paper", id="10.1126/sciadv.aeh2779", args={"queue": "bounded"})  # → queued ingest job jo<N>
 get(kind="job", id=N)  # the ingest job's status
 get(kind="paper", id="10.1126/sciadv.aeh2779")  # works once it is held
 ```
