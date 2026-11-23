@@ -59,6 +59,17 @@ Compute-adjacent seams, each with its own module docstring:
   importer call the same function (molecular-workspace-code slice 4).
 - `cache` — content-addressed relax memoisation; forces are stored
   label-paired, never canonical-rank-indexed (see ``serialize_forces``).
+- `substitution` — the per-axis substitution query (gr695283 slice 1):
+  named axes whose type fixes the distance (categorical table over a
+  closed vocabulary, ordinal, unit scalar linear/log, embedding
+  cosine/L2; condition and tensor declared, not built — the magnetic
+  axis's ``at`` op is the one wired condition case), the
+  prototype/occupancy split (:func:`substitution_sites`), and kNN over
+  the embedded axes only. Pure in-memory records — no new tables until
+  gr695047 lands; numeric values use the measures value shape (me694355).
+  Origin filters require candidate property provenance, including
+  ordering labels and vectors, so missing provenance cannot satisfy a
+  requested origin.
 - `georelax` — the shared graph-first geometry core behind the `geo` rung
   (`relax.py`, hybridization-aware VSEPR-angle relax) plus
   `embed_from_graph` (spectral coordinate seeding from a bond graph alone)
