@@ -598,24 +598,32 @@ def test_build_explore_counts_feed_the_exploration_pick(store: Any) -> None:
 
 
 def test_build_runs_scan_is_bounded_on_the_primary_key(store: Any) -> None:
-    """The build-run read is a ``refs_pkey`` range above the window's id
-    floor (the floor itself a backward ``refs_pkey`` walk), not a scan
-    of every run_slice job ever. With seq scans off the plan names the
-    primary key."""
+    """A populated build history uses an index condition on the id floor."""
     from precis.utils.llm import suitability
 
     sql = suitability._BUILD_RUNS_SQL.format(filters="")
     with store.pool.connection() as conn:
-        try:
-            conn.execute("SET enable_seqscan = off")
+        with conn.transaction(force_rollback=True):
+            # TRUNCATE leaves column statistics from previous tests. Give
+            # EXPLAIN a fixed history with builds on both sides of the cutoff.
+            conn.execute(
+                "INSERT INTO refs (kind, title, meta, created_at) "
+                "SELECT CASE WHEN n % 10 = 0 THEN 'job' ELSE 'todo' END, "
+                "'Plan fixture ' || n, "
+                "CASE WHEN n % 10 = 0 THEN "
+                """'{"job_type":"run_slice","lane":"codex","adapter":"codex"}'"""
+                "::jsonb ELSE '{}'::jsonb END, "
+                "now() - (10000 - n) * interval '10 minutes' "
+                "FROM generate_series(1, 10000) AS n ORDER BY n"
+            )
+            conn.execute("ANALYZE refs")
+            conn.execute("SET LOCAL enable_seqscan = off")
             plan = "\n".join(
                 str(r[0])
                 for r in conn.execute(
                     f"EXPLAIN {sql}", ("default", "build_signal", 30, 30)
                 ).fetchall()
             )
-        finally:
-            conn.execute("RESET enable_seqscan")
     # The floor: a backward walk of a ref_id-leading btree (refs_pkey or
     # its twin refs_ref_id_kind_key) that stops at the window's edge.
     assert re.search(
