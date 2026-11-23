@@ -47,6 +47,10 @@ and encounter-order requirements; only a complete-state shove can establish
 that a disconnected partner was rescued. Full identity, retry and accounting
 contracts: ``docs/reference/pcb-kernel-contracts.md#shove-and-branch-identity``.
 
+The route job retries after placement moves. Same-pose seeded re-routes
+added work without a known recovery (gr696400), so a blocked part shove
+stops with its reason. Track negotiation still runs within each route.
+
 Plane-pad escapes run after signals to preserve signal corridors. Reuse
 requires a barrel spanning the stub and independently joined pour; final pours
 are rechecked against pre-escape primitives so escapes cannot certify each

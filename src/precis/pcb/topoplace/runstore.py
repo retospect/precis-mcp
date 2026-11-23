@@ -71,7 +71,9 @@ RUN_SCHEMA = "precis.topo-run/9"
 #: blocked path (first-pass corridor refusal, moving-shove no-improve)
 #: now gets the seeded axis (gr635502 review): equal inputs can route
 #: and record differently.
-CODE_VERSION = 10
+#: 11 — route recovery stops when part shove is blocked or stalls
+#: (gr696400). The initial route retains its bounded track negotiation.
+CODE_VERSION = 11
 
 _JSON_FILES = ("manifest.json", "elites.json", "pairs.json", "pins.json")
 _TEXT_FILES = ("summary.txt", "placement.svg")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -16,6 +17,7 @@ from shapely.geometry import Point, box
 
 from precis.pcb import rules, topo
 from precis.pcb.capabilities import capability_for
+from precis.store import Store
 
 W = 0.1  # track
 S = 0.1  # clearance
@@ -424,10 +426,7 @@ def _channel_wall_design() -> dict[str, Any]:
     """Three signal pairs crossing a TH-pad wall with one 0.6 mm
     channel (one slot per outer layer): demand 3 > 2, so the route
     stage fails at the FIXED placement — and every part is
-    ``fixed='both'``, so the part shove can move nothing. The seeded
-    track shove then owes the failures a rotated-order deeper-S2 pass;
-    on this board a different net takes the channel under a different
-    order (the copper moves even while the failure count holds)."""
+    ``fixed='both'``, so the part shove can move nothing."""
     from tests._pcb_outline import closed_outline
 
     fp = {
@@ -500,17 +499,11 @@ def _channel_wall_design() -> dict[str, Any]:
     }
 
 
-def test_route_track_shove_tries_seeded_passes_at_fixed_placement(store) -> None:
-    """gr635502 review: on an all-fixed board the part LP reports
-    ``all-fixed`` and hands the failure to the seeded re-shove axis:
-    rotated route order, deeper S2 multi-start. The run record's
-    ``track_shove`` counts the seeded passes it ran — the axis firing
-    is the fix, since it never ran before — and the committed copper
-    never gains an illegal crossing. ``moved_mm`` is NOT asserted
-    here: it counts only KEPT plans, and this board's demand exceeds
-    the channel's capacity so no seed can land a better one."""
+def test_route_stops_without_retry_at_fixed_placement(store: Store) -> None:
+    """gr696400: an all-fixed, over-capacity board gets one route attempt."""
     from precis.dispatch import Hub
     from precis.handlers.pcb import PcbHandler
+    from precis.pcb.topoplace import realise
     from precis.workers.executors._context import DispatchContext
     from precis.workers.job_types import pcb_place
 
@@ -531,27 +524,26 @@ def test_route_track_shove_tries_seeded_passes_at_fixed_placement(store) -> None
     ref = store.get_ref(kind="pcb", id="track-shove")
     assert ref is not None
     ctx = _place_ctx(store, int(ref.id))
-    pcb_place._dispatch(cast(DispatchContext, ctx), pcb_place.SPEC)
+    with patch.object(
+        realise, "route_design", wraps=realise.route_design
+    ) as route_design:
+        pcb_place._dispatch(cast(DispatchContext, ctx), pcb_place.SPEC)
+    route_design.assert_called_once()
     assert not ctx.failures
     route = ctx.meta["topo_run"]["route"]
     assert route["failed"] > 0, "channel demand 3 > 2 slots must fail nets"
-    # the part axis reported its stop and the track axis ran passes
     assert route["shove"] is not None and route["shove"]["reason"] == "all-fixed"
-    track = route["track_shove"]
-    assert track is not None and track["tries"] >= 1
-    assert route["shove_stops"]
+    assert route["track_shove"] is None
+    assert route["shove_stops"] == ["all-fixed"]
     # the committed plan carries no illegal crossing; every stored route
     # row is either realized or a named honest failure, never a short
     assert route["crossings"] == 0
     events = [t for k, t in ctx.summaries if k == "job_event"]
-    assert any("track shove" in t for t in events)
     assert any("shove stopped:" in t for t in events)
 
 
-def test_route_track_shove_blocked_names_its_stop(store) -> None:
-    """The blocked half: even seeded re-shoves cannot open a channel
-    the physics closes. ``shove_stops`` must still name the recovery's
-    end — the gripe's empty ``reason`` is what made the run silent."""
+def test_route_blocked_shove_names_its_stop(store: Store) -> None:
+    """Record why placement recovery stopped on a saturated channel."""
     from precis.dispatch import Hub
     from precis.handlers.pcb import PcbHandler
     from precis.workers.executors._context import DispatchContext

@@ -580,44 +580,6 @@ def _plan_failed_count(plan: Any) -> int:
     return len(nets)
 
 
-#: Seeded re-route tries the TRACK shove axis gets when the part LP
-#: cannot move (gr635502): ``_TRACK_SHOVE_TRIES`` attempts, each with
-#: ``_TRACK_SHOVE_SEEDS`` extra multi-start shuffles and a doubled
-#: ``_SHOVE_GROWS`` budget — the S2 ruling's cost doubled stays inside
-#: Reto's "less than 5 min, working result beats failure that is quick".
-_TRACK_SHOVE_TRIES = 3
-_TRACK_SHOVE_SEEDS = 6
-
-
-def _tracks_moved_mm(plan_a: Any, plan_b: Any) -> float:
-    """mm of track geometry the kept re-shove moved — per branch, the
-    longer of the two plans' piece lengths when their (layer, rounded
-    points) signature differs; a branch that re-grew to the same wire
-    counts 0."""
-
-    def _per_branch(plan: Any) -> dict[int, tuple[tuple[Any, ...], float]]:
-        out: dict[int, tuple[tuple[Any, ...], float]] = {}
-        for p in getattr(plan, "pieces", ()):
-            xy = np.asarray(p.points, dtype=float)
-            length = (
-                float(np.hypot(*np.diff(xy, axis=0).T).sum()) if len(xy) > 1 else 0.0
-            )
-            sig, total = out.get(int(p.branch), ((), 0.0))
-            pts = tuple((round(float(x), 3), round(float(y), 3)) for x, y in xy)
-            out[int(p.branch)] = (
-                sig + ((int(p.layer), pts),),
-                total + length,
-            )
-        return {b: (tuple(sorted(s)), ln) for b, (s, ln) in out.items()}
-
-    a, b = _per_branch(plan_a), _per_branch(plan_b)
-    return sum(
-        max(a[k][1] if k in a else 0.0, b[k][1] if k in b else 0.0)
-        for k in set(a) | set(b)
-        if (a[k][0] if k in a else ()) != (b[k][0] if k in b else ())
-    )
-
-
 def _route_masks(
     td: Any,
     pose: Any,
@@ -1022,7 +984,7 @@ def _topo_route(
     except _tprealise.CorridorOverflow as exc:
         # gr635502 review: a corridor refusal is a BLOCKED PATH, not a
         # verdict — the same recovery every other failing board gets
-        # (legalise poses, part shove, seeded track re-routes) runs
+        # (legalise poses and part shove) runs
         # before the refusal may propagate below.
         first_exc = exc
         plan = rres = None
@@ -1039,7 +1001,7 @@ def _topo_route(
     # every cause that ended a recovery axis while nets still failed,
     # in order — the run record's empty ``reason`` was the gripe, so a
     # re-route that does not improve, a corridor refusal or a spent
-    # seed/round budget each leave a name here.
+    # round budget each leave a name here.
     stops: list[str] = []
     if first_exc is not None:
         stops.append("corridor-overflow")
@@ -1111,97 +1073,13 @@ def _topo_route(
     # the zero-cost path (failed empty -> break before any shove); a
     # shove that stops moving, overflows the mesh, or stops improving
     # gives up and keeps the best plan so far.
-    #
-    # gr635502: a board the part LP cannot move (every unit fixed, or
-    # the cap ate the step) still owes its failures the TRACK half of
-    # push-and-shove — S2's pinned rip-up in ``build_wires`` — under
-    # rotated multi-start seeds and a doubled grow budget (Reto's
-    # "shove the crossovers around a lot before materializing"; the
-    # doubled budget stays inside the 5-minute route ruling). Each try
-    # re-routes the same pose; a kept plan still gets LP pushes next
-    # round.
     route_shove_mm = 0.0
     route_shove_rounds = 0
     last_shove: Any = None
-    track_shove = {"tries": 0, "moved_mm": 0.0}
-    if not legalise_poses or best_failed > 0:
+    if best_failed > 0:
         from precis.pcb.topoplace import shove as _tpshove
-        from precis.pcb.topoplace import wires as _tpwires
 
-        track_budget = _tpwires._SHOVE_GROWS * len(td_route.net_pins) * 2
         pose = best_pose
-        track_try = 0
-
-        def _track_axis(at_pose: Any, label: str) -> bool:
-            """The track half of push-and-shove at ``at_pose`` —
-            ``_TRACK_SHOVE_TRIES`` seeded re-routes, each a
-            rotated-order deeper-S2 pass. Returns True when a try
-            landed a strictly better plan (``best_*`` updated); on a
-            clean miss the stops list gains the cause that ended the
-            axis — ``corridor-overflow`` when a try refused, else
-            ``seed-exhausted`` (gr635502 review: EVERY blocked path owes
-            the failures this axis, not only the all-fixed one)."""
-            nonlocal track_try, best_plan, best_rres, best_pose, best_failed
-            overflowed = False
-            while best_failed > 0 and track_try < _TRACK_SHOVE_TRIES:
-                track_try += 1
-                track_shove["tries"] += 1
-                ctx.append_chunk(
-                    "job_event",
-                    f"topo-route: track shove {track_try} — "
-                    f"{best_failed} unresolved at the {label} pose, "
-                    "seeded re-route",
-                )
-                pose_sink.clear()
-                try:
-                    plan, rres = _tprealise.route_design(
-                        td_route,
-                        ir,
-                        pose=at_pose,
-                        net_rules=net_rules,
-                        min_via_dia=None if min_via_dia is None else float(min_via_dia),
-                        min_via_drill=None
-                        if min_via_drill is None
-                        else float(min_via_drill),
-                        min_via_ring=None
-                        if min_via_ring is None
-                        else float(min_via_ring),
-                        event=event,
-                        masks=_route_masks(
-                            td_route, at_pose, ir.n_layers, net_rules, min_via_dia
-                        ),
-                        legalise_sink=legalise_poses,
-                        pose_sink=pose_sink,
-                        shove_seed=track_try,
-                        shove_seeds=_TRACK_SHOVE_SEEDS,
-                        shove_budget=track_budget,
-                        **plane_kw,
-                    )
-                except _tprealise.CorridorOverflow:
-                    # a rotated order may still fit — the next seed tries
-                    overflowed = True
-                    continue
-                failed = _plan_failed_count(plan)
-                if best_plan is not None and failed >= best_failed:
-                    continue
-                # only a KEPT plan's regrown copper counts as moved —
-                # a discarded candidate's geometry is not movement the
-                # run should claim (gr635502 review).
-                track_shove["moved_mm"] += _tracks_moved_mm(best_plan, plan)
-                best_plan, best_rres, best_pose, best_failed = (
-                    plan,
-                    rres,
-                    pose_sink[-1] if pose_sink else at_pose,
-                    failed,
-                )
-                return True
-            if overflowed:
-                if "corridor-overflow" not in stops:
-                    stops.append("corridor-overflow")
-            elif "seed-exhausted" not in stops:
-                stops.append("seed-exhausted")
-            return False
-
         for _round in range(3):
             if best_failed == 0:
                 break
@@ -1231,16 +1109,8 @@ def _topo_route(
             route_shove_mm += shoved.moved_mm
             pose = shoved.pose
             if shoved.moved_mm <= 1e-6:
-                # The part axis is spent — record its reason once, then
-                # the track axis takes the rest of the recovery.
                 if shoved.reason and shoved.reason not in stops:
                     stops.append(shoved.reason)
-                if _track_axis(pose, shoved.reason or "blocked"):
-                    # the next part-LP round starts from the pose the
-                    # kept track pass was actually built at — it may
-                    # sit one corridor-recovery shove deeper.
-                    pose = best_pose
-                    continue
                 break
             route_shove_rounds += 1
             ctx.append_chunk(
@@ -1269,26 +1139,14 @@ def _topo_route(
                     **plane_kw,
                 )
             except _tprealise.CorridorOverflow:
-                # the shoved pose is itself blocked — the track axis
-                # gets its seeded tries there before the round gives up
-                # (gr635502 review).
                 if "corridor-overflow" not in stops:
                     stops.append("corridor-overflow")
-                if _track_axis(pose, "overflow"):
-                    pose = best_pose
-                    continue
                 break
             eff_pose = pose_sink[-1] if pose_sink else pose
             failed = _plan_failed_count(plan)
             if best_plan is not None and failed >= best_failed:
-                # the moving shove did not help this net order — the
-                # seeded track axis gets its tries at the shoved pose
-                # before the round gives up (gr635502 review).
                 if "no-improvement" not in stops:
                     stops.append("no-improvement")
-                if _track_axis(pose, "shoved"):
-                    pose = best_pose
-                    continue
                 break
             best_plan, best_rres, best_pose, best_failed = (
                 plan,
@@ -1688,14 +1546,10 @@ def _topo_route(
         # every cause that ended a recovery axis while nets still
         # failed, in order (``all-fixed``/``cap-blocked`` from the LP
         # report, ``corridor-overflow``, ``no-improvement``,
-        # ``seed-exhausted``/``exhausted``) — empty when nothing ran
+        # ``exhausted``) — empty when nothing ran
         "shove_stops": stops,
-        # the seeded re-shoves the part axis could not reach — tries is
-        # the number of rotated-order deeper-S2 route passes and
-        # moved_mm the track geometry KEPT plans re-grew vs their
-        # incumbent (a discarded candidate is not movement);
-        # ``None`` when the track axis never fired
-        "track_shove": track_shove if track_shove["tries"] else None,
+        # Preserve the route record field for readers of older runs.
+        "track_shove": None,
         # instances whose committed x/y the kept shoved pose re-stamped
         # (0 when the kept plan was routed at pose0 or nothing persisted)
         "shove_committed": n_pose,
