@@ -12,8 +12,15 @@ finding / paper / structure reject it loudly instead of applying it.
 
 Fix (td48769, 2026-08-05): paper / cfp / datasheet now honour dry_run
 too — a real ``field: old → new`` preview, no write — bringing them to
-parity with the file kinds. ``structure`` still rejects: its ops mutate
-the cell/bond graph and may dispatch compute.
+parity with the file kinds. ``structure`` previews too (td766686): the
+ops apply to an in-memory scene copy for a TOC echo and a relax rung is
+reported (inline vs dispatched) but never run — nothing saves and no
+job mints. The preview TOC suppresses the saved version's relax summary,
+geometry tier and per-atom |F| (they describe the stored coordinates,
+not the post-op scene), routes with ``_run_ops``'s model resolution
+(explicit ``model=""`` included), and reports a would-be dispatch
+carrying ``dispersion=True`` as the refusal ``_stage_relax_dispatch``
+raises, not as a dispatch.
 
 Finding candidate picks, retitles, hypothesis sharpening and unacquirable
 overrides preview their changes. The self-pick close-out still rejects dry_run.
@@ -342,16 +349,231 @@ def test_finding_edit_rejects_non_mode_dry_run(
         h.edit(id=ref_id, dry_run="bogus", **kwargs)
 
 
-# ── reject: loud error, no write ─────────────────────────────────────
+# ── structure: TOC preview on an in-memory scene, no write ───────────
+
+#: Twin of ``_PD`` in ``test_structure_handler.py`` (copy, never import
+#: across test modules): a 10 Å slab cell with two Pd atoms and a bond.
+_PD_PAIR = json.dumps(
+    {
+        "cell": {"a": 10.0, "b": 10.0, "c": 10.0, "pbc": [True, True, False]},
+        "ops": [
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.26, 0.0, 0.0]},
+            {"op": "add_bond", "i": "aPd1", "j": "aPd2", "order": 1},
+        ],
+    }
+)
 
 
-def test_structure_edit_dry_run_rejected(hub: Hub) -> None:
+def _child_job_count(store: Store, parent_id: int) -> int:
+    """Job refs minted under a structure — the ``_child_jobs2`` count from
+    ``test_structure_handler.py``, kept local for the same reason."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'job'",
+            (parent_id,),
+        ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def test_structure_edit_dry_run_previews_without_write(hub: Hub) -> None:
     h = StructureHandler(hub=hub)
-    with pytest.raises(BadInput, match="dry_run"):
+    h.put(id="pd_pair", text=_PD_PAIR)
+    store = h.store
+    ref = store.get_ref(kind="structure", id="pd_pair")
+    assert ref is not None
+    version = store.structure_version(ref.id)
+    body_before = h.get(id="pd_pair").body
+
+    resp = h.edit(
+        id="pd_pair",
+        ops=[{"op": "add_atom", "element": "O", "frac": [0.3, 0.3, 0.5]}],
+        dry_run=True,
+    )
+
+    assert "dry run" in resp.body
+    assert "3 atoms" in resp.body and "aO1" in resp.body
+    assert h.get(id="pd_pair").body == body_before
+    assert store.structure_version(ref.id) == version
+    assert _child_job_count(store, ref.id) == 0
+
+
+def test_structure_edit_dry_run_reports_dispatch_without_minting(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``no_local_mlip`` twin (``test_structure_handler.py``): with the ML
+    backend check failing, an ``ml`` relax rung would dispatch a
+    ``struct_relax`` job — the preview says so but mints nothing."""
+    import importlib
+
+    # NB: ``precis.structure`` re-exports the ``relax`` function, shadowing
+    # the submodule name — reach the module via importlib.
+    relax_mod = importlib.import_module("precis.structure.relax")
+
+    def _no_mlip(model: str, **_kw: object) -> None:
+        raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
+
+    monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
+    monkeypatch.setattr(relax_mod, "_check_ml_backend", _no_mlip)
+
+    h = StructureHandler(hub=hub)
+    h.put(id="pd_pair_ml", text=_PD_PAIR)
+    store = h.store
+    ref = store.get_ref(kind="structure", id="pd_pair_ml")
+    assert ref is not None
+    version = store.structure_version(ref.id)
+    body_before = h.get(id="pd_pair_ml").body
+
+    resp = h.edit(
+        id="pd_pair_ml", ops=[{"op": "relax", "fidelity": "ml"}], dry_run=True
+    )
+
+    assert "struct_relax" in resp.body and "dispatch" in resp.body
+    after = h.get(id="pd_pair_ml").body
+    assert after == body_before and "# relax" not in after
+    assert store.structure_version(ref.id) == version
+    assert _child_job_count(store, ref.id) == 0
+
+
+def test_structure_edit_dry_run_reports_dispersion_refusal(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``dispersion=True`` on a rung that would dispatch is refused by
+    ``_stage_relax_dispatch`` before minting (the struct_relax contract
+    carries no dispersion flag) — the preview must report the refusal,
+    not promise a dispatch that would raise Unsupported on apply."""
+    import importlib
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+
+    def _no_mlip(model: str, **_kw: object) -> None:
+        raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
+
+    monkeypatch.setattr(relax_mod, "_ml_calculator", _no_mlip)
+    monkeypatch.setattr(relax_mod, "_check_ml_backend", _no_mlip)
+
+    h = StructureHandler(hub=hub)
+    h.put(id="pd_pair_d3", text=_PD_PAIR)
+    store = h.store
+    ref = store.get_ref(kind="structure", id="pd_pair_d3")
+    assert ref is not None
+    version = store.structure_version(ref.id)
+    body_before = h.get(id="pd_pair_d3").body
+
+    resp = h.edit(
+        id="pd_pair_d3",
+        ops=[{"op": "relax", "fidelity": "ml", "dispersion": True}],
+        dry_run=True,
+    )
+
+    assert "would refuse this relax" in resp.body
+    assert "dispersion=True" in resp.body
+    assert "would dispatch a struct_relax job" not in resp.body
+    assert h.get(id="pd_pair_d3").body == body_before
+    assert store.structure_version(ref.id) == version
+    assert _child_job_count(store, ref.id) == 0
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"model": "mace_mp"}, "GFN2-xTB only"),
+        ({"preflight": "bogus"}, "unknown preflight mode"),
+    ],
+)
+def test_structure_edit_dry_run_rejects_invalid_dispatch_options(
+    hub: Hub, options: dict[str, str], message: str
+) -> None:
+    h = StructureHandler(hub=hub)
+    h.put(id="pd_pair_xtb", text=_PD_PAIR)
+    ref = h.store.get_ref(kind="structure", id="pd_pair_xtb")
+    assert ref is not None
+    version = h.store.structure_version(ref.id)
+    ops = [{"op": "relax", "fidelity": "xtb", **options}]
+
+    with pytest.raises(BadInput, match=message) as preview:
+        h.edit(id="pd_pair_xtb", ops=ops, dry_run=True)
+    with pytest.raises(BadInput, match=message) as apply:
+        h.edit(id="pd_pair_xtb", ops=ops)
+
+    assert str(preview.value) == str(apply.value)
+    assert h.store.structure_version(ref.id) == version
+    assert _child_job_count(h.store, ref.id) == 0
+
+
+def test_structure_edit_dry_run_resolves_explicit_empty_model(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preview routes with ``_run_ops``'s model resolution: an explicit
+    ``model=""`` reaches the backend check untouched (never re-routed by
+    composition)."""
+    import importlib
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    seen: list[str] = []
+
+    def _recording_check(model: str, **_kw: object) -> None:
+        seen.append(str(model))
+        raise relax_mod.RelaxUnsupported("no MLIP backend (test)")
+
+    monkeypatch.setattr(relax_mod, "_check_ml_backend", _recording_check)
+
+    h = StructureHandler(hub=hub)
+    h.put(id="pd_pair_empty_model", text=_PD_PAIR)
+    ref = h.store.get_ref(kind="structure", id="pd_pair_empty_model")
+    assert ref is not None
+
+    h.edit(
+        id="pd_pair_empty_model",
+        ops=[{"op": "relax", "fidelity": "ml", "model": ""}],
+        dry_run=True,
+    )
+
+    assert seen == [""]
+
+
+def test_structure_edit_dry_run_suppresses_saved_relax_state(hub: Hub) -> None:
+    """The preview describes only the post-op scene: the saved version's
+    relax summary, geometry tier and per-atom |F| must not leak into it.
+    The stored echo keeps them (sanity — the suppression, not their
+    absence, is what is tested)."""
+    pytest.importorskip("ase")
+    h = StructureHandler(hub=hub)
+    h.put(id="pd_pair_relaxed", text=_PD_PAIR)
+    store = h.store
+    ref = store.get_ref(kind="structure", id="pd_pair_relaxed")
+    assert ref is not None
+
+    ack = h.edit(id="pd_pair_relaxed", ops=[{"op": "relax", "fidelity": "emt"}])
+    assert "# relax[emt]" in ack.body
+    assert "tier:" in ack.body and "|F|" in ack.body
+    stored = h.get(id="pd_pair_relaxed").body
+    assert "# relax[emt]" in stored
+    version = store.structure_version(ref.id)
+
+    resp = h.edit(
+        id="pd_pair_relaxed",
+        ops=[{"op": "add_atom", "element": "O", "frac": [0.3, 0.3, 0.5]}],
+        dry_run=True,
+    )
+
+    assert "3 atoms" in resp.body and "aO1" in resp.body
+    assert "# relax[" not in resp.body
+    assert "tier:" not in resp.body
+    assert "|F|" not in resp.body
+    assert h.get(id="pd_pair_relaxed").body == stored
+    assert store.structure_version(ref.id) == version
+    assert _child_job_count(store, ref.id) == 0
+
+
+def test_structure_edit_dry_run_rejects_bogus_mode(hub: Hub) -> None:
+    """A truthy non-mode ``dry_run`` raises the shared ``dry_run must be
+    bool`` BadInput instead of silently previewing on a ``bool()``
+    coercion — the same contract the file kinds and findings honour."""
+    h = StructureHandler(hub=hub)
+    with pytest.raises(BadInput, match="dry_run must be bool"):
         h.edit(
-            id="pd111",
-            ops=json.loads(
-                '[{"op": "add_atom", "element": "O", "frac": [0.3, 0.3, 0.5]}]'
-            ),
-            dry_run=True,
+            id="pd_pair",
+            ops=[{"op": "add_atom", "element": "O", "frac": [0.3, 0.3, 0.5]}],
+            dry_run="bogus",
         )

@@ -26,6 +26,9 @@ Paper tag batches commit edits with audit events. Numeric-ref tag batches
 accept 300 IDs to support deck moves, and Anki opts in for tag alone.
 Job simulation queues follow the quest's candidate links and nested jobs
 so a freeze or parent hold is visible without inferring it from measurements.
+Structure edit previews share relax validation with apply so invalid requests
+never appear eligible for dispatch. Preview TOCs omit saved relax fields
+because those fields describe the stored coordinates.
 Abstract checks never queue paper ingest.
 An unheld DOI lookup can queue ingest. Explicit retries bypass the daily
 cap, while batch passage searches keep their per-call mint limit.

@@ -259,9 +259,12 @@ edit(
 )
 ```
 
-`dry_run=True` (or `'diff'`) returns a unified diff. `dry_run='full'`
+For file edits, `dry_run=True` (or `'diff'`) returns a unified diff. `dry_run='full'`
 returns the post-edit region with `> ` markers. Validation gates run
 during dry-run, so you see whether the edit *would* validate.
+
+For `kind='structure'`, `dry_run=True` returns the post-op scene TOC.
+See `precis-structure-help` for relax preview behavior.
 
 ## Check dependants before a ref edit
 

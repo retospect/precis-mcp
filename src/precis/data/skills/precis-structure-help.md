@@ -217,6 +217,12 @@ edit(
 
 Each saved edit bumps the design version; a dispatched relax defers saving to its job. A graph edit invalidates any prior relax.
 
+`edit(kind='structure', id=<slug>, ops=[…], dry_run=True)` applies graph ops
+in memory and returns the resulting TOC. It leaves the saved design and
+version intact. If the ops include a relax, preview checks the relax options
+and reports its route without running relax or creating a job. The preview
+omits the saved relax summary, geometry tier and per-atom forces.
+
 ## Read the TOC — `get(id=<slug>)`
 
 ```python

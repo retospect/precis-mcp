@@ -130,6 +130,7 @@ from precis.structure.relax import (
     route_ml_model,
 )
 from precis.utils import handle_registry
+from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
@@ -421,6 +422,134 @@ def _relax_cache_address(
     structure_sha = relax_cache.structure_sha(scene)
     order = relax_cache.canonical_order(scene)
     return cache_key, structure_sha, order
+
+
+def _relax_would_dispatch(
+    fidelity: str, model: str, *, dispersion: bool = False
+) -> tuple[bool, RelaxUnsupported | None]:
+    """The routing test ``_run_ops`` applies to a relax rung, factored out
+    so the ``edit(dry_run=…)`` preview asks the same question — "would
+    applying dispatch, or would it relax inline?" — without running
+    anything. Returns ``(would_dispatch, cause)``: ``cause`` is the
+    backend check's :class:`RelaxUnsupported` when an ``ml`` rung has no
+    local backend, ``None`` for a dispatch-only rung or an inline rung.
+
+    A rung dispatches when its fidelity sits outside the locally-runnable
+    set — ``xtb`` and friends are dispatch-only — or when it is ``ml``
+    and the import-only backend check fails. This is routing only:
+    relax-op *argument* validation (a bad ``cell``/``fmax``/``dispersion``)
+    lives in ``_run_ops`` and does not run here, so a preview may name a
+    route an invalid op would never reach."""
+    if fidelity not in ("clean", "0", "geo", "jiggle", "emt", "ml"):
+        return True, None
+    if fidelity != "ml":
+        return False, None
+    # Check imports, not model weights: inline cache hits must not
+    # construct a calculator merely to decide where to run.
+    from precis.structure.relax import _check_ml_backend
+
+    try:
+        _check_ml_backend(model, dispersion=dispersion)
+    except RelaxUnsupported as exc:
+        return True, exc
+    return False, None
+
+
+def _rung_model(ro: dict[str, Any], scene: Scene, fidelity: str) -> str:
+    """The model a relax rung resolves to — the same resolution
+    :meth:`StructureHandler._run_ops` applies, kept in one place so the
+    ``edit(dry_run=…)`` preview routes on the identical value. An explicit
+    ``model`` (even ``""``) wins untouched; otherwise the ``ml`` rung
+    routes by composition (gripe 285774), ``xtb`` pins GFN2-xTB, and
+    every other rung keeps the historical ``mace_mp`` literal default."""
+    explicit_model = ro.get("model")
+    if explicit_model is not None:
+        return str(explicit_model)
+    if fidelity == "ml":
+        return route_ml_model(scene)
+    if fidelity == "xtb":
+        return "gfn2-xtb"
+    return "mace_mp"
+
+
+def _relax_options(
+    ro: dict[str, Any], scene: Scene, fidelity: str
+) -> tuple[int, str, str | None, float | None, bool]:
+    """Resolve and validate options before preview or apply chooses a route."""
+    steps = int(ro.get("steps", 200))
+    model = _rung_model(ro, scene, fidelity)
+    if ro.get("model") is not None:
+        if fidelity == "xtb" and model.lower().replace("_", "-") != "gfn2-xtb":
+            raise BadInput(
+                f"relax model {model!r} does not apply to rung 'xtb' — "
+                "the rung is GFN2-xTB only (model='gfn2-xtb' or omit)",
+                next="ops=[{'op': 'relax', 'fidelity': 'xtb'}] "
+                "(model pins to gfn2-xtb)",
+            )
+    # Optional variable-cell relax: 'inplane' (slab box, vacuum pinned) or
+    # 'full' (bulk). Validated up front so a bad mode is a retryable BadInput
+    # rather than being swallowed into the dispatch/Unsupported path below.
+    cell_mode = ro.get("cell") or None
+    if cell_mode == "fixed":
+        cell_mode = None
+    if cell_mode is not None and cell_mode not in ("inplane", "full"):
+        raise BadInput(
+            f"relax cell mode {cell_mode!r} not understood "
+            "(use 'inplane', 'full', or omit for an atoms-only relax)",
+            options=["inplane", "full"],
+        )
+    if cell_mode is not None and fidelity in ("clean", "0", "jiggle"):
+        raise BadInput(
+            "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
+            "geometry repair has no stress to relax the cell against",
+            next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
+        )
+    if cell_mode is not None and fidelity == "xtb":
+        # Refused here, not left to relax()'s RelaxUnsupported: that
+        # exception is the cloud-dispatch trigger below, and a struct_relax
+        # job carrying cell= for an atoms-only rung would only fail as
+        # infra on the node.
+        raise BadInput(
+            "variable-cell relax (cell=…) needs fidelity='ml'; rung 'xtb' "
+            "relaxes atoms only",
+            next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
+        )
+    # Optional explicit force target (eV/Å) — the way to ask for a tighter
+    # relax than the rung's max(tol, 0.05) floor (the β-PdH re-runs). It
+    # applies only to an energy rung: a geometry repair has no forces to
+    # converge, so fmax there is refused up front like cell=.
+    fmax_raw = ro.get("fmax")
+    fmax: float | None = None
+    if fmax_raw is not None:
+        try:
+            fmax = float(fmax_raw)
+        except (TypeError, ValueError):
+            fmax = -1.0
+        if not (fmax > 0.0):  # also catches NaN
+            raise BadInput(
+                f"relax fmax must be a positive force target (eV/Å), got {fmax_raw!r}",
+                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
+            )
+        if fidelity in ("clean", "0", "geo", "jiggle"):
+            raise BadInput(
+                f"relax fmax is a force target — rung {fidelity!r} is a "
+                "geometry repair with no forces to converge",
+                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
+            )
+    # Optional DFT-D3 on top of the MLIP. Off by default (the historical
+    # behaviour), but load-bearing for anything held together by van der
+    # Waals contact — a host-guest complex or an interlocked ring reads as
+    # barely bound without it. Validated here so a wrong rung is a
+    # retryable BadInput rather than a RelaxUnsupported swallowed into the
+    # cloud-dispatch path below.
+    dispersion = bool(ro.get("dispersion", False))
+    if dispersion and fidelity != "ml":
+        raise BadInput(
+            f"dispersion=True needs fidelity='ml'; rung {fidelity!r} has no "
+            "potential to correct",
+            next="ops=[{'op': 'relax', 'fidelity': 'ml', 'dispersion': true}]",
+        )
+    return steps, model, cell_mode, fmax, dispersion
 
 
 def _run_params(res: RelaxResult) -> dict[str, Any] | None:
@@ -2072,17 +2201,10 @@ class StructureHandler(Handler):
         """``turn`` is the workbench chat turn this edit came from
         (``<conv-slug>~<block ordinal>``, :mod:`precis_web.design_turn`),
         stamped onto the revision row; ``None`` for every other caller."""
-        if dry_run:
-            # Structure ops mutate the cell/bond IR (and may dispatch a
-            # GPU relax). No faithful preview yet — reject rather than
-            # silently apply on dry_run (that was a data-loss footgun).
-            raise BadInput(
-                "edit(kind='structure') does not support dry_run yet — ops mutate "
-                "the cell/bond graph (and may dispatch compute); omit dry_run to apply",
-                next="edit(kind='structure', id='pd111', "
-                "ops=[{'op':'add_atom_site','element':'O',"
-                "'site':{'type':'top'}}])",
-            )
+        # Preview mutates only the in-memory scene. It shares relax routing
+        # and upfront validation with apply, then renders the scene before
+        # any relax, job mint, or save.
+        dry_mode = normalize_dry_run(dry_run)
         if id is None or not str(id).strip():
             raise BadInput(
                 "edit(kind='structure') requires id= (the design slug)",
@@ -2108,13 +2230,57 @@ class StructureHandler(Handler):
                 "'site':{'type':'fcc'}}])",
             )
         version = self.store.structure_version(ref.id)
-        scene, _ = self.store.structure_load(ref.id)
+        scene, handles = self.store.structure_load(ref.id)
         if self.store.structure_version(ref.id) != version:
             raise BadInput(
                 "structure changed while loading the edit input",
                 next="retry the edit on the current structure",
             )
         relax_ops, import_echo = self._apply_ops_with_imports(scene, op_list)
+        if dry_mode is not None:
+            # Preview the post-op scene as a TOC — the same "what you just
+            # made" echo the save path emits — plus one line naming the
+            # relax tail's route when ops carried a relax rung.
+            echo = import_echo
+            if relax_ops:
+                ro = relax_ops[-1]
+                fidelity = str(ro.get("fidelity", "clean"))
+                _, model, _, _, dispersion = _relax_options(ro, scene, fidelity)
+                would_dispatch, cause = _relax_would_dispatch(
+                    fidelity, model, dispersion=dispersion
+                )
+                if would_dispatch:
+                    try:
+                        self._validate_relax_dispatch(
+                            scene,
+                            ro,
+                            dispersion=dispersion,
+                            structure_id=ref.id,
+                            cause=cause,
+                        )
+                    except Unsupported as exc:
+                        relax_line = f"applying would refuse this relax — {exc}"
+                    else:
+                        relax_line = (
+                            "applying would dispatch a struct_relax job for "
+                            f"fidelity {fidelity!r}"
+                        )
+                else:
+                    relax_line = (
+                        f"applying would run a {fidelity!r} relax inline "
+                        "(not run in this preview)"
+                    )
+                echo = _combine_echo(echo, relax_line)
+            return self._with_echo(
+                self._toc_response(
+                    scene,
+                    ref,
+                    handles,
+                    head_verb="preview (dry run — nothing saved)",
+                    preview=True,
+                ),
+                echo,
+            )
         res = self._run_ops(scene, relax_ops, structure_id=ref.id)
         if isinstance(res, _NeedsDispatch):
             return self._with_echo(
@@ -5809,113 +5975,14 @@ class StructureHandler(Handler):
             return None
         ro = relax_ops[-1]
         fidelity = str(ro.get("fidelity", "clean"))
-        steps = int(ro.get("steps", 200))
-        # No explicit model=: route by composition on the 'ml' rung (gripe
-        # 285774) — an all-organic, non-periodic, neutral scene defaults to
-        # the organic MLIP (mace_off) rather than the materials one
-        # (mace_mp), which is off-distribution for exactly that chemistry.
-        # The 'xtb' rung has exactly one backend (GFN2-xTB via tblite), so
-        # its model is pinned rather than routed — naming anything else is
-        # refused here rather than silently computed under a wrong label.
-        # Every other rung keeps the historical literal default — model
-        # isn't functional there yet, so there's nothing to route.
-        explicit_model = ro.get("model")
-        if explicit_model is not None:
-            model = str(explicit_model)
-            if fidelity == "xtb" and model.lower().replace("_", "-") != "gfn2-xtb":
-                raise BadInput(
-                    f"relax model {model!r} does not apply to rung 'xtb' — "
-                    "the rung is GFN2-xTB only (model='gfn2-xtb' or omit)",
-                    next="ops=[{'op': 'relax', 'fidelity': 'xtb'}] "
-                    "(model pins to gfn2-xtb)",
-                )
-        elif fidelity == "ml":
-            model = route_ml_model(scene)
-        elif fidelity == "xtb":
-            model = "gfn2-xtb"
-        else:
-            model = "mace_mp"
-        # Optional variable-cell relax: 'inplane' (slab box, vacuum pinned) or
-        # 'full' (bulk). Validated up front so a bad mode is a retryable BadInput
-        # rather than being swallowed into the dispatch/Unsupported path below.
-        cell_mode = ro.get("cell") or None
-        if cell_mode == "fixed":
-            cell_mode = None
-        if cell_mode is not None and cell_mode not in ("inplane", "full"):
-            raise BadInput(
-                f"relax cell mode {cell_mode!r} not understood "
-                "(use 'inplane', 'full', or omit for an atoms-only relax)",
-                options=["inplane", "full"],
-            )
-        if cell_mode is not None and fidelity in ("clean", "0", "jiggle"):
-            raise BadInput(
-                "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
-                "geometry repair has no stress to relax the cell against",
-                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
-            )
-        if cell_mode is not None and fidelity == "xtb":
-            # Refused here, not left to relax()'s RelaxUnsupported: that
-            # exception is the cloud-dispatch trigger below, and a struct_relax
-            # job carrying cell= for an atoms-only rung would only fail as
-            # infra on the node.
-            raise BadInput(
-                "variable-cell relax (cell=…) needs fidelity='ml'; rung 'xtb' "
-                "relaxes atoms only",
-                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
-            )
-        # Optional explicit force target (eV/Å) — the way to ask for a tighter
-        # relax than the rung's max(tol, 0.05) floor (the β-PdH re-runs). It
-        # applies only to an energy rung: a geometry repair has no forces to
-        # converge, so fmax there is refused up front like cell=.
-        fmax_raw = ro.get("fmax")
-        fmax: float | None = None
-        if fmax_raw is not None:
-            try:
-                fmax = float(fmax_raw)
-            except (TypeError, ValueError):
-                fmax = -1.0
-            if not (fmax > 0.0):  # also catches NaN
-                raise BadInput(
-                    f"relax fmax must be a positive force target (eV/Å), "
-                    f"got {fmax_raw!r}",
-                    next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
-                )
-            if fidelity in ("clean", "0", "geo", "jiggle"):
-                raise BadInput(
-                    f"relax fmax is a force target — rung {fidelity!r} is a "
-                    "geometry repair with no forces to converge",
-                    next="ops=[{'op': 'relax', 'fidelity': 'ml', 'fmax': 0.01}]",
-                )
-        # Optional DFT-D3 on top of the MLIP. Off by default (the historical
-        # behaviour), but load-bearing for anything held together by van der
-        # Waals contact — a host-guest complex or an interlocked ring reads as
-        # barely bound without it. Validated here so a wrong rung is a
-        # retryable BadInput rather than a RelaxUnsupported swallowed into the
-        # cloud-dispatch path below.
-        dispersion = bool(ro.get("dispersion", False))
-        if dispersion and fidelity != "ml":
-            raise BadInput(
-                f"dispersion=True needs fidelity='ml'; rung {fidelity!r} has no "
-                "potential to correct",
-                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'dispersion': true}]",
-            )
+        steps, model, cell_mode, fmax, dispersion = _relax_options(ro, scene, fidelity)
 
         # Dispatch-only rungs do no canonical hashing or repair in the
         # request. Inline ML retains its existing cache/backend behavior.
-        dispatch_cause = None
-        if fidelity == "ml":
-            # Check imports, not model weights: inline cache hits must not
-            # construct a calculator merely to decide where to run.
-            from precis.structure.relax import _check_ml_backend
-
-            try:
-                _check_ml_backend(model, dispersion=dispersion)
-            except RelaxUnsupported as exc:
-                dispatch_cause = exc
-        if (
-            fidelity not in ("clean", "0", "geo", "jiggle", "emt", "ml")
-            or dispatch_cause
-        ):
+        would_dispatch, dispatch_cause = _relax_would_dispatch(
+            fidelity, model, dispersion=dispersion
+        )
+        if would_dispatch:
             return self._stage_relax_dispatch(
                 scene,
                 ro,
@@ -6012,6 +6079,36 @@ class StructureHandler(Handler):
             res.final_geometry = relax_cache.serialize_geometry(scene, order)
         return res
 
+    @staticmethod
+    def _validate_relax_dispatch(
+        scene: Scene,
+        ro: dict[str, Any],
+        *,
+        dispersion: bool,
+        structure_id: str | int,
+        cause: RelaxUnsupported | None,
+    ) -> str:
+        """Check dispatch eligibility without building a job snapshot."""
+        if dispersion:
+            raise Unsupported(
+                f"{cause} — dispersion=True runs locally only; the "
+                "struct_relax dispatch contract carries no dispersion "
+                "flag, so this relax cannot be dispatched",
+                next="install the [dft-ml] extra locally, or re-run with "
+                "dispersion omitted to use the cluster",
+            ) from cause
+        with phase(structure_id, "validate"):
+            findings = validate(scene)
+        if findings:
+            raise BadInput(
+                _format_gate_rejection(findings),
+                next="fix the flagged atoms/bonds or run fidelity='clean' first",
+            ) from cause
+        preflight_mode = str(ro.get("preflight", "clean"))
+        if preflight_mode not in ("clean", "emt"):
+            raise BadInput("unknown preflight mode", options=["clean", "emt"])
+        return preflight_mode
+
     def _stage_relax_dispatch(
         self,
         scene: Scene,
@@ -6032,24 +6129,9 @@ class StructureHandler(Handler):
         Reject unsupported dispatch arguments before minting; preflight,
         cache lookup and persistence belong to prepare_relax_job (gr524236).
         """
-        if dispersion:
-            raise Unsupported(
-                f"{cause} — dispersion=True runs locally only; the "
-                "struct_relax dispatch contract carries no dispersion "
-                "flag, so this relax cannot be dispatched",
-                next="install the [dft-ml] extra locally, or re-run with "
-                "dispersion omitted to use the cluster",
-            ) from cause
-        with phase(structure_id, "validate"):
-            findings = validate(scene)
-        if findings:
-            raise BadInput(
-                _format_gate_rejection(findings),
-                next="fix the flagged atoms/bonds or run fidelity='clean' first",
-            ) from cause
-        preflight_mode = str(ro.get("preflight", "clean"))
-        if preflight_mode not in ("clean", "emt"):
-            raise BadInput("unknown preflight mode", options=["clean", "emt"])
+        preflight_mode = self._validate_relax_dispatch(
+            scene, ro, dispersion=dispersion, structure_id=structure_id, cause=cause
+        )
         snapshot = pack_scene(scene)
         # This linear JSON digest is only a queue identity, never a run-cube
         # address. Canonical hashing and cache lookup happen in the worker.
@@ -6626,7 +6708,14 @@ class StructureHandler(Handler):
         head_verb: str | None = None,
         relax_summary: dict[str, Any] | None = None,
         inline_atoms: bool = False,
+        preview: bool = False,
     ) -> Response:
+        """The TOC head (+ small-scene atom table). ``preview=True`` is the
+        ``edit(dry_run=…)`` echo of a scene the caller has already mutated
+        in memory: the relax summary, geometry tier and per-atom ``|F|``
+        all describe the *saved* version's coordinates, so a preview
+        carries none of them — everything shown is computed from ``scene``
+        itself."""
         t = probe.toc(scene)
         pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
         handle = handle_registry.try_format("structure", ref.id, chunk=False) or "—"
@@ -6641,7 +6730,7 @@ class StructureHandler(Handler):
             f" · {t['formula']} · {t['natoms']} atoms · "
             f"pbc[{pbc}] · {t['nbonds']} bonds · {handle}"
         )
-        lr = relax_summary or (ref.meta or {}).get("last_relax")
+        lr = None if preview else (relax_summary or (ref.meta or {}).get("last_relax"))
         if lr:
             state = "converged" if lr.get("converged") else "not converged"
             head += (
@@ -6664,7 +6753,10 @@ class StructureHandler(Handler):
         gstats = geometry_stats.compute(scene)
         gline = geometry_stats.head_line(gstats)
         if gline:
-            head += f"\n# geometry: {gline} · tier: {self._geometry_tier(ref, relax_summary)}"
+            tier = (
+                "" if preview else f" · tier: {self._geometry_tier(ref, relax_summary)}"
+            )
+            head += f"\n# geometry: {gline}{tier}"
         findings = validate(scene) + vsepr.advisories(scene)
         n_err = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
@@ -6688,24 +6780,27 @@ class StructureHandler(Handler):
             # gripe 161576: a compact |F| (eV/Å) column — a cheap DB read from
             # a recorded run at the CURRENT design version only (FIX 2); never
             # the live EMT estimate here (FIX 3 — that's view='atom'-only).
-            # '—' when no such run exists (never fabricated).
-            force_mags = self._force_magnitudes(scene, ref)
+            # '—' when no such run exists (never fabricated). A preview
+            # carries no |F| column at all: a recorded run describes the
+            # saved version's coordinates, never the post-op scene.
+            force_mags = {} if preview else self._force_magnitudes(scene, ref)
             rows = []
             coord_all = probe.coordination_all(scene)
+            schema = ["atom", "element", "frac", "coord", "fixed"]
+            if not preview:
+                schema.append("|F|")
             for label, atom in scene.atoms.items():
-                rows.append(
-                    {
-                        "atom": f"{handle}#{label}",
-                        "element": atom.element,
-                        "frac": ",".join(f"{x:.3f}" for x in atom.frac),
-                        "coord": coord_all[label],
-                        "fixed": "yes" if atom.fixed else "no",
-                        "|F|": force_mags.get(label, "—"),
-                    }
-                )
-            body += "\n" + render_agent_table(
-                rows, schema=["atom", "element", "frac", "coord", "fixed", "|F|"]
-            )
+                row = {
+                    "atom": f"{handle}#{label}",
+                    "element": atom.element,
+                    "frac": ",".join(f"{x:.3f}" for x in atom.frac),
+                    "coord": coord_all[label],
+                    "fixed": "yes" if atom.fixed else "no",
+                }
+                if not preview:
+                    row["|F|"] = force_mags.get(label, "—")
+                rows.append(row)
+            body += "\n" + render_agent_table(rows, schema=schema)
         prov_rows = paper_provenance_rows(self.store, ref.id)
         if prov_rows:
             body += "\n\nProvenance:\n" + render_agent_table(
