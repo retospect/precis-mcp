@@ -1,5 +1,5 @@
-"""gr687874 — the coupled-commit guard: a release never splits a declared
-Change-Set/Requires pairing (Reto 2026-11-15).
+"""Release cut pairing for Change-Set and Requires trailers (gr687874,
+gr763931).
 
 Same rig as test_release_script: a throwaway repo with a bare origin and
 stubbed gh/deploy. Declarations are commit-message trailers, which is also
@@ -119,6 +119,52 @@ def test_factory_pinned_cut_waits_for_an_incomplete_set(rig: Rig) -> None:
     assert out.returncode == 1
     assert _hold(out)["class"] == REFUSAL_HOLDING
     assert rig.origin_ref("release/r1") == ""
+
+
+@pytest.mark.parametrize("mode", ["tip", "pinned", "factory"])
+def test_expired_incomplete_set_allows_cut(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    with monkeypatch.context() as dates:
+        dates.setenv("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+        member = _commit_trailer(rig, "src/d1.py", "d1 half", "Change-Set: pair-1")
+    tip = _commit(rig.root, "src/d2.py", "unrelated")
+    _push_main(rig)
+
+    args = [] if mode == "tip" else ["--sha", member]
+    out = _release(
+        rig,
+        "--cut-only",
+        *args,
+        *FAST,
+        PRECIS_RELEASE_PASS="td5" if mode == "factory" else "",
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert rig.origin_ref("release/r1") == (tip if mode == "tip" else member)
+    assert (
+        out.stderr.count("Change-Set pair-1: 1 sibling never landed, no longer pairing")
+        == 1
+    )
+
+
+def test_expired_incomplete_set_keeps_landed_members_together(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with monkeypatch.context() as dates:
+        dates.setenv("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
+        first = _commit_trailer(rig, "src/d1.py", "d1", "Change-Set: trio-1 3")
+    second = _commit_trailer(rig, "src/d2.py", "d2", "Change-Set: trio-1 3")
+    _push_main(rig)
+
+    pinned = _release(rig, "--cut-only", "--sha", first, *FAST, PRECIS_RELEASE_PASS="")
+    assert pinned.returncode == 1
+    assert "straddles the cut" in _hold(pinned)["line"]
+    assert rig.origin_ref("release/r1") == ""
+
+    tip = _release(rig, "--cut-only", *FAST)
+    assert tip.returncode == 0, tip.stdout + tip.stderr
+    assert rig.origin_ref("release/r1") == second
+    assert "Change-Set trio-1: 1 sibling never landed" in tip.stderr
 
 
 def test_pending_cut_is_rechecked_at_its_recorded_base(rig: Rig) -> None:
@@ -358,8 +404,8 @@ def test_change_set_declared_count_wins(
 ) -> None:
     mod = _load_release(tmp_path, monkeypatch)
     walk = [  # newest first, as _first_parent_walk returns
-        ("b" * 40, "s\n\nChange-Set: trio-1\n"),
-        ("a" * 40, "s\n\nChange-Set: trio-1 3\n"),
+        ("b" * 40, 2, "s\n\nChange-Set: trio-1\n"),
+        ("a" * 40, 1, "s\n\nChange-Set: trio-1 3\n"),
     ]
     sets = mod._change_sets(walk)
     assert sets["trio-1"]["want"] == 3

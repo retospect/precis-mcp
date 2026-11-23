@@ -54,9 +54,9 @@ first-parent line at cut time:
 - `Change-Set: <id> [<n>]` — every commit carrying the same one-token
   `<id>` is one set of `<n>` members (n defaults to 2; write the count for
   a bigger set). Every member carries the trailer — that is the explicit
-  membership. A release carries all n members or none: a set with fewer
-  than n members on main is *incomplete* and never ships alone. Members
-  origin/prod already holds count as shipped.
+  membership. A release keeps landed members together. A set with fewer
+  than n members on main is *incomplete*. Members origin/prod already
+  holds count as shipped.
 - `Requires: <sha>` — the commit requires commit `<sha>` (7-40 hex, a
   commit reachable from origin/main — the landed sha, not a pre-squash
   builder sha). A release carries both or neither; a `<sha>` already on
@@ -74,7 +74,10 @@ requiring B, holds) refuses with a `holding: ` line: a classified wait,
 attempt-free, and the next cut re-targets to origin/main's tip where the
 set ships whole. An incomplete set moves the cut below its oldest landed
 member for an older hand-pinned cut when there is earlier work to ship.
-Tip cuts and factory cuts hold for completion. A factory pass needs a
+Tip cuts and factory cuts hold for completion. The hold expires 24 hours
+after the oldest unshipped member's committer timestamp. If a cut includes
+an expired incomplete set, release warns on stderr with the set ID and
+the number of missing siblings. A factory pass needs a
 release containing its requested SHA. A pending cut whose branch is not
 yet on origin reconciles at its recorded base after the same check; a
 base that would split a set holds until the pending record is abandoned.

@@ -99,10 +99,9 @@ failed); a journal with rollout done prints the `next:` line at once.
 A converged deployment with an unpublished prod pointer takes `round deploy
 --finish-pointer`, using round's receipt proof without repeating the rollout.
 
-Declared commit pairings (gr687874): a commit carrying a `Change-Set: <id>
-[<n>]` or `Requires: <sha>` trailer (preserved verbatim by ship, gr517803)
-may not be split across releases — a cut carries the whole declared set or
-none of it. The target is checked over origin/main's first-parent line
+Declared commit pairings (gr687874) use `Change-Set: <id> [<n>]` and
+`Requires: <sha>` trailers (preserved verbatim by ship, gr517803).
+The target is checked over origin/main's first-parent line
 only where a cut is selected: a re-run resumes or reports a recorded
 release at its own base even when the requested tip straddles an
 incomplete set, a pending cut that would still push reconciles at its
@@ -117,8 +116,10 @@ other cut paths hold. A cut below the tip that would split a landed set
 holds with a `holding: ` line (a classified wait, like in-flight); an
 incomplete Change-Set (fewer than n members, those on origin/prod counted
 as shipped) moves an older hand-pinned cut below its oldest landed member.
-Tip and factory cuts hold for completion. A Requires value naming no
-commit on origin/main is unenforceable: the cut warns on stderr, naming
+Tip and factory cuts hold for completion. After 24 hours from the oldest
+unshipped member's committer timestamp, missing members warn and cease
+blocking the cut. A Requires value naming no commit on origin/main is
+unenforceable: the cut warns on stderr, naming
 the commit and the value, and does not hold on it.
 
 --dry-run only reads; it prints the plan and passes --dry-run to round cut and
@@ -783,9 +784,8 @@ def next_line(sha: str) -> str:
 #                            carrying the same <id> is one set of <n>
 #                            members (n defaults to 2 — write the count
 #                            for a bigger set; <id> is one token). A cut
-#                            carries all n members or none. A set whose
-#                            landed members number fewer than n is
-#                            INCOMPLETE and never ships alone.
+#                            keeps landed members together. The wait for
+#                            missing siblings can age out.
 #   Requires: <sha>          the commit requires commit <sha> (7-40 hex,
 #                            a commit reachable from origin/main); a cut
 #                            carries both or neither. A <sha> already on
@@ -804,7 +804,10 @@ def next_line(sha: str) -> str:
 #    origin/prod already holds as shipped) moves the cut BELOW its oldest
 #    landed member — the cut ships none of the set. From a tip cut, or
 #    when the move would leave nothing shippable, it HOLDS instead (a
-#    pipelined cut can take only the tip anyway).
+#    pipelined cut can take only the tip anyway). After 24 hours from the
+#    oldest unshipped member's committer time, the missing members stop
+#    blocking the cut. Use committer time so an old author date on a
+#    newly landed squash commit does not shorten the wait.
 #  - A Requires value that is not a commit reachable from origin/main (a
 #    td/gr handle, a pre-squash builder sha, a sibling that never landed)
 #    FAILS OPEN: it cannot be honoured, so the cut names it in one
@@ -832,6 +835,7 @@ _MAIN_MOVED_PHRASE = "origin/main moved since the pairing check"
 MAIN_MOVED = -2
 
 _CHANGE_SET_KEY = "change-set"
+_CHANGE_SET_WAIT_SECONDS = 24 * 60 * 60
 _REQUIRES_KEY = "requires"
 _SHA_TOKEN_RE = re.compile(r"[0-9a-f]{7,40}")
 _TRAILER_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):(?:[ \t]+(.*))?$")
@@ -868,8 +872,8 @@ def _trailers(body: str) -> list[tuple[str, str]]:
     return out
 
 
-def _first_parent_walk(prod: str, tip: str) -> list[tuple[str, str]] | None:
-    """(sha, message) of every first-parent commit in (prod..tip],
+def _first_parent_walk(prod: str, tip: str) -> list[tuple[str, int, str]] | None:
+    """(sha, committer timestamp, message) of each first-parent commit in (prod..tip],
     NEWEST first (git log's order — the guard's positions index it); None
     when git cannot read the range (the caller holds). With no prod ref
     the walk covers the entire first-parent line through tip."""
@@ -877,24 +881,28 @@ def _first_parent_walk(prod: str, tip: str) -> list[tuple[str, str]] | None:
     out = git(
         "log",
         "--first-parent",
-        "--format=%H%x1f%B%x1e",
+        "--format=%H%x1f%ct%x1f%B%x00",
         rng,
     )
     if out is None:
         return None
-    walk: list[tuple[str, str]] = []
-    for rec in out.split("\x1e"):
-        sha, sep, body = rec.strip("\n").partition("\x1f")
-        if sep and sha:
-            walk.append((sha.strip(), body))
+    walk: list[tuple[str, int, str]] = []
+    for rec in out.split("\0"):
+        if not rec.strip():
+            continue
+        fields = rec.strip("\n").split("\x1f", 2)
+        if len(fields) != 3 or not fields[1].isascii() or not fields[1].isdigit():
+            return None
+        sha, committed_at, body = fields
+        walk.append((sha.strip(), int(committed_at), body))
     return walk
 
 
-def _change_sets(walk: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
+def _change_sets(walk: list[tuple[str, int, str]]) -> dict[str, dict[str, Any]]:
     """Change-Set id → {"members": [sha...] (land order), "want": n} —
     the highest declared member count wins."""
     out: dict[str, dict[str, Any]] = {}
-    for sha, body in walk:
+    for sha, _committed_at, body in walk:
         for key, value in _trailers(body):
             if key.lower() != _CHANGE_SET_KEY or not value:
                 continue
@@ -910,12 +918,12 @@ def _change_sets(walk: list[tuple[str, str]]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _requires(walk: list[tuple[str, str]]) -> list[tuple[str, str]]:
+def _requires(walk: list[tuple[str, int, str]]) -> list[tuple[str, str]]:
     """(commit sha, raw value) of every Requires trailer (walk order;
     evaluation order is irrelevant)."""
     return [
         (sha, value)
-        for sha, body in walk
+        for sha, _committed_at, body in walk
         for key, value in _trailers(body)
         if key.lower() == _REQUIRES_KEY
     ]
@@ -1000,7 +1008,7 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
     walk = _first_parent_walk(prod, tip)
     if walk is None:
         return s, "commit history is unreadable — refusing to cut unchecked"
-    pos = {sha: i for i, (sha, _body) in enumerate(walk)}  # 0 = newest
+    pos = {sha: i for i, (sha, _committed_at, _body) in enumerate(walk)}  # 0 = newest
     if s not in pos:
         if prod and ancestor(s, prod):
             return s, None  # already shipped; the rollback guard still applies
@@ -1014,6 +1022,7 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
     requires = _requires(walk)
     targets = _requires_targets(requires, pos, prod, tip)
     cut = pos[s]
+    expired_before = time.time() - _CHANGE_SET_WAIT_SECONDS
 
     def _done(result: tuple[str, str | None]) -> tuple[str, str | None]:
         # One line per unenforceable Requires the cut carries: named, not
@@ -1032,6 +1041,7 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
         holds: list[str] = []
         drops: list[int] = []  # positions of landed members to cut below
         drop_why: list[str] = []
+        expired: list[tuple[str, int]] = []
         for cid, ent in sets.items():
             members = [m for m in ent["members"] if m in pos]
             in_cut = [m for m in members if pos[m] >= cut]
@@ -1041,11 +1051,15 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
             have = len(members) + on_prod  # prod's count as shipped
             want = max(ent["want"], prod_want)  # highest count across both
             if have < want:
-                drops.append(max(pos[m] for m in in_cut))
-                drop_why.append(
-                    f"Change-Set {cid} has {have} of {want} members on main"
-                )
-            elif any(pos[m] < cut for m in members):
+                oldest = pos[members[0]]  # members are in land order
+                if walk[oldest][1] > expired_before:
+                    drops.append(max(pos[m] for m in in_cut))
+                    drop_why.append(
+                        f"Change-Set {cid} has {have} of {want} members on main"
+                    )
+                    continue
+                expired.append((cid, want - have))
+            if any(pos[m] < cut for m in members):
                 holds.append(
                     f"Change-Set {cid} is landed but straddles the cut"
                     f" ({len(in_cut)} of {len(members)} members would ship)"
@@ -1066,6 +1080,14 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
         if holds:
             return _done((s, "; ".join(dict.fromkeys(holds))))
         if not drops:
+            for cid, missing in expired:
+                sibling = "sibling" if missing == 1 else "siblings"
+                print(
+                    f"scripts/release: warning: Change-Set {cid}: "
+                    f"{missing} {sibling} never landed, no longer pairing",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return _done((walk[cut][0], None))
         why = "; ".join(dict.fromkeys(drop_why))
         if cut == 0 or release_pass():
