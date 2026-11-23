@@ -10,7 +10,9 @@ gotcha links to a thread it applies to with ``qualifies`` (the thread reads
 ``link`` ack (``precis.handlers.memory``).
 Summaries past the eye's child cap need the hub tag, not pruned membership.
 :func:`refuse_unregistered_sections` closes the ``section:`` axis per space
-on ``put`` / ``tag``: the allowed set is what the space's root hub names.
+on ``put`` / ``tag`` / ``edit``: the allowed set is what the space's root hub
+names. Edits check the stored tags because they change prose and metadata,
+while the tag verb can still remove an invalid legacy value.
 
 The placement, hub-less and thread-prefix hints read a :class:`MemoryDraft`
 (title, body, hook, tags, ``part-of`` parents), not the ref row, so
@@ -535,7 +537,7 @@ def registered_sections(store: Store, space: str) -> tuple[frozenset[str], list[
 def refuse_unregistered_sections(
     store: Store, tags: Iterable[str] | None, *, space: str | None
 ) -> None:
-    """Raise ``BadInput`` when ``tags`` (the raw strings a write adds) carry
+    """Raise ``BadInput`` when ``tags`` carry
     a ``section:`` value the node's space does not register. ``space`` is
     the fallback when ``tags`` names no ``SPACE:`` itself (the node's own
     space on ``tag``, the create default on ``put``)."""
@@ -543,7 +545,7 @@ def refuse_unregistered_sections(
     for raw in tags or []:
         if not isinstance(raw, str):
             continue
-        t = raw.strip()
+        t = raw.strip().removeprefix("OPEN:")
         if t.startswith("SPACE:"):
             space = t
         elif t.lower().startswith("section:"):
@@ -565,6 +567,17 @@ def refuse_unregistered_sections(
             f"{root}'s body names; a new type is registered by an edit of "
             "that root node, not by tagging"
         ),
+    )
+
+
+def validate_stored_sections(store: Store, ref_id: int) -> None:
+    """Refuse edits to a node carrying an unregistered live section tag."""
+    tags = store.ref_tags_bulk([ref_id]).get(ref_id, [])
+    space = next((f"SPACE:{value}" for ns, value in tags if ns == "SPACE"), None)
+    refuse_unregistered_sections(
+        store,
+        (value for ns, value in tags if ns == "OPEN" and value.startswith("section:")),
+        space=space,
     )
 
 

@@ -264,6 +264,7 @@ from precis.utils.memory_hubs import (
     space_tag_of,
     sub_hub_hints,
     thread_dup_hint,
+    validate_stored_sections,
 )
 from precis.utils.memory_rulings import (
     META_KEYS as _RULING_META_KEYS,
@@ -3218,6 +3219,9 @@ class MemoryHandler(AuditedRetirementHandler):
                 next="edit(kind='memory', id=N, mode='replace', text='new body')",
             )
         require_mode(spec=self.spec, verb="edit", mode=mode)
+        ref_id = self._coerce_id(id)
+        ref = self._resolve_live_ref(ref_id)
+        validate_stored_sections(self.store, ref_id)
         delete_span = mode == "delete"
         if delete_span:
             # Explicit span deletion (gr503460): several MCP clients
@@ -3306,11 +3310,11 @@ class MemoryHandler(AuditedRetirementHandler):
             if warrant_clean is not None:
                 ops_meta["warrant"] = warrant_clean
             return self._after_status_write(
-                self._coerce_id(id),
+                ref_id,
                 meta_clean,
                 dry_mode,
                 self._edit_ops(
-                    ref_id=self._coerce_id(id),
+                    ref_id=ref_id,
                     ops=ops,
                     dry_mode=dry_mode,
                     meta_patch=ops_meta,
@@ -3334,11 +3338,11 @@ class MemoryHandler(AuditedRetirementHandler):
             if warrant_clean is not None:
                 anchored_meta["warrant"] = warrant_clean
             return self._after_status_write(
-                self._coerce_id(id),
+                ref_id,
                 meta_clean,
                 dry_mode,
                 self._edit_anchored(
-                    ref_id=self._coerce_id(id),
+                    ref_id=ref_id,
                     mode=mode,
                     find=find,
                     text=text,
@@ -3374,10 +3378,6 @@ class MemoryHandler(AuditedRetirementHandler):
                     "args={'warrant': 'updated justification'})"
                 ),
             )
-        ref_id = self._coerce_id(id)
-        # _resolve_live_ref raises NotFound/Gone with the right taxonomy if
-        # the memory doesn't exist or was soft-deleted.
-        ref = self._resolve_live_ref(ref_id)
         meta_patch: dict[str, Any] = {}
         if rule_clean is not None:
             meta_patch["rule"] = rule_clean
@@ -4645,7 +4645,8 @@ class MemoryHandler(AuditedRetirementHandler):
                     ),
                 )
         if not isinstance(id, list) and any(
-            isinstance(t, str) and t.strip().lower().startswith("section:")
+            isinstance(t, str)
+            and t.strip().removeprefix("OPEN:").lower().startswith("section:")
             for t in add or []
         ):
             # A batch reaches here once per id (``_tag_batch``).

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.cli.memory import SPACE_TAG, _created_id
+from precis.cli.memory import SPACE_TAG, _created_id, audit_sections
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
@@ -116,3 +116,36 @@ def test_a_space_without_a_registering_root_stays_open(hub: Hub) -> None:
         "section:outlook",
         "section:dft_methodology",
     }
+
+
+def test_edit_checks_stored_sections_and_allows_repair(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    legacy = _note(handler, "Legacy", "old body", SPACE_TAG, "section:rulings")
+    valid = _note(handler, "Valid", "original body", SPACE_TAG, "section:workflow")
+    root = _root(handler, store)
+
+    with pytest.raises(BadInput, match="rulings"):
+        handler.edit(id=legacy, title="New title", dry_run=True)
+    with pytest.raises(BadInput, match="batch"):
+        handler.edit(id=[valid, legacy], mode="append", text=" New text.")
+    assert "New text." not in handler.get(id=valid).body
+
+    handler.edit(id=root, mode="append", text=" Rulings carry section:rulings.")
+    handler.edit(id=legacy, mode="append", text=" New text.")
+    assert "New text." in handler.get(id=legacy).body
+
+
+def test_audit_reports_only_legacy_tags_in_closed_spaces(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    legacy = _note(handler, "Legacy", "live", SPACE_TAG, "section:rulings")
+    retired = _note(handler, "Retired", "gone", SPACE_TAG, "section:rulings")
+    store.retire_ref(retired)
+    _note(handler, "Chapter", "prose", "SPACE:research", "section:outlook")
+    _root(handler, store)
+
+    assert audit_sections(store).splitlines() == [
+        "1 unregistered section tag(s)",
+        f"me{legacy} {SPACE_TAG} section:rulings",
+    ]
+    handler.tag(id=legacy, remove=["section:rulings"], add=["section:workflow"])
+    assert audit_sections(store) == "0 unregistered section tag(s)"

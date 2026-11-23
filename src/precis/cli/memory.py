@@ -38,6 +38,8 @@ The write and load halves of `me690866`:
 - ``precis memory migrate-rulings [--apply]`` (gr548835 slice 1): one-off
   move of the backfilled ``ruling`` nodes' trailing ``Meta:`` body line into
   real meta; dry run by default, operator-run only (:func:`migrate_rulings`).
+- ``precis memory audit-sections`` reports live memory tags outside their
+  space's registered set for the gr688811 cutover. The audit is read-only.
 
 The logic lives in :func:`import_memory_dir` and :func:`render_memory_index`
 (both take a :class:`~precis.store.Store`) so tests call them directly; the
@@ -1680,6 +1682,40 @@ def migrate_rulings(store: Store, *, apply: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 
+def audit_sections(store: Store) -> str:
+    """Report each live memory with an unregistered section in a closed space."""
+    from precis.utils import handle_registry
+    from precis.utils.memory_hubs import registered_sections
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, space.value, section.value
+            FROM refs r
+            JOIN ref_tags sr ON sr.ref_id = r.ref_id
+            JOIN tags space ON space.tag_id = sr.tag_id AND space.namespace = 'SPACE'
+            JOIN ref_tags tr ON tr.ref_id = r.ref_id
+            JOIN tags section ON section.tag_id = tr.tag_id AND section.namespace = 'OPEN'
+            WHERE r.kind = 'memory' AND r.retired_at IS NULL
+              AND section.value LIKE 'section:%'
+              AND (sr.expires_at IS NULL OR sr.expires_at > now())
+              AND (tr.expires_at IS NULL OR tr.expires_at > now())
+            ORDER BY space.value, r.ref_id, section.value
+            """
+        ).fetchall()
+    allowed_by_space: dict[str, frozenset[str]] = {}
+    findings: list[str] = []
+    for ref_id, space_name, section in rows:
+        space = f"SPACE:{space_name}"
+        if space not in allowed_by_space:
+            allowed_by_space[space], _ = registered_sections(store, space)
+        allowed = allowed_by_space[space]
+        if allowed and section.removeprefix("section:") not in allowed:
+            handle = handle_registry.try_format("memory", ref_id) or f"me{ref_id}"
+            findings.append(f"{handle} {space} {section}")
+    return "\n".join([f"{len(findings)} unregistered section tag(s)", *findings])
+
+
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the ``memory`` subparser (``import`` and ``index``) on ``sub``."""
     mp = sub.add_parser(
@@ -1693,6 +1729,11 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     msub = mp.add_subparsers(dest="memory_cmd", required=True)
     memory_recall_set.configure_parser(msub)
+    audit = msub.add_parser(
+        "audit-sections",
+        help="Report live memory tags outside their space's section set.",
+    )
+    audit.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     imp = msub.add_parser(
         "import",
@@ -1943,7 +1984,9 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        if args.memory_cmd == "mirror":
+        if args.memory_cmd == "audit-sections":
+            print(audit_sections(store))
+        elif args.memory_cmd == "mirror":
             import json
             from dataclasses import asdict
 
