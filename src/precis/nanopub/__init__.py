@@ -158,6 +158,9 @@ signing keys exist (``precis nanopub keygen`` has run — the introduction
 nanopub's live POST + ORCID back-link are Reto's pending steps, no
 self-hosted fingerprint page by decision); publication requires an
 attesting allowlist entry — an empty allowlist means nothing publishable.
+The grounding gate checks each cited paper's live title and identity
+flags at approval and signing. It refuses placeholder titles and
+flagged mismatches before a wrong source can enter a signed artifact.
 """
 
 from __future__ import annotations

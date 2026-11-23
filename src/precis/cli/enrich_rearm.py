@@ -1,4 +1,4 @@
-"""``precis enrich-rearm`` — re-arm metadata enrichment for named papers.
+"""``precis enrich-rearm`` — re-arm metadata enrichment for selected papers.
 
 ``paper_meta_enrich`` visits each paper once and stamps
 ``meta.authors_resolved_at``; it claims only unstamped rows. A paper
@@ -7,7 +7,8 @@ visited before the pass learned a new field (Crossref ``volume`` /
 stamp on the papers you name
 (:func:`precis.ingest.paper_hygiene.requeue_papers_for_enrich`) so the
 worker pass re-claims them on its next cycle. Only papers that carry a DOI
-and are currently stamped are selected. Dry-run by default; pass
+and are currently stamped are selected. Use ``--all-caps`` for the title
+backfill cohort. Dry-run by default; pass
 ``--apply`` to commit.
 
 A re-visit is safe: the pass never clobbers human-verified authors or a
@@ -57,10 +58,15 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "Dry-run by default; --apply to commit."
         ),
     )
-    p.add_argument(
+    cohort = p.add_mutually_exclusive_group(required=True)
+    cohort.add_argument(
         "--refs",
-        required=True,
         help="Comma-separated paper ref ids, e.g. 12,34,56.",
+    )
+    cohort.add_argument(
+        "--all-caps",
+        action="store_true",
+        help="Select visited DOI papers with all-caps titles longer than 25 characters.",
     )
     p.add_argument(
         "--apply",
@@ -78,7 +84,7 @@ def run(args: argparse.Namespace) -> None:
     from precis.runtime import build_runtime
 
     try:
-        ref_ids = _parse_refs(args.refs)
+        ref_ids = None if args.all_caps else _parse_refs(args.refs)
     except ValueError:
         print(
             f"enrich-rearm: bad --refs {args.refs!r} (want 12,34,56)", file=sys.stderr
@@ -99,14 +105,15 @@ def run(args: argparse.Namespace) -> None:
 
     dry_run = not args.apply
     mode = "DRY-RUN" if dry_run else "APPLY"
-    print(f"enrich-rearm [{mode}]: {len(ref_ids)} ref(s) named", file=sys.stderr)
+    selection = "all-caps cohort" if ref_ids is None else f"{len(ref_ids)} ref(s) named"
+    print(f"enrich-rearm [{mode}]: {selection}", file=sys.stderr)
 
     queued = requeue_papers_for_enrich(store, ref_ids, dry_run=dry_run)
     for ref_id in queued:
         print(f"ref_id={ref_id}")
 
     verb = "would re-arm" if dry_run else "re-armed"
-    skipped = len(set(ref_ids)) - len(queued)
+    skipped = len(set(ref_ids)) - len(queued) if ref_ids is not None else 0
     print(
         f"\nenrich-rearm [{mode}] done: {verb} {len(queued)} paper(s); "
         f"{skipped} skipped (not a live paper, no DOI, or not yet visited). "

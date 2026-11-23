@@ -702,6 +702,24 @@ def _last_tick_evidence(store: Store, ref_id: int, created_at: datetime) -> date
     return latest_chunk_at or created_at
 
 
+def all_caps_title_counts(store: Store) -> tuple[int, int]:
+    """Count live ALL-CAPS paper titles, including the subset without DOI."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (
+                SELECT 1 FROM ref_identifiers ri
+                 WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi'
+            ))
+              FROM refs r
+             WHERE r.kind = 'paper' AND r.retired_at IS NULL
+               AND length(r.title) > 25 AND r.title = upper(r.title)
+            """
+        ).fetchone()
+    assert row is not None
+    return int(row[0]), int(row[1])
+
+
 def latest_report(
     store: Store,
     max_age: timedelta | None = None,

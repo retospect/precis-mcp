@@ -21,6 +21,14 @@ catching "same paper, different bytes" the fast path misses.
 Either hit yields ``IngestResult(inserted=False, ref_id=...)`` with
 identifiers re-fetched from ``ref_identifiers`` (reflecting what's
 actually stored, not what the pipeline freshly computed).
+
+Stub binding (gr690404): a no-DOI manual drop can fill a unique
+bodyless stub when its lexical score and front matter agree. Named
+targets and advisory lexical matches get outcome events, visible in
+paper status and the full log. Existing chunks stay intact: a foreign
+article's head detected in the tail is journalled as a suspected
+boundary — naming the held stub that owns it when one does — and the
+record tagged ``multi-article``, never trimmed.
 """
 
 from __future__ import annotations
@@ -35,7 +43,14 @@ import psycopg
 
 from precis.errors import DraftExportRefused
 from precis.identity import is_placeholder_title, make_pdf_sha256, normalize_doi
-from precis.ingest.article_spread import mark_article_start, note_issue_splice
+from precis.ingest.article_spread import (
+    _opens_article,
+    foreign_tail_ord,
+    front_matter_title,
+    leading_foreign_ord,
+    mark_article_start,
+    note_issue_splice,
+)
 from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
     PaperToWrite,
@@ -61,7 +76,7 @@ from precis.store import Store
 from precis.store._links_ops import _carry_notes_to_survivor
 from precis.store.revision_context import trust_door
 from precis.store.types import Tag
-from precis.utils.title_merge import first_author_agreement
+from precis.utils.title_merge import _title_identity_key, first_author_agreement
 
 log = logging.getLogger(__name__)
 
@@ -447,13 +462,27 @@ def _precis_add(
             # A file named ``pa<id>`` whose bytes match a different live ref:
             # the named stub wins (the twin merges into it), gr479362.
             with store.pool.connection() as conn:
-                existing_ref_id = _fold_into_named_stub(
-                    store,
-                    matched_ref_id=existing_ref_id,
-                    file_stem=input.pdf_path.stem,
-                    pdf_path=input.pdf_path,
-                    conn=conn,
-                )
+                matched_ref_id = existing_ref_id
+                if input.fold_ref_id is None:
+                    existing_ref_id = _fold_into_named_stub(
+                        store,
+                        matched_ref_id=matched_ref_id,
+                        file_stem=input.pdf_path.stem,
+                        pdf_path=input.pdf_path,
+                        conn=conn,
+                    )
+                if existing_ref_id != matched_ref_id:
+                    _note_stub_event(
+                        store,
+                        existing_ref_id,
+                        event="stub_bound",
+                        payload={"file": input.pdf_path.name, "via": "stem-dedup"},
+                        conn=conn,
+                    )
+                elif input.fold_ref_id is not None or (
+                    _handle_stem_ref_id(input.pdf_path.stem) == existing_ref_id
+                ):
+                    _note_target_duplicate(store, input, existing_ref_id, conn=conn)
                 conn.commit()
             _apply_extra_tags(store, "paper", existing_ref_id, input.extra_tags)
             # A byte-identical re-fetch hits here before Marker runs; still
@@ -689,6 +718,427 @@ def _note_issue_splice(store: Store, ref_id: int | None, *, conn: Any) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# No-DOI stub binding + visible drop outcomes (gr690404, lane A)
+# ---------------------------------------------------------------------------
+
+#: ``ref_events.source`` for the inbox title-bind and drop-outcome rows.
+STUB_BIND_SOURCE = "ingest:stub-bind"
+
+#: ``title_body_score`` at which a held stub's title is taken to name this
+#: PDF's body — the same confidence ``trim_to_article`` needs to KEEP a
+#: segment (:data:`precis.ingest.article_spread.KEEP_SCORE`).
+_STUB_BIND_SCORE = 0.6
+
+#: A second candidate this close behind the leader makes the match
+#: ambiguous: bind only on a *unique* high-score title match.
+_STUB_BIND_MARGIN = 0.15
+
+#: Below the bind threshold but at/above this, an unbound candidate earns a
+#: visible ``stub_possible_match`` note on both refs.
+_STUB_POSSIBLE_SCORE = 0.4
+
+#: How many unbound candidates a mint writes ``stub_possible_match`` for.
+_STUB_POSSIBLE_MAX = 5
+
+#: Leading body text (chars) a no-DOI drop scores held stub titles against.
+_STUB_BIND_BODY_CHARS = 20_000
+
+#: Open tag marking a ref the binder flagged for a human look (on the
+#: minted record AND on each stub it nearly bound to).
+_STUB_POSSIBLE_TAG = "stub-possible-match"
+
+
+def _bind_body_text(paper: PaperToWrite) -> str:
+    """The leading body text a no-DOI drop is scored by (chars-capped)."""
+    return "\n".join(c.text or "" for c in paper.chunks if c.ord >= 0)[
+        :_STUB_BIND_BODY_CHARS
+    ]
+
+
+def _held_stub_titles(conn: Any, *, kind: str) -> list[tuple[int, str]]:
+    """``(ref_id, title)`` of every live 0-block stub — the bind candidates.
+
+    Same "wanting a body" signature as :func:`_valid_fold_stub`'s bodiless
+    leg: no live ``ord >= 0`` chunk. That covers both the ``pdf_sha256 IS
+    NULL`` metadata stub (pa1181/pa477143's shape) and the bodiless ref a
+    zero-body ingest left holding its file. Placeholder titles carry no
+    evidence, so they drop out here
+    (:func:`precis.utils.title_body.is_placeholder_title`, the extraction-
+    artifact check — a two-word stub title must never bind a body either).
+    """
+    from precis.utils.title_body import is_placeholder_title as _artifact_title
+
+    rows = conn.execute(
+        """
+        SELECT r.ref_id, r.title
+          FROM refs r
+         WHERE r.kind = %s
+           AND r.retired_at IS NULL
+           AND r.title IS NOT NULL
+           AND NOT EXISTS (
+                 SELECT 1 FROM chunks c
+                  WHERE c.ref_id = r.ref_id
+                    AND c.ord >= 0
+                    AND c.retired_at IS NULL
+               )
+        """,
+        (kind,),
+    ).fetchall()
+    return [
+        (int(r[0]), str(r[1])) for r in rows if not _artifact_title(str(r[1] or ""))
+    ]
+
+
+def _stub_title_candidates(
+    paper: PaperToWrite, *, conn: Any
+) -> list[tuple[int, str, float]]:
+    """Held stubs scored against this PDF's leading body, best first.
+
+    Only scores at/above :data:`_STUB_POSSIBLE_SCORE` survive — anything
+    below is neither a bind nor a possible match worth a note. One
+    :class:`~precis.utils.title_body.BodyLexicon` build covers every
+    candidate.
+    """
+    from precis.utils.title_body import body_lexicon, lexicon_score
+
+    lexicon = body_lexicon(_bind_body_text(paper))
+    if lexicon is None:
+        return []
+    out: list[tuple[int, str, float]] = []
+    for ref_id, title in _held_stub_titles(conn, kind=paper.kind):
+        scored = lexicon_score(lexicon, title)
+        if scored is not None and scored.score >= _STUB_POSSIBLE_SCORE:
+            out.append((ref_id, title, round(scored.score, 3)))
+    out.sort(key=lambda c: (-c[2], c[0]))
+    return out
+
+
+def _pick_stub_bind(
+    candidates: list[tuple[int, str, float]],
+) -> tuple[int | None, list[tuple[int, str, float]]]:
+    """``(bind ref_id, runners-up)`` — a unique high score wins, else ``None``.
+
+    A bind needs the leader at/above :data:`_STUB_BIND_SCORE` AND the
+    runner-up more than :data:`_STUB_BIND_MARGIN` behind — two stubs the
+    same body satisfies equally are an ambiguity a human must see, not a
+    coin flip.
+    """
+    if not candidates:
+        return None, []
+    leader = candidates[0]
+    if leader[2] < _STUB_BIND_SCORE:
+        return None, candidates[:_STUB_POSSIBLE_MAX]
+    if len(candidates) > 1 and leader[2] - candidates[1][2] <= _STUB_BIND_MARGIN:
+        return None, candidates[:_STUB_POSSIBLE_MAX]
+    return leader[0], candidates[1:_STUB_POSSIBLE_MAX]
+
+
+def _note_stub_event(
+    store: Store,
+    ref_id: int,
+    *,
+    event: str,
+    payload: dict[str, Any],
+    tag: Tag | None = None,
+    conn: Any,
+) -> None:
+    """Journal one stub-bind outcome row on ``ref_id`` (+ optional tag).
+
+    The ref's ``ref_events`` log is the visible record the silence bug hid
+    (gr690404: a dropped PDF left no trace on the stub it was for — the
+    owner re-drops a file that is already held). Best-effort, like
+    :func:`_note_pdf_no_body`.
+    """
+    try:
+        with conn.transaction():
+            store.append_event(
+                ref_id,
+                source=STUB_BIND_SOURCE,
+                event=event,
+                payload=payload,
+                conn=conn,
+            )
+            if tag is not None:
+                store.add_tag(ref_id, tag, set_by="system", conn=conn)
+    except Exception as exc:  # journalling is best-effort
+        log.warning(
+            "precis_add: could not journal %s for ref_id=%s: %s",
+            event,
+            ref_id,
+            exc,
+        )
+
+
+def _note_target_duplicate(
+    store: Store, input: PdfInput, matched_ref_id: int, *, conn: Any
+) -> None:
+    target = input.fold_ref_id or _handle_stem_ref_id(input.pdf_path.stem)
+    if target is None:
+        return
+    _note_stub_event(
+        store,
+        target,
+        event="stub_duplicate",
+        payload={"record_ref_id": matched_ref_id, "file": input.pdf_path.name},
+        conn=conn,
+    )
+
+
+def _note_stub_bound(
+    store: Store,
+    ref_id: int,
+    *,
+    via: str,
+    input: PdfInput,
+    paper: PaperToWrite,
+    score: float | None = None,
+    conn: Any,
+) -> None:
+    """Journal ``stub_bound`` on the stub that just took this PDF's body.
+
+    The 'bound' verdict of the every-drop-visible rule — a ``pa<id>``
+    filename, an OA-fetch sidecar and a no-DOI title match all land here,
+    so the stub's log always says which file became its body.
+    """
+    payload: dict[str, Any] = {
+        "file": input.pdf_path.name,
+        "pdf_sha256": paper.pdf_sha256,
+        "via": via,
+    }
+    if score is not None:
+        payload["score"] = score
+    _note_stub_event(store, ref_id, event="stub_bound", payload=payload, conn=conn)
+
+
+def _note_possible_stub_matches(
+    store: Store,
+    new_ref_id: int,
+    candidates: list[tuple[int, str, float]],
+    input: PdfInput,
+    *,
+    conn: Any,
+) -> None:
+    """Journal ``stub_possible_match`` on the minted ref and each candidate.
+
+    The 'possible match: pa<N>' note, written in both directions — the new
+    record's log names every stub it nearly bound to and each stub's log
+    names the record now holding a look-alike body (gr690404: without it
+    the stub keeps reporting a bare ``no-pdf`` and the owner re-drops a
+    file that is already held).
+    """
+    if not candidates:
+        return
+    from precis.utils.handle_registry import format_handle
+
+    new_handle = format_handle("paper", new_ref_id)
+    for stub_id, stub_title, score in candidates:
+        _note_stub_event(
+            store,
+            new_ref_id,
+            event="stub_possible_match",
+            payload={
+                "stub": format_handle("paper", stub_id),
+                "stub_ref_id": stub_id,
+                "stub_title": (stub_title or "")[:200],
+                "score": score,
+                "file": input.pdf_path.name,
+            },
+            tag=Tag.open(_STUB_POSSIBLE_TAG),
+            conn=conn,
+        )
+        _note_stub_event(
+            store,
+            stub_id,
+            event="stub_possible_match",
+            payload={
+                "record": new_handle,
+                "record_ref_id": new_ref_id,
+                "score": score,
+                "file": input.pdf_path.name,
+            },
+            tag=Tag.open(_STUB_POSSIBLE_TAG),
+            conn=conn,
+        )
+
+
+def _fold_stub_disqualifier(
+    conn: Any, ref_id: int, *, kind: str, doi: str | None
+) -> str:
+    """Why ``ref_id`` is not a fold target — the journal's reason string.
+
+    Mirrors :func:`_valid_fold_stub`'s gates so a refused named/sidecar
+    target's drop outcome names the disqualifier on the stub itself.
+    """
+    row = conn.execute(
+        "SELECT r.retired_at IS NOT NULL, r.kind, r.pdf_sha256 IS NOT NULL, "
+        "EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id "
+        "        AND c.ord >= 0 AND c.retired_at IS NULL) "
+        "FROM refs r WHERE r.ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    if row is None:
+        return "target-missing"
+    retired, rkind, has_pdf, has_body = row
+    if retired:
+        return "target-retired"
+    if rkind != kind:
+        return f"target-kind:{rkind}"
+    if has_pdf and has_body:
+        return "target-has-body"
+    conflict = _doi_conflicts(doi, ref_id, conn=conn)
+    if conflict is not None:
+        return f"doi-conflict:{conflict}"
+    return "invalid-target"
+
+
+def _title_bind_eligible(
+    input: PdfInput, paper: PaperToWrite, fold_ref_id: int | None
+) -> bool:
+    """Whether this drop may bind to a held stub by title score.
+
+    Only a *manual* PDF drop that prints no DOI and writes a body: a
+    sidecar or ``pa<id>`` name already has its deterministic fold (and
+    its refusal journalling), a ``printable_only`` companion has no body
+    to score, and a non-``paper`` kind never folds into a paper stub.
+    """
+    return (
+        fold_ref_id is None
+        and not input.printable_only
+        and input.supplement_of is None
+        and paper.kind == "paper"
+        and paper.doi is None
+        and any(c.ord >= 0 for c in paper.chunks)
+    )
+
+
+def _note_foreign_tail(
+    store: Store, ref_id: int, input: PdfInput, *, conn: Any
+) -> None:
+    """Flag a trailing foreign article head a held stub provably owns (gr690404).
+
+    Multi-letter scans (old Nature letters share a printed page) land the
+    NEXT article's head as this record's tail chunks. When the tail scores
+    at bind confidence against a *held* 0-block stub's title AND above this
+    record's own-title score, the stub is named on the journal row; a
+    foreign head no held stub owns is journalled as a suspected boundary
+    instead. Either way the record is tagged ``multi-article`` (the
+    standing ruling: tag, no split or trim) and the extract is kept
+    whole — the stub can still take its own PDF. Best-effort, like
+    :func:`_note_pdf_no_body`.
+    """
+    try:
+        _do_note_foreign_tail(store, ref_id, input, conn=conn)
+    except Exception as exc:  # journalling is best-effort
+        log.warning(
+            "precis_add: foreign-tail check failed for ref_id=%s: %s", ref_id, exc
+        )
+
+
+def _do_note_foreign_tail(
+    store: Store, ref_id: int, input: PdfInput, *, conn: Any
+) -> None:
+    from precis.utils.handle_registry import format_handle
+    from precis.utils.title_body import body_lexicon, lexicon_score
+
+    chunks = [
+        c
+        for c in store.chunks.list_chunks_for_ref(ref_id, conn=conn)
+        if (c.text or "").strip()
+    ]
+    if len(chunks) < 4:
+        return
+    row = conn.execute(
+        "SELECT coalesce(title, '') FROM refs WHERE ref_id = %s", (ref_id,)
+    ).fetchone()
+    own_title = str(row[0]) if row else ""
+    own_key = _title_identity_key(own_title)
+    # Foreign article openings, in body order: a mid-body chunk that opens
+    # on a title head + multi-name byline whose title isn't this record's.
+    foreign: list[tuple[int, str, str]] = []
+    for idx in range(2, len(chunks)):
+        if not _opens_article(chunks, idx):
+            continue
+        head = front_matter_title(chunks[idx:], start_ord=int(chunks[idx].ord))
+        head_key = _title_identity_key(head)
+        if head_key and head_key != own_key:
+            foreign.append((idx, head or "", head_key))
+    for idx, head, head_key in reversed(foreign):
+        lexicon = body_lexicon("\n".join(c.text or "" for c in chunks[idx:]))
+        if lexicon is None:
+            continue
+        own = lexicon_score(lexicon, own_title)
+        own_score = own.score if own is not None else 0.0
+        candidate: tuple[int, str, float] | None = None
+        for stub_id, stub_title in _held_stub_titles(conn, kind="paper"):
+            if stub_id == ref_id or _title_identity_key(stub_title) != head_key:
+                continue
+            scored = lexicon_score(lexicon, stub_title)
+            if (
+                scored is not None
+                and scored.score >= _STUB_BIND_SCORE
+                and (candidate is None or scored.score > candidate[2])
+            ):
+                candidate = (stub_id, stub_title, scored.score)
+        if candidate is None or candidate[2] <= own_score:
+            continue
+        stub_id, stub_title, score = candidate
+        tail_ords = [int(c.ord) for c in chunks[idx:]]
+        _note_stub_event(
+            store,
+            ref_id,
+            event="foreign_tail",
+            payload={
+                "file": input.pdf_path.name,
+                "tail_ords": tail_ords,
+                "stub": format_handle("paper", stub_id),
+                "stub_ref_id": stub_id,
+                "stub_title": (stub_title or "")[:200],
+                "score": score,
+                "own_score": own_score,
+            },
+            tag=Tag.open(MULTI_ARTICLE_TAG),
+            conn=conn,
+        )
+        _note_stub_event(
+            store,
+            stub_id,
+            event="stub_foreign_tail",
+            payload={
+                "record": format_handle("paper", ref_id),
+                "record_ref_id": ref_id,
+                "tail_ords": tail_ords,
+                "score": score,
+                "file": input.pdf_path.name,
+            },
+            conn=conn,
+        )
+        return
+    if not foreign:
+        return
+    # No held stub owns a detected foreign head: keep the extract whole
+    # and journal the suspected boundary — but only when the record's own
+    # front matter corroborates its title, else the "foreign" head could
+    # be front-matter noise rather than an article restart.
+    start = leading_foreign_ord(chunks, title=own_title) or 0
+    own_front = front_matter_title(chunks, start_ord=start)
+    if not own_front or _title_identity_key(own_front) != own_key:
+        return
+    idx, head, _head_key = foreign[0]
+    _note_stub_event(
+        store,
+        ref_id,
+        event="foreign_tail",
+        payload={
+            "file": input.pdf_path.name,
+            "tail_ords": [int(c.ord) for c in chunks[idx:]],
+            "tail_title": head[:200],
+        },
+        tag=Tag.open(MULTI_ARTICLE_TAG),
+        conn=conn,
+    )
+
+
 def _ingest_pdf(
     input: PdfInput,
     *,
@@ -736,6 +1186,12 @@ def _ingest_pdf(
             conn=conn,
         )
         fold_ref_id = input.fold_ref_id
+        bound_stub_id: int | None = None
+        bound_via: str | None = None
+        bound_score: float | None = None
+        possible_matches: list[tuple[int, str, float]] = []
+        bind_review: tuple[int, str] | None = None
+        fold_outcome_noted = False
         if existing is None and fold_ref_id is None:
             # Manual drop named by handle (``pa123.pdf``): same fold, no sidecar.
             fold_ref_id = _handle_stem_ref_id(input.pdf_path.stem)
@@ -808,6 +1264,7 @@ def _ingest_pdf(
                         reason=refusal,
                         conn=conn,
                     )
+                    fold_outcome_noted = True
                     existing = None
             if (
                 existing is not None
@@ -815,7 +1272,18 @@ def _ingest_pdf(
                 and not _named_stub_identity_ok(existing, input.pdf_path, conn=conn)
             ):
                 # Handle-named but a different paper (e.g. one that only
-                # cites the stub's): ingest as a fresh ref, never fold.
+                # cites the stub's): ingest as a fresh ref, never fold —
+                # and say so on the stub, or its log stays silent while
+                # the file mints elsewhere (gr690404).
+                _note_stub_fold_refused(
+                    store,
+                    existing,
+                    input=input,
+                    paper=paper,
+                    reason="rendered-text-mismatch",
+                    conn=conn,
+                )
+                fold_outcome_noted = True
                 existing = None
             elif existing is not None:
                 log.info(
@@ -858,6 +1326,105 @@ def _ingest_pdf(
                     input.pdf_path.name,
                     fold_ref_id,
                 )
+            if existing is None and not fold_outcome_noted:
+                # The drop was *for* this ref and did not land: the refusal
+                # must be visible on it, whatever disqualified it (gr690404).
+                _note_stub_fold_refused(
+                    store,
+                    fold_ref_id,
+                    input=input,
+                    paper=paper,
+                    reason=_fold_stub_disqualifier(
+                        conn, fold_ref_id, kind=paper.kind, doi=paper.doi
+                    ),
+                    conn=conn,
+                )
+            elif existing is not None:
+                bound_stub_id = existing
+                bound_via = "sidecar" if input.fold_ref_id is not None else "stem"
+        # gr690404 (lane A): a manual drop that prints no DOI and names no
+        # stub used to mint an anonymous record even when a held 0-block
+        # stub's title matched its body — the stub kept reporting a bare
+        # ``no-pdf`` and the owner re-dropped a file already held. Score
+        # every held stub's title against the leading body. A unique high
+        # score nominates the candidate; a matching front-matter title
+        # and byline evidence are required before it can take the body.
+        if existing is None and _title_bind_eligible(input, paper, fold_ref_id):
+            candidates = _stub_title_candidates(paper, conn=conn)
+            bind_id, possible_matches = _pick_stub_bind(candidates)
+            if bind_id is not None:
+                # The per-file claim cannot serialize different PDFs
+                # trying to fill the same stub.
+                locked = conn.execute(
+                    "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL "
+                    "FOR NO KEY UPDATE",
+                    (bind_id,),
+                ).fetchone()
+                if locked is None or _ref_has_body(bind_id, conn=conn):
+                    possible_matches = candidates[:_STUB_POSSIBLE_MAX]
+                    bind_id = None
+            if bind_id is not None:
+                s_title, s_authors = _ref_identity(conn, bind_id)
+                body = sorted(
+                    (c for c in paper.chunks if c.ord >= 0), key=lambda c: c.ord
+                )
+                # Establish the opening before consulting the stub title.
+                # A bibliography before a later letter can otherwise make
+                # that letter look like the start of the whole PDF.
+                start = foreign_tail_ord(body) or 0
+                front = next(
+                    (c for c in body if c.ord >= start and c.text.strip()), None
+                )
+                front_title = (
+                    front_matter_title(body, start_ord=start)
+                    if front is not None and front.chunk_kind != "references"
+                    else None
+                )
+                refusal = _stub_identity_refusal(
+                    s_title, s_authors, front_title or "", paper.authors
+                )
+                corroborated = bool(
+                    front_title
+                    and _title_identity_key(front_title) == _title_identity_key(s_title)
+                )
+                if not corroborated or (
+                    first_author_agreement(s_authors, s_authors) is True
+                    and first_author_agreement(s_authors, paper.authors) is None
+                ):
+                    possible_matches = candidates[:_STUB_POSSIBLE_MAX]
+                elif refusal is None:
+                    existing = bind_id
+                    bound_stub_id = bind_id
+                    bound_via = "title-match"
+                    bound_score = candidates[0][2]
+                    log.info(
+                        "precis_add: no-DOI %s title-scores %.3f against held "
+                        "stub ref_id=%s — folding into it rather than minting",
+                        input.pdf_path.name,
+                        bound_score,
+                        bind_id,
+                    )
+                else:
+                    log.warning(
+                        "precis_add: no-DOI %s title-matches stub ref_id=%s "
+                        "but fails identity (%s; stub %r vs fetched %r) — "
+                        "ingesting as a new ref, stub left live",
+                        input.pdf_path.name,
+                        bind_id,
+                        refusal,
+                        s_title[:60],
+                        (paper.title or "")[:60],
+                    )
+                    _note_stub_fold_refused(
+                        store,
+                        bind_id,
+                        input=input,
+                        paper=paper,
+                        reason=refusal,
+                        conn=conn,
+                    )
+                    bind_review = (bind_id, refusal)
+                    possible_matches = candidates[:_STUB_POSSIBLE_MAX]
         if existing is not None:
             # Existing ref hit — never re-insert, but always (a) register
             # this ingest's pdf/content hashes as aliases and (b) when
@@ -895,6 +1462,7 @@ def _ingest_pdf(
             # A ``pa<id>``-named file that de-duped against a different live
             # ref: the named stub wins; the twin merges into it (gr479362).
             # Only when the stub wasn't already the dedup target above.
+            matched_ref_id = existing
             if input.fold_ref_id is None:
                 existing = _fold_into_named_stub(
                     store,
@@ -914,6 +1482,43 @@ def _ingest_pdf(
                 conn=conn,
             )
             _note_pdf_no_body(store, existing, input, paper, conn=conn)
+            target = input.fold_ref_id or _handle_stem_ref_id(input.pdf_path.stem)
+            if existing != matched_ref_id:
+                bound_stub_id = existing
+                bound_via = "stem-dedup"
+            elif bound_stub_id is None and target == existing and chunks_written:
+                bound_stub_id = existing
+                bound_via = "identifier-dedup"
+            if bound_stub_id is None and (
+                input.fold_ref_id is not None or target == existing
+            ):
+                _note_target_duplicate(store, input, existing, conn=conn)
+            if bound_stub_id is not None:
+                if not chunks_written and not _ref_has_body(existing, conn=conn):
+                    _note_stub_event(
+                        store,
+                        bound_stub_id,
+                        event="stub_no_body",
+                        payload={"file": input.pdf_path.name},
+                        conn=conn,
+                    )
+                else:
+                    _note_stub_bound(
+                        store,
+                        bound_stub_id,
+                        via=bound_via or "fold",
+                        input=input,
+                        paper=paper,
+                        score=bound_score,
+                        conn=conn,
+                    )
+            if possible_matches:
+                # Runner-up stubs a bound fold beat out — each keeps a
+                # 'possible match: pa<N>' pointer at the record that now
+                # holds a look-alike body, in case the drop was for them.
+                _note_possible_stub_matches(
+                    store, existing, possible_matches, input, conn=conn
+                )
             if chunks_written:
                 _note_article_spread(store, existing, spread, input, conn=conn)
                 # gr515439: mark a leading foreign prefix (previous
@@ -922,6 +1527,8 @@ def _ingest_pdf(
                 # gr658690: flag a whole scanned issue spliced into one
                 # record (no single title exists to repair).
                 _note_issue_splice(store, existing, conn=conn)
+                # gr690404: flag (never cut) a next-letter head a held stub owns.
+                _note_foreign_tail(store, existing, input, conn=conn)
             conn.commit()
             stored_kind = _lookup_kind(existing, conn=conn)
             _apply_extra_tags(store, stored_kind, existing, input.extra_tags)
@@ -974,6 +1581,23 @@ def _ingest_pdf(
             _note_article_spread(store, result.ref_id, spread, input, conn=conn)
             mark_article_start(store, result.ref_id, conn=conn)
             _note_issue_splice(store, result.ref_id, conn=conn)
+            _note_foreign_tail(store, result.ref_id, input, conn=conn)
+        # gr690404: the near-miss stubs this mint did not bind to get a
+        # visible 'possible match' note on both sides; a title-bind the
+        # identity gate refused additionally files the standing review.
+        if possible_matches:
+            _note_possible_stub_matches(
+                store, result.ref_id, possible_matches, input, conn=conn
+            )
+        if bind_review is not None:
+            _raise_stub_identity_review(
+                store,
+                stub_id=bind_review[0],
+                survivor_ref_id=result.ref_id,
+                file_stem=input.pdf_path.stem,
+                reason=bind_review[1],
+                conn=conn,
+            )
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
@@ -1319,14 +1943,17 @@ def _valid_fold_stub(
     return int(row[0])
 
 
-def _warn_skipped_cite_key_match(conn: Any, *, stem: str, exclude_ref_id: int) -> None:
+def _warn_skipped_cite_key_match(
+    store: Store, conn: Any, *, stem: str, exclude_ref_id: int
+) -> None:
     """Log a near-miss: a live, ``pdf_sha256 IS NULL`` ref shares ``stem``
     as its ``cite_key`` but :func:`_reconcile_orphan_stub`'s kind/body
     guard disqualified it (not ``kind='paper'``, or it carries live body
     chunks). This is exactly the shape of the 2026-09-27 incident (a
     ``draft`` ref matched by filename) minus the guard that now stops it
     — surfacing it at WARNING so the next near-miss is visible instead of
-    silent until it becomes a second incident.
+    silent until it becomes a second incident. The same row lands on the
+    ref's log (gr690404: a skipped stub-match must not stay silent).
     """
     row = conn.execute(
         """
@@ -1351,6 +1978,17 @@ def _warn_skipped_cite_key_match(conn: Any, *, stem: str, exclude_ref_id: int) -
             row[1],
             stem,
             exclude_ref_id,
+        )
+        _note_stub_event(
+            store,
+            int(row[0]),
+            event="stub_reconcile_skipped",
+            payload={
+                "survivor_ref_id": exclude_ref_id,
+                "file_stem": stem,
+                "reason": f"guard:kind={row[1]}",
+            },
+            conn=conn,
         )
 
 
@@ -1569,30 +2207,20 @@ def _note_stub_fold_refused(
     ``paper-stub-identity-review`` so the contested target is findable.
     Best-effort, like :func:`_note_pdf_no_body`.
     """
-    try:
-        store.append_event(
-            stub_id,
-            source="ingest:dedup",
-            event="stub_fold_refused",
-            payload={
-                "file": input.pdf_path.name,
-                "pdf_sha256": paper.pdf_sha256,
-                "reason": reason,
-            },
-            conn=conn,
-        )
-        store.add_tag(
-            stub_id,
-            Tag.parse_strict(_STUB_IDENTITY_REVIEW_TAG),
-            set_by="system",
-            conn=conn,
-        )
-    except Exception as exc:  # journalling is best-effort
-        log.warning(
-            "precis_add: could not journal stub_fold_refused for ref_id=%s: %s",
-            stub_id,
-            exc,
-        )
+    if reason == "target-missing":
+        return
+    _note_stub_event(
+        store,
+        stub_id,
+        event="stub_fold_refused",
+        payload={
+            "file": input.pdf_path.name,
+            "pdf_sha256": paper.pdf_sha256,
+            "reason": reason,
+        },
+        tag=Tag.parse_strict(_STUB_IDENTITY_REVIEW_TAG),
+        conn=conn,
+    )
 
 
 def _raise_stub_identity_review(
@@ -1916,6 +2544,23 @@ def _fold_into_named_stub(
         return matched_ref_id
     if _lookup_kind(matched_ref_id, conn=conn) != "paper":
         return matched_ref_id
+
+    def _note_on_stub(ref_id: int, event: str, reason: str) -> None:
+        # gr690404: every drop aimed at a stub leaves its verdict on the
+        # stub — without it the stub reports a bare ``no-pdf`` while the
+        # body it was fetched for sits on the twin.
+        _note_stub_event(
+            store,
+            ref_id,
+            event=event,
+            payload={
+                "survivor_ref_id": matched_ref_id,
+                "file_stem": file_stem,
+                "reason": reason,
+            },
+            conn=conn,
+        )
+
     stub_id = _valid_fold_stub(handle_ref, kind="paper", conn=conn)
     if stub_id is None:
         log.warning(
@@ -1926,8 +2571,14 @@ def _fold_into_named_stub(
             handle_ref,
             matched_ref_id,
         )
+        _note_on_stub(
+            handle_ref,
+            "stub_fold_refused",
+            _fold_stub_disqualifier(conn, handle_ref, kind="paper", doi=None),
+        )
         return matched_ref_id
     if not _named_stub_identity_ok(stub_id, pdf_path, conn=conn):
+        _note_on_stub(stub_id, "stub_fold_refused", "rendered-text-mismatch")
         return matched_ref_id
     if not _stub_title_corroborated(conn, stub_id, matched_ref_id):
         log.warning(
@@ -1938,6 +2589,7 @@ def _fold_into_named_stub(
             stub_id,
             file_stem,
         )
+        _note_on_stub(stub_id, "stub_reconcile_refused", "title-token-mismatch")
         return matched_ref_id
     # Identity (gr512169): a series sibling passes both the rendered-text
     # and token gates — it shares the stub's tokens. Require part markers
@@ -1966,6 +2618,7 @@ def _fold_into_named_stub(
             reason=refusal,
             conn=conn,
         )
+        _note_on_stub(stub_id, "stub_reconcile_refused", refusal)
         _raise_stub_identity_review(
             store,
             stub_id=stub_id,
@@ -2065,9 +2718,27 @@ def _reconcile_orphan_stub(
     # A ``pa<id>`` stem is NOT handled here: the human named that ref, so it
     # must survive — see :func:`_fold_into_named_stub` (gr479362).
     if row is None:
-        _warn_skipped_cite_key_match(conn, stem=stem, exclude_ref_id=survivor_ref_id)
+        _warn_skipped_cite_key_match(
+            store, conn, stem=stem, exclude_ref_id=survivor_ref_id
+        )
         return None
     stub_id = int(row[0])
+
+    def _note_on_stub(event: str, reason: str) -> None:
+        # gr690404: the same verdict the survivor's log gets must land on
+        # the stub too — otherwise the stub reports a bare ``no-pdf``
+        # while the body it was fetched for sits on another record.
+        _note_stub_event(
+            store,
+            stub_id,
+            event=event,
+            payload={
+                "survivor_ref_id": survivor_ref_id,
+                "file_stem": stem,
+                "reason": reason,
+            },
+            conn=conn,
+        )
 
     # Lock both refs rows first, in id order: set/clear_ref_identifier
     # take refs before ref_identifiers, and this fold writes
@@ -2091,6 +2762,7 @@ def _reconcile_orphan_stub(
             survivor_ref_id,
             stem,
         )
+        _note_on_stub("stub_reconcile_refused", "title-token-mismatch")
         return None
 
     # Identity (gr512169): token corroboration can't tell series
@@ -2124,6 +2796,7 @@ def _reconcile_orphan_stub(
             reason=refusal,
             conn=conn,
         )
+        _note_on_stub("stub_reconcile_refused", refusal)
         _raise_stub_identity_review(
             store,
             stub_id=stub_id,

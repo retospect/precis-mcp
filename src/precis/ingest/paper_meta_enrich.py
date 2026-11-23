@@ -165,6 +165,7 @@ from precis.ingest.provenance import (
 from precis.store import Store
 from precis.utils.authors import author_display, author_names, normalize_authors
 from precis.utils.rate_limit import RateLimited
+from precis.utils.title_merge import content_tokens
 from precis.utils.title_views import title_plain
 
 log = logging.getLogger(__name__)
@@ -670,8 +671,60 @@ def enrich_paper(
             )
             msg = None
 
+    norm = _crossref_normalize(msg, doi) if doi and msg is not None else {}
+    if norm and not was_placeholder:
+        registry_title = str(norm.get("title") or "").strip()
+        local_title = ref.title or ""
+        local_terms = content_tokens(local_title)
+        registry_terms = content_tokens(registry_title)
+        if (
+            len(local_terms) >= 2
+            and len(registry_terms) >= 2
+            and _title_key(local_title) != _title_key(registry_title)
+            and len(local_terms & registry_terms)
+            < min(len(local_terms), len(registry_terms)) / 2
+        ):
+            meta_patch["registry_title_mismatch"] = {
+                "doi": doi,
+                "local_title": local_title,
+                "registry_title": registry_title,
+            }
+            # A registry record for another work cannot supply this paper's
+            # byline, venue, identifiers, or retraction status.
+            msg = None
+        elif registry_title and current_meta.get("registry_title_mismatch"):
+            meta_patch["registry_title_mismatch"] = None
+
+    # Body corroboration (gr690404): title and DOI can both name the same
+    # work while the ref's own chunks are another's (pa693 — a WSe2
+    # title/DOI over a MoS2 body), in which case the registry byline the
+    # title check just waved through names authors the body never wrote.
+    # Reuse the resolver's zero-overlap and missing-formula checks.
+    # A fragmentary body abstains from each check independently.
+    if msg is not None and norm:
+        from precis.ingest.metadata_resolve import (
+            _MIN_CHUNK_TOKENS,
+            _chunk0_text,
+            _formula_terms_missing,
+        )
+        from precis.ingest.verify_metadata import title_overlap
+
+        probe = str(norm.get("title") or "").strip() or (ref.title or "")
+        if probe and not is_placeholder_title(probe):
+            body0 = _chunk0_text(store, ref_id)
+            enough_opening = len(content_tokens(body0)) >= _MIN_CHUNK_TOKENS
+            if _formula_terms_missing(store, ref_id, probe) or (
+                enough_opening and title_overlap(probe, body0) == 0
+            ):
+                meta_patch["title_body_mismatch"] = {
+                    "doi": doi,
+                    "title": probe,
+                }
+                msg = None
+            elif enough_opening and current_meta.get("title_body_mismatch"):
+                meta_patch["title_body_mismatch"] = None
+
     if doi and msg is not None:
-        norm = _crossref_normalize(msg, doi)
         orcid_map = _orcid_lookup(msg)
         authors_raw = list(norm.get("authors") or [])
         for a in authors_raw:
@@ -853,6 +906,17 @@ def enrich_paper(
             authors_source=authors_table_source,
             conn=conn,
         )
+        for flag in ("registry_title_mismatch", "title_body_mismatch"):
+            if (mismatch := meta_patch.get(flag)) and mismatch != current_meta.get(
+                flag
+            ):
+                store.append_event(
+                    ref_id,
+                    source="paper-meta-enrich",
+                    event=flag,
+                    payload=mismatch,
+                    conn=conn,
+                )
         if extra_ids:
             outcome.extra_identifiers = store.insert_ref_identifiers(
                 ref_id, extra_ids, conn=conn

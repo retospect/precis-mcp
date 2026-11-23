@@ -228,6 +228,9 @@ failures an extraction agent can avoid up front:
   contract: single-spaced lowercase ASCII letters/digits/hyphens
   tokens (~8 words), matching exactly once across the paper's body
   chunks.
+- **Source identity must be clean** — `source-identity` refuses a cited
+  paper with a placeholder title (`Untitled`, `foo.doc`) or a
+  title/body- or registry-mismatch flag; repair the paper row first.
 - **Quantities carry bound semantics** — `exact` / `upper` / `lower` /
   `approx-range`; "up to 400:1" and "400:1" are different claims.
 - **Structured fields must be evidence-contained** — a `quantity` must

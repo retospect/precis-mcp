@@ -98,6 +98,34 @@ def test_update_paper_fields_authors_source_and_human_guard(store: Store) -> Non
     assert fresh.authors == [{"given": "Cee", "family": "Three"}]
 
 
+def test_human_byline_edit_regenerates_derived_cite_key(store: Store) -> None:
+    paper = store.insert_ref(
+        kind="paper",
+        slug="wrong24a",
+        title="A paper with a mistaken byline",
+        authors=[{"family": "Wrong"}],
+        year=2024,
+    )
+    updated = store.update_paper_fields(
+        paper.id, authors=[{"family": "Right"}], source="web-edit"
+    )
+    assert updated.slug == "right24"
+    assert store.find_ref_by_identifier("cite_key_alias", "wrong24a") == paper.id
+
+
+def test_year_only_edit_regenerates_derived_cite_key(store: Store) -> None:
+    paper = store.insert_ref(
+        kind="paper",
+        slug="smith24a",
+        title="A paper with a mistaken year",
+        authors=[{"family": "Smith"}],
+        year=2024,
+    )
+    updated = store.update_paper_fields(paper.id, year=2023, source="mcp-edit")
+    assert updated.slug == "smith23"
+    assert store.find_ref_by_identifier("cite_key_alias", "smith24a") == paper.id
+
+
 def test_draft_write_creates_no_paper_authors_rows(store: Store) -> None:
     ref = store.insert_ref(
         kind="draft", slug="d-authors", title="D", authors=[{"name": "Someone"}]

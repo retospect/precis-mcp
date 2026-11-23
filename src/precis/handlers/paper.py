@@ -5677,6 +5677,26 @@ class PaperHandler(Handler):
                     if r["last_event"]
                     else "never tried"
                 )
+                inbox = ""
+                if event := r.get("inbox_event"):
+                    payload = r.get("inbox_payload") or {}
+                    other = next(
+                        (
+                            payload[key]
+                            for key in (
+                                "record_ref_id",
+                                "survivor_ref_id",
+                                "stub_ref_id",
+                            )
+                            if isinstance(payload.get(key), int)
+                        ),
+                        None,
+                    )
+                    inbox = f"  inbox: {event.removeprefix('stub_').replace('_', ' ')}"
+                    if other is not None and other != rid:
+                        inbox += f" pa{other}"
+                    if reason := payload.get("reason"):
+                        inbox += f" ({reason})"
                 pdf = "pdf" if r["has_pdf"] else "no-pdf"
                 title = _excerpt(
                     title_md((r["title"] or "").split("\n", 1)[0].strip()),
@@ -5684,7 +5704,7 @@ class PaperHandler(Handler):
                 )
                 segments.append(
                     f"{h}  [{r['cite_key'] or h}]  {r['doi'] or '—'}  {r['body']}"
-                    f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
+                    f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}{inbox}"
                     + (f"  — {title}" if title else "")
                 )
             row_lines.append(f"  {asked} -> " + "; ".join(segments))
@@ -9219,7 +9239,19 @@ class PaperHandler(Handler):
         ``metadata_cleared`` ref_event carries the reason and the
         cleared fields.
         """
+        from precis.identity import is_byline_cite_key
         from precis.ingest import paper_dump
+
+        def check_cite_key(ref: Ref) -> None:
+            if (
+                ref.kind == "paper"
+                and ref.authors
+                and is_byline_cite_key(ref.slug, ref.authors, ref.year)
+            ):
+                raise BadInput(
+                    f"clearing {handle}'s byline would leave its derived cite_key stale",
+                    next="set an explicit cite_key before clearing the byline",
+                )
 
         kind = self.spec.kind
         ref, handle = self._require_live_body_ref(id, "clear")
@@ -9269,6 +9301,8 @@ class PaperHandler(Handler):
                 )
                 + "."
             )
+        if want_authors:
+            check_cite_key(ref)
         bits: list[str] = []
         if want_authors:
             bits.append(
@@ -9307,6 +9341,9 @@ class PaperHandler(Handler):
                 )
             cleared: list[str] = []
             if want_authors and has_authors:
+                check_cite_key(
+                    self.store.fetch_refs_by_ids([ref.id], conn=conn)[ref.id]
+                )
                 conn.execute("DELETE FROM paper_authors WHERE ref_id = %s", (ref.id,))
                 conn.execute(
                     "UPDATE refs SET authors = '[]'::jsonb, "

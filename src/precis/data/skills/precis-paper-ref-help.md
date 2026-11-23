@@ -153,7 +153,10 @@ Where no field spelling can blank a column — `authors=[]` reads as
 `args={'clear': ['authors','year'], 'reason': …}` is the removal door
 (`authors` also drops `meta.authors_source` and every `paper_authors`
 row; the cards rebuild; a `metadata_cleared` event carries the
-reason). A
+reason). Clearing `authors` has one prerequisite when the paper's
+cite_key is byline-derived (it still spells the old byline, e.g.
+`smith24a`): the clear refuses — set an explicit `cite_key` first so
+citations keep resolving, then clear. A
 mis-filed record's year and venue repair the same way — `year=2007`,
 `journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`,
 and the locator fields `volume=`/`issue=`/`pages=`/`url=` — the BibTeX
@@ -185,8 +188,15 @@ Re-keys also happen automatically: a repair that gives a paper on a
 ingest metadata — a real byline/year re-mints a proper key (this `edit`
 door on `authors`/`year`, metadata repair, registry resolution, stub
 reconcile/merge), reason `auto re-mint after metadata repair`. A
-non-junk key is never re-minted, a still-junk suggestion is skipped,
+non-junk key is outside this junk-key repair, a still-junk suggestion is skipped,
 and a collision lands on a letter suffix — never a steal.
+
+A human `authors=`/`year=` edit on a *byline-derived* key regenerates
+it in the same transaction when the new first author or year changes the key
+— the `cite_key_changed` event and `cite_key_alias` row behave exactly
+as in a manual re-key, so existing `\cite{<old>}` references keep
+resolving. Worker-written bylines (`source` other than a human edit)
+never re-key.
 
 A registry hit (Crossref/S2) whose title shares zero distinctive words
 with the paper's own first-page text (e.g. an SI PDF) is withheld

@@ -675,6 +675,18 @@ class TestEnrichRearmCli:
         store.set_ref_identifier(ref.id, "doi", f"10.1234/{slug}", source="manual")
         return ref.id
 
+    def test_all_caps_selects_only_matching_stamped_rows(
+        self, store: Store, monkeypatch: Any, capsys: Any
+    ) -> None:
+        target = self._stamped(store, "caps21")
+        other = self._stamped(store, "mixed21")
+        store.update_paper_fields(target, title="CAPS TITLE WITH ENOUGH CHARACTERS")
+        store.update_paper_fields(other, title="A title in ordinary sentence case")
+        self._run(store, monkeypatch, ["--all-caps"])
+        assert capsys.readouterr().out.splitlines() == [f"ref_id={target}"]
+        meta = store.fetch_refs_by_ids([target])[target].meta or {}
+        assert meta["authors_resolved_at"]
+
     def test_dry_run_prints_and_does_not_write(
         self, store: Store, monkeypatch: Any, capsys: Any
     ) -> None:

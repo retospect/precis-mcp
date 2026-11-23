@@ -565,6 +565,49 @@ def _default_author_source(source: str) -> str:
     return "human" if source in ("web-edit", "mcp-edit", "edit") else "pdf"
 
 
+def _rekey_after_bibliographic_edit(
+    store: Store, old: Ref, updated: Ref, source: str, conn: Connection
+) -> bool:
+    """Update a derived citation key in the same transaction as its inputs."""
+    from precis.identity import is_byline_cite_key, make_cite_key
+
+    old_key = old.slug or ""
+    if not is_byline_cite_key(old_key, old.authors, old.year):
+        return False
+    if make_cite_key(old.authors, old.year) == make_cite_key(
+        updated.authors, updated.year
+    ):
+        return False
+    key = store.suggest_cite_key(
+        updated.authors, updated.year, exclude_ref_id=old.id, conn=conn
+    )
+    if not key:
+        raise BadInput(
+            f"pa{old.id} needs a usable byline to regenerate {old_key!r}",
+            next="set an explicit cite_key before removing the byline",
+        )
+    changed = store.set_ref_identifier(
+        old.id, "cite_key", key, source=source, conn=conn
+    )
+    if not changed:
+        raise BadInput(
+            f"pa{old.id} could not regenerate its cite_key",
+            next="set an explicit cite_key and retry the metadata edit",
+        )
+    store.append_event(
+        old.id,
+        source=source,
+        event="cite_key_changed",
+        payload={
+            "old": old_key,
+            "new": key,
+            "reason": "year edit" if old.authors == updated.authors else "byline edit",
+        },
+        conn=conn,
+    )
+    return True
+
+
 class RefsMixin:
     """Ref insert / get / update / delete + list + lexical search."""
 
@@ -1805,6 +1848,8 @@ class RefsMixin:
         — a datasheet never has any). Ids that are not live ``kind``
         refs are simply absent from the result. ``kind='datasheet'``
         backs ``search(kind='datasheet', view='status')`` (gr520077).
+        ``inbox_event`` / ``inbox_payload`` separately expose the newest inbox
+        outcome so a local drop cannot change the fetcher's thin-body classification.
         One query; rows come back in ``ref_ids`` order.
         """
         if not ref_ids:
@@ -1824,7 +1869,7 @@ class RefsMixin:
                    r.title,
                    r.pdf_sha256 IS NOT NULL,
                    COALESCE(c.n_full, 0), COALESCE(c.n_card, 0),
-                   le.ts, le.source, le.event
+                   le.ts, le.source, le.event, inbox.event, inbox.payload
               FROM refs r
               LEFT JOIN LATERAL (
                    SELECT count(*) FILTER (WHERE ord >= 0
@@ -1836,13 +1881,30 @@ class RefsMixin:
                    SELECT ts, source, event FROM ref_events
                     WHERE ref_id = r.ref_id AND source LIKE 'fetcher:%%'
                     ORDER BY ts DESC LIMIT 1) le ON true
+              LEFT JOIN LATERAL (
+                   SELECT event, payload FROM ref_events
+                    WHERE ref_id = r.ref_id AND source = 'ingest:stub-bind'
+                    ORDER BY ts DESC, event_id DESC LIMIT 1) inbox ON true
              WHERE r.ref_id = ANY(%s) AND r.kind = %s
                AND r.retired_at IS NULL
         """
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (list(ref_ids), kind)).fetchall()
         by_id: dict[int, dict[str, Any]] = {}
-        for rid, cite, doi, title, has_pdf, n_full, n_card, ts, src, ev in rows:
+        for (
+            rid,
+            cite,
+            doi,
+            title,
+            has_pdf,
+            n_full,
+            n_card,
+            ts,
+            src,
+            ev,
+            inbox_event,
+            inbox_payload,
+        ) in rows:
             if 0 < n_full <= THIN_BODY_MAX_CHUNKS and ev == "no_oa_version":
                 body = "thin-text"
             elif n_full:
@@ -1862,6 +1924,8 @@ class RefsMixin:
                 "last_ts": ts.isoformat() if ts is not None else "",
                 "last_source": src or "",
                 "last_event": ev or "",
+                "inbox_event": inbox_event or "",
+                "inbox_payload": inbox_payload or {},
             }
         return [by_id[i] for i in dict.fromkeys(ref_ids) if i in by_id]
 
@@ -2802,7 +2866,9 @@ class RefsMixin:
         the table, so the returned ``Ref.authors`` reflects that
         canonical form, not necessarily the literal input. A
         ``kind='draft'`` (or any non-paper) write stays jsonb-only — no
-        ``paper_authors`` rows."""
+        ``paper_authors`` rows. A human surname or year correction regenerates a key
+        derived from the old byline within the same transaction and keeps
+        the former key as a citation alias."""
         changed: list[str] = []
         if title is not None:
             changed.append("title")
@@ -2833,6 +2899,18 @@ class RefsMixin:
         )
 
         def _do(c: Connection) -> Any:
+            old = None
+            default_source = _default_author_source(source)
+            author_source = authors_source or default_source
+            if (authors is not None and author_source == "human") or (
+                year is not None and default_source == "human"
+            ):
+                old = c.execute(
+                    f"SELECT {_REFS_COLS} FROM refs "
+                    "WHERE ref_id = %s AND kind = 'paper' AND retired_at IS NULL "
+                    "FOR NO KEY UPDATE",
+                    (ref_id,),
+                ).fetchone()
             row = c.execute(sql, params).fetchone()
             if row is None:
                 raise NotFound(
@@ -2848,13 +2926,21 @@ class RefsMixin:
                 self.set_paper_authors(
                     ref_id,
                     authors,
-                    source=authors_source or _default_author_source(source),
+                    source=author_source,
                     conn=c,
                 )
                 # Re-fetch: set_paper_authors may have rewritten
                 # refs.authors to the table's regenerated projection.
                 row = c.execute(
                     f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s", (ref_id,)
+                ).fetchone()
+                assert row is not None
+            if old is not None and _rekey_after_bibliographic_edit(
+                cast("Store", self), _row_to_ref(old), _row_to_ref(row), source, c
+            ):
+                row = c.execute(
+                    f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s",
+                    (ref_id,),
                 ).fetchone()
                 assert row is not None
             return row

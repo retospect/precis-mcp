@@ -310,6 +310,10 @@ def run(
     # lines, before the body is filed — best-effort, never raises (see
     # convert_needs_a_human's docstring).
     body = doctor_report.convert_needs_a_human(store, body, report_ref_id=ref.id)
+    caps, without_doi = doctor_report.all_caps_title_counts(store)
+    body += (
+        f"\n\n## Paper titles\n\nAll-caps titles: {caps} ({without_doi} without DOI)."
+    )
     # Same-day re-ticks (the 8h cadence fires up to 3x within one UTC
     # day, per the freshness-window margin) APPEND rather than replace —
     # the day's report is a running log of this UTC day's ticks, and

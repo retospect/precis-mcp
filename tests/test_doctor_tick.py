@@ -83,6 +83,7 @@ def test_run_happy_path_writes_report_and_uses_deny_list(
     body = doctor_report.latest_report(store)
     assert body is not None
     assert "Classification" in body.body
+    assert "All-caps titles:" in body.body
 
 
 def test_run_second_tick_same_day_appends_not_duplicates(

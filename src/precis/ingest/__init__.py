@@ -23,6 +23,21 @@ Short held article previews can take a longer agent-supplied PDF through
 the old PDF alias and journaling both hashes and the source URL. Failed
 downloads or extractions leave the old body available.
 
+An unnamed no-DOI inbox PDF can fill a bodyless stub when a unique
+lexical candidate agrees with the title and byline pattern in the
+first article opening, located independently of held stub titles.
+Lexical hits without corroboration from that opening leave possible-match
+events. Named-target refusals and duplicate outcomes are journalled on
+the target and surfaced in paper status alongside fetch outcomes.
+A foreign article's head in the tail is journalled as a suspected
+boundary — naming the held stub that owns it when one does — under a
+multi-article tag; the extract itself is never cut.
+
+Metadata enrichment withholds contested registry metadata. It flags a
+substantial Crossref/local title disagreement, zero distinctive overlap
+at the article opening, or a title formula absent outside references.
+The flags let a human verify the DOI and body before citation.
+
 Identifier trust (td730803): a prefixed ``arxiv:``/``doi:`` S2 single-id
 lookup must echo the requested id, so its record always carries it. An
 S2-attributed DOI on a stub put is kept only if the DOI registries

@@ -1311,11 +1311,102 @@ class TestAllCapsTitleRecase:
         assert outcome.title_recased is None
         assert ref.title == _CAPS
         assert "title_raw" not in (ref.meta or {})
+        assert (ref.meta or {})["registry_title_mismatch"] == {
+            "doi": "10.1234/x",
+            "local_title": _CAPS,
+            "registry_title": "Totally unrelated heading text here",
+        }
 
     def test_enrich_never_touches_human_verified(self, store: Store) -> None:
         outcome, ref = self._run(store, verified=True, registry=_MIXED)
         assert outcome.title_recased is None
         assert ref.title == _CAPS
+
+
+class TestTitleBodyMismatch:
+    """gr690404: title and DOI can agree on one work while the ref's own
+    chunks are another's (pa693 — WSe2 title/DOI over a MoS2 body). The
+    registry/local title check passes in that shape, so the pass also
+    corroborates the claimed title against chunk 0 — the resolver's
+    zero-overlap guard — and on a hard miss flags the row and withholds
+    the byline the different body never wrote."""
+
+    _TITLE = "Tunable excitons in bilayer WSe2 field-effect transistors"
+    _FOREIGN_BODY = (
+        "Molybdenum disulfide monolayers exhibit strong photoluminescence "
+        "near the direct bandgap edge under ambient conditions with sulfur "
+        "vacancies."
+    )
+
+    def _run(self, store: Store, *, body: str) -> Any:
+        rid = _paper(store, slug="wse2x", title=self._TITLE, doi="10.1234/x")
+        _chunk(store, rid, 0, body)
+        msg = _crossref_msg()
+        msg["title"] = [self._TITLE]
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/x",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        return rid, outcome, _ref(store, rid)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            _FOREIGN_BODY,
+            "Tunable excitons in bilayer MoS2 field-effect transistors "
+            "exhibit strong photoluminescence near the direct bandgap edge "
+            "under ambient conditions with sulfur vacancies.",
+        ],
+    )
+    def test_uncorroborated_body_flags_and_withholds_byline(
+        self, store: Store, body: str
+    ) -> None:
+        rid, outcome, ref = self._run(store, body=body)
+        assert (ref.meta or {})["title_body_mismatch"] == {
+            "doi": "10.1234/x",
+            "title": self._TITLE,
+        }
+        # The contested registry answer supplies nothing — not even the
+        # byline — until a human repairs the row.
+        assert outcome is not None and outcome.authors_source is None
+        assert not ref.authors
+        events = store.events_for(rid, event="title_body_mismatch")
+        assert len(events) == 1
+        assert events[0].payload["doi"] == "10.1234/x"
+
+    def test_corroborated_body_enriches_normally(self, store: Store) -> None:
+        body = (
+            self._TITLE + "\nA. N. Author & B. O. Writer\n"
+            "Bilayer WSe2 hosts tunable excitons across the transistor "
+            "channel under gate bias."
+        )
+        rid, outcome, ref = self._run(store, body=body)
+        assert not (ref.meta or {}).get("title_body_mismatch")
+        assert outcome is not None and outcome.authors_source == "crossref"
+        assert ref.authors
+        assert store.events_for(rid, event="title_body_mismatch") == []
+
+    def test_corroboration_clears_an_older_flag(self, store: Store) -> None:
+        rid, _outcome, ref = self._run(store, body=self._FOREIGN_BODY)
+        assert (ref.meta or {}).get("title_body_mismatch")
+        # Body chunks are append-only: swap the row, never UPDATE text.
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord = 0", (rid,))
+            conn.commit()
+        _chunk(store, rid, 0, self._TITLE + "\nA. N. Author\nBilayer WSe2 excitons.")
+        msg = _crossref_msg()
+        msg["title"] = [self._TITLE]
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/x",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert not (_ref(store, rid).meta or {}).get("title_body_mismatch")
 
 
 class TestSharedLimiterRefusal:

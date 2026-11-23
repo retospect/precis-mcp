@@ -42,6 +42,7 @@ from precis.errors import BadInput
 from precis.nanopub import evidence as ev
 from precis.nanopub import snip as sniplib
 from precis.nanopub.vocab import QUANTITY_BOUNDS
+from precis.store.types import Tag
 from precis.taproot import eligibility
 from precis.taproot.canon import NONEMPIRICAL_ARTIFACT_TYPES
 from precis.taproot.hub import human_rejected
@@ -49,6 +50,7 @@ from precis.taproot.notation import lint_notation
 from precis.taproot.review_like import proceedings_venue, venue_vetoed
 from precis.taproot.sentence_lint import lint_claim_sentence
 from precis.utils import handle_registry
+from precis.utils.title_body import is_known_placeholder_title
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -1401,6 +1403,30 @@ def _check_passage(
             return tolerated
     ref = store.fetch_refs_by_ids([chunk.ref_id]).get(chunk.ref_id) if chunk else None
     kind = ref.kind if ref is not None else "paper"
+
+    if ref is not None and kind == "paper":
+        meta = ref.meta or {}
+        reason = ""
+        if is_known_placeholder_title(ref.title or ""):
+            reason = "has a placeholder title"
+        elif meta.get("registry_title_mismatch"):
+            reason = "is flagged for a registry title mismatch"
+        elif meta.get("title_body_mismatch"):
+            reason = "is flagged for a title/body mismatch"
+        else:
+            tags = store.tags_for(ref.id)
+            if Tag.open("title-body-mismatch") in tags:
+                reason = "is flagged for a title/body mismatch"
+            elif Tag.open("paper-meta:title-mismatch") in tags:
+                reason = "is flagged for a registry title mismatch"
+        if reason:
+            out.append(
+                GateViolation(
+                    "source-identity",
+                    f"{label}: pa{ref.id} {reason}; verify and repair the source "
+                    "before minting",
+                )
+            )
 
     if kind == "datasheet":
         if ref is None or ev.datasheet_sha(store, ref.id) is None:

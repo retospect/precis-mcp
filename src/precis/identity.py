@@ -1311,6 +1311,16 @@ def make_cite_key(
     raise CiteKeyOverflow(base, taken_set)  # unreachable for a finite taken set
 
 
+def is_byline_cite_key(
+    key: str | None, authors: Iterable[Any] | None, year: int | None
+) -> bool:
+    """Whether the key has the byline-derived base and optional suffix."""
+    return (
+        re.fullmatch(re.escape(make_cite_key(authors, year)) + "[a-z]*", key or "")
+        is not None
+    )
+
+
 #: Junk-mint cite_key shapes (gr521515): keys minted from empty or garbage
 #: metadata at ingest — ``anon`` when the byline was unknown
 #: (:func:`make_cite_key`'s empty-author placeholder), ``user``/``the``

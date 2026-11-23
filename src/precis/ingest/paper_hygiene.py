@@ -3454,7 +3454,7 @@ def raise_junk_title_papers(
 
 
 def requeue_papers_for_enrich(
-    store: Store, ref_ids: list[int], *, dry_run: bool = True
+    store: Store, ref_ids: list[int] | None, *, dry_run: bool = True
 ) -> list[int]:
     """Re-arm ``paper_meta_enrich`` over the named papers (``precis enrich-rearm``).
 
@@ -3465,6 +3465,8 @@ def requeue_papers_for_enrich(
     cycle. Nothing is fetched or written beyond the stamp and a
     ``paper_reconcile``/``enrich_rearmed`` breadcrumb.
 
+    Pass `None` to select the all-caps title backfill cohort.
+
     Selected: live papers that carry a DOI (nothing for Crossref to resolve
     otherwise) and currently have the stamp (an unstamped one is claimable
     already). A re-visit is safe: the pass never overwrites
@@ -3474,15 +3476,19 @@ def requeue_papers_for_enrich(
     Returns the selected ref_ids, in the order given, de-duplicated; a dry
     run returns what it *would* act on without writing.
     """
-    wanted = list(dict.fromkeys(int(i) for i in ref_ids))
-    if not wanted:
+    wanted = (
+        list(dict.fromkeys(int(i) for i in ref_ids)) if ref_ids is not None else None
+    )
+    if wanted == []:
         return []
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
             SELECT r.ref_id
               FROM refs r
-             WHERE r.ref_id = ANY(%s)
+             WHERE CASE WHEN %s::bigint[] IS NULL
+                        THEN length(r.title) > 25 AND r.title = upper(r.title)
+                        ELSE r.ref_id = ANY(%s::bigint[]) END
                AND r.kind = 'paper'
                AND r.retired_at IS NULL
                AND r.meta ? 'authors_resolved_at'
@@ -3490,11 +3496,14 @@ def requeue_papers_for_enrich(
                      SELECT 1 FROM ref_identifiers ri
                       WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi'
                    )
+             ORDER BY r.ref_id
             """,
-            (wanted,),
+            (wanted, wanted),
         ).fetchall()
     eligible = {int(r[0]) for r in rows}
-    selected = [i for i in wanted if i in eligible]
+    selected = (
+        sorted(eligible) if wanted is None else [i for i in wanted if i in eligible]
+    )
 
     if not dry_run:
         for ref_id in selected:

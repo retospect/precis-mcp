@@ -137,6 +137,35 @@ def test_clean_payload_passes_all_gates(store: Any) -> None:
     assert _gate_slugs(store, hub, _payload(chunk)) == set()
 
 
+@pytest.mark.parametrize(
+    ("title", "patch"),
+    [
+        ("Untitled", {}),
+        ("Anisotropic Elastic Properties", {"title_body_mismatch": True}),
+        (
+            "Anisotropic Elastic Properties",
+            {"registry_title_mismatch": {"doi": "10.1/x"}},
+        ),
+    ],
+)
+def test_source_identity_gate(store: Any, title: str, patch: dict[str, Any]) -> None:
+    paper, chunk, sha = _seed_paper(store, title=title)
+    store.update_paper_fields(paper, meta_patch=patch)
+    violations = gates._check_passage(store, 1, _payload(chunk, sha)["passages"][0])
+    assert any(
+        v.gate == "source-identity" and f"pa{paper}" in v.message for v in violations
+    )
+
+
+def test_source_identity_gate_tolerates_short_title(store: Any) -> None:
+    """A real two-word title is not a placeholder — the sweep's short-
+    title heuristic stays advisory; only the enumerated placeholder
+    strings and confirmed identity flags hard-refuse (gr690404)."""
+    paper, chunk, sha = _seed_paper(store, title="Quantum Mechanics")
+    violations = gates._check_passage(store, 1, _payload(chunk, sha)["passages"][0])
+    assert not any(v.gate == "source-identity" for v in violations)
+
+
 def test_pdf_sha_alias_row_does_not_block_mint(store: Any) -> None:
     # The metadata write-back (_maybe_patch_pdf) leaves TWO identifier
     # rows per patched PDF — post-patch canonical + as-downloaded alias.

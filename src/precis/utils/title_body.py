@@ -172,7 +172,19 @@ def is_placeholder_title(title: str) -> bool:
     them separately and keeps them out of the mismatch ranking.
     """
     t = unicodedata.normalize("NFKC", title_plain(title or "")).strip()
-    return len(t.split()) <= 2 or _PLACEHOLDER_RE.search(t) is not None
+    return len(t.split()) <= 2 or is_known_placeholder_title(title)
+
+
+def is_known_placeholder_title(title: str) -> bool:
+    """True only for the enumerated extraction-artifact titles
+    (:data:`_PLACEHOLDER_RE`) — the hard-gate set.
+
+    :func:`is_placeholder_title`'s two-or-fewer-words leg stays a sweep
+    heuristic: a real short title (``Quantum Mechanics``) matches it, so
+    a refusal gate must use this narrower check instead (gr690404).
+    """
+    t = unicodedata.normalize("NFKC", title_plain(title or "")).strip()
+    return _PLACEHOLDER_RE.search(t) is not None
 
 
 def _stem(w: str) -> str:
@@ -207,28 +219,64 @@ def _formula_pattern(f: str) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9])" + pat + r"(?![a-z])")
 
 
+@dataclass(frozen=True)
+class BodyLexicon:
+    """A body's token index, built once for repeated title scoring.
+
+    Scoring many titles against one body (the ingest-time stub bind,
+    gr690404) re-tokenises the body per call when it goes through
+    :func:`title_body_score` — one lexicon build instead.
+    """
+
+    text: str
+    words: frozenset[str]
+    stems: frozenset[str]
+
+
+def body_lexicon(body: str) -> BodyLexicon | None:
+    """Index *body* for :func:`lexicon_score`; ``None`` on an empty body."""
+    body = unicodedata.normalize("NFKC", body or "")
+    if not body.strip():
+        return None
+    words = _WORD_RE.findall(body)
+    return BodyLexicon(
+        text=body,
+        words=frozenset(w.lower() for w in words),
+        stems=frozenset(_stem(w) for w in words),
+    )
+
+
+def lexicon_score(lexicon: BodyLexicon, title: str) -> TitleBodyScore | None:
+    """``title_body_score`` against a pre-built :class:`BodyLexicon`.
+
+    Returns ``None`` when there is nothing to judge (no distinctive
+    title terms).
+    """
+    terms = title_terms(title)
+    if not terms:
+        return None
+    matched: list[str] = []
+    missing: list[str] = []
+    for term, weight in terms.items():
+        if weight == FORMULA_WEIGHT:
+            hit = _formula_pattern(term).search(lexicon.text) is not None
+        elif weight == ACRONYM_WEIGHT:
+            hit = term.lower() in lexicon.words or term in lexicon.text
+        else:
+            hit = term in lexicon.words or _stem(term) in lexicon.stems
+        (matched if hit else missing).append(term)
+    total = sum(terms.values())
+    got = sum(terms[t] for t in matched)
+    return TitleBodyScore(got / total, len(terms), tuple(matched), tuple(missing))
+
+
 def title_body_score(title: str, body: str) -> TitleBodyScore | None:
     """Score how well *title* is supported by *body* (leading body text).
 
     Returns ``None`` when there is nothing to judge (no distinctive title
     terms, or an empty body).
     """
-    terms = title_terms(title)
-    body = unicodedata.normalize("NFKC", body or "")
-    if not terms or not body.strip():
+    lexicon = body_lexicon(body)
+    if lexicon is None:
         return None
-    body_stems = {_stem(w) for w in _WORD_RE.findall(body)}
-    body_words = {w.lower() for w in _WORD_RE.findall(body)}
-    matched: list[str] = []
-    missing: list[str] = []
-    for term, weight in terms.items():
-        if weight == FORMULA_WEIGHT:
-            hit = _formula_pattern(term).search(body) is not None
-        elif weight == ACRONYM_WEIGHT:
-            hit = term.lower() in body_words or term in body
-        else:
-            hit = term in body_words or _stem(term) in body_stems
-        (matched if hit else missing).append(term)
-    total = sum(terms.values())
-    got = sum(terms[t] for t in matched)
-    return TitleBodyScore(got / total, len(terms), tuple(matched), tuple(missing))
+    return lexicon_score(lexicon, title)
