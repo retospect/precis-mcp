@@ -24,9 +24,9 @@ instead of a row in a bespoke ``news_items`` table. The morning
 briefing (:mod:`precis.workers.briefing`) reads recent ``news`` refs
 back out and summarizes them.
 
-Cache TTL is ``None`` (pinned): a news article is a historical record,
-not a TTL'd lookup that should silently re-fetch. Volume is bounded at
-ingest by per-feed ``max_items`` caps, not by expiry.
+Cache entries have no TTL. The retention cadence can soft-delete
+unused articles after 90 days. A new URL fetch can then refill the cache
+while the original ref remains restorable by handle.
 
 Every article is stamped ``category:news`` + ``source:<slug>`` so it can
 be filtered in or out of search by tag — no hard fence (per design
@@ -299,6 +299,8 @@ class NewsHandler(CacheBackedHandler):
         supports_chunk_selectors=True,
     )
 
+    stamps_recall: ClassVar[bool] = True
+    handle_routes_by_ref_id: ClassVar[bool] = True
     provider: ClassVar[str] = "news"
     ttl_seconds: ClassVar[int | None] = None  # pinned — articles are records
     attribution: ClassVar[str] = _ATTRIBUTION
@@ -389,6 +391,7 @@ class NewsHandler(CacheBackedHandler):
         footer = f"  Article: {url}\n  Cache:   {_format_cache_footer(cache)}"
         return Response(
             body=resp.body + "\n" + footer,
+            ref_id=ref.id,
             cost=resp.cost,
             result_budget_hint=resp.result_budget_hint,
         )

@@ -572,6 +572,22 @@ class CacheMixin:
 
                 _bust_tag_caches(conn)  # ref_tags rows just cascaded away
 
+            if kind == "news":
+                # Keep the retired snapshot restorable by URL until a refill
+                # actually takes its request key. Lock against a concurrent
+                # restore and release the key in the same tx as the insert.
+                retired = conn.execute(
+                    "SELECT r.ref_id FROM cache_state cs JOIN refs r USING (ref_id) "
+                    "WHERE cs.provider = %s AND cs.request_hash = %s AND cs.is_current "
+                    "AND r.kind = 'news' AND r.retired_at IS NOT NULL FOR UPDATE OF r",
+                    (provider, request_hash),
+                ).fetchone()
+                if retired is not None:
+                    conn.execute(
+                        "UPDATE cache_state SET is_current = false WHERE ref_id = %s",
+                        (retired[0],),
+                    )
+
             ref = self.insert_ref(
                 kind=kind,
                 slug=slug,

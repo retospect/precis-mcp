@@ -28,7 +28,7 @@ Rescue clocks breaker waits from the first park because rechecks refresh
 status (:mod:`.factory_rescue`). Queued jobs wait only where claim skips them. Mirror fetches avoid receive hooks
 (:mod:`.factory_git_mirror`).
 Gripe intake bounds frozen reports (``precis-work-help``). Todo sweeps
-recheck under lock. Dispatch logs decisions and cadence accounts for elapsed time.
+recheck under lock. Dispatch logs decisions.
 
 Runner halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra
 failures and gives task-design failures one repair attempt. :mod:`.halt_recovery`
@@ -83,6 +83,9 @@ Scheduler cadences
 
 ``memory_recall`` measures renders; :mod:`.memory_recall`.
 ``memory_recall_harvest`` queues proposals, default-OFF; :mod:`.memory_recall_harvest`.
+
+:mod:`.retention` reports before soft-deleting unused news. Durable read
+stamps survive receipt expiry. Citation filtering precedes the cap.
 
 ``scheduler.py`` decentralizes recurring-work triggering — see its own
 docstring for the lease mechanism. ``CADENCES``: ``cron_tick`` (60s),

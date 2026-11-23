@@ -69,7 +69,7 @@ from typing import TYPE_CHECKING, Any
 from precis import settings
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.env import env_float
-from precis.workers.runner import BatchResult, _emit_handler
+from precis.workers.runner import BatchResult, _emit_handler, inner_result_payload
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -125,7 +125,7 @@ class Cadence:
 
     name: str
     interval_s: int
-    run: Callable[[Any, int], None]
+    run: Callable[[Any, int], BatchResult | None]
     host_affinity: str | None = None
     eligible: Callable[[], bool] | None = None
     resolve_interval: Callable[[Any], int] | None = None
@@ -982,6 +982,23 @@ def _run_ref_body_bytes_verify(store: Store, batch_size: int) -> None:
         result.ok,
         result.failed,
     )
+
+
+def _run_retention(store: Store, batch_size: int) -> BatchResult:
+    """One retention tick (gr690338's first policy slice), fired from the
+    daily host-agnostic ``retention`` cadence — soft-delete never-used news
+    (90d, no read receipt, no link, no citation), reason
+    ``retention:news-unused-90d``. Dark-gated inside the pass: no
+    ``retention`` service_config row (prio > 0) → all-zeros no-op, so the
+    cadence's lease advances harmlessly while dark (the ``dream_consolidate``
+    shape). The first lit fire is report-only — it writes the per-kind
+    counts it would act on and stops; subsequent fires act. ``batch_size``
+    is unused — the pass caps itself (``MAX_CANDIDATES_PER_FIRE``). See
+    workers/retention.py; pure local SQL, no LLM. spends=False."""
+    del batch_size
+    from precis.workers.retention import run_retention_pass
+
+    return run_retention_pass(store)
 
 
 def _run_memory_recall(store: Store, batch_size: int) -> None:
@@ -1911,6 +1928,23 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=24 * 3600 + 89 * 60,
         run=_run_ref_body_bytes_verify,
     ),
+    # gr690338's first policy slice (Reto 2026-11-19): soft-delete news
+    # that was never used — older than 90d with no read receipt (0329), no
+    # link and no citation — reason 'retention:news-unused-90d'. Host-
+    # agnostic, daily, off the exact day boundary (+31m) like the other
+    # daily sweeps. No `service=` gate on the cadence on purpose: the
+    # dark-gate lives inside the pass (the `dream_consolidate` shape — a
+    # `service=` gate would leave the lease unclaimed while dark, which
+    # health_digest's cadence-staleness check reads as "stopped firing").
+    # The first lit fire reports the per-kind counts and stops; acting
+    # starts on the fires after. Resolved alerts (>90d) join behind a
+    # config flag in a later slice, once news has run clean for one cycle.
+    # spends=False: pure local SQL, no LLM.
+    Cadence(
+        name="retention",
+        interval_s=24 * 3600 + 31 * 60,
+        run=_run_retention,
+    ),
 )
 
 
@@ -2114,15 +2148,16 @@ def _scheduler_pass(
         )
         fired_ok = 1
         fired_error: str | None = None
+        result: BatchResult | None = None
         try:
             if bound > 0:
-                call_with_deadline(
+                result = call_with_deadline(
                     partial(cad.run, store, batch_size),
                     deadline_s=bound,
                     label=f"cadence {cad.name}",
                 )
             else:
-                cad.run(store, batch_size)
+                result = cad.run(store, batch_size)
             ok += 1
         except DeadlineExceeded as exc:
             _INFLIGHT[cad.name] = exc.thread
@@ -2161,6 +2196,9 @@ def _scheduler_pass(
             "failed": 1 - fired_ok,
             "report_only": False,
         }
+        if result is not None:
+            liveness.update(inner_result_payload(result))
+            liveness["handler"] = _emit_handler(cad.name, cad.name)
         if fired_error is not None:
             liveness["error"] = fired_error
         log.info(

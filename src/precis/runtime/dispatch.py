@@ -5182,11 +5182,14 @@ class DispatchMixin(RuntimeShape):
             raise
 
         if verb == "get":
-            # gr524009: a read counts on every focused get — any view,
-            # not only the bare one ``_stamp_recalled`` covers.
-            self._bump_ref_read(kind, args.get("id"))
+            # News URL/query reads report the concrete cache ref they served.
+            read_id = args.get("id")
+            if kind == "news" and response.ref_id is not None:
+                read_id = response.ref_id
+            self._bump_ref_read(kind, read_id)
+            if args.get("view") is None or kind == "news":
+                self._stamp_recalled(kind, read_id)
             if args.get("view") is None:
-                self._stamp_recalled(kind, args.get("id"))
                 response = self._append_trust_line(
                     handler, kind, args.get("id"), response
                 )
