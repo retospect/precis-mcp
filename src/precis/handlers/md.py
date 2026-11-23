@@ -3,10 +3,9 @@
 Read-only mirror of :mod:`precis.handlers.python`'s pattern applied to
 prose instead of code: an in-memory, mtime-gated index
 (:class:`precis.md_index.MdRepoCache`) over one or more roots
-registered via ``PRECIS_MD_ROOTS`` (parsed with the same
-:func:`precis.handlers._roots.parse_alias_roots` the ``python`` kind
-uses). No Postgres, no writes — see the :mod:`precis.md_index`
-package docstring for the DB-free design.
+registered via ``PRECIS_MD_ROOTS``. When both ``PRECIS_MD_ROOTS`` and
+``PRECIS_ROOT`` are unset, boot uses the registered ``python`` kind's
+checkout paths and aliases. See :mod:`precis.md_index` for the DB-free design.
 
 Address grammar accepted by ``get``:
 
@@ -178,7 +177,7 @@ class MdHandler(Handler):
     """Read-only navigator + hybrid search over one or more md roots.
 
     Constructed with a dict of ``alias -> absolute root path``
-    (typically parsed from ``PRECIS_MD_ROOTS`` by the registry).
+    from explicit Markdown configuration or the Python checkout fallback.
     ``cache`` / ``vector_cache`` are optional injection seams for
     tests; production code lets the handler own fresh instances.
     """

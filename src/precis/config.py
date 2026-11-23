@@ -265,9 +265,10 @@ class PrecisConfig(BaseSettings):
     root's short identifier used in addresses (e.g.
     ``docs/backlog/foo.md``); each path is an absolute directory
     walked for ``.md``/``.markdown`` files. Unparseable entries are
-    dropped with a warning, same rules as ``python_roots``. When
-    unset (or zero valid entries), the ``md`` kind is hidden. Set via
-    ``PRECIS_MD_ROOTS`` in the env. See the ``precis.md_index``
+    dropped with a warning, same rules as ``python_roots``. Set via
+    ``PRECIS_MD_ROOTS`` in the env. When unset along with ``PRECIS_ROOT``,
+    ``md`` uses the registered Python checkout roots if available. An
+    explicit value with zero valid entries hides ``md``. See the ``precis.md_index``
     package docstring for the DB-free design this kind is built on.
     """
 

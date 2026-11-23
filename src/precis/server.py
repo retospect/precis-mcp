@@ -2155,7 +2155,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     from a cold or partially-warm vector cache (`MdHandler.search`'s
     coverage-percent fallback), so this thread's only job is to close
     the gap without blocking boot or any tool call. No-op when the
-    `md` kind isn't registered (env var unset) or has no embedder
+    `md` kind isn't registered or has no embedder
     wired (`vector_cache is None` — e.g. a `MockEmbedder`-less build).
 
     Walks every configured root, embeds every block whose `sha256`

@@ -9,6 +9,11 @@ in-memory index with heading breadcrumbs and lexical search — the
 `python` kind's pattern (`precis.python_index`) applied to prose
 instead of code.
 
+When both `PRECIS_MD_ROOTS` and `PRECIS_ROOT` are unset, boot gives
+`md` the same checkout paths and aliases as the registered `python`
+kind. This makes repository prose available through the read-only
+index without mounting a Python checkout as a writable file root.
+
 Deliberately **not** persisted to Postgres, and deliberately a
 separate kind from the DB-backed `markdown` kind: block-splitting is
 cheap, idempotent, and the source of truth already lives on disk, so

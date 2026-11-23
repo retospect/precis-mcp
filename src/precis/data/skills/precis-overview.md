@@ -123,7 +123,7 @@ name/path.
 | Kind | Example id | What | Needs |
 |---|---|---|---|
 | `python` | `precis::precis.cli.main` | Symbol or file in a configured Python repo | `PRECIS_PYTHON_ROOTS` |
-| `md` | `docs/conventions/shipping.md~Long form` | Read-only, DB-free hybrid search over configured markdown roots (docs, skills prose) | `PRECIS_MD_ROOTS` |
+| `md` | `docs/conventions/shipping.md~Long form` | Read-only, DB-free hybrid search over workspace markdown roots (docs, skills prose) | `PRECIS_MD_ROOTS` or a registered `python` kind when both `PRECIS_MD_ROOTS` and `PRECIS_ROOT` are unset |
 | `folder` | `fo12` | Organizational container for authored artifacts — single-parent placement via `link(rel='parent')`; `search(folder=...)` scopes to the subtree. See `precis-folder-help`. | store |
 | `todo` | `td122` | A node in the hierarchical todo tree. Branches read as outcomes; leaves as next actions. See `precis-todo-tree-help`. | store |
 | `memory` | `me47` | Agent note / scratchpad | store |

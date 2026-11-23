@@ -33,7 +33,7 @@ get(kind="md", id="docs/conventions/shipping.md~Long form")  # one heading's sec
 get(kind="md", id="docs/conventions/shipping.md", q="find me")  # passages inside the file (find-in-ref)
 ```
 
-`<alias>` comes from `PRECIS_MD_ROOTS`. `~<heading>` takes the
+Call `get(kind='md')` to list root aliases. `~<heading>` takes the
 heading plus everything nested under it, up to the next heading of
 equal or higher rank — match by exact slug, by title text
 (case-insensitive), or by a unique title prefix (`~Gaps` resolves
@@ -94,6 +94,10 @@ Comma-separated `alias:/abs/path` pairs, same format as
 `PRECIS_PYTHON_ROOTS`. Relative paths resolve against the server's
 working directory.
 
+When `PRECIS_MD_ROOTS` and `PRECIS_ROOT` are both unset, `md` uses
+the checkout paths and aliases registered by the `python` kind from
+`PRECIS_PYTHON_ROOTS`.
+
 ## Read-only
 
 `put` / `edit` / `delete` / `tag` / `link` aren't supported — edit
@@ -104,8 +108,8 @@ next time it's touched (per-file, so unrelated files stay cached).
 
 `kind='markdown'` is the DB-backed, `PRECIS_ROOT`-sandboxed kind:
 write-capable, ingested into the corpus, cross-kind-searchable.
-`kind='md'` is a separate, read-only, DB-free index over
-`PRECIS_MD_ROOTS` — for searching a codebase's own docs and skills
+`kind='md'` is a separate, read-only, DB-free index over its workspace
+roots — for searching a codebase's own docs and skills
 without ingesting them. Use `markdown` to author corpus notes; use
 `md` to search a repo's prose in place.
 

@@ -1032,12 +1032,17 @@ def boot(
     # Python — DB-free in-memory AST index. Skipped when no roots
     # are configured or every entry is malformed (parse_python_roots
     # logs each rejection).
+    python_checkout_roots = {}
     if python_roots:
         from precis.handlers.python import PythonHandler, parse_python_roots
 
-        roots = parse_python_roots(python_roots)
-        if roots:
-            _gated(PythonHandler, roots=roots, worktrees=_worktree_registry())
+        python_checkout_roots = parse_python_roots(python_roots)
+        if python_checkout_roots:
+            _gated(
+                PythonHandler,
+                roots=python_checkout_roots,
+                worktrees=_worktree_registry(),
+            )
         else:
             # Roots configured but every entry was malformed — same
             # deferred-kind treatment as markdown/plaintext/tex below.
@@ -1059,13 +1064,14 @@ def boot(
         )
 
     # md — DB-free in-memory markdown index (hybrid lexical + semantic
-    # search over workspace prose). Same requires_env-deferred-kind
-    # shape as python above; see the precis.md_index package
-    # docstring for the design.
-    if md_roots:
+    # search over workspace prose). Reuse Python's parsed checkout roots
+    # for read-only repo navigation when PRECIS_MD_ROOTS and PRECIS_ROOT
+    # are unset.
+    use_python_checkouts = not precis_root and "python" in hub.kinds
+    if md_roots or use_python_checkouts:
         from precis.handlers.md import MdHandler, parse_md_roots
 
-        roots = parse_md_roots(md_roots)
+        roots = parse_md_roots(md_roots) if md_roots else python_checkout_roots
         if roots:
             _gated(MdHandler, roots=roots, worktrees=_worktree_registry())
         else:

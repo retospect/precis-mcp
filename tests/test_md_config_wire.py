@@ -5,8 +5,8 @@ Mirrors ``tests/test_python_config_wire.py``. Covers:
   ``precis.handlers._roots.parse_alias_roots`` (already exercised
   from the python side); a couple of smoke cases confirm the wrapper
   passes ``env_var='PRECIS_MD_ROOTS'`` through correctly.
-- ``boot(...)`` instantiates ``MdHandler`` only when at least one
-  valid root parses, regardless of whether a store is present.
+- ``boot(...)`` uses valid explicit roots or falls back to registered
+  Python checkouts when both prose roots are unset, even without a store.
 - The handler is hidden (deferred, with reason) when no roots are
   configured, and when every entry is malformed.
 """
@@ -96,9 +96,11 @@ def test_md_handler_hidden_when_no_roots() -> None:
     assert r.loadabilities["md"].reason == "missing PRECIS_MD_ROOTS"
 
 
-def test_md_handler_hidden_when_all_entries_invalid(caplog) -> None:
+def test_md_handler_hidden_when_all_entries_invalid(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     with caplog.at_level(logging.WARNING):
-        r = boot(md_roots="bogus,no-colon-either")
+        r = boot(md_roots="bogus,no-colon-either", python_roots=f"repo:{tmp_path}")
     assert "md" not in r.kinds
     assert r.loadabilities["md"].reason == "PRECIS_MD_ROOTS parsed empty"
 
@@ -116,6 +118,46 @@ def test_md_handler_present_without_store(tmp_path: Path) -> None:
     boot() is called with store=None."""
     r = boot(store=None, md_roots=f"r:{tmp_path}")
     assert "md" in r.kinds
+
+
+def test_md_reads_python_checkouts_without_prose_roots(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (second / "decision.md").write_text(
+        "# Decision\n\n## Rationale\n\nUse the quartz protocol.\n", encoding="utf-8"
+    )
+    r = boot(python_roots=f"first:{first},second:{second}")
+
+    assert "python" in r.kinds
+    h = r.handler_for("md")
+    assert isinstance(h, MdHandler)
+    assert h.roots == {"first": first.resolve(), "second": second.resolve()}
+    assert "Rationale" in h.get(id="second/decision.md").body
+    assert "quartz protocol" in h.get(id="second/decision.md~Rationale").body
+    assert "decision.md" in h.search(q="quartz", scope="second").body
+    assert r.get("md", "put") is None
+    assert r.get("md", "edit") is None
+    assert {"markdown", "plaintext", "tex"}.isdisjoint(r.kinds)
+
+
+def test_explicit_md_roots_override_python_checkouts(tmp_path: Path) -> None:
+    r = boot(python_roots=f"repo:{tmp_path}", md_roots=f"docs:{tmp_path}")
+    h = r.handler_for("md")
+    assert isinstance(h, MdHandler)
+    assert h.roots == {"docs": tmp_path.resolve()}
+
+
+def test_md_does_not_fall_back_with_precis_root(tmp_path: Path) -> None:
+    r = boot(python_roots=f"repo:{tmp_path}", precis_root=str(tmp_path))
+    assert "python" in r.kinds
+    assert "md" not in r.kinds
+
+
+def test_md_does_not_fall_back_to_disabled_python(tmp_path: Path) -> None:
+    r = boot(python_roots=f"repo:{tmp_path}", kinds_disabled=frozenset({"python"}))
+    assert "md" not in r.kinds
 
 
 def test_md_handler_present_with_multiple_valid_roots(tmp_path: Path) -> None:

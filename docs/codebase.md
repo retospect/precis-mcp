@@ -402,6 +402,10 @@ session start).
 
 ## Seams — where changes concentrate
 
+When `PRECIS_ROOT` and `PRECIS_MD_ROOTS` are unset, boot uses the
+registered `python` checkout paths and aliases for read-only `md`
+navigation. Both indexes read those checkouts directly.
+
 Handlers return `Response`; runtime appends hints and applies result budgets.
 Indivisible content such as slides supplies `Response.budget_fit`, allowing
 the final fitter to reserve runtime suffix bytes before choosing boundaries.
