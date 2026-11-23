@@ -4,7 +4,10 @@ asa_bot post path that calls it."""
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -44,6 +47,12 @@ def test_stamp_sent_then_failed_records_reason(hub: Hub, store: Store) -> None:
     assert m["status"] == "sent" and not m["error"]
 
 
+def test_stamp_expired(hub: Hub, store: Store) -> None:
+    h, rid = _queue(hub, store)
+    h.put(id=rid, status="expired")
+    assert _meta(store, rid)["status"] == "expired"
+
+
 def test_stamp_rejects_bad_status_and_unknown_id(hub: Hub, store: Store) -> None:
     h, rid = _queue(hub, store)
     with pytest.raises(BadInput):
@@ -71,6 +80,7 @@ def test_stamp_reaches_handler_through_tool_dispatch(
 pytest.importorskip("discord")
 
 from asa_bot.bot import AsaBot
+from asa_bot.pg_listen import PgListener
 
 
 class _Precis:
@@ -85,10 +95,12 @@ class _Precis:
 class _Chan:
     def __init__(self, exc: Exception | None = None) -> None:
         self.exc = exc
+        self.posts: list[str] = []
 
     async def send(self, content: str) -> None:
         if self.exc:
             raise self.exc
+        self.posts.append(content)
 
 
 def _bot(chan: Any, text: str = "hi") -> tuple[AsaBot, _Precis]:
@@ -137,6 +149,45 @@ def test_bot_stamps_failed_when_no_channel() -> None:
     asyncio.run(bot._post_message_ref({"ref_id": 9, "target": "discord/1/2/3"}))
     (s,) = _stamps(p)
     assert s["status"] == "failed" and "no channel" in s["error"]
+
+
+def test_recover_recent_messages_once_and_expire_stale() -> None:
+    channel = _Chan()
+    bot, precis = _bot(channel)
+    listener = PgListener("")
+    bot._listener = listener
+    meta = {"target": "discord/1/2/3", "author": "asa"}
+    cursor = SimpleNamespace(
+        fetchall=AsyncMock(
+            return_value=[(9, meta, True), (8, meta, False), (7, meta, False)]
+        )
+    )
+    conn = AsyncMock()
+    conn.execute.return_value = cursor
+
+    async def run() -> None:
+        recovered = await listener._recover_messages(conn)
+        for ref_id in (9, 8, 7):
+            data = listener.message_queue.get_nowait()
+            assert data["ref_id"] == ref_id
+            await bot._handle_outbound(data)
+        # The same row can appear in the sweep and in a buffered NOTIFY,
+        # even if delivery completed before the notification was drained.
+        await listener._dispatch(
+            SimpleNamespace(
+                channel="precis.messages", payload=json.dumps({**meta, "ref_id": 8})
+            ),
+            recovered,
+        )
+        assert listener.message_queue.empty()
+
+    asyncio.run(run())
+    assert channel.posts == ["hi", "hi"]
+    assert [(stamp["id"], stamp["status"]) for stamp in _stamps(precis)] == [
+        (9, "expired"),
+        (8, "sent"),
+        (7, "sent"),
+    ]
 
 
 def test_stamp_non_numeric_id_names_the_put_form(hub: Hub, store: Store) -> None:

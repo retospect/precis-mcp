@@ -18,8 +18,8 @@ State in ``ref.meta``:
 - ``target``: ``'discord/<g>/<c>/<t>'`` (transport-prefixed). The
   handler validates the format prefix; the delivery layer is
   responsible for routing.
-- ``status``: ``'queued'`` | ``'sent'`` | ``'failed'``. New rows
-  start ``'queued'``; asa_bot updates after delivery.
+- ``status``: ``'queued'`` | ``'sent'`` | ``'failed'`` | ``'expired'``.
+  New rows start ``'queued'``; asa_bot records delivery or expiry.
 - ``reason``: free-form trace (``'cron:42 fired'``, ``'asa response
   to user'``) for audit.
 - ``attachments``: optional list of attachment dicts (Q1 — Discord
@@ -120,7 +120,7 @@ class MessageHandler(NumericRefHandler):
         """Queue a proactive outbound message, or stamp its delivery result.
 
         Delivery stamp (asa_bot only): ``put(kind='message', id=N,
-        status='sent'|'failed', error='<reason>')`` merges ``status``
+        status='sent'|'failed'|'expired', error='<reason>')`` merges ``status``
         (and ``error`` on failure) into ``meta`` and nothing else.
 
         Required: ``text`` (body), ``target`` (where to deliver).
@@ -144,9 +144,8 @@ class MessageHandler(NumericRefHandler):
         State transitions: every new send starts
         ``meta.status='queued'``. asa_bot stamps ``'sent'`` (or
         ``'failed'`` with a ``meta.error`` note) after delivery
-        attempt. Re-delivery on failure is not automatic in v1
-        (acceptable for human-scale traffic); operator can flip
-        status back to ``'queued'`` to re-attempt.
+        attempt. On listener recovery, pending messages older than 24 hours
+        are stamped ``'expired'``. Failed deliveries require manual retry.
         """
         if id is not None and status is not None:
             return self._stamp_delivery(id, status, error)
@@ -297,10 +296,10 @@ class MessageHandler(NumericRefHandler):
     def _stamp_delivery(
         self, id: str | int, status: str, error: str | None
     ) -> Response:
-        if status not in ("sent", "failed"):
+        if status not in ("sent", "failed", "expired"):
             raise BadInput(
-                f"status={status!r} not accepted; delivery stamps are 'sent' or 'failed'",
-                next="put(kind='message', id=N, status='sent'|'failed', error='...')",
+                f"status={status!r} not accepted; use 'sent', 'failed' or 'expired'",
+                next="put(kind='message', id=N, status='sent'|'failed'|'expired')",
             )
         try:
             ref_id = int(id)

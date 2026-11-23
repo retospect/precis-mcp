@@ -17,7 +17,10 @@ NOTIFY handlers:
   - precis.cron: fetch the cron's payload, synthesize a user msg,
     invoke Asa with that as the prompt, post the result.
   - precis.messages: fetch the message ref, post text + attachments
-    to the target, stamp meta.status='sent'. A multi-part briefing
+    to the target, stamp meta.status='sent' (or 'failed' with the
+    error). On each listener (re)connect a startup sweep replays
+    unstamped/'queued' messages from the last 24 h in queue order and
+    stamps older ones 'expired' with no post. A multi-part briefing
     (``briefing_parts`` > 1 in the payload) is buffered and flushed in
     ascending part order by ``BriefingBuffer`` rather than posted as it
     arrives — see ``asa_bot.briefing_buffer`` for why (gr51556).
@@ -637,6 +640,7 @@ class AsaBot(discord.Client):
             await channel.send(content=c)
 
     async def _consume_messages(self) -> None:
+        await self.wait_until_ready()
         while True:
             data = await self._listener.message_queue.get()
             try:
@@ -647,8 +651,15 @@ class AsaBot(discord.Client):
     async def _handle_outbound(self, data: dict[str, Any]) -> None:
         ref_id = data.get("ref_id")
         target = data.get("target")
+        if ref_id and data.get("expired"):
+            try:
+                await self._stamp_delivery(ref_id, "expired")
+            finally:
+                self._listener.message_done(data)
+            return
         if not ref_id or not target:
             log.warning("messages notify missing ref_id/target: %r", data)
+            self._listener.message_done(data)
             return
         # A multi-part briefing (briefing.py::_deliver, gr51556): buffer by
         # (target, briefing_date) and post 1..N in order once complete (or
@@ -659,7 +670,13 @@ class AsaBot(discord.Client):
         if data.get("briefing_parts"):
             await self._briefing_buffer.add(data)
             return
-        await self._post_message_ref(data)
+        await self._deliver_message_ref(data)
+
+    async def _deliver_message_ref(self, data: dict[str, Any]) -> None:
+        try:
+            await self._post_message_ref(data)
+        finally:
+            self._listener.message_done(data)
 
     async def _post_briefing_parts(self, payloads: list[dict[str, Any]]) -> None:
         """``BriefingBuffer`` poster callback: post a completed/timed-out
@@ -671,7 +688,7 @@ class AsaBot(discord.Client):
         part after it and surface only as an unretrieved-task exception."""
         for payload in payloads:
             try:
-                await self._post_message_ref(payload)
+                await self._deliver_message_ref(payload)
             except Exception:
                 log.exception(
                     "briefing part failed to post (ref_id=%r) — continuing "
@@ -695,31 +712,31 @@ class AsaBot(discord.Client):
         # kind='message' rendering only carries the title (≤200 chars), so a
         # long message (e.g. a morning briefing) would otherwise post
         # truncated. Mirrors how cli/cron.py reads the cron_payload chunk.
-        text = await self._fetch_message_body(ref_id)
-        if not text:
-            # Fallback for older messages / a fetch failure: the rendering's
-            # title block, via the precis MCP.
-            body = await self._precis.call_tool(
-                "get", {"kind": "message", "id": ref_id}
-            )
-            text = _extract_message_body(body)
-        if not text:
-            log.warning("message %s: empty body, skipping", ref_id)
-            await self._stamp_delivery(ref_id, "failed", "empty body")
-            return
-        channel = await self._channel_from_slug(target)
-        if channel is None:
-            log.warning("message %s: no channel for target %r", ref_id, target)
-            await self._stamp_delivery(
-                ref_id, "failed", f"no channel for target {target!r}"
-            )
-            return
-        text = mask_secrets(text)
         try:
+            text = await self._fetch_message_body(ref_id)
+            if not text:
+                # Fall back to the title block for older messages.
+                body = await self._precis.call_tool(
+                    "get", {"kind": "message", "id": ref_id}
+                )
+                text = _extract_message_body(body)
+            if not text:
+                log.warning("message %s: empty body, skipping", ref_id)
+                await self._stamp_delivery(ref_id, "failed", "empty body")
+                return
+            channel = await self._channel_from_slug(target)
+            if channel is None:
+                log.warning("message %s: no channel for target %r", ref_id, target)
+                await self._stamp_delivery(
+                    ref_id, "failed", f"no channel for target {target!r}"
+                )
+                return
+            text = mask_secrets(text)
             for c in _split_for_discord(text, self._cfg.discord.max_message_chars):
                 await channel.send(content=c)
         except Exception as exc:
-            await self._stamp_delivery(ref_id, "failed", f"{type(exc).__name__}: {exc}")
+            error = mask_secrets(f"{type(exc).__name__}: {exc}")
+            await self._stamp_delivery(ref_id, "failed", error)
             raise
         await self._stamp_delivery(ref_id, "sent")
 

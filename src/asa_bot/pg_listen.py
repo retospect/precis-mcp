@@ -22,6 +22,7 @@ class PgListener:
         self._dsn = dsn
         self.cron_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.message_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._pending_messages: set[int] = set()
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[Any] | None = None
 
@@ -52,6 +53,9 @@ class PgListener:
         ) as conn:
             await conn.execute('LISTEN "precis.cron"')
             await conn.execute('LISTEN "precis.messages"')
+            # Subscribe before reading the backlog so inserts during startup
+            # are covered. A row visible to both paths must only queue once.
+            recovered = await self._recover_messages(conn)
             log.info("LISTENing on precis.cron + precis.messages")
             # Drain notifies while *holding* the connection. ``notifies(
             # timeout=)`` yields whatever arrived, then returns after the idle
@@ -63,11 +67,50 @@ class PgListener:
             # NOTIFY that landed in the gap.
             while not self._stop_event.is_set():
                 async for notify in conn.notifies(timeout=10.0):
-                    await self._dispatch(notify)
+                    await self._dispatch(notify, recovered)
                     if self._stop_event.is_set():
                         break
 
-    async def _dispatch(self, notify: Any) -> None:
+    async def _recover_messages(self, conn: psycopg.AsyncConnection[Any]) -> set[int]:
+        pending = self._pending_messages.copy()
+        cur = await conn.execute(
+            """
+            SELECT ref_id, meta, created_at < now() - interval '24 hours'
+            FROM refs
+            WHERE kind = 'message' AND retired_at IS NULL
+              AND (meta->>'status' IS NULL OR meta->>'status' = 'queued')
+            ORDER BY created_at, ref_id
+            """
+        )
+        for ref_id, meta, expired in await cur.fetchall():
+            if ref_id not in pending:
+                # The database already supplies queue order, including any
+                # remaining parts of a partially delivered briefing.
+                self._queue_message(
+                    {
+                        "ref_id": ref_id,
+                        "target": (meta or {}).get("target"),
+                        "author": (meta or {}).get("author"),
+                        "expired": expired,
+                    }
+                )
+            pending.add(ref_id)
+        return pending
+
+    def _queue_message(self, data: dict[str, Any]) -> None:
+        ref_id = data.get("ref_id")
+        if isinstance(ref_id, int):
+            if ref_id in self._pending_messages:
+                return
+            self._pending_messages.add(ref_id)
+        self.message_queue.put_nowait(data)
+
+    def message_done(self, data: dict[str, Any]) -> None:
+        ref_id = data.get("ref_id")
+        if isinstance(ref_id, int):
+            self._pending_messages.discard(ref_id)
+
+    async def _dispatch(self, notify: Any, recovered: set[int]) -> None:
         channel = getattr(notify, "channel", None) or str(notify)
         payload = getattr(notify, "payload", None) or ""
         try:
@@ -78,6 +121,9 @@ class PgListener:
         if channel == "precis.cron":
             await self.cron_queue.put(data)
         elif channel == "precis.messages":
-            await self.message_queue.put(data)
+            if isinstance(data, dict):
+                ref_id = data.get("ref_id")
+                if not isinstance(ref_id, int) or ref_id not in recovered:
+                    self._queue_message(data)
         else:
             log.warning("notify on unknown channel %r", channel)

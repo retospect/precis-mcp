@@ -2236,7 +2236,7 @@ def put(
     # the kwarg died at the strictness gate on the way in.
     dry_run: bool | None = None,
     # message delivery stamp (asa_bot, precis-message-help):
-    # put(kind='message', id=N, status='sent'|'failed'[, error='…']).
+    # put(kind='message', id=N, status='sent'|'failed'|'expired'[, error='…']).
     status: str | None = None,
     error: str | None = None,
     # quest logbook (see precis-quest-help): append a dated WORM entry —

@@ -105,9 +105,17 @@ surface; the actual Discord message stays posted.
 4. asa_bot fetches the ref + chunks + attachments, posts to Discord
    via the appropriate transport.
 5. asa_bot stamps `meta.status='sent'` (or `'failed'` with `meta.error`)
-   after each attempt, via `put(kind='message', id=N, status='sent'|'failed',
-   error='...')`. That put changes only status/error; the message stays
-   otherwise immutable.
+   after each attempt, via `put(kind='message', id=N,
+   status='sent'|'failed'|'expired', error='...')`. That put changes only
+   status/error; the message stays otherwise immutable.
+
+If the listener was down, NOTIFY is gone — so on each (re)connect
+asa_bot sweeps rows with no status or `status='queued'`: sends from
+the last 24 h are re-posted in queue order; older ones are stamped
+`expired` with no post, so an outage doesn't flood Discord. A `failed`
+message is not retried automatically — send a fresh `put` (a failed
+row is immutable to agents). A crash between the Discord post and the
+status write can replay a message.
 
 You don't see asa_bot. You just see the message land.
 

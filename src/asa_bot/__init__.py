@@ -65,8 +65,12 @@ the watcher from consuming a drop without provenance.
 connection ``LISTEN``ing on ``precis.cron`` (a due scheduled tick with
 ``meta.deliver``: synthesize a user message, run a turn, post the result) and
 ``precis.messages`` (post a ``message`` ref's text and attachments, stamp
-``meta.status='sent'``). NOTIFY is not durable; multi-part briefings are
-therefore reassembled and posted in order by
+``meta.status='sent'`` or ``'failed'``). Because NOTIFY is transient, the
+listener sweeps pending refs after subscribing on each connection. It
+replays the last 24 hours in queue order and expires older messages to
+avoid flooding Discord. A crash after Discord accepts a post but before
+its status persists can result in a replay. Live multi-part briefings are
+reassembled and posted in order by
 :mod:`asa_bot.briefing_buffer`, with a per-set timeout so a dropped part cannot
 stall delivery.
 

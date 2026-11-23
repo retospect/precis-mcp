@@ -21,11 +21,13 @@ pytest.importorskip("discord")
 
 from asa_bot.bot import AsaBot
 from asa_bot.briefing_buffer import BriefingBuffer
+from asa_bot.pg_listen import PgListener
 
 
 def _bare_bot(*, timeout_seconds: float = 30.0) -> AsaBot:
     bot = object.__new__(AsaBot)
     posted: list[dict[str, Any]] = []
+    bot._listener = PgListener("")
 
     async def fake_post(data: dict[str, Any]) -> None:
         posted.append(data)
