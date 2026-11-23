@@ -252,6 +252,23 @@ over — is the watchdog `claim_hub_dedup_index` check; outstanding chase
 findings with no new evidence edge are `taproot_edges`
 (`precis-health-digest-help`).
 
+## Regrounding a hub — the `reground_claim` job
+
+`reground_claim` (see `precis-job-types-help`) re-audits claim hubs. Its
+`mode` param picks the pass:
+
+- `reground` (default) — audit/prune proxy evidence and re-discover deeper
+  primaries, per hub; pruning stays dark unless `prune` is passed and the
+  rubric-eval interlock is open.
+- `verify` — read-only diff of intent vs committed edges; `repair=true`
+  applies the delta adds-first. No LLM.
+- `retire-prose` — rewords the draft sentences citing a retired hub from its
+  `reground_verdict` proposal. No LLM; needs `authorize_retire` plus the
+  per-hub vetting tag. A refused hub is an event, not a failure; an
+  ambiguous citation is skipped for the frontier pass.
+- `external-worklist` — read-only, scope-free list of mined unheld DOIs with
+  draft-citer demand. It never puts; acquisition stays a human decision.
+
 ## See also
 
 - [[precis-taproot-mint-help]] — author, mint, sharpen, merge a hub
