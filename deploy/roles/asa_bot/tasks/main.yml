@@ -205,11 +205,21 @@
       # runtime profile) into ~/.claude/agents/ with a YAML
       # frontmatter header prepended so Claude Code's Agent tool
       # registers it.
+      #
+      # `tools` is declared deliberately (gr761752): without it the
+      # Agent-tool catalog reports every synced profile as
+      # "Tools: *" / "All tools", so a dispatching agent believes a
+      # coder subagent can run Bash/Edit/Write and burns turns on
+      # dispatches the session-level deny list silently drops. The
+      # list mirrors the deployed ceiling — claude_settings.json.j2's
+      # permissions.allow and config.yaml.j2's --tools/deny boundary —
+      # so the catalog advertises exactly what a subagent can call.
       ansible.builtin.copy:
         content: |
           ---
           name: {{ item | basename | regex_replace('\.md$', '') }}
           description: Specialist agent for {{ item | basename | regex_replace('\.md$', '') }} tasks (synced from grimoire/agents/).
+          tools: Read, Glob, Grep, Agent, mcp__precis
           ---
 
           {{ lookup('file', item) }}

@@ -17,7 +17,7 @@
   "deploy/playbooks/35-precis-worker-sandbox.yml": 225,
   "deploy/playbooks/43-precis-worker-compute.yml": 338,
   "deploy/redeploy-precis.yml": 1830,
-  "deploy/roles/asa_bot/tasks/main.yml": 292,
+  "deploy/roles/asa_bot/tasks/main.yml": 302,
   "deploy/roles/backups/tasks/main.yml": 260,
   "deploy/roles/backups/templates/pg_backup.sh.j2": 302,
   "deploy/roles/backups/templates/pg_backup_dir.sh.j2": 182,
