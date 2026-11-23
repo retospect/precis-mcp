@@ -18,6 +18,21 @@ from precis.workers.job_types import get_job_type, known_job_types
 NOW = datetime.now(UTC).replace(microsecond=0)
 
 
+class _FrozenDateTime(datetime):
+    """The job's clock pinned to :data:`NOW`.
+
+    xdist may execute a module's items long after importing it, and a
+    suspended CI VM drifts the wall clock in between (gr778230: the +1 h
+    horizon read as already past on a macOS nightly, so the first slice
+    dispatched instead of parking). The park decision must not depend on
+    the wall clock.
+    """
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz is None else NOW.astimezone(tz)
+
+
 def test_registered_on_the_coordinator_lane() -> None:
     assert "deferred_llm_call" in known_job_types()
     spec = get_job_type("deferred_llm_call")
@@ -113,6 +128,7 @@ def _result(error: str | None = None, **kw: Any) -> LlmResult:
 
 
 def test_first_slice_parks_until_retry_at(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dlc, "datetime", _FrozenDateTime)
     monkeypatch.setattr(dlc, "route", lambda req: pytest.fail("must not dispatch"))
     at = NOW + timedelta(hours=1)
     out = dlc._dispatch(_Ctx(_params(at)), None)
