@@ -65,6 +65,11 @@ def _migration_files() -> list[Path]:
 #: reason, so a new unconditional vocabulary seed can't hide here by
 #: mistake.
 NOT_VOCAB: dict[str, str] = {
+    "app_settings_audit": (
+        "0363_mcp_served_legacy_key.sql: audit row for deleting the legacy "
+        "release.mcp_served setting — SELECTs FROM app_settings, empty on a "
+        "fresh DB; an audit trail, not vocabulary."
+    ),
     "artifact_kinds": (
         "0002/0004: seeded the artifact registry, dropped by 0349 "
         "(gr690192) — the table no longer exists after the chain."
