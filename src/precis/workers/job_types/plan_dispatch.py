@@ -5210,9 +5210,16 @@ def _verdict_comment(
     dropped work no job ever ran. Comments older than ``since`` (the
     newest attempt job's ``created_at``) never count — an earlier
     attempt's verdict is not this one's; a comment whose ``created_at``
-    cannot be read fails closed like :func:`_handoff_verdict`. Newest
-    first, first hit wins."""
+    cannot be read fails closed like :func:`_handoff_verdict`.
+    Worker comments count only when bound to a job, as when run_slice
+    relays the session's handoff. The dispatcher's own send-back can
+    quote a verdict in the review finding. Newest first, first hit wins."""
     for c in _comments(store, todo_id):
+        meta = getattr(c, "meta", None) or {}
+        if str(meta.get("principal", "")).startswith("worker:") and not meta.get(
+            HANDOFF_JOB_KEY
+        ):
+            continue
         created = getattr(c, "created_at", None)
         if since is not None and (not isinstance(created, datetime) or created < since):
             continue

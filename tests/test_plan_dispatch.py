@@ -9107,6 +9107,28 @@ def test_stale_noop_verdict_does_not_rehold_a_sent_back_build(store: Store) -> N
     assert len(_jobs_under(store, review)) == parked_reviews
 
 
+def test_preland_handback_quoting_verdict_dispatches_rebuild(store: Store) -> None:
+    mint = _reviewed_pending(
+        store,
+        "review: FIX — the empty case still fails despite the builder's claim:\n"
+        "validated: the branch is ready as it stands",
+    )
+    build = mint.ids["build"]
+    runs = len(_run_slice_jobs(store, build))
+
+    res = pd.run_pass(store)
+
+    assert res.reviews == 1
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    assert _meta(store, build)["preland_held"]["at"]
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+    assert any(
+        c.startswith("handoff: review: FIX") and "\nvalidated:" in c
+        for c in _todo_comments(store, build)
+    )
+
+
 def test_verdict_posted_while_parked_on_an_ask_does_not_rehold(store: Store) -> None:
     """gr738860: a `no-op:`/`validated:` that lands on a stashed build
     held by an OPEN coordinator ask neither re-holds the land (which
@@ -9183,6 +9205,19 @@ def test_noop_newer_than_the_send_back_still_reholds_the_land(store: Store) -> N
             "land held for review" in c and f"td{review}" in c
             for c in _todo_comments(store, build)
         )
+
+
+def test_relayed_builder_verdict_reholds_the_land(store: Store) -> None:
+    build, _ = _stashed_build(store, at=True)
+    job_id = _job(store, build, lane="claude-sub")
+    run_slice._append_comment(
+        store, build, "handoff: validated: the branch is ready", job_id=job_id
+    )
+
+    pd.run_pass(store)
+
+    assert _status(store, build) == "done"
+    assert _meta(store, build)["pending_land"]["branch"] == f"slice/{build}"
 
 
 def test_verdict_older_than_a_coordinator_brief_is_not_replayed(store: Store) -> None:
