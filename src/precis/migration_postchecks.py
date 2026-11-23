@@ -70,6 +70,15 @@ POST_MIGRATION_STEPS: tuple[PostMigrationStep, ...] = (
         constraints=("ref_identifiers_doi_lc",),
     ),
     PostMigrationStep(
+        "precis/0359_doi_trailing_punct_guard",
+        # The CHECK was left NOT VALID over legacy DOI rows carrying
+        # trailing citation punctuation. Reconcile canonicalises lone rows
+        # and audits unresolved collisions for explicit repair.
+        finish="precis reconcile-duplicates --apply, repair audited DOI collisions, then "
+        "ALTER TABLE ref_identifiers VALIDATE CONSTRAINT ref_identifiers_doi_clean",
+        constraints=("ref_identifiers_doi_clean",),
+    ),
+    PostMigrationStep(
         "precis/0226_chunk_embeddings_kind_ann",
         finish="precis backfill-embedding-kinds --apply",
         constraints=(

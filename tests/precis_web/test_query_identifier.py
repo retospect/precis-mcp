@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from precis.handlers._query_identifier import resolve_query_identifier
+from precis.store import Store
 
 
 def _ref_id(store, q: str) -> int | None:
@@ -57,6 +58,15 @@ def test_prefix_excludes_retired(store):
     a = _paper(store, "alpha2020x", "10.1021/acscatal.3c01963")
     store.retire_ref(a.id)
     assert store.find_paper_ref_ids_by_doi_prefix("10.1021/acscatal") == []
+
+
+def test_doi_prefix_preserves_terminal_period(store: Store) -> None:
+    dotted = _paper(store, "dotted", "10.1000/abc.def")
+    plain = _paper(store, "plain", "10.1000/abc")
+    store.set_ref_identifier(plain.id, "cite_key", "plain", source="test")
+
+    assert store.find_paper_ref_ids_by_doi_prefix("doi:10.1000/ABC.") == [dotted.id]
+    assert _ref_id(store, "10.1000/ABC.") == dotted.id
 
 
 def test_resolver_doi_prefix_and_ambiguity(store):

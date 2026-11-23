@@ -59,10 +59,9 @@ from precis.ingest.db_writer import (
     write_paper,
 )
 from precis.ingest.dedup import (
-    _drop_cleared_loser_rows,
-    _drop_dropped_loser_rows,
     _merge_cleared_markers,
     _merge_dropped_markers,
+    _move_external_identifiers,
     inherit_missing_identity,
 )
 from precis.ingest.draft_export_guard import draft_export_refusal, read_pdf_info
@@ -1853,7 +1852,7 @@ def _doi_conflicts(fetched_doi: str | None, ref_id: int, *, conn: Any) -> str | 
         "SELECT id_value FROM ref_identifiers WHERE ref_id = %s AND id_kind = 'doi'",
         (ref_id,),
     ).fetchall()
-    target_dois = [str(r[0]) for r in rows]
+    target_dois = [normalize_doi(str(r[0])) or str(r[0]) for r in rows]
     journal = [d for d in target_dois if not d.startswith(_PREPRINT_DOI_PREFIXES)]
     if not journal or fetched in journal:
         return None
@@ -2807,30 +2806,11 @@ def _reconcile_orphan_stub(
         )
         return None
 
-    # Move external bibliographic identifiers onto the survivor so a
-    # future probe_existing() dedups by DOI/arXiv/S2 directly — the very
-    # gap that let this stub slip past. The PK is (id_kind, id_value),
-    # so a straight UPDATE can't conflict: the survivor by definition
-    # doesn't already own these exact values. Content-derived ids
-    # (cite_key/paper_id) stay on the retired row; probe_existing now
-    # filters soft-deleted refs so they can't resurrect it.
-    # A value the survivor's operator deliberately cleared must not ride
-    # across on the stub's rows — the fold would resurrect the very
-    # identifier the human removed (gr515246). Same per-value for a pair
-    # dropped at the drop_identifier door (gr517591).
-    _drop_cleared_loser_rows(
-        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id
-    )
-    _drop_dropped_loser_rows(
-        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id
-    )
-    conn.execute(
-        """
-        UPDATE ref_identifiers SET ref_id = %s
-         WHERE ref_id = %s
-           AND id_kind IN ('doi', 'arxiv', 's2', 'pubmed', 'openalex')
-        """,
-        (survivor_ref_id, stub_id),
+    _move_external_identifiers(
+        conn,
+        survivor_ref_id=survivor_ref_id,
+        loser_ref_id=stub_id,
+        kinds=("doi", "arxiv", "s2", "pubmed", "openalex"),
     )
     # The stub's ``cite_key_alias`` redirects follow too (gr521515) —
     # left on the retired row they stop resolving. Unlike the external

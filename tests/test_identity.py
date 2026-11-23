@@ -57,6 +57,18 @@ from precis.identity import (
         ("http://dx.doi.org/10.1234/x", "10.1234/x"),
         ("doi.org/10.1234/x", "10.1234/x"),
         ("  10.1234/x  ", "10.1234/x"),
+        # gr763049: trailing citation punctuation is typesetting, not
+        # suffix — a stored `…jes]` must canonicalise onto `…jes`.
+        ("10.1149/2.1221816jes]", "10.1149/2.1221816jes"),
+        ("doi:10.1149/2.1221816jes]", "10.1149/2.1221816jes"),
+        ("https://doi.org/10.1234/x.", "10.1234/x"),
+        ("10.1234/x),", "10.1234/x"),
+        ("10.1234/x] ", "10.1234/x"),
+        # Balanced parens are a legitimate suffix tail (gr658687).
+        ("10.1234/abc(03)", "10.1234/abc(03)"),
+        ("10.53469/jrse.2026.08(03).19", "10.53469/jrse.2026.08(03).19"),
+        # An unbalanced closer riding a balanced pair still comes off.
+        ("10.53469/jrse.2026.08(03).19)", "10.53469/jrse.2026.08(03).19"),
     ],
 )
 def test_normalize_doi(raw: str | None, expected: str | None) -> None:

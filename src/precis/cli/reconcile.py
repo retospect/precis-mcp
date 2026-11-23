@@ -26,10 +26,12 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Merge duplicate paper refs (pdf_sha256 / doi-case / fuzzy title).",
         description=(
             "Collapse duplicate paper refs — same file (pdf_sha256), same DOI "
-            "modulo case, and id-less title-only stubs that duplicate a held "
-            "paper (fuzzy title, high-confidence only) — to the best survivor, "
-            "soft-deleting the rest. Ambiguous title matches are flagged for "
-            "review, never merged. Dry-run by default; --apply to commit."
+            "modulo case, and id-less title-only stubs that duplicate a "
+            "held paper (fuzzy title, high-confidence only) — to the best "
+            "survivor, soft-deleting the rest. Ambiguous title matches are "
+            "flagged for review, never merged. Also prints the DOI audit: "
+            "stored DOIs with trailing citation punctuation. "
+            "Dry-run by default; --apply to commit."
         ),
     )
     p.add_argument(
@@ -52,6 +54,7 @@ def run(args: argparse.Namespace) -> None:
     from precis.config import load_config
     from precis.ingest.dedup import (
         TitleMatchReview,
+        audit_doi_trailing_junk,
         reconcile_by_doi_case,
         reconcile_by_pdf_sha256,
         reconcile_by_title_similarity,
@@ -74,9 +77,7 @@ def run(args: argparse.Namespace) -> None:
     mode = "DRY-RUN" if dry_run else "APPLY"
     print(f"reconcile-duplicates [{mode}]: limit={args.limit}", file=sys.stderr)
 
-    # Phase 1b — DOI-case duplicates (stub ↔ ingested paper sharing a DOI
-    # modulo case). Runs first: it keeps the chunked copy and normalises stored
-    # DOIs to lowercase, which also collapses would-be pdf_sha256 groups.
+    # Phase 1b — case-only DOI duplicate groups and collision-free DOI cleanup.
     doi_outcomes = reconcile_by_doi_case(store, dry_run=dry_run, limit=args.limit)
     for o in doi_outcomes:
         print(o.line())
@@ -98,6 +99,15 @@ def run(args: argparse.Namespace) -> None:
         print(o.line())
     for r in review:
         print(r.line())
+
+    # Audit residual trailing punctuation, including on retired refs.
+    audit_rows = audit_doi_trailing_junk(store)
+    if audit_rows:
+        print(
+            f"\nDOI audit — {len(audit_rows)} stored DOI(s) with trailing citation punctuation:"
+        )
+        for row in audit_rows:
+            print(row.line())
 
     all_outcomes = doi_outcomes + outcomes + title_outcomes
     merged = sum(len(o.duplicate_ref_ids) for o in all_outcomes if o.skipped is None)

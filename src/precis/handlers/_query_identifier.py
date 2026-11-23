@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.identity import clean_doi
 from precis.store._identifiers_ops import _DOI_RE
 from precis.utils import handle_registry
 
@@ -122,7 +123,8 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
     m = _DOI_RE.match(text)
     if m is None:
         return QueryIdentifierMatch()
-    slug = store.find_paper_slug_by_doi(text)
+    # A literal prefix ending in punctuation must reach the prefix probe.
+    slug = store.find_paper_slug_by_doi(text) if clean_doi(text) == text else None
     if slug is not None:
         try:
             return QueryIdentifierMatch(

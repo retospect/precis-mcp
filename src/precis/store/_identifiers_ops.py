@@ -224,16 +224,20 @@ def _normalise_identifier(scheme: str, value: str) -> str:
     """Strip prefixes / URL wrappers and lowercase to canonical form.
 
     The ``ref_identifiers`` table stores values in canonical lowercase
-    form; this helper produces the same form before INSERT or SELECT.
+    form (for ``doi`` also free of trailing citation punctuation —
+    :func:`precis.identity.normalize_doi` owns that whole rule); this
+    helper produces the same form before INSERT or SELECT.
     Idempotent — calling on an already-canonical string is a no-op.
     """
     v = value.strip()
     if scheme == "doi":
-        # Strip URL form
-        v = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/)", "", v, flags=re.IGNORECASE)
-        # Strip bare-host form and explicit DOI: prefix
-        v = re.sub(r"^doi\.org/", "", v, flags=re.IGNORECASE)
-        v = re.sub(r"^doi:\s*", "", v, flags=re.IGNORECASE)
+        # One canonical form for probes and stored rows: prefixes off,
+        # lowercase, trailing citation punctuation stripped — a stored
+        # ``…jes]`` row otherwise never meets its ``…jes`` probe
+        # (gr763049).
+        from precis.identity import normalize_doi
+
+        v = normalize_doi(v) or ""
     elif scheme == "arxiv":
         # arXiv DOI form (10.48550/arXiv.X) -> bare arxiv id
         m = re.match(
@@ -355,7 +359,7 @@ def _dropped_pairs(c: Connection, ref_id: int) -> dict[str, set[str]]:
 
     Same ``FOR NO KEY UPDATE`` row lock :func:`_cleared_schemes` takes —
     check-then-write callers hold it so a concurrent drop can't race the
-    check. Values are the ``_normalise_identifier`` form (lowercased).
+    check. Legacy DOI keys are canonicalised on read.
     """
     row = c.execute(
         "SELECT meta->%s FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
@@ -365,7 +369,9 @@ def _dropped_pairs(c: Connection, ref_id: int) -> dict[str, set[str]]:
     if not isinstance(marked, dict):
         return {}
     return {
-        str(s): {str(v) for v in vals}
+        str(s): {
+            _normalise_identifier("doi", str(v)) if s == "doi" else str(v) for v in vals
+        }
         for s, vals in marked.items()
         if isinstance(vals, dict)
     }
@@ -403,14 +409,23 @@ def _unstamp_dropped(c: Connection, ref_id: int, scheme: str, value: str) -> Non
     """Lift one suppressed ``(scheme, value)`` pair — an explicit re-add
     of it landed (the ``_HUMAN_EDIT_SOURCES`` rule, same as
     :func:`_unstamp_cleared`)."""
+    if scheme == "doi":
+        row = c.execute(
+            "SELECT meta->'dropped_identifiers'->'doi' FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        keys = row[0] if row and isinstance(row[0], dict) else {}
+        values = [key for key in keys if _normalise_identifier(scheme, key) == value]
+    else:
+        values = [value]
     c.execute(
         "UPDATE refs SET meta = jsonb_set(meta, '{dropped_identifiers}', "
-        "  (meta->'dropped_identifiers'->%s::text) - %s::text) "
+        "  (meta->'dropped_identifiers'->%s::text) - %s::text[]) "
         "WHERE ref_id = %s "
         "  AND jsonb_typeof(meta->'dropped_identifiers') = 'object' "
         "  AND jsonb_typeof(meta->'dropped_identifiers'->%s::text) = 'object' "
-        "  AND meta->'dropped_identifiers'->%s::text ? %s::text",
-        (scheme, value, ref_id, scheme, scheme, value),
+        "  AND meta->'dropped_identifiers'->%s::text ?| %s::text[]",
+        (scheme, values, ref_id, scheme, scheme, values),
     )
     # Prune the empty scheme shell, then the empty marker object itself.
     c.execute(
@@ -960,9 +975,8 @@ class IdentifiersMixin:
         holds no such row (the caller's refuse path — never an
         exception: a missing row names no fix). Scoped to this ref's
         rows like ``clear_ref_identifier`` — it can never touch another
-        ref's claim on the value. The row match is
-        ``lower(id_value) = <normalised value>`` so a legacy
-        non-canonical (mixed-case) row is still removable.
+        ref's claim on the value. DOI rows match in canonical form, so legacy punctuation and
+        mixed case are still removable. Other schemes match lowercase.
 
         When the dropped value is the paper's displayed ``meta.<scheme>``
         copy (doi/arxiv on ``kind='paper'``, same ghost rule
@@ -986,7 +1000,9 @@ class IdentifiersMixin:
                 for r in c.execute(
                     "DELETE FROM ref_identifiers "
                     "WHERE ref_id = %s AND id_kind = %s "
-                    "AND lower(id_value) = %s RETURNING id_value",
+                    "AND CASE WHEN id_kind = 'doi' "
+                    "    THEN ref_identifiers_doi_canonical(id_value) "
+                    "    ELSE lower(id_value) END = %s RETURNING id_value",
                     (ref_id, s, v),
                 ).fetchall()
             ]

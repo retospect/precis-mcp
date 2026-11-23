@@ -820,24 +820,31 @@ _DOI_PREFIXES = (
 
 
 def normalize_doi(s: str | None) -> str | None:
-    """Strip URL / ``doi:`` prefixes and lowercase. Empty / None → None.
+    """Strip URL / ``doi:`` prefixes, lowercase, and drop trailing
+    citation punctuation. Empty / None → None.
 
     DOIs are case-insensitive per the DOI Handbook §2.4. We canonicalise
     to lowercase so ``(id_kind='doi', id_value=…)`` PK collisions aren't
-    invented by publisher case inconsistency.
+    invented by publisher case inconsistency. Trailing ``.,;:) ] } >``
+    and whitespace come off too (:func:`clean_doi`): the ``]`` in a
+    pasted ``[doi:10.x/yy]`` is typesetting, not suffix — a stored
+    ``…jes]`` DOI kept one paper as two live records for months
+    (gr763049).
     """
+    prefix = normalize_doi_prefix(s)
+    return (clean_doi(prefix) or None) if prefix else None
+
+
+def normalize_doi_prefix(s: str | None) -> str | None:
+    """Remove DOI wrappers and fold case, preserving literal suffix punctuation."""
     if not s:
         return None
-    raw = s.strip()
-    if not raw:
-        return None
-    lower = raw.lower()
+    lower = s.strip().lower()
     for prefix in _DOI_PREFIXES:
         if lower.startswith(prefix):
             lower = lower[len(prefix) :]
             break
-    lower = lower.lstrip("/")
-    return lower or None
+    return lower.lstrip("/").strip() or None
 
 
 _WILEY_TWIN_RE = re.compile(r"^(10\.1002/)(anie|ange)\.(.+)$")
@@ -864,20 +871,26 @@ def doi_twins(doi: str | None) -> list[str]:
 #: closer strip.
 _DOI_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
 
+#: Always-prose trailing characters :func:`clean_doi` strips — sentence
+#: punctuation and whitespace. Kept in lockstep with the storage
+#: canonicaliser (``ref_identifiers_doi_canonical``, migration 0358).
+_DOI_TRAILING_JUNK = ".,;: \t\n\r\f\v"
+
 
 def clean_doi(doi: str) -> str:
     """Strip trailing punctuation from an extracted DOI.
 
-    ``.`` ``,`` ``;`` ``:`` are always prose punctuation. A closing
-    bracket is typesetting — the ``)`` in ``(doi:10.x/yy)`` — only when
-    no opener inside the match balances it; DOI suffixes legitimately
-    carry balanced parens (``10.53469/jrse.2026.08(03).19``, gr658687).
+    ``.`` ``,`` ``;`` ``:`` and whitespace are always prose punctuation.
+    A closing bracket is typesetting — the ``)`` in ``(doi:10.x/yy)`` —
+    only when no opener inside the match balances it; DOI suffixes
+    legitimately carry balanced parens
+    (``10.53469/jrse.2026.08(03).19``, gr658687).
     """
-    doi = doi.rstrip(".,;:")
+    doi = doi.rstrip(_DOI_TRAILING_JUNK)
     while doi and doi[-1] in _DOI_CLOSERS:
         if doi.count(doi[-1]) <= doi.count(_DOI_CLOSERS[doi[-1]]):
             break
-        doi = doi[:-1].rstrip(".,;:")
+        doi = doi[:-1].rstrip(_DOI_TRAILING_JUNK)
     return doi
 
 

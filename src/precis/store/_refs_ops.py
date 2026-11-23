@@ -2317,16 +2317,16 @@ class RefsMixin:
         """Live paper ref ids whose DOI starts with ``prefix``.
 
         ``prefix`` is normalised like a full DOI (URL / ``doi:`` wrapper
-        stripped, lowercased — the ``ref_identifiers`` canonical form) and
+        stripped, lowercased), preserving literal suffix punctuation, and
         LIKE-escaped (``%``, ``_``, ``\\``) so user input is always a
         literal prefix; it is bound as a parameter. Retired refs are
         excluded. Ordered by ``ref_id`` and capped at ``limit`` — callers
         only need to tell "none / one / several" apart. Empty for a blank
         prefix.
         """
-        from precis.store._identifiers_ops import _normalise_identifier
+        from precis.identity import normalize_doi_prefix
 
-        v = _normalise_identifier("doi", prefix)
+        v = normalize_doi_prefix(prefix)
         if not v:
             return []
         pattern = v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"

@@ -234,6 +234,10 @@ def test_merge_drops_loser_mixed_case_cleared_doi(store: Store) -> None:
             "ALTER TABLE ref_identifiers DROP CONSTRAINT ref_identifiers_doi_lc"
         )
         conn.execute(
+            "ALTER TABLE ref_identifiers "
+            "DROP CONSTRAINT IF EXISTS ref_identifiers_doi_clean"
+        )
+        conn.execute(
             "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
             "VALUES ('doi', '10.9/WRONG', %s, 'test')",
             (duplicate,),
@@ -246,6 +250,12 @@ def test_merge_drops_loser_mixed_case_cleared_doi(store: Store) -> None:
             "ALTER TABLE ref_identifiers "
             "ADD CONSTRAINT ref_identifiers_doi_lc "
             "CHECK (id_kind <> 'doi' OR id_value = lower(id_value)) NOT VALID"
+        )
+        conn.execute(
+            "ALTER TABLE ref_identifiers "
+            "ADD CONSTRAINT ref_identifiers_doi_clean "
+            "CHECK (id_kind <> 'doi' OR id_value = "
+            "ref_identifiers_doi_canonical(id_value)) NOT VALID"
         )
 
     with store.tx() as conn:

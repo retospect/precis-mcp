@@ -37,6 +37,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
+from precis.identity import normalize_doi
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store, Tag
 from precis.store._body_predicate import has_body_sql
@@ -381,20 +382,22 @@ def _drop_cleared_loser_rows(
     migration, so they can't ride across (gr515246). Per *value*: a
     loser's row the human never cleared isn't touched. Legacy
     scheme-only marks (value unknowable) still drop the whole scheme —
-    resurrection is the worse error. DOIs compare case-insensitively:
-    marker ``values`` are recorded post-normalisation (lowercase) but a
-    legacy loser row can still carry the original mixed case."""
+    resurrection is the worse error. DOI rows and legacy marker values
+    compare in canonical form."""
     cleared = _cleared_mark(conn, survivor_ref_id)
     for scheme, entry in cleared.items():
         if scheme not in _MIGRATABLE_ID_KINDS:
             continue
         values = _mark_values(entry)
         if values:
+            if scheme == "doi":
+                values = {normalize_doi(v) or v for v in values}
             conn.execute(
                 "DELETE FROM ref_identifiers "
                 "WHERE ref_id = %s AND id_kind = %s "
                 "  AND CASE WHEN id_kind = 'doi' "
-                "           THEN lower(id_value) = ANY(%s) "
+                "           THEN ref_identifiers_doi_canonical(id_value) "
+                "                = ANY(%s) "
                 "           ELSE id_value = ANY(%s) END",
                 (loser_ref_id, scheme, list(values), list(values)),
             )
@@ -413,10 +416,8 @@ def _drop_dropped_loser_rows(
     ``drop_identifier`` — run BEFORE the identifier migration, so a
     deliberately dropped value can't ride across (gr517591; same
     anti-resurrection rule as :func:`_drop_cleared_loser_rows`, keyed
-    per value). Values compare lowercase for EVERY scheme, not just
-    doi: the marker records the normalised form while a legacy
-    non-canonical row (a mixed-case ``W…`` openalex id — only doi has
-    the 0049 lowercasing trigger) can still sit in the table."""
+    per value). DOIs compare in canonical form and other schemes
+    compare lowercase, accounting for legacy rows and markers."""
     dropped = _dropped_pairs(conn, survivor_ref_id)
     for scheme, values in dropped.items():
         if scheme not in _MIGRATABLE_ID_KINDS or not values:
@@ -424,8 +425,11 @@ def _drop_dropped_loser_rows(
         conn.execute(
             "DELETE FROM ref_identifiers "
             "WHERE ref_id = %s AND id_kind = %s "
-            "  AND lower(id_value) = ANY(%s)",
-            (loser_ref_id, scheme, list(values)),
+            "  AND CASE WHEN id_kind = 'doi' "
+            "           THEN ref_identifiers_doi_canonical(id_value) "
+            "                = ANY(%s) "
+            "           ELSE lower(id_value) = ANY(%s) END",
+            (loser_ref_id, scheme, list(values), list(values)),
         )
 
 
@@ -510,11 +514,13 @@ def _merge_cleared_markers(
         "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
         (survivor_ref_id,),
     ).fetchall():
-        # doi compares lowercase: marker values are post-normalisation,
-        # a legacy row can still be mixed-case (the DELETE below
-        # matches with lower() the same way).
+        # doi compares canonically: marker values are post-normalisation,
+        # a legacy row can still be non-canonical (the DELETE below
+        # matches with ref_identifiers_doi_canonical the same way).
         v = str(value)
-        held.setdefault(str(kind), set()).add(v.lower() if str(kind) == "doi" else v)
+        held.setdefault(str(kind), set()).add(
+            (normalize_doi(v) or v.lower()) if str(kind) == "doi" else v
+        )
     surv_mark = _cleared_mark(conn, survivor_ref_id)
     changed = False
     drop: dict[str, set[str]] = {}
@@ -524,7 +530,7 @@ def _merge_cleared_markers(
         own = held.get(scheme) or set()
         values = _mark_values(entry)
         if values is not None and scheme == "doi":
-            values = {v.lower() for v in values}
+            values = {normalize_doi(v) or v.lower() for v in values}
         if not own:
             surv_mark[scheme] = _union_cleared_entry(surv_mark.get(scheme), entry)
             changed = True
@@ -539,7 +545,8 @@ def _merge_cleared_markers(
             "DELETE FROM ref_identifiers "
             "WHERE ref_id = %s AND id_kind = %s "
             "  AND CASE WHEN id_kind = 'doi' "
-            "           THEN lower(id_value) = ANY(%s) "
+            "           THEN ref_identifiers_doi_canonical(id_value) "
+            "                = ANY(%s) "
             "           ELSE id_value = ANY(%s) END",
             (survivor_ref_id, scheme, list(vals), list(vals)),
         )
@@ -557,6 +564,61 @@ def _merge_cleared_markers(
             "WHERE ref_id = %s",
             (Jsonb(surv_mark), survivor_ref_id),
         )
+
+
+def _drop_redundant_doi_rows(conn: Any, *, ref_id: int | None = None) -> None:
+    """Keep one spelling per DOI on each ref, preferring the canonical row."""
+    conn.execute(
+        "DELETE FROM ref_identifiers a USING ref_identifiers b "
+        "WHERE b.ref_id = a.ref_id "
+        "  AND (%s::bigint IS NULL OR a.ref_id = %s) "
+        "  AND a.id_kind = 'doi' AND b.id_kind = 'doi' "
+        "  AND a.id_value <> ref_identifiers_doi_canonical(a.id_value) "
+        "  AND ref_identifiers_doi_canonical(a.id_value) "
+        "      = ref_identifiers_doi_canonical(b.id_value) "
+        "  AND (b.id_value = ref_identifiers_doi_canonical(b.id_value) "
+        "       OR a.id_value < b.id_value)",
+        (ref_id, ref_id),
+    )
+
+
+def _move_external_identifiers(
+    conn: Any,
+    *,
+    survivor_ref_id: int,
+    loser_ref_id: int,
+    kinds: tuple[str, ...] = _MIGRATABLE_ID_KINDS,
+) -> None:
+    """Move identifiers after locking both refs, collapsing canonical DOI twins.
+
+    The write trigger canonicalises DOIs even on a ref_id-only update.
+    Remove equivalent loser rows first to avoid primary-key collisions.
+    """
+    conn.execute(
+        "DELETE FROM ref_identifiers d USING ref_identifiers s "
+        " WHERE d.ref_id = %s AND s.ref_id = %s "
+        "   AND d.id_kind = s.id_kind AND d.id_kind = ANY(%s) "
+        "   AND CASE WHEN d.id_kind = 'doi' "
+        "            THEN ref_identifiers_doi_canonical(d.id_value) "
+        "                 = ref_identifiers_doi_canonical(s.id_value) "
+        "            ELSE d.id_value = s.id_value END",
+        (loser_ref_id, survivor_ref_id, list(kinds)),
+    )
+    # A value the survivor's operator deliberately cleared must not ride
+    # across on the duplicate's rows — the move below would resurrect the
+    # very identifier the human removed (gr515246).
+    _drop_cleared_loser_rows(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=loser_ref_id
+    )
+    _drop_dropped_loser_rows(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=loser_ref_id
+    )
+    _drop_redundant_doi_rows(conn, ref_id=loser_ref_id)
+    conn.execute(
+        "UPDATE ref_identifiers SET ref_id = %s "
+        "WHERE ref_id = %s AND id_kind = ANY(%s)",
+        (survivor_ref_id, loser_ref_id, list(kinds)),
+    )
 
 
 @trust_door("computed")
@@ -594,35 +656,8 @@ def merge_duplicate(
         ([survivor_ref_id, duplicate_ref_id],),
     )
 
-    # (a) External identifiers → survivor. First drop any identifier the
-    # survivor *already* holds, so the move below can't hit the
-    # (id_kind, id_value) PK. DOIs are compared case-insensitively: the 0049
-    # BEFORE-UPDATE trigger lowercases id_value on write, so moving a stub's
-    # mixed-case `.../D19-1371` onto a survivor that already owns the lowercase
-    # `.../d19-1371` would collide — that is exactly the reconcile-doi-case
-    # duplicate pair. Drop the redundant row, then migrate the rest.
-    conn.execute(
-        "DELETE FROM ref_identifiers d USING ref_identifiers s "
-        " WHERE d.ref_id = %s AND s.ref_id = %s "
-        "   AND d.id_kind = s.id_kind AND d.id_kind = ANY(%s) "
-        "   AND CASE WHEN d.id_kind = 'doi' "
-        "            THEN lower(d.id_value) = lower(s.id_value) "
-        "            ELSE d.id_value = s.id_value END",
-        (duplicate_ref_id, survivor_ref_id, list(_MIGRATABLE_ID_KINDS)),
-    )
-    # A value the survivor's operator deliberately cleared must not ride
-    # across on the duplicate's rows — the move below would resurrect the
-    # very identifier the human removed (gr515246).
-    _drop_cleared_loser_rows(
+    _move_external_identifiers(
         conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
-    )
-    _drop_dropped_loser_rows(
-        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
-    )
-    conn.execute(
-        "UPDATE ref_identifiers SET ref_id = %s "
-        "WHERE ref_id = %s AND id_kind = ANY(%s)",
-        (survivor_ref_id, duplicate_ref_id, list(_MIGRATABLE_ID_KINDS)),
     )
     # A rekeyed loser's ``cite_key_alias`` redirects follow too
     # (gr521515): left on the retired ref they stop resolving, breaking
@@ -1038,78 +1073,86 @@ def pick_survivor_keep_chunks(cands: list[_Cand]) -> int:
 
 
 def _normalize_doi_rows(conn: Any) -> int:
-    """Lowercase every stored DOI in ``ref_identifiers``; return rows changed.
+    """Canonicalise every stored DOI in ``ref_identifiers``; return rows changed.
 
-    Two steps, both collision-safe:
+    The canonical form is ``ref_identifiers_doi_canonical`` — lowercase
+    plus trailing citation punctuation stripped (0358 builds on 0049's
+    lowercase-only rule). Two steps, both collision-safe:
 
-    1. Within a single ref, drop a mixed-case DOI row when its lowercase twin
-       already sits on the same ref — this is the leftover after a merge moved
-       the stub's lowercase DOI onto a survivor that kept its own upper-case
-       one.
-    2. Lowercase the remaining lone mixed-case rows, but skip any whose
-       lowercase target is already owned by a *different* live ref (an
-       un-merged group, e.g. under a ``--limit`` run) — those wait for a full
-       reconcile pass rather than raising a PK violation.
+    1. Collapse equivalent spellings held by the same ref.
+    2. Canonicalise only rows with no other spelling of the same DOI.
+       Leave unresolved collisions visible for explicit repair, including
+       groups where neither spelling is canonical yet.
     """
-    conn.execute(
-        "DELETE FROM ref_identifiers a "
-        " USING ref_identifiers b "
-        " WHERE a.id_kind = 'doi' AND b.id_kind = 'doi' "
-        "   AND a.ref_id = b.ref_id "
-        "   AND a.id_value <> lower(a.id_value) "
-        "   AND b.id_value = lower(a.id_value)"
-    )
+    _drop_redundant_doi_rows(conn)
     cur = conn.execute(
         "UPDATE ref_identifiers r "
-        "   SET id_value = lower(r.id_value) "
-        " WHERE r.id_kind = 'doi' AND r.id_value <> lower(r.id_value) "
+        "   SET id_value = ref_identifiers_doi_canonical(r.id_value) "
+        " WHERE r.id_kind = 'doi' "
+        "   AND r.id_value <> ref_identifiers_doi_canonical(r.id_value) "
         "   AND NOT EXISTS ("
         "       SELECT 1 FROM ref_identifiers t "
         "        WHERE t.id_kind = 'doi' "
-        "          AND t.id_value = lower(r.id_value) "
-        "          AND t.ref_id <> r.ref_id)"
+        "          AND t.id_value <> r.id_value "
+        "          AND ref_identifiers_doi_canonical(t.id_value) "
+        "              = ref_identifiers_doi_canonical(r.id_value))"
     )
     return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
 
-def _maybe_validate_doi_constraint(conn: Any) -> bool:
-    """Promote the ``ref_identifiers_doi_lc`` CHECK from NOT VALID once clean.
+#: DOI storage-guard CHECKs the reconcile sweep promotes once the corpus
+#: is canonical-clean: 0049's lowercase rule and 0358's full-canonical
+#: rule (canonical implies lowercase, so one cleanliness probe serves
+#: both).
+_DOI_GUARD_CONSTRAINTS = ("ref_identifiers_doi_lc", "ref_identifiers_doi_clean")
 
-    Migration 0049 added the constraint ``NOT VALID`` because the legacy
-    mixed-case DOI rows would fail an immediate validation. Once a reconcile
-    pass has lowercased every stored DOI, the constraint can be validated so it
-    is enforced for existing rows too — turning the manual post-deploy step into
-    something the nightly sweep finishes itself. Idempotent: skips if the
-    constraint is already validated (or absent) or if any mixed-case DOI still
-    remains (e.g. an un-merged group left by a ``--limit`` run). Returns True
-    only when it actually validated.
+
+def _maybe_validate_doi_constraint(conn: Any) -> bool:
+    """Promote the DOI guard CHECKs from NOT VALID once clean.
+
+    Migrations 0049 and 0358 added their constraints ``NOT VALID``
+    because the legacy non-canonical DOI rows would fail an immediate
+    validation. Once a reconcile pass has canonicalised every stored
+    DOI, the constraints can be validated so they are enforced for
+    existing rows too — turning the manual post-deploy step into
+    something the nightly sweep finishes itself. Idempotent: skips a
+    constraint already validated (or absent) and stops entirely when
+    any non-canonical DOI remains (e.g. an un-merged group left by a
+    ``--limit`` run). Returns True only when it actually validated.
     """
-    row = conn.execute(
-        "SELECT convalidated FROM pg_constraint WHERE conname = 'ref_identifiers_doi_lc'"
-    ).fetchone()
-    if row is None or row[0]:
-        return False
     remaining = conn.execute(
         "SELECT 1 FROM ref_identifiers "
-        "WHERE id_kind = 'doi' AND id_value <> lower(id_value) LIMIT 1"
+        "WHERE id_kind = 'doi' "
+        "  AND id_value <> ref_identifiers_doi_canonical(id_value) LIMIT 1"
     ).fetchone()
     if remaining is not None:
         return False
-    # VALIDATE is DDL: owner DSN only since db-own. The nightly reconcile runs
-    # as precis_system, so it reports instead of failing on "must be owner".
-    from precis.store.ownership import owner_refusal
+    validated = False
+    for name in _DOI_GUARD_CONSTRAINTS:
+        row = conn.execute(
+            "SELECT convalidated FROM pg_constraint WHERE conname = %s", (name,)
+        ).fetchone()
+        if row is None or row[0]:
+            continue
+        # VALIDATE is DDL: owner DSN only since db-own. The nightly
+        # reconcile runs as precis_system, so it reports instead of
+        # failing on "must be owner".
+        from precis.store.ownership import owner_refusal
 
-    refusal = owner_refusal(
-        conn, "public.ref_identifiers", purpose="validating ref_identifiers_doi_lc"
-    )
-    if refusal is not None:
-        log.info("reconcile: constraint ready to validate, skipped — %s", refusal)
-        return False
-    conn.execute(
-        "ALTER TABLE ref_identifiers VALIDATE CONSTRAINT ref_identifiers_doi_lc"
-    )
-    log.info("reconcile: validated ref_identifiers_doi_lc constraint")
-    return True
+        refusal = owner_refusal(
+            conn, "public.ref_identifiers", purpose=f"validating {name}"
+        )
+        if refusal is not None:
+            log.info(
+                "reconcile: constraint %s ready to validate, skipped — %s",
+                name,
+                refusal,
+            )
+            continue
+        conn.execute(f"ALTER TABLE ref_identifiers VALIDATE CONSTRAINT {name}")
+        log.info("reconcile: validated %s constraint", name)
+        validated = True
+    return validated
 
 
 def _doi_case_corroborated(conn: Any, a_id: int, b_id: int) -> bool:
@@ -1148,9 +1191,9 @@ _DOI_CASE_REVIEW_TAG = "paper-doi-case-review"
 
 
 def _raise_doi_case_review(
-    store: Store, *, ref_ids: list[int], ldoi: str
+    store: Store, *, ref_ids: list[int], cdoi: str
 ) -> int | None:
-    """File a ``STATUS:open`` review todo for a skipped DOI-case group.
+    """File a ``STATUS:open`` review todo for a skipped DOI-canonical group.
 
     Deduped on ``(source, doi)`` like ``raise_junk_title_papers``: an open
     (or human-closed non-``done``) todo already covering the group is not
@@ -1169,7 +1212,7 @@ def _raise_doi_case_review(
             "    JOIN tags tg USING (tag_id) "
             "    WHERE rt.ref_id = t.ref_id "
             "      AND tg.namespace = 'STATUS' AND tg.value = 'done')",
-            (_DOI_CASE_REVIEW_SOURCE, ldoi),
+            (_DOI_CASE_REVIEW_SOURCE, cdoi),
         ).fetchone()
         if standing is not None:
             return None
@@ -1178,7 +1221,7 @@ def _raise_doi_case_review(
             kind="todo",
             slug=None,
             title=(
-                f"Review DOI-case duplicate group on {ldoi}: {handles} — "
+                f"Review DOI duplicate group on {cdoi}: {handles} — "
                 "the refs share a DOI modulo case but title/authors do not "
                 "corroborate them as one work (a DOI typo or publisher "
                 "reuse). Merge by hand only if they really are the same "
@@ -1186,7 +1229,7 @@ def _raise_doi_case_review(
             ),
             meta={
                 "source": _DOI_CASE_REVIEW_SOURCE,
-                "doi": ldoi,
+                "doi": cdoi,
                 "ref_ids": sorted(ref_ids),
             },
             conn=conn,
@@ -1212,17 +1255,11 @@ def reconcile_by_doi_case(
     limit: int | None = None,
     source: str = "reconcile",
 ) -> list[ReconcileOutcome]:
-    """Collapse live paper refs that share a DOI modulo case.
+    """Collapse corroborated live paper refs sharing a DOI modulo case.
 
-    Keeps the ingested (chunked) copy per :func:`pick_survivor_keep_chunks` and
-    merges the PDF-less stub(s) into it, then canonicalises every stored DOI to
-    lowercase (:func:`_normalize_doi_rows`) so the surviving rows satisfy the
-    ``ref_identifiers_doi_lc`` invariant. A group whose members fail the
-    corroboration gate (:func:`_doi_case_corroborated`, gr501446) is skipped —
-    recorded as a skipped outcome and, outside dry-run, filed as a review
-    todo — never merged on the DOI alone. Dry-run (default) reports the
-    planned merges without writing. Returns one :class:`ReconcileOutcome`
-    per group.
+    Punctuation-equivalent pairs are left for explicit review and merge.
+    An apply pass also canonicalises stored DOI rows with no collision.
+    Dry-run reports planned case merges without writing.
     """
     with store.pool.connection() as conn:
         groups = conn.execute(_DOI_CASE_GROUPS_SQL).fetchall()
@@ -1230,7 +1267,7 @@ def reconcile_by_doi_case(
         groups = groups[:limit]
 
     outcomes: list[ReconcileOutcome] = []
-    for ldoi, ids in groups:
+    for cdoi, ids in groups:
         ref_ids = [int(i) for i in ids]
         with store.pool.connection() as conn:
             cands = _candidates(store, conn, ref_ids)
@@ -1247,18 +1284,18 @@ def reconcile_by_doi_case(
                 ReconcileOutcome(
                     survivor,
                     dups,
-                    ldoi,
+                    cdoi,
                     key_label="doi",
                     skipped=f"uncorroborated: {uncorroborated}",
                 )
             )
             if not dry_run:
                 _raise_doi_case_review(
-                    store, ref_ids=[survivor, *uncorroborated], ldoi=ldoi
+                    store, ref_ids=[survivor, *uncorroborated], cdoi=cdoi
                 )
             continue
         if dry_run:
-            outcomes.append(ReconcileOutcome(survivor, dups, ldoi, key_label="doi"))
+            outcomes.append(ReconcileOutcome(survivor, dups, cdoi, key_label="doi"))
             continue
         try:
             with store.tx() as conn:
@@ -1271,27 +1308,99 @@ def reconcile_by_doi_case(
                         reason="reconcile-doi-case",
                         conn=conn,
                     )
-                _normalize_doi_rows(conn)
-            outcomes.append(ReconcileOutcome(survivor, dups, ldoi, key_label="doi"))
+            outcomes.append(ReconcileOutcome(survivor, dups, cdoi, key_label="doi"))
         except Exception:
-            log.exception("reconcile: doi group %s failed", ldoi[:24])
+            log.exception("reconcile: doi group %s failed", cdoi[:24])
 
-    # Lone mixed-case DOIs (no duplicate twin) still need lowercasing so the
-    # constraint can be validated. Safe and idempotent; runs once per pass.
+    # Lone non-canonical DOIs (no duplicate twin) still need canonicalising
+    # so the constraints can be validated. Safe and idempotent; runs once
+    # per pass.
     if not dry_run:
         try:
             with store.tx() as conn:
                 _normalize_doi_rows(conn)
         except Exception:
             log.exception("reconcile: doi-case normalize sweep failed")
-        # Once every DOI is lowercase, promote the NOT-VALID guard so it is
-        # enforced retroactively — the nightly sweep finishes the job itself.
+        # Once every DOI is canonical, promote the NOT-VALID guards so they
+        # are enforced retroactively — the nightly sweep finishes the job.
         try:
             with store.tx() as conn:
                 _maybe_validate_doi_constraint(conn)
         except Exception:
             log.exception("reconcile: doi-case constraint validate failed")
     return outcomes
+
+
+# ---------------------------------------------------------------------------
+# DOI trailing-junk audit — the stored rows the canonical guard rejects
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DoiTrailingJunkRow:
+    """One stored DOI with trailing citation punctuation.
+
+    A twin identifies a different live paper holding the canonical DOI,
+    when this row also belongs to a live paper.
+    """
+
+    ref_id: int
+    id_value: str  # as stored — the dirty spelling
+    canonical: str  # ref_identifiers_doi_canonical(id_value)
+    twin_ref_id: int | None
+
+    def line(self) -> str:
+        twin = (
+            f", canonical twin on #{self.twin_ref_id} — merge candidate"
+            if self.twin_ref_id is not None
+            else ""
+        )
+        return f"DOI    #{self.ref_id} {self.id_value!r} -> {self.canonical!r}{twin}"
+
+
+#: Stored trailing junk, independent of case and leading whitespace.
+_DOI_TRAILING_JUNK_SQL = """
+    SELECT ri.ref_id, ri.id_value,
+           ref_identifiers_doi_canonical(ri.id_value) AS canonical,
+           (SELECT t.ref_id
+              FROM ref_identifiers t
+              JOIN refs tr ON tr.ref_id = t.ref_id
+             WHERE t.id_kind = 'doi'
+               AND t.id_value = ref_identifiers_doi_canonical(ri.id_value)
+               AND t.ref_id <> ri.ref_id
+               AND r.kind = 'paper' AND tr.kind = 'paper'
+               AND r.retired_at IS NULL AND tr.retired_at IS NULL
+             LIMIT 1) AS twin_ref_id
+      FROM ref_identifiers ri
+      JOIN refs r ON r.ref_id = ri.ref_id
+     WHERE ri.id_kind = 'doi'
+       AND lower(ltrim(ri.id_value, E' \\t\\n\\r\\f\\x0b'))
+           <> ref_identifiers_doi_canonical(ri.id_value)
+     ORDER BY ri.id_value
+"""
+
+
+def audit_doi_trailing_junk(
+    store: Store, *, limit: int | None = None
+) -> list[DoiTrailingJunkRow]:
+    """Audit trailing punctuation, whitespace and unmatched closing brackets.
+
+    Includes retired refs. A live paper with a canonical twin can be
+    reviewed for an explicit ``merge_into``.
+    """
+    sql = _DOI_TRAILING_JUNK_SQL + (" LIMIT %s" if limit else "")
+    params: tuple[Any, ...] = (limit,) if limit else ()
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        DoiTrailingJunkRow(
+            ref_id=int(r[0]),
+            id_value=str(r[1]),
+            canonical=str(r[2]),
+            twin_ref_id=int(r[3]) if r[3] is not None else None,
+        )
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1443,8 +1552,10 @@ def reconcile_by_title_similarity(
 
 
 __all__ = [
+    "DoiTrailingJunkRow",
     "ReconcileOutcome",
     "TitleMatchReview",
+    "audit_doi_trailing_junk",
     "merge_duplicate",
     "merge_refs",
     "pick_survivor",
