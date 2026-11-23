@@ -75,7 +75,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 
 from precis.utils._claude_subprocess import ClaudeProcessError, resolve_binary
@@ -3796,9 +3796,17 @@ def _run_with_retry(
             _retry_sleep(wait)
             waited += wait
             started = time.monotonic()
+            prev = result
             result = _classified(provider.run(req, model=model))
             if result.rung_label is None:
                 result = _replace(result, rung_label=rung_label)
+            if result.local_endpoint_skipped and not prev.local_endpoint_skipped:
+                # The failed try just marked the endpoint down (gr622031);
+                # the retried dial's generic skip adds only the mark's
+                # retry horizon — surface the real wire failure, not
+                # "endpoint is down" stamped over it.
+                result = _replace(prev, retry_at=result.retry_at)
+                break
         # The last attempt's own wall clock — ``started`` was reset ahead of
         # its run. The caller charges THIS, not the run's whole retry window
         # (tries + backoff sleeps), which would overstate the outcome row's
@@ -4679,6 +4687,8 @@ def _run_chosen(
         detail = (
             f"worker draining — no local slot for {serve_model}"
             if slot.draining
+            else f"local serving endpoint for {serve_model} is down"
+            if slot.down
             else f"all local serving slots for {serve_model} are busy"
         )
         _gated_attempt(
@@ -4690,11 +4700,11 @@ def _run_chosen(
             routed=routed,
             stamp=stamp,
             paused=True,
-            reason_class="rate",
-            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+            reason_class="transport" if slot.down else "rate",
+            retry_at=datetime.now(UTC) + _slot_pause_horizon(slot),
             account=request_account(req, rung),
         )
-        return None, _fallback_stamp(stamp, "no-slot", detail)
+        return None, _fallback_stamp(stamp, "down" if slot.down else "no-slot", detail)
     call_req = req
     call_model = serve_model
     if slot is not None and slot.reserved and slot.endpoint:
@@ -5330,9 +5340,10 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             # window admission. (The hosted re-point below has this same
             # pre-existing gap: it is gated as rung 0, not as the hosted wire.)
             log.debug(
-                "llm-failover: local slot for %s is saturated — advancing to the "
+                "llm-failover: local slot for %s is %s — advancing to the "
                 "next chain rung (capacity backoff, not a transport error)",
                 ladder[0].model,
+                "down" if slot.down else "saturated",
             )
             nxt = ladder[1]
             esc_trip = _breaker.gate_tier(
@@ -5413,10 +5424,11 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             )
         ):
             log.debug(
-                "llm-failover: local slot for %s is saturated — trying the "
+                "llm-failover: local slot for %s is %s — trying the "
                 "hosted fallback rung instead of failing the call "
                 "(capacity backoff, not a transport error)",
                 serve_model,
+                "down" if slot.down else "saturated",
             )
             # No local slot is in play by construction (that's why we're
             # escaping to the hosted rung), so a local-only alias
@@ -5457,11 +5469,19 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 turns_used=None,
                 model=serve_model,
                 tier=req.tier,
-                error=f"all local serving slots for {serve_model} are busy — backing off",
+                # A ``down`` slot (gr622031) names the outage, not
+                # saturation — the wording keeps ``connection refused``
+                # so it still classifies ``transport`` for parked
+                # callers, and retries at the mark's own expiry.
+                error=(
+                    f"local serving endpoint for {serve_model} is down "
+                    "(connection refused or timed out) — backing off"
+                    if slot.down
+                    else f"all local serving slots for {serve_model} are busy — backing off"
+                ),
                 paused=True,
-                # Capacity, not a fault: the shortest horizon.
-                reason_class="rate",
-                retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+                reason_class="transport" if slot.down else "rate",
+                retry_at=datetime.now(UTC) + _slot_pause_horizon(slot),
             ),
             entered=entered,
             transport=transport,
@@ -5757,12 +5777,14 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
                 error=(
                     f"worker draining — no local slot for {serve_model}; backing off"
                     if slot.draining
+                    else f"local serving endpoint for {serve_model} is down "
+                    "(connection refused or timed out) — backing off"
+                    if slot.down
                     else f"all local serving slots for {serve_model} are busy — backing off"
                 ),
                 paused=True,
-                # Capacity, not a fault: the shortest horizon.
-                reason_class="rate",
-                retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+                reason_class="transport" if slot.down else "rate",
+                retry_at=datetime.now(UTC) + _slot_pause_horizon(slot),
             ),
             entered=entered,
             transport=transport,
@@ -6390,10 +6412,62 @@ def _is_unavailability(exc: BaseException) -> bool:
 _SMALL_LOCAL_TIMEOUT_S = 30.0
 
 
-_LOCAL_REFUSAL_COOLDOWN_S = 30.0
-_local_endpoint_lock = threading.Lock()
-# None means one call is checking recovery after the cooldown.
-_local_endpoint_retry: dict[tuple[str, str], float | None] = {}
+def _slot_pause_horizon(slot: LocalSlot) -> timedelta:
+    """The backoff a paused slot carries onto its gate result (gr622031):
+    a ``down`` slot retries at its endpoint mark's remaining cooldown — a
+    flapping wire is retried in seconds, not on the 15-minute capacity
+    horizon — falling back to the transport default when the mark already
+    expired (the next attempt re-probes anyway); a busy slot keeps the
+    short ``rate`` horizon it always had."""
+    if slot.down:
+        from precis.utils.llm import local_serving as _local
+
+        remaining = _local.endpoint_down(slot.endpoint)
+        if remaining is not None:
+            return timedelta(seconds=remaining)
+        return _failure.DEFAULT_HORIZON["transport"]
+    return _failure.DEFAULT_HORIZON["rate"]
+
+
+def _wire_dead(result: LlmResult) -> bool:
+    """Whether an errored served-endpoint call proved the wire dead, for
+    :func:`_note_endpoint_result` (gr622031). Two shapes:
+
+    * a ``transport``-classified failure that isn't a wall-clock timeout —
+      a refused connection or a 5xx;
+    * a ``timed_out`` result that returned nothing — ``text == ""`` and no
+      tokens — a connect-phase timeout or a stream that died before its
+      first delta.
+
+    A ``timed_out`` result carrying partial output is a healthy endpoint
+    running a long generation past its ceiling — ordinary slowness, not
+    an outage — so marking it would idle every model on the endpoint for
+    ``_ENDPOINT_DOWN_TTL_S`` on a call that was actually working."""
+    if result.timed_out:
+        return not result.text and not (result.total_tokens or result.output_tokens)
+    return result.reason_class == "transport"
+
+
+def _note_endpoint_result(endpoint: str | None, result: LlmResult) -> None:
+    """Feed a ``local_url`` call's outcome into the endpoint's health mark
+    (gr622031): a dead-wire failure (:func:`_wire_dead` — refused
+    connection, 5xx, or a timeout that produced no output) marks the
+    endpoint down so ``local_serving.acquire`` stops reserving slots on it
+    for the cooldown; every other outcome — a success, an answered error,
+    or a timeout that still streamed partial output — clears the mark.
+    Never raises: health bookkeeping must not break a dispatch. ``None``
+    endpoint → the call never dialed a served endpoint."""
+    if endpoint is None:
+        return
+    try:
+        from precis.utils.llm import local_serving as _local
+
+        if result.error is not None and _wire_dead(result):
+            _local.mark_endpoint_down(endpoint)
+        else:
+            _local.mark_endpoint_up(endpoint)
+    except Exception:  # pragma: no cover — bookkeeping must never break dispatch
+        log.debug("route: local endpoint outcome note failed", exc_info=True)
 
 
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
@@ -6404,11 +6478,10 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     it). Reuses ``LlmConfig.from_env`` and overrides only the model +
     ``enabled`` flag so the resolved tier model wins.
 
-    Refused connections open a process-local cooldown shared across models
-    on the same endpoint, so the ladder can move on without another failed
-    provider attempt. After the cooldown, one call checks recovery while
-    concurrent calls continue to skip. HTTP and model errors leave the
-    endpoint eligible because they show the service accepted a connection.
+    Transport failures open a process-local cooldown shared across models
+    on the same endpoint and with ``served_by`` slot acquisition. After the
+    cooldown, one call checks recovery while concurrent calls skip. A
+    transport failure on the probe renews the cooldown.
     """
     from dataclasses import replace
 
@@ -6444,30 +6517,22 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         cfg = replace(cfg, timeout=min(cfg.timeout, _SMALL_LOCAL_TIMEOUT_S))
     messages = _text_only_messages(req.messages) if req.messages else None
     messages = messages or [{"role": "user", "content": req.prompt}]
-    url = urlparse(cfg.url)
-    endpoint = (url.scheme, url.netloc.lower())
-    with _local_endpoint_lock:
-        checking_recovery = endpoint in _local_endpoint_retry
-        if checking_recovery:
-            retry = _local_endpoint_retry[endpoint]
-            remaining = (
-                _LOCAL_REFUSAL_COOLDOWN_S if retry is None else retry - time.monotonic()
-            )
-            if remaining > 0:
-                return LlmResult(
-                    text="",
-                    cost_usd=None,
-                    turns_used=None,
-                    model=model,
-                    tier=req.tier,
-                    error="local endpoint unavailable after a refused connection",
-                    paused=True,
-                    local_endpoint_skipped=True,
-                    reason_class="transport",
-                    retry_at=datetime.now(UTC) + timedelta(seconds=remaining),
-                )
-            _local_endpoint_retry[endpoint] = None
-    refused = False
+    from precis.utils.llm import local_serving as _local
+
+    skip_for, _claimed = _local.endpoint_probe(cfg.url)
+    if skip_for > 0:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error="local endpoint is down — backing off",
+            paused=True,
+            local_endpoint_skipped=True,
+            reason_class="transport",
+            retry_at=datetime.now(UTC) + timedelta(seconds=skip_for),
+        )
     try:
         client = LlmClient(cfg)
         if req.local_reasoning_effort is not None:
@@ -6478,13 +6543,11 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         else:
             res = client.complete(messages)
     except (RuntimeError, OSError) as exc:
-        reason = exc.reason if isinstance(exc, URLError) else exc
-        refused = isinstance(reason, ConnectionRefusedError)
         # A transport-level timeout / connection failure / 5xx-or-429 is
         # unavailability, not a genuine failure — flag it `paused` so a pinned
         # pass backs off and retries instead of recording a dispatch failure
         # that can park the todo.
-        return _classified(
+        out = _classified(
             LlmResult(
                 text="",
                 cost_usd=None,
@@ -6496,18 +6559,10 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
             ),
             exc=exc,
         )
-    finally:
-        if refused or checking_recovery:
-            with _local_endpoint_lock:
-                if refused:
-                    deadline = time.monotonic() + _LOCAL_REFUSAL_COOLDOWN_S
-                    if checking_recovery:
-                        _local_endpoint_retry[endpoint] = deadline
-                    else:
-                        _local_endpoint_retry.setdefault(endpoint, deadline)
-                else:
-                    _local_endpoint_retry.pop(endpoint, None)
-    return result_from_openai(res, model=model, tier=req.tier)
+    else:
+        out = result_from_openai(res, model=model, tier=req.tier)
+    _note_endpoint_result(cfg.url, out)
+    return out
 
 
 def openrouter_routing(
@@ -7368,6 +7423,30 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                     stop_reason="error",
                 )
             )
+    if req.local_url:
+        # The served endpoint is marked down (or already being probed) —
+        # skip the wire entirely so the ladder advances instead of paying
+        # a refused connection per call (gr622031). Same skipped shape as
+        # `_dispatch_local`'s cooldown consult.
+        from precis.utils.llm import local_serving as _local
+
+        skip_for, _claimed = _local.endpoint_probe(req.local_url)
+        if skip_for > 0:
+            return _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error="local endpoint is down — backing off",
+                    paused=True,
+                    local_endpoint_skipped=True,
+                    reason_class="transport",
+                    retry_at=datetime.now(UTC) + timedelta(seconds=skip_for),
+                    stop_reason="error",
+                )
+            )
     ctx = _overlay_tick_context(_overlay_with_source(req))
     try:
         with tick_context(ctx) if ctx is not None else contextlib.nullcontext():
@@ -7387,9 +7466,12 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                 profile=profile,
             )
     except RateLimited as exc:
+        # A client-side limiter refusal never dialed the endpoint — it
+        # teaches the health mark nothing, so it bypasses the outcome note
+        # (a claimed probe's stamp self-heals on expiry).
         return _replace(_limiter_refused(req, model, exc), stop_reason="error")
     except (RuntimeError, OSError) as exc:
-        return _adapter_failure_adjust(
+        out = _adapter_failure_adjust(
             profile,
             _classified(
                 LlmResult(
@@ -7408,43 +7490,50 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             ),
             exc=exc,
         )
-    # Cost: prefer the loop's own summed usage.cost (OpenRouter); otherwise
-    # price the accumulated token split via the catalog, as
-    # `result_from_openai` does for openai_compat.
-    cost = result.cost_usd
-    if cost is None and result.total_tokens is not None:
-        from precis.budget.pricing import cost_from_tokens
+    else:
+        # Cost: prefer the loop's own summed usage.cost (OpenRouter); otherwise
+        # price the accumulated token split via the catalog, as
+        # `result_from_openai` does for openai_compat.
+        cost = result.cost_usd
+        if cost is None and result.total_tokens is not None:
+            from precis.budget.pricing import cost_from_tokens
 
-        # No prompt/completion split survives the loop's accumulation — price
-        # the whole total at the pricier output rate, a conservative
-        # (never-under) estimate for a breaker that must not miss real spend.
-        cost = cost_from_tokens(
-            model, prompt_tokens=None, completion_tokens=result.total_tokens
-        )
-    return _adapter_failure_adjust(
-        profile,
-        _classified(
-            LlmResult(
-                text=result.final_text,
-                cost_usd=cost,
-                turns_used=result.turns_used,
-                model=model,
-                tier=req.tier,
-                error=result.error,
-                paused=result.paused,
-                timed_out=result.timed_out,
-                # `tool_calls_made` is the loop's own definitive count, needed so
-                # the review seam's empty-result assertion (which demands a real
-                # 0, not None) works on this backend too.
-                tool_calls=result.tool_calls_made,
-                stop_reason=result.stop_reason,
-                observed=_observed_from_response(
-                    getattr(result, "response_model", None),
-                    getattr(result, "response_provider", None),
-                ),
+            # No prompt/completion split survives the loop's accumulation — price
+            # the whole total at the pricier output rate, a conservative
+            # (never-under) estimate for a breaker that must not miss real spend.
+            cost = cost_from_tokens(
+                model, prompt_tokens=None, completion_tokens=result.total_tokens
             )
-        ),
-    )
+        out = _adapter_failure_adjust(
+            profile,
+            _classified(
+                LlmResult(
+                    text=result.final_text,
+                    cost_usd=cost,
+                    turns_used=result.turns_used,
+                    model=model,
+                    tier=req.tier,
+                    error=result.error,
+                    paused=result.paused,
+                    timed_out=result.timed_out,
+                    total_tokens=result.total_tokens,
+                    # `tool_calls_made` is the loop's own definitive count, needed so
+                    # the review seam's empty-result assertion (which demands a real
+                    # 0, not None) works on this backend too.
+                    tool_calls=result.tool_calls_made,
+                    stop_reason=result.stop_reason,
+                    observed=_observed_from_response(
+                        getattr(result, "response_model", None),
+                        getattr(result, "response_provider", None),
+                    ),
+                )
+            ),
+        )
+    # Whatever the wire learned feeds the served endpoint's health mark —
+    # a transport-class failure marks it down (acquire stops reserving for
+    # it), anything answered clears it. Settles the probe claim above too.
+    _note_endpoint_result(req.local_url, out)
+    return out
 
 
 def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResult:

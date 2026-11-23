@@ -18,11 +18,13 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from precis.utils.llm.router import (
     LlmRequest,
     LlmResult,
     Transport,
+    _slot_pause_horizon,
     provider_for,
     record_dispatch,
 )
@@ -61,6 +63,17 @@ def pinned_dispatch(model: str, placement: str) -> Callable[[LlmRequest], LlmRes
                 req, model, f"model {model} is not served on any host (no served_by)"
             )
         try:
+            if slot.down:
+                return replace(
+                    _error(
+                        req,
+                        model,
+                        f"local serving endpoint for {model} is down",
+                        paused=True,
+                    ),
+                    reason_class="transport",
+                    retry_at=datetime.now(UTC) + _slot_pause_horizon(slot),
+                )
             if slot.paused:
                 return _error(
                     req, model, f"all local slots busy for {model}", paused=True

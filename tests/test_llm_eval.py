@@ -774,6 +774,42 @@ def test_pinned_local_paused_is_error_and_released(
     assert not calls and released == [slot]
 
 
+def test_pinned_local_down_uses_endpoint_retry_horizon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from precis.llm_eval.pinned import pinned_dispatch
+    from precis.utils.llm import local_serving
+
+    endpoint = "http://localhost:8000/v1"
+    slot = local_serving.LocalSlot(
+        host="h",
+        resource="r",
+        reserved=False,
+        paused=True,
+        down=True,
+        endpoint=endpoint,
+    )
+    released = _stub_slots(monkeypatch, slot)
+    calls, _ = _pin_env(monkeypatch)
+    monkeypatch.setattr(local_serving, "_endpoint_marks", {})
+    monkeypatch.setenv("PRECIS_LOCAL_ENDPOINT_DOWN_S", "30")
+    local_serving.mark_endpoint_down(endpoint)
+
+    before = datetime.now(UTC)
+    res = pinned_dispatch("cand", "local")(_req())
+    assert res.paused and res.error and "is down" in res.error
+    assert res.reason_class == "transport"
+    assert res.retry_at is not None
+    assert (
+        before + timedelta(seconds=29)
+        <= res.retry_at
+        <= datetime.now(UTC) + timedelta(seconds=30)
+    )
+    assert not calls and released == [slot]
+
+
 def test_pinned_cloud_picks_transport_by_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

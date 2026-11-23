@@ -90,19 +90,16 @@ Resolution, per dispatch (in order)
    chain's next non-subscription rung (``llm.quota_fallback_daily_usd``
    caps it daily).
 
-Local serving: a ``served_by`` host holds one
-of its ``resource_slots`` for the call (``local_serving.acquire``); a
-reserved slot's ``endpoint`` repoints the local wire at llama-swap
-directly. **Cluster-scoped:** on a local-serve miss, a ``served_by`` entry
-on *another* host whose endpoint is LAN-routable (not loopback) is
-acquirable from any node — reserved against the declared host's slot row
-(one fleet-wide semaphore; the ``host`` label is the accounting key, not
-necessarily the serving machine), so every node dispatches the BIG chain's
-local rung to the DGX-pair llama-server instead of the hosted fallback. A
-*saturated* slot (all capacity busy) retries rung 0 against the
-hosted OSS endpoint instead of the busy hardware — unless
-``placement='local'`` pins the call, which takes the paused backoff.
-That retry logs as ``cloud`` whatever rung 0's label says.
+Local serving reserves a ``resource_slots`` row on the ``served_by`` host
+and routes to its declared endpoint. LAN-routable endpoints share that
+host's capacity across the fleet. A live but full slot can wait for
+capacity. Connection failures, HTTP 5xx and timeouts that produced no
+output open a process-local cooldown, so acquisition skips the endpoint
+while its advertisement survives a restart — a timeout that already
+streamed partial output is slowness, not an outage. One call probes
+after expiry and a dead-wire failure renews the cooldown. Saturation or outage can trigger hosted fallback,
+logged as ``cloud``. Local-pinned calls pause, using the endpoint cooldown
+as the transport retry horizon during an outage.
 
 Before an OSS tool loop with an agentlog can write, the router records the
 resolved dispatch model as ``meta.model_actual``. Revision stamps are

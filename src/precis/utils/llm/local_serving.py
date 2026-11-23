@@ -54,6 +54,25 @@ the caller already handles for a busy slot — and the worker's shutdown
 ``finally`` calls :func:`release_process_holds` to close this process's
 remaining holds and refund them. A bounced worker therefore never orphans
 its slots for the reaper floor or the TTL to rediscover.
+
+**Endpoint health (gr622031).** A ``resource_slots`` row says a host is
+*willing* to serve; it says nothing about whether the declared endpoint is
+up. When the serving process flaps (SGLang restarts, llama-swap mid-swap)
+the advertisement deliberately survives — a heartbeat probe blip must not
+retract it — so the router kept dispatching into a dead wire and paying a
+connection refusal per call (638 in 24h). The transports that dial a
+``served_by`` endpoint (``LOCAL`` and ``OPENAI_TOOLS``) therefore feed the
+call's outcome back to a process-local mark: a dead-wire failure
+(refused connection, 5xx, or a timeout that produced no output) marks
+the endpoint down for :data:`_ENDPOINT_DOWN_TTL_S`; anything the
+endpoint answered clears it — including a timeout that already streamed
+partial output, which is a healthy server on a slow generation, not an
+outage.
+:func:`acquire` skips a marked candidate before debiting its row — locally
+served *and* every LAN-routable remote — and returns a ``paused`` slot with
+:attr:`LocalSlot.down` set when every candidate for the model is marked, so
+the router's existing busy-slot escapes advance the ladder instead of
+sending work to a rung that is down.
 """
 
 from __future__ import annotations
@@ -61,6 +80,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any
@@ -111,6 +131,113 @@ _WAIT_S = 10.0
 #: the moment a short call releases it; large enough to stay off the DB.
 _WAIT_POLL_S = 0.5
 
+#: How long (seconds) a served endpoint stays marked down after a
+#: dead-wire failure (gr622031). Long enough to cover a serving
+#: process's restart window, short enough that a recovered rung re-enters
+#: service on the next probe without an operator touch.
+#: ``PRECIS_LOCAL_ENDPOINT_DOWN_S`` overrides.
+_ENDPOINT_DOWN_TTL_S = 30.0
+
+_endpoint_lock = threading.Lock()
+#: {(scheme, netloc) -> monotonic retry-at} — served endpoints that
+#: refused or timed out a call, keyed by *server*, not URL path (the
+#: flapping thing is the process). A recovery probe claims by re-stamping
+#: the same horizon — concurrent calls keep skipping either way, and a
+#: probe whose caller dies mid-check self-heals on expiry instead of
+#: wedging the mark.
+_endpoint_marks: dict[tuple[str, str], float] = {}
+
+
+def _endpoint_down_ttl_s() -> float:
+    raw = os.environ.get("PRECIS_LOCAL_ENDPOINT_DOWN_S")
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _ENDPOINT_DOWN_TTL_S
+
+
+def _endpoint_key(endpoint: str | None) -> tuple[str, str] | None:
+    """The health-mark key for a served endpoint URL — ``(scheme, netloc)``,
+    or ``None`` for a missing/unparseable endpoint (a slot-only ``served_by``
+    has nothing to mark)."""
+    if not endpoint:
+        return None
+    url = urlparse(endpoint)
+    if not url.scheme or not url.netloc:
+        return None
+    return (url.scheme, url.netloc.lower())
+
+
+def endpoint_down(endpoint: str | None) -> float | None:
+    """Seconds a served endpoint stays skipped, or ``None`` when a call may
+    try it — a live mark (or a claimed recovery probe, which carries the
+    same stamp) returns its remaining cooldown; an expired stamp is
+    eligible again. This never claims the probe: the dispatch transports
+    claim theirs via :func:`endpoint_probe` to narrow concurrent probes to
+    one."""
+    key = _endpoint_key(endpoint)
+    if key is None:
+        return None
+    with _endpoint_lock:
+        stamp = _endpoint_marks.get(key)
+        if stamp is None:
+            return None
+        remaining = stamp - time.monotonic()
+        return remaining if remaining > 0 else None
+
+
+def endpoint_probe(endpoint: str | None) -> tuple[float, bool]:
+    """Dispatch-side consult for a served endpoint: ``(skip_for_s,
+    claimed_probe)``.
+
+    ``skip_for_s > 0`` → the endpoint is marked down (or a recovery probe
+    is in flight — both carry the same stamp) — skip it for that long,
+    never claim. ``(0, True)`` → the cooldown just expired and THIS call
+    claimed the recovery probe: it should settle with
+    :func:`mark_endpoint_down` or :func:`mark_endpoint_up`; unsettled, the
+    claim expires with the stamp. ``(0, False)`` → unmarked, call normally.
+    """
+    key = _endpoint_key(endpoint)
+    if key is None:
+        return 0.0, False
+    with _endpoint_lock:
+        stamp = _endpoint_marks.get(key)
+        if stamp is None:
+            return 0.0, False
+        remaining = stamp - time.monotonic()
+        if remaining > 0:
+            return remaining, False
+        _endpoint_marks[key] = time.monotonic() + _endpoint_down_ttl_s()
+        return 0.0, True
+
+
+def mark_endpoint_down(endpoint: str | None) -> None:
+    """Mark a served endpoint down for the cooldown — a dead-wire failure
+    (refused connection, 5xx, or a timeout that produced no output)
+    showed it not serving. Every refusal refreshes the window: a flapping
+    wire stays skipped as long as it keeps refusing. A no-op on an
+    endpoint with no key."""
+    key = _endpoint_key(endpoint)
+    if key is None:
+        return
+    with _endpoint_lock:
+        _endpoint_marks[key] = time.monotonic() + _endpoint_down_ttl_s()
+
+
+def mark_endpoint_up(endpoint: str | None) -> None:
+    """Clear an endpoint's mark — a call reached it (a success, or an
+    answered error the wire survived to deliver). A no-op when nothing is
+    marked."""
+    key = _endpoint_key(endpoint)
+    if key is None:
+        return
+    with _endpoint_lock:
+        _endpoint_marks.pop(key, None)
+
 
 def _wait_s() -> float:
     raw = os.environ.get("PRECIS_LOCAL_SLOT_WAIT_S")
@@ -160,6 +287,14 @@ class LocalSlot:
     #: rung: a draining worker takes no slot ANYWHERE, so spill would just
     #: re-hit the same refusal or bill a cloud rung for a local-only call.
     draining: bool = False
+    #: ``paused`` because every serving candidate's endpoint is marked down
+    #: (gr622031) — the rung is unavailable, not saturated; the router's
+    #: busy-slot escapes (next chain rung / hosted repoint) apply, but the
+    #: terminal pause names the outage and retries at the mark's expiry,
+    #: not the capacity horizon. On a ``down`` slot :attr:`endpoint` carries
+    #: the first refused candidate's URL so the caller can read the
+    #: remaining cooldown.
+    down: bool = False
     endpoint: str | None = None
     served_model: str | None = None
     #: id of the crash-reclaim hold opened alongside a successful reserve
@@ -193,7 +328,8 @@ _remote_at: float = 0.0
 
 
 def reset_cache() -> None:
-    """Drop the served-resource + endpoint caches (tests + after a slot write)."""
+    """Drop the served-resource + endpoint caches AND the endpoint health
+    marks (tests + after a slot write)."""
     global _served, _served_at, _endpoints, _endpoints_at, _mismatch_warned
     global _remote, _remote_at
     _served = {}
@@ -203,6 +339,8 @@ def reset_cache() -> None:
     _remote = {}
     _remote_at = 0.0
     _mismatch_warned = {}
+    with _endpoint_lock:
+        _endpoint_marks.clear()
 
 
 def _iter_served_by(meta: dict[str, Any]) -> list[dict[str, Any]]:
@@ -427,6 +565,7 @@ def acquire(
         if (
             slot is None
             or slot.reserved
+            or slot.down  # the mark outlasts wait_s — waiting buys nothing
             or drain_requested()
             or time.monotonic() >= until
         ):
@@ -457,15 +596,32 @@ def _acquire_once(
                 paused=True,
                 draining=True,
             )
+        served = _served_endpoints(store, host).get(resource)
+        if served is not None and endpoint_down(served.endpoint) is not None:
+            # The declared endpoint is marked down (gr622031) — don't
+            # debit a slot a dead wire can't serve. A LAN-routable remote
+            # candidate may still take the call; all-down pauses ``down``,
+            # which the router escapes like saturation.
+            remote = _acquire_remote(store, resource, draining=draining)
+            return (
+                remote
+                if remote is not None
+                else LocalSlot(
+                    host=host,
+                    resource=resource,
+                    reserved=False,
+                    paused=True,
+                    down=True,
+                    endpoint=served.endpoint,
+                )
+            )
         slot = _reserve_one(store, host, resource)
         if slot is None:
             return None  # reservation failure must never break dispatch
         if slot.reserved:
             # Enrich with the card's direct endpoint (if declared), so the
             # router can route to llama-swap instead of the default loopback
-            # wire. Looked up only once served + reserved — the dark no-op
-            # path never touches it.
-            served = _served_endpoints(store, host).get(resource)
+            # wire.
             if served is not None:
                 slot = replace(
                     slot, endpoint=served.endpoint, served_model=served.served_model
@@ -473,7 +629,7 @@ def _acquire_once(
             return slot
         # Local row full — spill to another serving host before pausing.
         remote = _acquire_remote(store, resource, draining=draining)
-        return remote if remote is not None else slot
+        return remote if remote is not None and not remote.down else slot
     remote = _acquire_remote(store, resource, draining=draining)
     if remote is not None:
         return remote
@@ -548,7 +704,21 @@ def _acquire_remote(
             draining=True,
         )
     busy: LocalSlot | None = None
+    downed: LocalSlot | None = None
     for remote_host, remote_served in candidates:
+        if endpoint_down(remote_served.endpoint) is not None:
+            # Marked-down remote (gr622031): skip it like a full row but
+            # report the outage, not saturation — a live candidate's
+            # ``busy`` still wins below (capacity clears first).
+            downed = downed or LocalSlot(
+                host=remote_host,
+                resource=resource,
+                reserved=False,
+                paused=True,
+                down=True,
+                endpoint=remote_served.endpoint,
+            )
+            continue
         slot = _reserve_one(store, remote_host, resource)
         if slot is None:
             continue
@@ -559,7 +729,7 @@ def _acquire_remote(
                 served_model=remote_served.served_model,
             )
         busy = busy or slot
-    return busy
+    return busy or downed
 
 
 def _warn_family_mismatch(
@@ -719,6 +889,10 @@ def release_process_holds() -> int:
 __all__ = [
     "LocalSlot",
     "acquire",
+    "endpoint_down",
+    "endpoint_probe",
+    "mark_endpoint_down",
+    "mark_endpoint_up",
     "release",
     "release_process_holds",
     "reset_cache",

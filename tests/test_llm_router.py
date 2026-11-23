@@ -446,12 +446,14 @@ def test_on_mode_failing_choice_falls_back_to_the_ladder(
     assert final.features["decision"]["fallback_reason"].startswith("error:")
 
 
-@pytest.mark.parametrize("kind", ["no-slot", "gate"])
+@pytest.mark.parametrize("kind", ["no-slot", "down", "gate"])
 def test_on_mode_no_capacity_falls_back(
     monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     """A gate or slot refusal on the pick logs a gated attempt row, then the
-    ladder runs — nothing is ever dispatched on the refused rung."""
+    ladder runs — nothing is ever dispatched on the refused rung. A ``down``
+    slot (gr622031: every served endpoint marked down) escapes the same way —
+    the outage advances the ladder like capacity, it does not re-dial."""
     recorded = _on_harness(monkeypatch, offerings=(_free_pick(),), pools=_behind_pool())
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://hosted.example/v1")
     monkeypatch.setattr(
@@ -459,14 +461,21 @@ def test_on_mode_no_capacity_falls_back(
         "resolve_chain",
         lambda *a, **kw: [router.Rung(Transport.LOCAL, model="legacy-model")],
     )
-    if kind == "no-slot":
+    if kind in ("no-slot", "down"):
         from precis.utils.llm import local_serving as ls
 
         monkeypatch.setattr(
             ls,
             "acquire",
             lambda m: (
-                ls.LocalSlot(host="h", resource=f"llm:{m}", reserved=False, paused=True)
+                ls.LocalSlot(
+                    host="h",
+                    resource=f"llm:{m}",
+                    reserved=False,
+                    paused=True,
+                    down=kind == "down",
+                    endpoint=("http://203.0.113.9:8080/v1" if kind == "down" else None),
+                )
                 if m == "chosen-model"
                 else None
             ),
@@ -2913,14 +2922,23 @@ def test_error_result_argv_too_long_is_flagged_not_paused() -> None:
     assert res2.argv_too_long is False
 
 
-def test_refused_local_endpoint_skips_models_until_recovery(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "failure",
+    [URLError(ConnectionRefusedError("Connection refused")), TimeoutError("timed out")],
+    ids=["refusal", "timeout"],
+)
+def test_failed_local_endpoint_skips_models_until_recovery(
+    monkeypatch: pytest.MonkeyPatch, failure: OSError
 ) -> None:
     import precis.workers.llm_summarize as summ
 
     clock = Mock(return_value=100.0)
     monkeypatch.setattr(router.time, "monotonic", clock)
-    monkeypatch.setattr(router, "_local_endpoint_retry", {})
+    # The endpoint health mark moved to local_serving (gr622031) — reset it
+    # so this test's refusals don't bleed into other tests.
+    from precis.utils.llm import local_serving
+
+    monkeypatch.setattr(local_serving, "_endpoint_marks", {})
     requests: list[str] = []
     ledger = Mock()
     monkeypatch.setattr(router, "_record_dispatch", ledger)
@@ -2934,8 +2952,10 @@ def test_refused_local_endpoint_skips_models_until_recovery(
         def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
             requests.append(self.config.model)
             if self.config.url == local_url:
-                if clock.return_value == 100.0:
-                    raise URLError(ConnectionRefusedError("Connection refused"))
+                if self.config.model == "first":
+                    raise failure
+                if self.config.model == "failed-probe":
+                    raise TimeoutError("timed out")
                 if self.config.model == "probe":
                     concurrent = router._dispatch_local(request, "concurrent")
                     assert concurrent.local_endpoint_skipped
@@ -2962,9 +2982,188 @@ def test_refused_local_endpoint_skips_models_until_recovery(
     )
     assert router._dispatch_local(other, "other").text == "local"
     clock.return_value = 130.0
+    assert ladder.run(request, model="failed-probe").text == "cloud"
+    assert ladder.run(request, model="still-down").text == "cloud"
+    clock.return_value = 160.0
     assert ladder.run(request, model="probe").text == "local"
     assert ladder.run(request, model="recovered").text == "local"
-    assert requests == ["first", "other", "probe", "recovered"]
+    assert requests == ["first", "other", "failed-probe", "probe", "recovered"]
+
+
+def test_down_local_slot_pauses_with_endpoint_horizon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr622031: ``acquire`` reports every served endpoint marked down → a
+    chain with nowhere to escape pauses naming the outage (transport-class,
+    retried at the mark's remaining cooldown) instead of the saturation
+    wording's 15-minute capacity horizon."""
+    from precis.utils.llm import local_serving as ls
+
+    endpoint = "http://203.0.113.9:8080/v1"
+    monkeypatch.setattr(ls, "_endpoint_marks", {})
+    ls.mark_endpoint_down(endpoint)
+    # A single LOCAL rung — no next-rung escape and Transport.LOCAL has no
+    # hosted re-point, so the paused slot reaches the terminal gate.
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "local",
+                    "model": "openai/gpt-oss-120b",
+                    "transport": "local",
+                }
+            ]
+            if tier is Tier.SMALL
+            else None
+        ),
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="maple",
+            resource=f"llm:{model}",
+            reserved=False,
+            paused=True,
+            down=True,
+            endpoint=endpoint,
+        ),
+    )
+    monkeypatch.setattr(ls, "served_locally", lambda model: True)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="classify me"))
+
+    assert out.paused is True
+    assert out.model == "openai/gpt-oss-120b"
+    assert out.error == (
+        "local serving endpoint for openai/gpt-oss-120b is down "
+        "(connection refused or timed out) — backing off"
+    )
+    assert out.reason_class == "transport"
+    assert out.retry_at is not None
+    remaining = (out.retry_at - datetime.now(UTC)).total_seconds()
+    assert 0 < remaining <= 30.0
+
+
+def test_openai_tools_local_url_outcome_marks_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The served-endpoint dispatch feeds its outcome into the shared health
+    mark (gr622031): a transport-class failure marks the endpoint down, the
+    next dispatch skips the wire entirely, and a probe that gets an answer
+    clears it."""
+    from precis.utils.llm import local_serving
+    from precis.utils.llm.openai_tools import AgentLoopResult
+
+    monkeypatch.setattr(local_serving, "_endpoint_marks", {})
+    endpoint = "http://localhost:8000/v1"
+    request = LlmRequest(tier=Tier.BIG, prompt="p", local_url=endpoint)
+
+    monkeypatch.setattr(
+        router,
+        "run_oss_tool_loop",
+        lambda **kw: AgentLoopResult(
+            final_text="",
+            turns_used=0,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="error",
+            error="Connection refused",
+            paused=True,
+        ),
+    )
+    refused = router._dispatch_openai_tools(request, "m")
+    assert refused.error == "Connection refused"
+    assert local_serving.endpoint_down(endpoint) is not None
+
+    # While marked, a dispatch consults the mark and never dials.
+    dialed: list[object] = []
+    monkeypatch.setattr(router, "run_oss_tool_loop", lambda **kw: dialed.append(kw))
+    skipped = router._dispatch_openai_tools(request, "m")
+    assert skipped.paused and skipped.local_endpoint_skipped
+    assert skipped.retry_at is not None
+    assert not dialed
+
+    # The mark expired → this call is the recovery probe; its answered
+    # result clears the mark so the next acquire reserves again.
+    with local_serving._endpoint_lock:
+        for key in local_serving._endpoint_marks:
+            local_serving._endpoint_marks[key] = 0.0
+    monkeypatch.setattr(
+        router,
+        "run_oss_tool_loop",
+        lambda **kw: AgentLoopResult(
+            final_text="ok",
+            turns_used=1,
+            tool_calls_made=0,
+            total_tokens=5,
+            stop_reason="stop",
+        ),
+    )
+    ok = router._dispatch_openai_tools(request, "m")
+    assert ok.text == "ok"
+    assert local_serving.endpoint_down(endpoint) is None
+
+
+def test_openai_tools_partial_timeout_keeps_endpoint_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr622031 review: a streamed hard-wall/idle timeout that already
+    produced output is a healthy endpoint on a slow generation — the
+    ``timed_out`` result must NOT mark it down, or every model on the
+    endpoint skips for the cooldown on ordinary slowness. A timeout that
+    returned nothing (connect phase, or a stream dead before its first
+    delta) still marks the endpoint down."""
+    from precis.utils.llm import local_serving
+    from precis.utils.llm.openai_tools import AgentLoopResult
+
+    monkeypatch.setattr(local_serving, "_endpoint_marks", {})
+    endpoint = "http://localhost:8000/v1"
+    request = LlmRequest(tier=Tier.BIG, prompt="p", local_url=endpoint)
+    down = Mock(wraps=local_serving.mark_endpoint_down)
+    monkeypatch.setattr(local_serving, "mark_endpoint_down", down)
+
+    monkeypatch.setattr(
+        router,
+        "run_oss_tool_loop",
+        lambda **kw: AgentLoopResult(
+            final_text="[partial content — stream aborted before completion]\nhalf",
+            turns_used=0,
+            tool_calls_made=0,
+            total_tokens=120,
+            stop_reason="error",
+            error="hard ceiling (still generating — partial kept)",
+            paused=True,
+            timed_out=True,
+        ),
+    )
+    partial = router._dispatch_openai_tools(request, "m")
+    assert partial.timed_out and partial.paused and partial.text
+    down.assert_not_called()
+    assert local_serving.endpoint_down(endpoint) is None
+
+    # The same timeout with no output is a dead wire — mark it and skip.
+    monkeypatch.setattr(
+        router,
+        "run_oss_tool_loop",
+        lambda **kw: AgentLoopResult(
+            final_text="",
+            turns_used=0,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="error",
+            error="timed out after 120.0s",
+            paused=True,
+            timed_out=True,
+        ),
+    )
+    empty = router._dispatch_openai_tools(request, "m")
+    assert empty.timed_out and empty.text == ""
+    down.assert_called_once_with(endpoint)
+    assert local_serving.endpoint_down(endpoint) is not None
 
 
 def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2983,6 +3182,9 @@ def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
+    from precis.utils.llm import local_serving
+
+    monkeypatch.setattr(local_serving, "_endpoint_marks", {})
     out = route(LlmRequest(tier=Tier.SMALL, prompt="p"))
 
     assert out.paused is True

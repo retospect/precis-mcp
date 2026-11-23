@@ -905,3 +905,192 @@ def test_exit_release_scoped_and_idempotent_with_release(store, monkeypatch) -> 
     local_serving.release(ours)
     free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
     assert free["llm:qwen"] == 4
+
+
+# ── endpoint health marks (gr622031) ───────────────────────────────────────
+#
+# A ``served_by`` row proves willingness, not liveness: when the serving
+# process flaps, the transports feed call outcomes into a process-local
+# mark keyed by (scheme, netloc). ``acquire`` skips marked endpoints so a
+# dead wire never debits a slot row; after the cooldown one call probes.
+
+
+def test_endpoint_mark_lifecycle() -> None:
+    endpoint = "http://203.0.113.10:8080/v1"
+    assert local_serving.endpoint_down(endpoint) is None
+    local_serving.mark_endpoint_down(endpoint)
+    remaining = local_serving.endpoint_down(endpoint)
+    assert remaining is not None and 0 < remaining <= 30.0
+    # The mark keys the *server* — another model's URL path on the same
+    # host:port shares the outage.
+    assert local_serving.endpoint_down("http://203.0.113.10:8080/other") is not None
+    # A different port is a different process.
+    assert local_serving.endpoint_down("http://203.0.113.10:8081/v1") is None
+    local_serving.mark_endpoint_up(endpoint)
+    assert local_serving.endpoint_down(endpoint) is None
+
+
+def test_endpoint_mark_refresh_and_env_ttl(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_LOCAL_ENDPOINT_DOWN_S", "5")
+    local_serving.mark_endpoint_down("http://203.0.113.10:8080/v1")
+    remaining = local_serving.endpoint_down("http://203.0.113.10:8080/v1")
+    assert remaining is not None and remaining <= 5.0
+
+
+def test_reset_cache_clears_endpoint_marks() -> None:
+    local_serving.mark_endpoint_down("http://203.0.113.10:8080/v1")
+    assert local_serving.endpoint_down("http://203.0.113.10:8080/v1") is not None
+    local_serving.reset_cache()
+    assert local_serving.endpoint_down("http://203.0.113.10:8080/v1") is None
+
+
+def test_endpoint_probe_claims_one_recovery() -> None:
+    """An expired mark yields exactly one probe claimant — concurrent
+    consults keep skipping on the claim's stamp while it runs."""
+    endpoint = "http://203.0.113.10:8080/v1"
+    local_serving.mark_endpoint_down(endpoint)
+    # Expire the stamp: the monotonic epoch is always in the past.
+    with local_serving._endpoint_lock:
+        for key in local_serving._endpoint_marks:
+            local_serving._endpoint_marks[key] = 0.0
+    skip, claimed = local_serving.endpoint_probe(endpoint)
+    assert skip == 0.0 and claimed is True
+    # The claim re-stamps the horizon: a second consult skips, never claims.
+    skip, claimed = local_serving.endpoint_probe(endpoint)
+    assert skip > 0 and claimed is False
+    assert local_serving.endpoint_down(endpoint) is not None
+    # The probing call settles — an answer clears the mark.
+    local_serving.mark_endpoint_up(endpoint)
+    assert local_serving.endpoint_down(endpoint) is None
+
+
+def test_down_local_endpoint_acquires_nothing(store) -> None:
+    """A marked-down declared endpoint must not debit its slot row — the
+    advertisement outlives the outage but the wire can't serve."""
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "testnode",
+        "qwen-local",
+        2,
+        endpoint="http://127.0.0.1:11445/v1",
+    )
+    local_serving.mark_endpoint_down("http://127.0.0.1:11445/v1")
+    slot = local_serving.acquire("qwen-local", wait_s=0)
+    assert slot is not None and slot.paused and not slot.reserved
+    assert slot.down is True and slot.draining is False
+    assert slot.endpoint == "http://127.0.0.1:11445/v1"
+    free = {s.resource: s.free for s in store.resource_slots_for_host("testnode")}
+    assert free["llm:qwen-local"] == 2  # nothing debited for a dead wire
+
+
+def _serve_two_hosts(
+    store: Any,
+    model_id: str,
+    entries: list[tuple[str, int, str]],
+) -> None:
+    """Like ``_serve_card`` but one card serving ``model_id`` from several
+    hosts — ``reconcile_llm_served_slots`` is a namespace-wide sync, so every
+    (host, cap, endpoint) must land in a single call."""
+    from precis import llm_catalog
+
+    rid, _ = llm_catalog.upsert_card(store, model_id=model_id, text=f"{model_id} card.")
+    store.update_ref(
+        rid,
+        meta_patch={
+            "served_by": [
+                {"host": host, "max_parallel": cap, "endpoint": endpoint}
+                for host, cap, endpoint in entries
+            ]
+        },
+    )
+    store.reconcile_llm_served_slots(
+        {(host, f"llm:{model_id}"): cap for host, cap, _ in entries}
+    )
+    local_serving.reset_cache()
+
+
+def test_down_local_endpoint_spills_to_live_remote(store) -> None:
+    """The local endpoint down → acquire tries the LAN-routable candidate on
+    another host before pausing (live capacity beats a dead wire)."""
+    meter.bind_store(store)
+    _serve_two_hosts(
+        store,
+        "big",
+        [
+            ("testnode", 2, "http://127.0.0.1:11445/v1"),
+            ("otherhost", 2, "http://203.0.113.10:8080/v1"),
+        ],
+    )
+    local_serving.mark_endpoint_down("http://127.0.0.1:11445/v1")
+    slot = local_serving.acquire("big", wait_s=0)
+    assert slot is not None and slot.reserved
+    assert slot.host == "otherhost"
+    assert slot.endpoint == "http://203.0.113.10:8080/v1"
+    local_serving.release(slot)
+
+
+def test_down_remote_candidate_is_skipped(store) -> None:
+    """Cluster-scoped acquire skips a marked-down remote and takes the next
+    candidate — remote outages get the same skip as local ones."""
+    meter.bind_store(store)
+    _serve_two_hosts(
+        store,
+        "remote-big",
+        [
+            ("host-a", 2, "http://203.0.113.10:8080/v1"),
+            ("host-b", 2, "http://203.0.113.11:8080/v1"),
+        ],
+    )
+    local_serving.mark_endpoint_down("http://203.0.113.10:8080/v1")
+    slot = local_serving.acquire("remote-big", wait_s=0)
+    assert slot is not None and slot.reserved
+    assert slot.host == "host-b"
+    assert slot.endpoint == "http://203.0.113.11:8080/v1"
+    free = {s.resource: s.free for s in store.resource_slots_for_host("host-a")}
+    assert free["llm:remote-big"] == 2  # the dead wire debited nothing
+    local_serving.release(slot)
+
+
+def test_all_candidates_down_pauses_down(store) -> None:
+    """Every candidate marked down → a ``down`` pause carrying the endpoint
+    (the router reads its remaining cooldown for the retry horizon) — and no
+    row is debited."""
+    meter.bind_store(store)
+    _serve_card(
+        store,
+        "otherhost",
+        "remote-big",
+        2,
+        endpoint="http://203.0.113.10:8080/v1",
+    )
+    local_serving.mark_endpoint_down("http://203.0.113.10:8080/v1")
+    slot = local_serving.acquire("remote-big", wait_s=0)
+    assert slot is not None and slot.paused and not slot.reserved
+    assert slot.down is True
+    assert slot.endpoint == "http://203.0.113.10:8080/v1"
+    free = {s.resource: s.free for s in store.resource_slots_for_host("otherhost")}
+    assert free["llm:remote-big"] == 2
+
+
+@pytest.mark.parametrize("busy_host", ["host-b", "testnode"])
+def test_live_busy_candidate_beats_a_down_one(store, busy_host: str) -> None:
+    """Down is an outage, not saturation: a *live but full* candidate still
+    wins over a marked-down one, so the pause reports capacity, not down."""
+    meter.bind_store(store)
+    _serve_two_hosts(
+        store,
+        "remote-big",
+        [
+            ("host-a", 2, "http://203.0.113.10:8080/v1"),
+            (busy_host, 1, "http://203.0.113.11:8080/v1"),
+        ],
+    )
+    local_serving.mark_endpoint_down("http://203.0.113.10:8080/v1")
+    first = local_serving.acquire("remote-big", wait_s=0)
+    assert first is not None and first.reserved and first.host == busy_host
+    # host-a stays down, the live host is now full → the pause is saturation.
+    second = local_serving.acquire("remote-big", wait_s=0)
+    assert second is not None and second.paused and not second.reserved
+    assert second.down is False
+    local_serving.release(first)
