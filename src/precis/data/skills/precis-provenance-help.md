@@ -131,7 +131,7 @@ writes through:
   applied to the parent.
 
 After this, `get(kind='paper', id='pa<id>')` reads the notice text
-by its handle.
+by its handle; the notice line in the report names it as `notice: pa<id>`.
 
 If the parent isn't in the store, the report is informational —
 nothing is written. Ingest first to capture the retraction graph.
@@ -161,7 +161,8 @@ plus pre-CrossMark notices Crossref never received (the Hwang
 stem-cell paper is the canonical case — retracted 2006, Crossref
 still reports it clean). When both have data for the same notice
 DOI, Crossref's `update_type`/date drives the line and RW's
-reasons drive the sub-bullet. Dedup is by `notice_doi`.
+reasons drive the sub-bullet. Dedup is by `notice_doi`; an RW record
+without a DOI is kept apart, shown with its `Retraction Watch Record ID`.
 
 If Crossref times out but RW cache has data, the report still
 goes through with a `⚠️ Crossref unavailable` banner.
