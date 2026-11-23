@@ -7532,7 +7532,22 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"known capabilities: {sorted(_LANE_CAPABILITIES)}"
         )
         return None
-    params = _review_fallback_params(ctx, params, lane_table)
+    vendor_retry_lane = (ctx.meta or {}).get("vendor_retry_lane")
+    if vendor_retry_lane:
+        # The outage retries the execution lane, which can differ from
+        # the original pin after a quota switch or an unpinned pick.
+        params["lane"] = vendor_retry_lane
+        lane_table = tuple(ln for ln in lane_table if ln.name == vendor_retry_lane)
+        original_model = params.get("model")
+        if (
+            isinstance(original_model, str)
+            and lane_table
+            and not lane_table[0].accepts_model(original_model.strip())
+        ):
+            # A previous vendor switch may have discarded the mint's model.
+            params.pop("model", None)
+    else:
+        params = _review_fallback_params(ctx, params, lane_table)
     pinned = (
         next((ln for ln in lane_table if ln.name == str(params["lane"])), None)
         if params.get("lane")
@@ -7562,7 +7577,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     paid_ok = True
     if params.get("lane") and not left_pin:
         dead = lane is None or not lane.enabled or lane.parked
-        if dead and cap is None:
+        if dead and (cap is None or vendor_retry_lane):
             ctx.record_failure(
                 f"run_slice: lane {params['lane']!r} unknown or disabled"
             )
@@ -8312,6 +8327,8 @@ def submit(ctx: Any, spec: Any) -> Any:
             "exit_file": str(exit_path),
             "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if vendor_retry_lane:
+            handle["outage_parks"] = (ctx.meta or {}).get("vendor_retry_parks", 0)
         if profile is not None:
             # Later phases read the repo off the handle, never the tag
             # again.
@@ -8459,6 +8476,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     # any is logged (and said on the job when that still works), never
     # raised — a raise would leave a live session with no handle.
     try:
+        if vendor_retry_lane:
+            ctx.set_meta(vendor_retry_lane=None, vendor_retry_parks=None)
         if ask_steer is not None and conflict is None:
             # A refusal or a conflict-only session leaves the ask's steer
             # pending. An actual build spends it once.
@@ -10136,6 +10155,16 @@ OUTAGE_PARK_CAP = 3
 #: agent ran (gr762463, :func:`_slice_limits.scope_launch_failed`): the
 #: host's failure, parked attempt-free like a window and relaunched at once.
 HOST_FAILURE_CLASS = "host"
+#: The park class of a session the lane's vendor killed with an error it
+#: flagged retryable itself (gr751832: the Devin CLI exits 1 behind
+#: ``"cognition.ai/retryable": true`` — the model ended its turn without
+#: a response): a blip, not a window — parked attempt-free like
+#: ``host``, relaunched on the same lane after a short settle, never a
+#: lane move or a vendor switch.
+VENDOR_FAILURE_CLASS = "vendor"
+#: How long a retryable vendor error settles before the relaunch — the
+#: router's ``rate`` horizon, not the two-hour window guess.
+VENDOR_BLIP_BACKOFF = timedelta(minutes=15)
 _NOT_BEFORE_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -10163,6 +10192,37 @@ _CLI_MISSING_LOG_LINES = 3
 #: cap style as ``_MAX_QUOTA_TEXT_CHARS``: a short final message is the
 #: CLI's own notice; a long answer quoting auth wording is session text.
 _AUTH_TEXT_CAP = 240
+
+#: The Devin CLI's own terminal report of a retryable agent error
+#: (gr751832): a line ``Error: Agent error: <what>: {`` then a JSON
+#: object carrying ``"cognition.ai/errorKind"`` and
+#: ``"cognition.ai/retryable": true``. The object must end the log.
+_DEVIN_AGENT_ERROR_TAIL_CHARS = 4000
+_DEVIN_AGENT_ERROR_HEADER = re.compile(
+    r"^Error: Agent error:[^\r\n]*?:[ \t]*(?=\{)", re.MULTILINE
+)
+
+
+def _devin_retryable_agent_error(log_text: str) -> str | None:
+    """The ``errorKind`` a Devin agent error on the log tail declared
+    retryable, else ``None`` — ``retryable: false`` and a bare
+    ``errorKind`` with no retryable marker never qualify."""
+    start = max(0, len(log_text) - _DEVIN_AGENT_ERROR_TAIL_CHARS)
+    header = _DEVIN_AGENT_ERROR_HEADER.search(log_text, start)
+    if header is None:
+        return None
+    # The final header owns the terminal object. Decode the entire suffix
+    # so a quote's closing fence or a later log line invalidates the match.
+    for later in _DEVIN_AGENT_ERROR_HEADER.finditer(log_text, header.end()):
+        header = later
+    try:
+        error = json.loads(log_text[header.end() :])
+    except ValueError:
+        return None
+    if not isinstance(error, dict) or error.get("cognition.ai/retryable") is not True:
+        return None
+    kind = error.get("cognition.ai/errorKind")
+    return kind if isinstance(kind, str) and re.fullmatch(r"[A-Za-z_]+", kind) else None
 
 
 def _cli_missing_on_tail(
@@ -10208,9 +10268,14 @@ def _lane_outage(
     401/403 status or Codex's terminal missing-credentials event, then
     the lane's own binary reported missing by the
     process itself (exit 127, or no exit record under a near-empty log,
-    never a line inside a session transcript). The ``key`` is the
-    phrase mark (``not-logged-in``, ``http-401``, ``cli-missing``),
-    never session text.
+    never a line inside a session transcript). And for ``devin_tree``
+    only, the vendor's own retryable marker — the CLI's terminal
+    ``Error: Agent error:`` block declaring
+    ``"cognition.ai/retryable": true`` (:func:`_devin_retryable_agent_error`,
+    gr751832) — class ``vendor``: a blip the same lane retries, not a
+    window, so the attempt is never burned on it. The ``key`` is the
+    phrase mark (``not-logged-in``, ``http-401``, ``cli-missing``,
+    ``devin-<errorKind>``), never session text.
 
     jo565344: ``claude -p`` answered in 644 ms with a 429 and "You've hit
     your weekly limit · resets 11am (UTC)"; the poll read that as a failed
@@ -10257,6 +10322,10 @@ def _lane_outage(
         return "auth", None, f"http-{status}"
     if _cli_missing_on_tail(adapter, tail, exit_code, len(lines)):
         return "auth", None, "cli-missing"
+    if adapter == "devin_tree":
+        kind = _devin_retryable_agent_error(log_text)
+        if kind is not None:
+            return VENDOR_FAILURE_CLASS, None, f"devin-{kind.replace('_', '-')}"
     return None
 
 
@@ -10375,13 +10444,15 @@ def _park_outage(
     retry_at: datetime | None,
     phrase: str | None = None,
 ) -> bool:
-    """The lane's window closed on the session: hand the lease back with
-    no attempt burned, drop the dead process from the handle and park it
-    with ``not_before`` — now, when another vendor's lane can take the
-    slice (``meta.exclude_vendor`` steers the relaunch there), else the
-    parsed reset (or :data:`OUTAGE_BACKOFF`). The job stays running, as
-    land_slice's deferral does; :func:`_relaunch_when_due` resubmits.
-    Always ``False``.
+    """The lane's window closed on the session — or the run died of a
+    fault that was never the task's verdict (``host``, ``vendor``): hand
+    the lease back with no attempt burned, drop the dead process from
+    the handle and park it with ``not_before`` — now, when another
+    vendor's lane can take the slice (``meta.exclude_vendor`` steers the
+    relaunch there), else the parsed reset (or :data:`OUTAGE_BACKOFF`;
+    :data:`VENDOR_BLIP_BACKOFF` for a retryable vendor error). The job
+    stays running, as land_slice's deferral does;
+    :func:`_relaunch_when_due` resubmits. Always ``False``.
 
     An ``auth`` class (gr588221) is the LANE's credential, not a window:
     it also parks the lane itself (``parked_reason = auth:<phrase key>`` —
@@ -10404,21 +10475,33 @@ def _park_outage(
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
     # A ``host`` class (gr762463: the slice scope did not start) is neither
     # the lane's nor the vendor's: no lane move, no vendor switch, and the
-    # relaunch is due now — the scope probe runs again before it.
+    # relaunch is due now — the scope probe runs again before it. A
+    # ``vendor`` class (gr751832: the vendor flagged its own kill
+    # retryable) is a blip, not a window either — the same lane relaunches
+    # after a short settle; a move or a switch is for windows that stay
+    # closed, not a retryable error.
     host = cls == HOST_FAILURE_CLASS
+    blip = cls == VENDOR_FAILURE_CLASS
     # gr761723: a reviewer carries the lane its dispatch would pick without
     # this one — the window moves the review there now, never parks it.
-    moved = not host and _move_review_to_fallback(
+    moved = not (host or blip) and _move_review_to_fallback(
         ctx, dict(params), f"lane {lane} {cls} window closed", lane_table
     )
     switch = (
-        not host
+        not (host or blip)
         and not moved
         and _outage_alternative(ctx.store, todo_id, params, vendor, lane_table)
     )
     if host:
         due = now
         where = "this host once the slice scope probe has run again"
+    elif blip:
+        due = (
+            retry_at
+            if retry_at is not None and retry_at > now
+            else now + VENDOR_BLIP_BACKOFF
+        )
+        where = f"lane {lane} once the vendor error settles"
     elif moved:
         due = now
         where = "the review's fallback lane"
@@ -10446,6 +10529,8 @@ def _park_outage(
         what = f"auth failure (auth:{phrase or 'unclassified'}); lane parked"
     elif host:
         what = "host failure (the slice scope did not start)"
+    elif blip:
+        what = f"retryable vendor error ({phrase or 'unclassified'})"
     else:
         what = f"{cls} window closed"
     ctx.append_chunk(
@@ -10460,6 +10545,8 @@ def _park_outage(
         compute_handle_released=False,
         deadline=deadline,
         exclude_vendor=vendor if switch else None,
+        vendor_retry_lane=lane if blip else None,
+        vendor_retry_parks=parks if blip else None,
     )
     return False
 
@@ -10748,8 +10835,8 @@ def _live_session_of_job(ctx: Any, handle: dict[str, Any]) -> dict[str, Any] | N
 
 def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     """Poll half of a parked outage: ``False`` before ``not_before``; at or
-    after it, run :func:`submit` again (a fresh lane pick, the excluded
-    vendor skipped) and persist the new handle in place. ``True`` only
+    after it, run :func:`submit` again with the park's routing constraints
+    and persist the new handle in place. ``True`` only
     when submit drove the job terminal itself."""
     try:
         due = datetime.strptime(str(handle["not_before"]), _NOT_BEFORE_FMT).replace(
@@ -10796,6 +10883,8 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
             compute_handle_released=False,
             deadline=datetime.now(UTC).timestamp() + wall_seconds(),
             exclude_vendor=None,
+            vendor_retry_lane=None,
+            vendor_retry_parks=None,
             attempt_free=None,
         )
         return False
@@ -11328,12 +11417,16 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 if adopted is None:
                     _save_before_park(ctx, handle, todo_id, tree)
                 return _park_outage(ctx, handle, todo_id, lane, *outage)
-            # Parked and relaunched OUTAGE_PARK_CAP times already: this
-            # window counts as a failed attempt, so the retry cap and the
-            # ask can still fire.
+            # The next outage after OUTAGE_PARK_CAP parks counts as a
+            # failed attempt so the retry cap and the ask can still fire.
+            what = (
+                f"retryable vendor error ({outage[2]}) recurred"
+                if outage[0] == VENDOR_FAILURE_CLASS
+                else f"{outage[0]} window closed again"
+            )
             ctx.append_chunk(
                 "job_event",
-                f"run_slice: lane {lane} {outage[0]} window closed again after "
+                f"run_slice: lane {lane} {what} after "
                 f"{parks} parks on td{todo_id}; counting it as a failed attempt",
             )
     # Server-side deny check, before the handoff lands: independent of

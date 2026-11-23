@@ -6277,6 +6277,146 @@ def test_poll_devin_log_with_auth_phrases_is_not_a_lane_park(
     assert parked == []
 
 
+#: The Devin CLI's own terminal report when the vendor's model dies with
+#: a retryable error (gr751832's ``empty_response``) — a line ``Error:
+#: Agent error: <what>:`` then the ``cognition.ai`` error object.
+_DEVIN_AGENT_ERROR = (
+    "Error: Agent error: The model ended its turn without a response. "
+    "Send a message to continue.: {\n"
+    '  "cognition.ai/errorKind": "empty_response",\n'
+    '  "cognition.ai/retryable": true\n'
+    "}\n"
+)
+
+
+def test_lane_outage_devin_retryable_agent_error(seams: dict[str, Any]) -> None:
+    """gr751832: a retryable Devin agent error is the vendor's blip —
+    class ``vendor`` — never a burned attempt. Only the devin adapter,
+    only an explicit ``retryable: true``, only the terminal block near
+    the log's end qualify."""
+    log = "session work line\n" + _DEVIN_AGENT_ERROR
+    assert run_slice._lane_outage(log, log, adapter="devin_tree", exit_code=1) == (
+        "vendor",
+        None,
+        "devin-empty-response",
+    )
+    # The same text through another adapter's lens is session text.
+    assert run_slice._lane_outage(log, log, adapter="claude_p", exit_code=1) is None
+    # ``retryable: false`` is the vendor declining the retry.
+    refused = _DEVIN_AGENT_ERROR.replace(
+        '"cognition.ai/retryable": true', '"cognition.ai/retryable": false'
+    )
+    assert (
+        run_slice._lane_outage(refused, refused, adapter="devin_tree", exit_code=1)
+        is None
+    )
+    # Mid-log the same block is quoted text, not how the process died.
+    long_log = _DEVIN_AGENT_ERROR + "more session output\n" * 400
+    assert (
+        run_slice._lane_outage(long_log, long_log, adapter="devin_tree", exit_code=1)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "The previous log ended with:\n```text\n" + _DEVIN_AGENT_ERROR + "```\n",
+        _DEVIN_AGENT_ERROR + "ordinary process failure\n",
+        'Error: Agent error: first: {"cognition.ai/errorKind": "empty_response"}\n'
+        'Error: Agent error: second: {"cognition.ai/retryable": true}\n',
+        _DEVIN_AGENT_ERROR.removesuffix("}\n"),
+    ],
+    ids=["quoted", "nonterminal", "separate-objects", "truncated"],
+)
+def test_lane_outage_requires_a_complete_terminal_devin_error(log: str) -> None:
+    assert run_slice._lane_outage(log, log, adapter="devin_tree", exit_code=1) is None
+
+
+def test_poll_devin_retryable_agent_error_parks_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr751832: a Devin session the vendor killed with a retryable
+    ``empty_response`` is a blip, not a verdict: no attempt, the lease
+    back, the SAME lane relaunched after the short settle — no lane
+    park, no review move, no vendor switch."""
+    parked = _parks(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "Build")
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+    devin = _vendor_lane("devin", "devin_tree", models=("swe-2-high",))
+    use_lanes(monkeypatch, devin)
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.meta_set["adapter"] == "devin_tree"
+    assert "lane" not in ctx.meta["params"]
+    _finish(
+        handle,
+        1,
+        "I'll verify the branch head first, then read the diff.\n" + _DEVIN_AGENT_ERROR,
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert "pid" not in handle and handle["outage"] == "vendor"
+    assert handle["outage_parks"] == 1
+    assert parked == [] and pctx.meta_set["exclude_vendor"] is None
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    settle = due - datetime.now(UTC)
+    assert timedelta(minutes=14) < settle < timedelta(minutes=16)
+    assert any(
+        "retryable vendor error (devin-empty-response)" in text
+        for kind, text in pctx.chunks
+        if kind == "job_event"
+    )
+
+    # Give the router a different lane it would choose on a fresh pick.
+    codex, _ = _codex_and_sub()
+    use_lanes(monkeypatch, codex, devin)
+    monkeypatch.setattr(lanes, "pick_lane", lambda *args, **kwargs: codex)
+    seams["alive"] = False
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    launches = len(seams["launch"])
+    rctx = _Ctx(store, ctx.meta["params"], **(ctx.meta_set | pctx.meta_set))
+    assert run_slice.poll(rctx, handle) is False
+    assert len(seams["launch"]) == launches + 1
+    assert seams["launch"][-1][0][0] == "/vendor/devin"
+    assert rctx.meta_set["lane"] == "devin"
+    assert rctx.meta_set["vendor_retry_lane"] is None
+    assert "claimed-by:lane-devin" in store.tag_strings(42)
+    assert handle["outage_parks"] == 1 and "not_before" not in handle
+
+
+def test_poll_devin_retryable_agent_error_counts_after_the_park_cap(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The park cap still bounds the blip: once one job has parked
+    :data:`OUTAGE_PARK_CAP` times, the next retryable vendor error counts
+    as a failed attempt, so a persistent fault still climbs the ladder."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    handle["outage_parks"] = run_slice.OUTAGE_PARK_CAP
+    _finish(handle, 1, _DEVIN_AGENT_ERROR)
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    assert any(
+        "retryable vendor error (devin-empty-response) recurred after" in text
+        for kind, text in pctx.chunks
+        if kind == "job_event"
+    )
+
+
 def test_lane_outage_429_quota_wording_still_classifies_quota(
     seams: dict[str, Any],
 ) -> None:

@@ -152,16 +152,15 @@ scope. Governed skills retain their human-only fence. Editors open ruling
 provenance before loosening a rule, so tool drift cannot silently repeal
 human policy.
 
-A ``run_slice`` launch also writes one ``slice_run_features`` row
-(:mod:`precis.workers.job_types._run_features`, gr595544): cheap
-text/graph features plus the pick's lane context, recorded beside the
-job ref and keyed ``(job_ref_id, launch)`` — an outage relaunch
-resubmits the same job, so launches, not attempts, are the grain. The
-writer is dark by construction: a missing table, dead store or down
-embedder logs at debug and never blocks a launch. After a few hundred
-rows a small model fit on them can predict whether the small rung
-passes the hard gates, measured against recipe-only routing — the
-cheap half of the task-aware-routing spec, no per-call classifier.
+``_run_features`` logs text, graph and lane features to
+``slice_run_features`` (gr595544). Relaunches share a job, so the key is
+``(job_ref_id, launch)``. The writer never blocks launch. These rows
+support predicting small-rung gate outcomes against recipe-only routing.
+
+Devin's terminal CLI error object can declare an attempt-free retry
+(gr751832). The job releases its lease and retries the execution lane
+after 15 minutes, preserving lane health and review routing. Errors
+beyond ``OUTAGE_PARK_CAP`` count as failed attempts.
 
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
 to keep later releases from repeating the same fix. Legacy notes inherit
