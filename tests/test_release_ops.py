@@ -1895,7 +1895,8 @@ def test_release_cut_refuses_a_checkout_with_no_overlay(
     assert len(ctx.failures) == 1
     msg = ctx.failures[0]
     assert "builder-host cannot deploy" in msg
-    assert "release.cut_host" in msg and "gr713351" in msg
+    assert "scripts/prod-precis settings set release.cut_host <node>" in msg
+    assert "gr713351" in msg
     assert checkout["argv"] == [] and refreshed == []
     assert R.release_of(store, mint.ids["cut"]) is None
 

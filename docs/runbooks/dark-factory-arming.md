@@ -126,9 +126,9 @@ overlay" and the round record is "not published: no prod DSN on this host".
 The deploy account then holds the same deploy authority as the operator.
 
 The first `release_cut` of a pass has no `meta.release.host` to pin to, and
-the cut's checkout is the deploy's, so name the host that holds the overlay:
-`put(kind='job', mode='setting', args={'key': 'release.cut_host', 'value':
-'<node>', 'reason': '...'})` (the node's `PRECIS_NODE`; DB-only). Unset, the
+the cut's checkout is the deploy's. A release operator pins it with
+`scripts/prod-precis settings set release.cut_host <node>`, using the
+`PRECIS_NODE` of the host that holds the overlay. The setting is DB-only. Unset, the
 tick holds the cut with a note instead of letting any `ssh_node` host claim
 it (gr713351), and `release_cut` itself refuses a checkout with no overlay.
 

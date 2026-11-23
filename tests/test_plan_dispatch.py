@@ -13347,7 +13347,7 @@ def test_first_cut_is_held_when_release_cut_host_is_unset(store: Store) -> None:
     held = [n for n in res.notes if f"td{cut}: release_cut held" in n]
     assert len(held) == 1
     assert "release.cut_host is unset" in held[0]
-    assert "mode='setting'" in held[0] and "'key': 'release.cut_host'" in held[0]
+    assert "scripts/prod-precis settings set release.cut_host <node>" in held[0]
     assert res.logged == held
     assert R.cut_host(store) is None
     # The same hold on the next pass is not logged again.

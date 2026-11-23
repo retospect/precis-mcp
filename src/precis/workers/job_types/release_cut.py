@@ -1020,10 +1020,9 @@ def overlay_refusal(root: Path) -> str | None:
         return (
             f"{NAME}: {node} cannot deploy — no deploy overlay for the checkout "
             f"{root} (needs the inventory dir {overlay} and {vault}); nothing "
-            "was cut. next: pin the first cut to a host that holds the overlay "
-            "with release.cut_host (put(kind='job', mode='setting', "
-            "args={'key': 'release.cut_host', 'value': '<host>', "
-            "'reason': '...'})) (gr713351)"
+            "was cut (gr713351). next: have a release operator run "
+            "`scripts/prod-precis settings set release.cut_host <node>` "
+            "with the PRECIS_NODE of a host that holds the overlay."
         )
     if os.environ.get("PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT") or os.environ.get(
         "PRECIS_DEPLOY_ALLOW_STALE_OVERLAY"

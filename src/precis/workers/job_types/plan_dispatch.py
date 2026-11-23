@@ -10208,9 +10208,9 @@ def _step_dispatch(
                     no_host = (
                         f"td{n.id}: release_cut held — release.cut_host is "
                         "unset, so the first cut has no host that can "
-                        "deploy (gr713351); next: put(kind='job', "
-                        "mode='setting', args={'key': 'release.cut_host', "
-                        "'value': '<host>', 'reason': '...'})"
+                        "deploy (gr713351). next: have a release operator run "
+                        "`scripts/prod-precis settings set release.cut_host <node>` "
+                        "with the deploy host's PRECIS_NODE."
                     )
                     _log_cut_refusal(w, res, n, no_host)
                     res.dispatch_hold(n, no_host.removeprefix(f"td{n.id}: "))
