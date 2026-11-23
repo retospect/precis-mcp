@@ -99,7 +99,12 @@ Proposal evidence and `view='smells'` carry detector names.
   handle as `[pa3]`, `[source](pa3)`, or `pa3~2`. Use `[[PA3]]` for an
   uppercase address. Bare `pa1234` counts on its own. A URL containing
   `PA3` or a measurement like `PA3~2mm` stays literal. The consolidation
-  log and archive keep historical references. This pass also checks
+  log and archive keep historical references, as does clause-leading
+  past-tense "closed/fixed/resolved <handle>" of a retired target with
+  no successor — "which closed gr1" is history, while "if we fixed
+  gr1", "if we checked and we fixed gr1", "if it worked, then we fixed
+  gr1", "we fixed gr1?", "never fixed gr1" or "the closed gr1" still
+  flags. This pass also checks
   `thread_shape` (a thread node whose `Left:` is missing or done),
   `anchor_rot` (a cited path/symbol/section/commit no longer resolves
   on main), `compact` (expired, cold-decaying or half-history, or

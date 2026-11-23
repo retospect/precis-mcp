@@ -110,6 +110,136 @@ def test_mentions_ignore_live_wrong_kind_retired_body_and_dream(store: Store) ->
     assert cand.dangling_mention_candidates(store) == []
 
 
+def _retired_gripe(store: Store) -> int:
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="gripe", slug=None, title="Gripe", meta={}, conn=conn
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "done"), set_by="system", conn=conn)
+    store.retire_ref(int(ref.id))
+    return int(ref.id)
+
+
+def test_completed_action_mentions_of_successorless_retired_are_skipped(
+    store: Store,
+) -> None:
+    gripe = _retired_gripe(store)
+    _memory(
+        store,
+        f"Override landed, which closed [gr{gripe}]. We fixed [gr{gripe}]. "
+        f"Closed [gr{gripe}]: done. Merged, and then resolved [gr{gripe}]. "
+        "What happened next?",
+    )
+    assert cand.dangling_mention_candidates(store) == []
+    live = _memory(store, f"Still see [gr{gripe}] for context.")
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == live
+
+
+def test_completed_action_bare_handle_and_conditional(store: Store) -> None:
+    """gr775677's report uses a bare ``gr`` handle: bare tokens count only
+    past the four-digit floor, so push the sequence like the apply tests.
+    A conditional mention ("If we fixed …") is not a completed action and
+    still flags."""
+    with store.pool.connection() as conn:
+        conn.execute("ALTER SEQUENCE refs_ref_id_seq RESTART WITH 1000")
+    gripe = _retired_gripe(store)
+    assert gripe >= 1000
+    _memory(
+        store,
+        "Proposer-supplied params overriding, which closed "
+        f"gr{gripe}. We resolved gr{gripe} on 2026-09-18.",
+    )
+    assert cand.dangling_mention_candidates(store) == []
+    live = _memory(store, f"If we fixed gr{gripe}, use it as the current authority.")
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == live
+    assert "superseded" not in candidate.evidence["mentions"][0]
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "We never fixed [gr{h}] properly.",
+        "See the closed [gr{h}] for current instructions.",
+        "Not resolved [gr{h}].",
+        "If we fixed [gr{h}], use it as the current authority.",
+        "If that fixed [gr{h}], keep it live.",
+        "Check whether that resolved [gr{h}].",
+        "Worked on it until that closed [gr{h}].",
+        # Inverted aux-before-subject order is a question or a conditional,
+        # not a record of the action (gr775677 review).
+        "Have we fixed [gr{h}]?",
+        "Had we resolved [gr{h}], it would show.",
+        "So have we closed [gr{h}]?",
+        "We fixed [gr{h}]?",
+        "We closed [gr{h}] yesterday?",
+        # Coordination can stay inside the conditional even with a new subject.
+        "If we checked and fixed [gr{h}], use it as the current authority.",
+        "If we checked and we fixed [gr{h}], use it as the current authority.",
+        "If we checked the original report against all the available evidence "
+        "and we fixed [gr{h}], use it as the current authority.",
+        "If we checked, tested and fixed [gr{h}].",
+        "Check whether we verified and resolved [gr{h}].",
+        "If it broke, then we resolved [gr{h}].",
+        "If the patch worked, the check passed, so we closed [gr{h}].",
+        "If we checked, we fixed it and closed [gr{h}].",
+    ],
+)
+def test_non_completed_action_mentions_still_flag(store: Store, template: str) -> None:
+    gripe = _retired_gripe(store)
+    target = _memory(store, template.format(h=gripe))
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == target
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        # Coordinated VPs and subject-ful coordinators in declarative
+        # sentences still record the action (gr775677 review).
+        "We checked and fixed [gr{h}].",
+        "Merged, and we have fixed [gr{h}].",
+        "It failed, so we closed [gr{h}].",
+        "We checked, then we resolved [gr{h}].",
+    ],
+)
+def test_completed_action_coordinated_mentions_skip(
+    store: Store, template: str
+) -> None:
+    gripe = _retired_gripe(store)
+    _memory(store, template.format(h=gripe))
+    assert cand.dangling_mention_candidates(store) == []
+
+
+def test_completed_action_with_broken_successor_chain_still_flags(
+    store: Store,
+) -> None:
+    gone = _memory(store, "Gone")
+    store.retire_ref(gone)
+    retired = _memory(store, "Old", meta={"superseded_by": gone})
+    store.retire_ref(retired)
+    target = _memory(store, f"Landed, which closed [me{retired}].")
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == target
+
+
+def test_completed_action_with_retired_superseder_still_flags(
+    store: Store,
+) -> None:
+    """An inbound ``supersedes`` edge whose replacement itself retired is a
+    broken chain, not an outright close: completed-action phrasing about
+    the loser still flags (gr775677 review)."""
+    replacement = _memory(store, "Replacement")
+    retired = _memory(store, "Old")
+    store.add_link(src_ref_id=replacement, dst_ref_id=retired, relation="supersedes")
+    store.retire_ref(replacement)
+    store.retire_ref(retired)
+    target = _memory(store, f"Landed, which closed [me{retired}].")
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == target
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [

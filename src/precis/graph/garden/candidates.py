@@ -1002,7 +1002,9 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             "JOIN refs r USING (ref_id) WHERE c.chunk_id = ANY(%s)) "
             "SELECT m.kind, m.is_chunk, m.pk, r.ref_id, r.retired_at, "
             "r.meta->>'superseded_by', s.ref_id, s.kind, s.title, r.title, "
-            "r.meta->'garden_merge'->>'winner' "
+            "r.meta->'garden_merge'->>'winner', "
+            "EXISTS (SELECT 1 FROM links le WHERE le.dst_ref_id = r.ref_id "
+            "AND le.relation = 'supersedes') "
             "FROM mentioned m JOIN refs r USING (ref_id) "
             "LEFT JOIN LATERAL (SELECT live.ref_id, live.kind, live.title "
             "FROM links l "
@@ -1021,7 +1023,20 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             for rid in {int(row[3]) for row in rows if row[5]}
         }
     by_address = {}
-    for kind, chunk, pk, rid, retired, raw, sid, skind, stitle, rtitle, winner in rows:
+    for (
+        kind,
+        chunk,
+        pk,
+        rid,
+        retired,
+        raw,
+        sid,
+        skind,
+        stitle,
+        rtitle,
+        winner,
+        edge_supersede,
+    ) in rows:
         successor = successors.get(int(rid))
         if successor is None and sid is not None:
             successor = try_format(str(skind), int(sid))
@@ -1032,6 +1047,11 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             "retired_ref": try_format(str(kind), int(rid)),
             "retired_at": retired.isoformat(),
             "successor": successor,
+            # A supersede pointer exists even when its chain does not resolve
+            # to a live ref — a tombstone, a merge winner, or an inbound
+            # ``supersedes`` edge whose source may itself have retired:
+            # a broken chain, not an outright close.
+            "superseded": raw is not None or edge_supersede or winner is not None,
             "chunk": bool(chunk),
             "duplicate_successor": duplicate,
         }
@@ -1090,6 +1110,113 @@ def _duplicate_successor(
     return None
 
 
+#: Past-tense completed-action phrasing right before a handle: the clause
+#: records that the node was closed/fixed/resolved, so a retired target
+#: with no successor is the expected end state, not a dangling reference.
+#: The verb must head a clause — sentence start, or a coordinator/relative
+#: opening a new clause — with only subjects, auxiliaries and adverbs
+#: between the boundary and the verb ("we fixed", "which closed", "and
+#: then resolved"). A subordinator ahead of the lead ("if we fixed",
+#: "whether that closed"), negation ("never fixed") and attributive use
+#: ("the closed gr1") keep the mention a live reference.
+_COMPLETED_ACTION_BEFORE = re.compile(
+    r"(?:[.;:!?\n]\s*|\b(?P<lead>which|that|and|but|then|so)\s+)"
+    r"(?P<mid>(?:(?:which|that|and|but|then|so|also|"
+    r"we|i|he|she|it|this|they|now|already|since|finally|later|just|"
+    r"has|have|had|was|were|been)\s+)*)"
+    r"(?:closed|fixed|resolved)\s+[\[`(]?$",
+    re.IGNORECASE,
+)
+
+#: Subordinators that make a "that/which <verb>" clause conditional or
+#: temporal instead of recording the action. Checked against the word
+#: right before a mid-clause ``which``/``that`` lead (gr775677).
+_SUBORDINATORS = frozenset(
+    {
+        "if",
+        "when",
+        "whenever",
+        "while",
+        "until",
+        "unless",
+        "whether",
+        "once",
+        "before",
+        "after",
+        "because",
+        "since",
+        "as",
+        "though",
+        "although",
+        "provided",
+        "providing",
+        "assuming",
+        "supposing",
+        "given",
+    }
+)
+
+#: Words that can head a clause's subject in the mid-clause filler, and
+#: auxiliaries that precede the subject only in inverted order. "Have we
+#: fixed" and "had it closed" are a question or a conditional, never a
+#: record of the action (gr775677 review).
+_SUBJECT_WORDS = frozenset(
+    {"we", "i", "he", "she", "it", "this", "they", "which", "that"}
+)
+_AUX_WORDS = frozenset({"has", "have", "had", "was", "were", "been"})
+
+#: These subordinators can leave a closure uncertain across coordination
+#: ("if we checked and fixed") or a comma ("if it broke, then we fixed").
+#: Factual subordinators such as "because" and "after" can record the
+#: action, so they are excluded here (gr775677 review).
+_SCOPING_SUBORDINATORS = frozenset(
+    {
+        "if",
+        "whether",
+        "unless",
+        "until",
+        "provided",
+        "providing",
+        "assuming",
+        "supposing",
+        "given",
+    }
+)
+
+
+def _is_completed_action_mention(
+    body: str, start: int, end: int, info: dict[str, Any]
+) -> bool:
+    """Recognize a declarative closure of a retired node with no successor."""
+    if info.get("successor") is not None or info.get("superseded"):
+        return False
+    lo = max(0, start - 48)
+    head = ("\n" if lo == 0 else "") + body[lo:start]
+    match = _COMPLETED_ACTION_BEFORE.search(head)
+    if match is None:
+        return False
+    terminator = re.compile(r"[.!?\n]").search(body, end)
+    if terminator is not None and terminator.group() == "?":
+        return False
+    mid = match.group("mid").lower().split()
+    subject = next((i for i, tok in enumerate(mid) if tok in _SUBJECT_WORDS), None)
+    aux = next((i for i, tok in enumerate(mid) if tok in _AUX_WORDS), None)
+    if subject is not None and aux is not None and aux < subject:
+        return False
+    lead = match.group("lead")
+    if lead is None:
+        return True
+    lead = lead.lower()
+    prefix = body[: lo + match.start("lead") - int(lo == 0)]
+    if lead in {"which", "that"}:
+        word = re.search(r"[A-Za-z]+$", prefix.rstrip())
+        if word is not None and word.group().lower() in _SUBORDINATORS:
+            return False
+    boundary = max(prefix.rfind(c) for c in ".;:!?\n")
+    tail = prefix[boundary + 1 :].lower()
+    return _SCOPING_SUBORDINATORS.isdisjoint(re.findall(r"[a-z]+", tail))
+
+
 def dangling_mention_candidates(
     store: Store,
     *,
@@ -1101,7 +1228,14 @@ def dangling_mention_candidates(
     """Propose anchored rewrites of retired handles in live memory bodies.
 
     The consolidation log and its archive record point-in-time actions.
-    Their handles remain as written when the referenced nodes retire.
+    Their handles remain as written when the referenced nodes retire. So do
+    inline clause-leading completed actions ("which closed gr123", "we
+    fixed me456") whose retired target has no successor — a closed-outright
+    gripe has none by design (gr775677). Conditional ("if we fixed",
+    "if we checked and we fixed"), interrogative ("we fixed gr1?"), negated
+    ("never fixed") and attributive ("the closed gr1") phrasing still
+    flags, as does a target whose supersede pointer never resolved
+    to a live ref — a broken chain, not an outright close.
 
     One proposal per memory carries at most ``MENTION_MATCH_CAP`` matching
     spans (zero-based, end exclusive), with ``matches_capped`` in its payload
@@ -1135,7 +1269,9 @@ def dangling_mention_candidates(
         capped = False
         for match in matches[rid]:
             info = retired.get(match.group())
-            if info is None:
+            if info is None or _is_completed_action_mention(
+                body, match.start(), match.end(), info
+            ):
                 continue
             if len(ops) >= MENTION_MATCH_CAP:
                 capped = True
@@ -1146,7 +1282,10 @@ def dangling_mention_candidates(
                     "handle": match.group(),
                     "span": span,
                     "context": body[max(0, match.start() - 300) : match.end() + 300],
-                    **info,
+                    # ``superseded`` is detector-internal: apply compares
+                    # fresh evidence exactly, so emitting it would stale
+                    # pending proposals written before the flag existed.
+                    **{k: v for k, v in info.items() if k != "superseded"},
                 }
             )
             ops.append(
