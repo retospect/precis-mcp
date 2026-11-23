@@ -1067,6 +1067,13 @@ def test_schedule_pass_failed_job_tick_closes_wont_do(
     assert _status_of(store, child_id) == "won't-do"
 
 
+def _daily_cron_far_from_now() -> str:
+    """A daily cron whose boundary is ~12h from now, so "last tick
+    minutes ago" is never straddled by a due tick (``0 0 * * *`` is
+    due for a minutes-old last tick when the run crosses midnight UTC)."""
+    return f"0 {(datetime.now(UTC).hour + 12) % 24} * * *"
+
+
 def test_schedule_pass_settled_tick_closes_even_without_due_tick(
     handler: TodoHandler, store: Store
 ) -> None:
@@ -1075,7 +1082,7 @@ def test_schedule_pass_settled_tick_closes_even_without_due_tick(
     cadence boundary to leave the open queue."""
     resp = handler.put(
         text="Daily",
-        meta={"schedule": {"cron": "0 0 * * *"}},
+        meta={"schedule": {"cron": _daily_cron_far_from_now()}},
     )
     rid = _id_of(resp.body)
     old_created = datetime.now(UTC) - timedelta(hours=3)
@@ -1138,7 +1145,7 @@ def test_schedule_pass_jobless_tick_stays_open(
     terminal, so hygiene must not close it."""
     resp = handler.put(
         text="Daily",
-        meta={"schedule": {"cron": "0 0 * * *"}},
+        meta={"schedule": {"cron": _daily_cron_far_from_now()}},
     )
     rid = _id_of(resp.body)
     child_id = _spawn_open_child(

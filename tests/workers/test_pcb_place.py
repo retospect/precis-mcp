@@ -250,6 +250,9 @@ def test_pcb_place_first_placement_is_not_judged_against_an_unplaced_board(
 
 
 def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
+    # U1/U2 overlap on purpose (the anneal legalizes them) but sit inside the
+    # default 20x20 placement bounds: legalization searches only a ring radius
+    # of the bounds' size, so a start off the board is unrepairable (gr769721).
     args = {
         "components": [
             {
@@ -263,15 +266,15 @@ def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
             {
                 "refdes": "U1",
                 "label": "ic",
-                "x": 40.0,
-                "y": 40.0,
+                "x": 10.0,
+                "y": 10.0,
                 "pins": [{"name": "1"}],
             },
             {
                 "refdes": "U2",
                 "label": "ic",
-                "x": 41.0,
-                "y": 40.0,
+                "x": 11.0,
+                "y": 10.0,
                 "pins": [{"name": "1"}],
             },
         ],
