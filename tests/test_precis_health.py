@@ -70,6 +70,22 @@ def test_storeless_precis_pings_false():
     assert asyncio.run(client.ping()) is False
 
 
+def test_storeless_precis_store_required_signature_pings_false():
+    # gr779330: storeless boots now answer ``Unsupported … (store
+    # required)`` instead of ``unknown kind``; the degraded-server
+    # detection must recognise the new signature too.
+    def handler(method, params):
+        if method == "tools/list":
+            return {"tools": [{"name": "get"}]}
+        return _tool_text(
+            "[error:Unsupported] kind 'gripe' is registered but disabled "
+            "in this build (store required)"
+        )
+
+    client = _client_with_fake_request(handler)
+    assert asyncio.run(client.ping()) is False
+
+
 def test_no_search_kinds_pings_false():
     def handler(method, params):
         if method == "tools/list":

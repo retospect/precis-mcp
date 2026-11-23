@@ -1233,6 +1233,19 @@ def _disabled_kind_next(kind: str, reason: str, *, all_files_off: bool) -> list[
             "search(kind='memory', tags=['project:<project>'])",
             _KINDS_DISABLED_POINTER,
         ]
+    if reason == "store required":
+        # gr779330: the kind exists in this build; the process simply has
+        # no store. No in-process retry can succeed — the fix is to bind a
+        # database and restart (or route the call to a deployment that has
+        # one) — so say that instead of the generic "use a live kind"
+        # advice, then keep the pointer for the full reason vocabulary.
+        return [
+            f"kind {kind!r} needs a store and this process has none; "
+            "do not retry here — bind the database (PRECIS_DATABASE_URL) "
+            "and restart this process, or run the call against a "
+            "deployment that has one:",
+            _KINDS_DISABLED_POINTER,
+        ]
     if kind not in _FILE_KINDS or not (
         reason == "prohibited" or reason.startswith("missing ")
     ):

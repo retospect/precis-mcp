@@ -31,7 +31,10 @@ plugins and bridges sharing the repo:
   the kind and verb, ``search`` fans out across kinds), which routes to
   ``handlers/`` — one adapter per kind implementing ``protocol.Handler`` and
   declaring a ``KindSpec``; ``dispatch.py`` holds the registry, plugin loading
-  and the service ``Hub``. ``response.py`` and ``hints.py`` shape what comes
+  and the service ``Hub``. Storeless boot records deferred verdicts without
+  importing the store-backed handlers, so dispatch can name the missing
+  database and still honor operator prohibitions. ``response.py`` and
+  ``hints.py`` shape what comes
   back. The word-handle switch uses the OAuth grant on stateless HTTP so
   token refresh and per-request SDK sessions preserve the connector's
   preference. See ``word_handle_session.py``. The key-memory pointer is

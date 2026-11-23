@@ -101,8 +101,9 @@ def set_runtime(runtime: PrecisRuntime) -> None:
     don't inherit the DSN). If the tool-dispatch path then lazily built
     its *own* runtime via ``_get_runtime`` → ``build_runtime()``, that
     second build would read the now-scrubbed env, get no ``database_url``,
-    and come up **storeless** — every DB kind reports ``unknown kind`` even
-    though the server's own runtime is fully connected. The MCP server
+    and come up **storeless** — every DB kind reports
+    ``Unsupported … (store required)`` even though the server's own
+    runtime is fully connected. The MCP server
     calls this at boot so both paths share the one store-bearing runtime.
     """
     global _runtime

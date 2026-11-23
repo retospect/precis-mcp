@@ -868,6 +868,80 @@ def _plugin_import_reason(exc: BaseException) -> str:
 # Composition root
 # ---------------------------------------------------------------------------
 
+#: Every kind the store-backed boot section constructs. When ``boot`` runs
+#: without a store that whole section is skipped; recording a deferred
+#: ``store required`` verdict for each kind here keeps the loadability
+#: index truthful — without it a stateless process answered
+#: ``get(kind='memory')`` with ``NotFound: unknown kind: memory`` plus a
+#: precis-get-help pointer, when the kind exists and the store is what is
+#: missing (gr779330). Same pattern as the file kinds' ``missing
+#: PRECIS_ROOT`` deferred branch in ``boot``. Kept in sync with the boot
+#: section by tests/test_storeless_kind_verdicts.py.
+_STORE_DEFERRED_KINDS: tuple[str, ...] = (
+    "agentlog",
+    "alert",
+    "alias",
+    "anki",
+    "cad",
+    "cfp",
+    "checklist",
+    "chem",
+    "citation",
+    "component",
+    "concept",
+    "conv",
+    "datasheet",
+    "draft",
+    "edgar",
+    "email",
+    "figure",
+    "finding",
+    "fleet",
+    "folder",
+    "gripe",
+    "gtd",
+    "job",
+    "learning",
+    "llm",
+    "machine",
+    "make",
+    "markdown",
+    "material",
+    "math",
+    "measure",
+    "memory",
+    "mermaid",
+    "message",
+    "news",
+    "oracle",
+    "orcid",
+    "paper",
+    "part",
+    "patent",
+    "pcb",
+    "perplexity-reasoning",
+    "perplexity-research",
+    "plaintext",
+    "plan",
+    "pres",
+    "profile",
+    "quest",
+    "random",
+    "rxn",
+    "schema",
+    "semanticscholar",
+    "skill",
+    "structure",
+    "tag",
+    "taxon",
+    "tex",
+    "todo",
+    "web",
+    "websearch",
+    "wikipedia",
+    "youtube",
+)
+
 
 def boot(
     *,
@@ -904,7 +978,10 @@ def boot(
     Stateless handlers (calc, time) are always attempted. Store-backed
     handlers (memory, todo, paper, ...) are skipped when ``store`` is
     ``None`` — this preserves the phase-1 stateless deployment mode
-    from the old ``registry.builtins()``.
+    from the old ``registry.builtins()`` — and each records a deferred
+    ``store required`` verdict (:data:`_STORE_DEFERRED_KINDS`) so the
+    dispatcher surfaces ``Unsupported`` with the missing store named
+    instead of ``NotFound: unknown kind`` (gr779330).
 
     Optional-dependency handlers (math needs sympy, patent needs
     ``epo_ops``, etc.) raise :class:`InitError` from their own
@@ -1450,6 +1527,30 @@ def boot(
         from precis.handlers.edgar import EdgarHandler
 
         _gated(EdgarHandler)
+    else:
+        # No store: the whole store-backed section above is skipped.
+        # Record a deferred verdict for every kind it would have
+        # constructed so the dispatcher answers ``Unsupported (store
+        # required)`` — naming the real missing precondition — instead
+        # of ``NotFound: unknown kind``, which sent agents to
+        # precis-get-help for kinds that exist (gr779330). Same
+        # deferred-verdict pattern as the file kinds' ``missing
+        # PRECIS_ROOT`` branch above; no handler module is imported,
+        # keeping the stateless boot lean.
+        from precis.kind_gate import Loadability, gate
+        from precis.protocol import KindSpec
+
+        for kind in _STORE_DEFERRED_KINDS:
+            verdict = gate(
+                KindSpec(kind=kind, title=kind, description=""),
+                disabled=kinds_disabled,
+                reasons=kinds_disabled_reasons,
+            )
+            hub.loadabilities[kind] = (
+                Loadability(kind=kind, loaded=False, reason="store required")
+                if verdict.loaded
+                else verdict
+            )
 
     # Third-party plugins load last. See :func:`_load_plugins` for the
     # contract and failure modes.

@@ -1070,18 +1070,20 @@ def _kinds_loaded_line(runtime: PrecisRuntime) -> str:
 def _kinds_unavailable_line(runtime: PrecisRuntime) -> str:
     """Render the ``Kinds unavailable: ...`` summary, or ``""``.
 
-    Sourced from ``runtime.hub.loadabilities``: every kind boot
-    *attempted* and gated out (prohibited / missing-env / init-failed)
-    gets a one-entry. Kinds we never even tried (no store, no
-    PRECIS_ROOT, no python roots) intentionally don't appear — they
-    aren't ``unavailable``, they're ``not configured``, and surfacing
-    them would dwarf the banner. The boot-time log line names them
-    for the operator who wants to audit.
+    Sourced from ``runtime.hub.loadabilities``. Omit missing-store
+    verdicts to keep the banner compact on stateless boots. Dispatch
+    still uses those verdicts for calls to the affected kinds.
     """
     from precis.kind_gate import format_unavailable
 
     verdicts = getattr(runtime.hub, "loadabilities", None) or {}
-    return format_unavailable(verdicts)
+    return format_unavailable(
+        {
+            kind: verdict
+            for kind, verdict in verdicts.items()
+            if verdict.reason != "store required"
+        }
+    )
 
 
 def _build_instructions(runtime: PrecisRuntime) -> str:
@@ -1245,7 +1247,7 @@ def _init_runtime() -> PrecisRuntime:
     # this, the verb funcs lazily build a SECOND runtime — but build_runtime
     # above already scrubbed PRECIS_DATABASE_URL from the env (secrets
     # vault), so that second build comes up storeless and every DB kind
-    # reports "unknown kind". See precis.tools.core.set_runtime.
+    # reports that it requires a store. See precis.tools.core.set_runtime.
     from precis.tools import core as _tools_core
 
     _tools_core.set_runtime(_runtime)

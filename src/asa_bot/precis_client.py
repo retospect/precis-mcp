@@ -298,7 +298,9 @@ class PrecisClient:
         MCP handshake — a precis that came up *without a store* (e.g. it
         was spawned during a reboot boot-race while the DB was
         unreachable) still answers ``tools/list`` cleanly but reports
-        ``unknown kind`` for every DB-backed kind. That degraded server
+        every DB-backed kind as unavailable — historically
+        ``unknown kind``, since gr779330 ``Unsupported … (store
+        required)``. That degraded server
         wipes asa's memory/conv/gripe recall for as long as it lives, and
         a liveness-only check never restarts it. So we also probe a cheap
         store-backed read and treat a "kind unavailable" reply as
@@ -317,7 +319,11 @@ class PrecisClient:
         except Exception as e:
             log.warning("precis ping failed: %s", e)
             return False
-        if "unknown kind" in blob or "no kinds in this build support" in blob:
+        if (
+            "unknown kind" in blob
+            or "no kinds in this build support" in blob
+            or "disabled in this build (store required)" in blob
+        ):
             log.warning(
                 "precis ping: DB kinds unavailable — degraded/storeless "
                 "server, forcing restart: %.120s",

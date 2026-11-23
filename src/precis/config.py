@@ -47,8 +47,9 @@ class PrecisConfig(BaseSettings):
     (crashing the process) rather than silently coming up storeless.
 
     Coming up storeless is the worse failure: the server answers the MCP
-    handshake but reports ``unknown kind`` for every DB-backed kind, and a
-    liveness-only supervisor never restarts it (the 2026-07-14 asa
+    handshake but reports every DB-backed kind as disabled
+    (``store required`` — before gr779330 it reported ``unknown kind``),
+    and a liveness-only supervisor never restarts it (the 2026-07-14 asa
     incident — a degraded ``precis serve`` served asa a memory/gripe-less
     context for hours). Crashing instead lets the parent respawn until the
     DB is back. The window rides out the boot-race without churning on a
