@@ -6281,6 +6281,7 @@ class PaperHandler(Handler):
         *,
         id: str | int | None = None,
         args: dict[str, Any] | None = None,
+        dry_run: bool = False,
         **_kw: Any,
     ) -> Response:
         """``delete(id=N, args={'comment': K[, 'restore': True]})`` hides
@@ -6306,6 +6307,7 @@ class PaperHandler(Handler):
                 kind=kind,
                 comment_kind=_NOTE_KIND,
                 args=args,
+                dry_run=dry_run,
                 chunks=chunks,
                 number_of=_note_number,
             )

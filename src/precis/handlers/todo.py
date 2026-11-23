@@ -3420,7 +3420,12 @@ class TodoHandler(NumericRefHandler):
                 )
             ref = self._resolve_live_ref(self._coerce_id(id))
             return tl.delete_comment(
-                self.store, ref, kind=self.kind, comment_kind=_COMMENT_KIND, args=args
+                self.store,
+                ref,
+                kind=self.kind,
+                comment_kind=_COMMENT_KIND,
+                args=args,
+                dry_run=dry_run,
             )
         ref_id = self._coerce_id(id)
         guards.check_owner_only_ref(self.store, ref_id)

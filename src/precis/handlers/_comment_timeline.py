@@ -653,6 +653,7 @@ def delete_comment(
     kind: str,
     comment_kind: str,
     args: dict[str, Any],
+    dry_run: bool,
     chunks: list[ChunkRow] | None = None,
     number_of: Callable[[ChunkRow], int] | None = None,
 ) -> Response:
@@ -705,10 +706,18 @@ def delete_comment(
     if _truthy(args.get("restore")):
         if number not in hidden:
             return Response(body=f"comment {number} of {kind} {ref.id} was not hidden.")
+        if dry_run:
+            return Response(
+                body=f"dry run: would restore comment {number} of {kind} {ref.id}."
+            )
         _set_hidden(store, ref.id, number, hide=False)
         return Response(body=f"restored comment {number} of {kind} {ref.id}.")
     if number in hidden:
         return Response(body=f"comment {number} of {kind} {ref.id} is already hidden.")
+    if dry_run:
+        return Response(
+            body=f"dry run: would hide comment {number} of {kind} {ref.id}."
+        )
     _set_hidden(store, ref.id, number, hide=True)
     return Response(
         body=(

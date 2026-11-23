@@ -2943,6 +2943,7 @@ class GripeHandler(NumericRefHandler):
         *,
         id: str | int | None = None,
         args: dict[str, Any] | None = None,
+        dry_run: bool = False,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -2956,14 +2957,19 @@ class GripeHandler(NumericRefHandler):
         if args and "comment" in args:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return tl.delete_comment(
-                self.store, ref, kind=self.kind, comment_kind=_COMMENT_KIND, args=args
+                self.store,
+                ref,
+                kind=self.kind,
+                comment_kind=_COMMENT_KIND,
+                args=args,
+                dry_run=dry_run,
             )
         if args:
             raise BadInput(
                 f"unknown delete args {sorted(args)!r}",
                 next=f"delete(kind={self.kind!r}, id={id}, args={{'comment': <K>}})",
             )
-        return super().delete(id=id, **_kw)
+        return super().delete(id=id, dry_run=dry_run, **_kw)
 
     # ── search: chunk (body + comment) search grouped by ref lives in
     # NumericRefHandler via the search_body_chunks opt-in above. We only

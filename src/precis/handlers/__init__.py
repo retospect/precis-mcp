@@ -24,6 +24,7 @@ Cached record selectors preserve ref identity despite numeric slug collisions.
 Cache finds resolve stored rows without fetching. Withheld bodies also hide
 section handles, and tag changes follow find validation.
 Cache eyes apply injection verdicts while retaining link rings.
+Comment visibility previews share target and state validation with apply.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
 Crossref misses leave DOI health unverified because other agencies register DOIs.

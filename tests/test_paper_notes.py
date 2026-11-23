@@ -134,6 +134,10 @@ def test_hide_and_restore_note(handler: PaperHandler, store: Store) -> None:
     for i in range(1, 3):
         handler.put(id=rid, text=f"note-{i}")
 
+    preview = handler.delete(id="wang2020state", args={"comment": 2}, dry_run=True).body
+    assert f"would hide comment 2 of paper {rid}" in preview
+    assert "note-2" in handler.get(id="wang2020state").body
+
     ack = handler.delete(id="wang2020state", args={"comment": 2}).body
     assert "hid comment 2" in ack
     assert store.fetch_refs_by_ids({rid})[rid].meta["hidden_comments"] == [2]

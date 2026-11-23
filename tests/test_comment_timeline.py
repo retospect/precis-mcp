@@ -146,6 +146,16 @@ def test_hide_and_restore(which: str, gripe: GripeHandler, todo: TodoHandler) ->
     rid = _new(h)
     for i in range(1, 5):
         h.put(id=rid, text=f"note-{i}")
+    hide = {"comment": 4}
+    assert (
+        f"would hide comment 4 of {which} {rid}"
+        in h.delete(id=rid, args=hide, dry_run=True).body
+    )
+    previewed = h.get(id=rid, view="comments").body
+    assert "note-4" in previewed and "[hidden]" not in previewed
+    assert 4 not in h.store.fetch_refs_by_ids({rid})[rid].meta.get(
+        "hidden_comments", []
+    )
     assert "hid comment 4" in h.delete(id=rid, args={"comment": 4}).body
     out = h.get(id=rid).body  # the ref itself is still live
     assert "note-4" not in out
@@ -156,6 +166,11 @@ def test_hide_and_restore(which: str, gripe: GripeHandler, todo: TodoHandler) ->
     assert h.store.fetch_refs_by_ids({rid})[rid].meta["hidden_comments"] == [4]
     assert "already hidden" in h.delete(id=rid, args={"comment": 4}).body
     restore = {"comment": 4, "restore": True}
+    assert (
+        f"would restore comment 4 of {which} {rid}"
+        in h.delete(id=rid, args=restore, dry_run=True).body
+    )
+    assert h.store.fetch_refs_by_ids({rid})[rid].meta["hidden_comments"] == [4]
     assert "restored comment 4" in h.delete(id=rid, args=restore).body
     assert "note-4" in h.get(id=rid, view="comments").body
     assert "was not hidden" in h.delete(id=rid, args=restore).body
