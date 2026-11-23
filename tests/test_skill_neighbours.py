@@ -2,9 +2,9 @@
 
 Pins :func:`precis.skill_neighbours.skill_neighbour_audit` — see that
 module's docstring for the report's sections. The fast legs run on the
-regular gate; the live ``search()`` sweep is ``nightly`` — one real
-search per linked shipped skill (~0.5 s × ~220 ≈ 2 min) clears the 30 s
-gate bar.
+regular gate. The live ``search()`` sweep stays ``nightly`` because it
+runs one real search per linked shipped skill. Batches give each group
+its own per-test timeout under xdist.
 """
 
 from __future__ import annotations
@@ -82,6 +82,8 @@ _KNOWN_ISOLATED: tuple[str, ...] = (
     "sci-results",
     "sci-survey-section",
 )
+
+_SEARCH_SWEEP_BATCHES = 16
 
 
 @pytest.fixture
@@ -239,11 +241,9 @@ def test_search_related_line_names_graph_neighbours(
     assert "related: b" in body
 
 
-@pytest.mark.nightly(
-    reason="~2 min at 0.5 s/search × ~220 linked skills — over the 30 s "
-    "gate bar; runs in the nightly full shape and local scripts/test"
-)
-def test_search_exposes_each_linked_skills_neighbours() -> None:
+@pytest.mark.nightly(reason="the full corpus search sweep exceeds the 30 s gate budget")
+@pytest.mark.parametrize("batch", range(_SEARCH_SWEEP_BATCHES))
+def test_search_exposes_each_linked_skills_neighbours(batch: int) -> None:
     """Whether searching a skill exposes its neighbours — measured.
 
     For every non-persona shipped skill with wikilink neighbours,
@@ -258,7 +258,7 @@ def test_search_exposes_each_linked_skills_neighbours() -> None:
     graph = _get_skill_graph()
     misses: list[str] = []
     thin: list[str] = []
-    for slug in sorted(_list_skills()):
+    for slug in sorted(_list_skills())[batch::_SEARCH_SWEEP_BATCHES]:
         if parse_frontmatter(corpus[slug]).flavor == "persona":
             continue
         linked = graph.linked(slug)
