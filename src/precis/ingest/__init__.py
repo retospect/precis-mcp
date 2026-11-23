@@ -82,9 +82,10 @@ Retraction Watch Record IDs identify them across checks, including Watch
 records without a DOI. Only a shared DOI reconciles live records from the
 two providers, since another notice can have the same nature.
 
-Cite-key and notice-slug allocation count aliases as occupied to preserve
-existing citations. The partial trigram index on ``ref_identifiers.id_value``
-covers both identifier kinds so these prefix probes are eligible to use it.
+Cite-key and notice-slug allocation reserve aliases to preserve citations.
+The partial trigram index on ``ref_identifiers.id_value`` supports prefix
+probes for both. Duplicate ingest returns the canonical cite key because
+the watcher uses it to name corpus files.
 
 Discovery layer (F20)
 ---------------------

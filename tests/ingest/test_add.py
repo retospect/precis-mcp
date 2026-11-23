@@ -42,6 +42,7 @@ from precis.ingest.add import (
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.fetch_sidecar import read_sidecar, write_sidecar
 from precis.ingest.markup import MarkupParseError
+from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -260,7 +261,9 @@ class TestPrecisAddIdempotent:
         # extraction back before the dedup check.
         assert m.call_count == 1
 
-    def test_fast_path_skips_marker_when_pdf_sha256_known(self, store, tmp_path: Path):
+    def test_fast_path_skips_marker_when_pdf_sha256_known(
+        self, store: Store, tmp_path: Path
+    ) -> None:
         """If the PDF's ``pdf_sha256`` is already in ``ref_identifiers``,
         ``precis_add(PdfInput)`` must return ``inserted=False`` without
         invoking ``extract_paper`` at all.
@@ -293,6 +296,13 @@ class TestPrecisAddIdempotent:
                 ("pdf_sha256", sha, seeded_ref_id),
             )
             conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, created_at) "
+                "VALUES ('cite_key', 'seed24', %s, '2026-06-25T10:00:00Z'), "
+                "('cite_key', 'zed24', %s, '2026-06-25T10:00:00Z'), "
+                "('cite_key', 'alpha2024wrong', %s, '2026-06-27T10:00:00Z')",
+                (seeded_ref_id, seeded_ref_id, seeded_ref_id),
+            )
+            conn.execute(
                 "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
                 "VALUES (%s, 0, 'paragraph', 'seeded body', '{}'::jsonb)",
                 (seeded_ref_id,),
@@ -306,6 +316,7 @@ class TestPrecisAddIdempotent:
         assert isinstance(result, IngestResult)
         assert result.inserted is False
         assert result.ref_id == seeded_ref_id
+        assert result.cite_key == result.identifiers["cite_key"] == "seed24"
         assert result.pdf_sha256 == sha
         assert result.chunks_written == 0
 

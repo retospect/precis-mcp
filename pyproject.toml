@@ -1001,6 +1001,7 @@ extend-exclude = [
     "scripts/_prod-run",
     "scripts/agent-start",
     "scripts/alchem-diff",
+    "scripts/audit-paper-cite-keys.sql",
     "scripts/backlog-lint",
     "scripts/bench",
     "scripts/bench-ann-recall",

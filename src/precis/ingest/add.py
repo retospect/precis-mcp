@@ -3684,7 +3684,11 @@ def _hit_result_from_db(
     just enriched it.
     """
     rows = conn.execute(
-        "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
+        # The mapping keeps the last row of each kind. For cite_key, put
+        # the canonical key (oldest, then lexical first, as in v_refs) last.
+        "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s "
+        "ORDER BY CASE WHEN id_kind = 'cite_key' THEN created_at END DESC, "
+        "CASE WHEN id_kind = 'cite_key' THEN id_value END DESC",
         (ref_id,),
     ).fetchall()
     identifiers: dict[str, str] = {kind: value for kind, value in rows}
