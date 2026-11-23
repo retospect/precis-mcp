@@ -58,11 +58,10 @@ def _open_tags(store: Store, mid: int) -> set[str]:
 # ── validation ──────────────────────────────────────────────────────────
 
 
-def test_create_defaults_status_ruled_on_and_review_by() -> None:
+def test_undated_create_defaults_status_and_review_by() -> None:
     out = validate_ruling_meta({}, existing=None, today=TODAY)
     assert out == {
         "status": "in-force",
-        "ruled_on": "2026-11-01",
         "review_by": "2026-11-15",
     }
 
@@ -148,14 +147,19 @@ def test_parse_meta_line_reads_the_last_meta_line() -> None:
 # ── put / edit ──────────────────────────────────────────────────────────
 
 
-def test_put_ruling_stamps_defaults_and_the_ack_names_them(
+def test_put_ruling_leaves_decision_date_unset(
     handler: MemoryHandler, store: Store
 ) -> None:
-    resp = handler.put(text="land when feature-complete", tags=["ruling"])
+    resp = handler.put(
+        text="Land when feature-complete.\n\nReto 2026-10-26.",
+        tags=["ruling"],
+    )
     meta = _meta(store, id_of(resp.body))
     assert meta["status"] == "in-force"
-    ruled_on = date.fromisoformat(meta["ruled_on"])
-    assert meta["review_by"] == (ruled_on + timedelta(days=14)).isoformat()
+    assert "ruled_on" not in meta
+    assert (
+        meta["review_by"] == (datetime.now(UTC).date() + timedelta(days=14)).isoformat()
+    )
     assert "ruling meta: " in resp.body and "status=in-force" in resp.body
 
 

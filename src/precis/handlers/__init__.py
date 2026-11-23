@@ -108,6 +108,8 @@ records can be stubs.
 Paper identity warnings exclude misleading issue-page prefixes.
 
 Memory body writes lock the ref and anchored writes recheck the snapshot.
+Ruling dates come from explicit metadata because a moved decision can
+predate its memory node. Undated creates still get a review deadline.
 Anchors retry folded on a literal miss to handle retyped prose.
 Transaction and resolver details live in :mod:`precis.handlers.memory`.
 Attribution reads rendered decimals in cited text.

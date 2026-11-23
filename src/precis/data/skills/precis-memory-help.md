@@ -1191,10 +1191,12 @@ A ruling is a memory tagged `ruling`: a temporary patch on the
 documented system, integrated into skills/spec and then archived. Its
 meta (`put(meta=…)` / `edit(args={'meta': …})`, only on a `ruling`
 node — `tag`'s `meta=` is a todo-only door and refuses here): `ruled_by`,
-`ruled_on` (ISO date, default today), `status` (`in-force` default,
+`ruled_on` (ISO date, unset unless supplied in meta), `status` (`in-force` default,
 `absorbed` = integrated, `archived` = moot, `retired` = won't-do),
-`review_by` (ISO date, default later of `ruled_on`/today + 14 days). The status lives
-in meta only; writing it drops a leftover `status:<v>` tag. Link what a
+`review_by` (ISO date). On create, `review_by` defaults to 14 days after the
+later of `ruled_on` and today (UTC), or 14 days after today if `ruled_on` is
+unset. The status lives in meta only; writing it drops a leftover
+`status:<v>` tag. Link what a
 ruling governs with `link(kind='memory', id=<ruling>, target='todo:N',
 rel='related-to', meta={'rel_intent': 'decides'})`.
 
