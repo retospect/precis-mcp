@@ -438,7 +438,14 @@ target lines — with the selector and the count together answered inside
 `SPOT_SELECTION_TIMEOUT_S` = 3 min; `testmon=1` is unbounded and goes
 `--quick`), else `--quick` — engine
 diffs follow the same rule, and a FULL-selector refusal relaunches
-`--quick`, never `--full`. The full suite is the release gate's job —
+`--quick`, never `--full`. One class bypasses the spot bound
+(gr579772): a diff touching a `SHARED_WRITE_PATHS` module (the
+write-path files every memory kind shares — `filing_origin.py`,
+`principal.py`, `runtime/dispatch.py`, `store/_refs_ops.py`,
+`tools/core.py`) is forced `--checked` outright, because its ~150-target
+reverse-dependency selection is exactly what the lint-only quick lane
+kept missing (the r236/r275/r289/r307/r309 release reds); the spot
+probe is skipped and a FULL answer still relaunches `--quick`. The full suite is the release gate's job —
 GitHub CI on `release/r<N>`; a red release goes through the existing
 fix loop. The td574937 E1 "an engine land never drops to lint" clause is
 superseded: the engine review reads the landed diff, not a checked gate.

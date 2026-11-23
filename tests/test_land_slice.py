@@ -4950,6 +4950,65 @@ def test_non_engine_land_is_unchanged(seams: dict[str, Any]) -> None:
     assert ctx.meta_set["engine_paths"] == []
 
 
+# ── shared write-path lands (gr579772) ─────────────────────────────
+# A diff touching a SHARED_WRITE_PATHS module — a write-path file every
+# memory kind shares — lands ``--checked`` outright: its impacted-tests
+# selection runs ~150 target lines, always over the spot bound, so the
+# probe is skipped and the stamp rides the job meta for the flagless
+# ``_planned_flag`` default. A release fix still lands lint-only:
+# ship's release lane refuses ``--checked``.
+
+
+def test_shared_write_path_land_forces_checked(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seams["changed_paths"] = ["src/precis/filing_origin.py", "src/precis/x.py"]
+    probed: list[Path] = []
+
+    def _probe(tree: Path) -> bool:
+        probed.append(tree)
+        return True
+
+    monkeypatch.setattr(land_slice, "spot_selection", _probe)
+    store = _Store()
+    store.add_todo(42)
+    # No engine hit, no params.checked ask — the shared module alone
+    # forces the checked gate.
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv[1] == "--checked"
+    assert probed == [], "the spot probe ran on a forced-checked land"
+    assert ctx.meta_set["shared_paths"] == ["src/precis/filing_origin.py"]
+    assert ctx.meta_set["engine_paths"] == []
+    # the flagless relaunch default reads the same stamps
+    assert land_slice._planned_flag(ctx.meta_set, _params(seams)) == "--checked"
+
+
+def test_shared_write_path_release_fix_stays_quick(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release fix (``--onto release/r<N>``) touching a shared module
+    still ships ``--quick``: ship's release lane refuses ``--checked``
+    and the release push's own check.yml run is its gate."""
+    store = _Store()
+    store.add_todo(42, meta={"land_target": "release/r7", "op": "run_slice"})
+    seams["changed_paths"] = ["src/precis/runtime/dispatch.py"]
+    probed: list[Path] = []
+
+    def _probe(tree: Path) -> bool:
+        probed.append(tree)
+        return True
+
+    monkeypatch.setattr(land_slice, "spot_selection", _probe)
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv[1] == "--quick" and "--onto" in argv
+    assert probed == []
+    assert ctx.meta_set["shared_paths"] == ["src/precis/runtime/dispatch.py"]
+
+
 # ── deny gate (gr645524) ───────────────────────────────────────────
 # The land re-checks the resolved deny set before launching ship — the
 # run's poll check is the first gate, this is the last (td574960's
@@ -6257,6 +6316,44 @@ def test_ship_flag_is_checked_only_on_a_spot_selection() -> None:
     # asked + wide: --quick, engine included
     assert land_slice.ship_flag({"checked": True}, spot=False) == "--quick"
     assert land_slice.ship_flag({}, engine=True, spot=False) == "--quick"
+
+
+def test_ship_flag_shared_write_path_forces_checked() -> None:
+    """gr579772: a diff touching a :data:`SHARED_WRITE_PATHS` module earns
+    ``--checked`` outright — the spot bound would always veto the ~150-
+    target selection these modules draw, and that reverse-dependency set
+    is the point: the r236-class release reds rode a shared module past a
+    lint-only ``--quick`` land."""
+    assert land_slice.ship_flag({}, shared=True) == "--checked"
+    assert land_slice.ship_flag({"checked": False}, shared=True) == "--checked"
+    # the wide-selection veto does not apply to a shared diff
+    assert land_slice.ship_flag({}, shared=True, spot=False) == "--checked"
+    assert (
+        land_slice.ship_flag({"checked": True}, engine=True, spot=False, shared=True)
+        == "--checked"
+    )
+
+
+def test_shared_write_hits_names_the_five_modules() -> None:
+    """Exact, case-folded membership: the gripe names five files, not a
+    package — ``filing_origin.py.bak`` or ``principal_x.py`` is not one."""
+    for path in land_slice.SHARED_WRITE_PATHS:
+        assert land_slice.shared_write_hits([path]) == [path], path
+    # a case-mangled write is the same file — the hit reports the
+    # branch's own spelling, like ``lanes.engine_hits``
+    assert land_slice.shared_write_hits(
+        ["SRC/Precis/Filing_Origin.py", "src/precis/x.py"]
+    ) == ["SRC/Precis/Filing_Origin.py"]
+    assert (
+        land_slice.shared_write_hits(
+            [
+                "src/precis/filing_origin.py.bak",
+                "src/precis/filing_origin2.py",
+                "src/precis/runtime/dispatch_extra.py",
+            ]
+        )
+        == []
+    )
 
 
 def test_spot_selection_verdicts(

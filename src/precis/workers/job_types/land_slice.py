@@ -352,7 +352,12 @@ title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
 suite before deploy) unless a checked gate was asked for —
 ``params.checked`` (a pr-intake plan's land node) or an engine-path
 diff (td574937 E1) — AND the selector's answer is a small spot
-selection (:func:`spot_selection`). Reto 2026-11-08 (gr599427): lands
+selection (:func:`spot_selection`). One class bypasses that bound
+(gr579772): a diff touching a :data:`SHARED_WRITE_PATHS` module —
+the write-path files every memory kind shares — is forced
+``--checked`` outright, because its wide reverse-dependency selection
+is exactly the set the lint-only quick lane kept missing (the
+r236/r275/r289/r307/r309 release reds). Reto 2026-11-08 (gr599427): lands
 run basic checks only — lint plus a spot check; GitHub CI at the
 release gate runs the suite, so no land runs the wide or the full
 local gate (E1's "an engine land never drops to lint" is superseded —
@@ -414,6 +419,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -486,15 +492,27 @@ NO_DIFF_NOTE = (
 )
 
 
-def ship_flag(params: dict[str, Any], engine: bool = False, spot: bool = False) -> str:
-    """``--checked`` only when a checked gate was asked for AND the
-    selector's answer is a small spot selection — else ``--quick``.
+def ship_flag(
+    params: dict[str, Any],
+    engine: bool = False,
+    spot: bool = False,
+    shared: bool = False,
+) -> str:
+    """``--checked`` when a checked gate was asked for AND the
+    selector's answer is a small spot selection — or unconditionally
+    for a shared-write-path diff — else ``--quick``.
 
     A land asks for the checked gate two ways: ``params.checked`` (a
     pr-intake plan's land node — r200 went red on a factory land for an
     ``args`` key only the dispatch contract test catches) or an
     engine-path diff (td574937 E1). It earns ``--checked`` only when
     ``spot`` — :func:`spot_selection`, read by the caller — is True.
+
+    A ``shared`` diff (a :data:`SHARED_WRITE_PATHS` module, gr579772)
+    earns ``--checked`` outright: the spot bound exists to keep an
+    ordinary checked land cheap, but for these modules the wide
+    reverse-dependency selection IS the ask — the r236-class release
+    reds each rode one of them past a lint-only ``--quick``.
 
     Reto 2026-11-08 (gr599427): every factory land — engine diffs
     included — runs basic checks only; GitHub CI at the release gate
@@ -504,9 +522,42 @@ def ship_flag(params: dict[str, Any], engine: bool = False, spot: bool = False) 
     wide selection was a 1 h wall death, not a safety net (11k ids on
     a stale coverage map, gr561463).
     """
+    if shared:
+        return "--checked"
     if engine or params.get("checked") is True:
         return "--checked" if spot else "--quick"
     return "--quick"
+
+
+#: The write-path modules every memory kind shares (gr579772). A land
+#: whose diff touches one is forced onto ``--checked`` — the
+#: impacted-tests selection for these files is exactly the
+#: reverse-dependency set the quick lane kept missing (r236, r275, r289,
+#: r307, r309 all went red on a shared-module change that landed
+#: lint-only). Their selections run ~150 target lines — far over the
+#: :data:`SPOT_SELECTION_MAX_IDS` bound, which is why the force sits
+#: outside :func:`spot_selection`: the spot rule only decides whether a
+#: checked ASK is cheap, never whether this diff may skip the gate.
+#: ship's ``--checked`` still refuses a FULL answer, so a diff the
+#: selector cannot narrow falls back to ``--quick`` through
+#: :func:`full_fallback_flag`.
+SHARED_WRITE_PATHS: tuple[str, ...] = (
+    "src/precis/filing_origin.py",
+    "src/precis/principal.py",
+    "src/precis/runtime/dispatch.py",
+    "src/precis/store/_refs_ops.py",
+    "src/precis/tools/core.py",
+)
+
+#: :data:`SHARED_WRITE_PATHS` lowercased — the match folds case like
+#: :func:`precis.plans.lanes.engine_hits` does.
+_SHARED_WRITE_LOWER = frozenset(p.lower() for p in SHARED_WRITE_PATHS)
+
+
+def shared_write_hits(paths: Iterable[str]) -> list[str]:
+    """The ``paths`` naming a :data:`SHARED_WRITE_PATHS` module, exact
+    match under a case fold (the slice hosts' filesystems fold case)."""
+    return sorted({p for p in paths if p.lower() in _SHARED_WRITE_LOWER})
 
 
 #: ``--checked`` earns its gate only when the impacted-tests selection's
@@ -599,12 +650,13 @@ def spot_selection(tree: Path) -> bool:
 
 def _planned_flag(meta: dict[str, Any] | None, params: dict[str, Any]) -> str:
     """The flag submit picked for this job — the default when a handle
-    carries none (the engine/spot stamps ride the job meta)."""
+    carries none (the engine/spot/shared stamps ride the job meta)."""
     m = meta or {}
     return ship_flag(
         params,
         engine=bool(m.get("engine_paths")),
         spot=bool(m.get("spot_selection")),
+        shared=bool(m.get("shared_paths")),
     )
 
 
@@ -3395,7 +3447,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     base_ref = _land_base(tree, onto)
     paths = _rs.changed_paths(tree, base_ref)
     hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
-    ctx.set_meta(engine_paths=hits[:50])
+    shared = [] if paths is None else shared_write_hits(paths)
+    ctx.set_meta(engine_paths=hits[:50], shared_paths=shared[:50])
     if paths is None:
         # td645833: a diff git cannot enumerate cannot be deny-checked —
         # refuse rather than let an unverified branch past the last gate
@@ -3589,11 +3642,20 @@ def submit(ctx: Any, spec: Any) -> Any:
     # is a spot selection; the stamp rides the job so a flagless handle's
     # default (:func:`_planned_flag`) agrees. A release fix (``onto``)
     # lands lint-only: ship's release lane refuses --checked, and the
-    # release push's own check.yml run is its gate.
-    wants_spot = onto is None and (bool(hits) or params.get("checked") is True)
+    # release push's own check.yml run is its gate. gr579772: a shared
+    # write-path diff is forced --checked outright — its selection runs
+    # far over the spot bound — so the spot probe (which could only ever
+    # cost the launch up to SPOT_SELECTION_TIMEOUT_S here) is skipped.
+    wants_spot = (
+        onto is None and not shared and (bool(hits) or params.get("checked") is True)
+    )
     spot = spot_selection(tree) if wants_spot else False
     ctx.set_meta(spot_selection=spot)
-    flag = "--quick" if onto else ship_flag(params, engine=bool(hits), spot=spot)
+    flag = (
+        "--quick"
+        if onto
+        else ship_flag(params, engine=bool(hits), spot=spot, shared=bool(shared))
+    )
     handle = _launch_ship(ctx, tree, flag, subject)
     if handle is None:
         return None
@@ -3979,9 +4041,22 @@ def _adopt_ship(
         params = dict((ctx.meta or {}).get("params") or {})
         paths = _rs.changed_paths(tree)
         hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
-        spot = spot_selection(tree) if hits or params.get("checked") is True else False
-        ctx.set_meta(engine_paths=hits[:50], spot_selection=spot)
-        flag = ship_flag(params, engine=bool(hits), spot=spot)
+        shared = [] if paths is None else shared_write_hits(paths)
+        spot = (
+            spot_selection(tree)
+            if not shared and (hits or params.get("checked") is True)
+            else False
+        )
+        ctx.set_meta(
+            engine_paths=hits[:50], shared_paths=shared[:50], spot_selection=spot
+        )
+        # Same onto rule as submit: a release fix lands lint-only —
+        # ship's release lane refuses --checked.
+        flag = (
+            "--quick"
+            if land_target(ctx.store, params, todo_id) is not None
+            else ship_flag(params, engine=bool(hits), spot=spot, shared=bool(shared))
+        )
     subject = (
         subject
         or busy["stamp"].get("subject")

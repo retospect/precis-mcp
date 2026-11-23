@@ -1293,6 +1293,8 @@ Known limits:
   and ships `--checked` when the selector's answer is a small spot
   selection — else `--quick` like every land (gr599427, Reto
   2026-11-08: lands run lint plus a spot check; GitHub CI is the gate —
+  except a `SHARED_WRITE_PATHS` diff, which is forced `--checked`
+  outright since its wide selection is the ask (gr579772) — and
   a FULL-selector refusal relaunches `--quick`, never `--full`); until every
   engine commit in `origin/prod..origin/main` — read from git, not
   jobs, so a hand land with no `land_slice` job still gates
