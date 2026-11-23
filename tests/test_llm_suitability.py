@@ -7,7 +7,6 @@ declared scipy version, not transcribed by hand.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -597,34 +596,36 @@ def test_build_explore_counts_feed_the_exploration_pick(store: Any) -> None:
     assert tried == {}
 
 
-def test_build_runs_scan_is_bounded_on_the_primary_key(store: Any) -> None:
-    """The build-run read is a ``refs_pkey`` range above the window's id
-    floor (the floor itself a backward ``refs_pkey`` walk), not a scan
-    of every run_slice job ever. With seq scans off the plan names the
-    primary key."""
-    from precis.utils.llm import suitability
+def test_build_runs_prunes_jobs_below_the_ref_id_floor(store: Any) -> None:
+    """Separate the id floor from the time filter with out-of-order dates."""
+    from precis.utils.llm.suitability import build_runs
 
-    sql = suitability._BUILD_RUNS_SQL.format(filters="")
-    with store.pool.connection() as conn:
-        try:
-            conn.execute("SET enable_seqscan = off")
-            plan = "\n".join(
-                str(r[0])
-                for r in conn.execute(
-                    f"EXPLAIN {sql}", ("default", "build_signal", 30, 30)
-                ).fetchall()
+    adapter = f"adapter_{uuid4().hex[:8]}"
+    below = _build(store, "below-floor", adapter=adapter)
+    floor = int(store.insert_ref(kind="todo", slug=None, title="floor", meta={}).id)
+    expired = _build(store, "expired", adapter=adapter)
+    recent = _build(store, "recent", adapter=adapter)
+    assert below < floor < expired < recent
+
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '32 days' WHERE ref_id = %s",
+            (floor,),
+        )
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '30 days 1 hour' "
+            "WHERE ref_id = %s",
+            (expired,),
+        )
+    try:
+        runs = build_runs(store, window_days=30, adapter=adapter)
+    finally:
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() WHERE ref_id IN (%s, %s)",
+                (floor, expired),
             )
-        finally:
-            conn.execute("RESET enable_seqscan")
-    # The floor: a backward walk of a ref_id-leading btree (refs_pkey or
-    # its twin refs_ref_id_kind_key) that stops at the window's edge.
-    assert re.search(
-        r"Index Scan Backward using (refs_pkey|refs_ref_id_kind_key) on refs f", plan
-    ), plan
-    # The outer scan: the floor is an index condition on ref_id, not a
-    # heap filter over every run_slice job.
-    cond = [ln for ln in plan.splitlines() if "Index Cond" in ln and "ref_id >" in ln]
-    assert cond, plan
+    assert [run.model for run in runs] == ["recent"]
 
 
 def test_build_runs_window_keeps_builds_under_an_older_row_on_a_newer_id(

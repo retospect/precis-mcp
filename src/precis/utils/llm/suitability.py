@@ -216,10 +216,9 @@ class BuildRun(NamedTuple):
 #: ``ref_id`` floor only prunes the scan: the scalar subquery walks a
 #: ``ref_id``-leading btree (``refs_pkey`` or ``refs_ref_id_kind_key``)
 #: backwards from the newest ref to the first one created a day before
-#: the cutoff, and ``j.ref_id > floor`` rides the outer index — the test
-#: DB plans ``refs_slice_overlap_jobs_idx`` (the ``run_slice``/``land_slice``
-#: partial index) with ``job_type = 'run_slice' AND ref_id > floor`` as
-#: its index condition, so no old job's heap row is read.
+#: the cutoff. ``j.ref_id > floor`` can use the outer index, including
+#: the ``run_slice``/``land_slice`` partial index. PostgreSQL may also
+#: apply the floor as a filter, depending on table statistics.
 #:
 #: The day of slack (:data:`_BUILD_RUNS_FLOOR_SLACK`, td763090) is what
 #: keeps the floor from dropping an in-window build: ``created_at``
