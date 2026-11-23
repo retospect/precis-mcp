@@ -3165,6 +3165,8 @@ def link(
     `mode='remove'` with `rel=` removes one (target, rel) pair,
     without `rel=` removes every link to the target. `rel=` defaults
     to `related-to` on add.
+    `note=` (edge note) is taken by finding and structure only; on
+    memory/paper/taxon/todo/gripe use `reason=` for the edge's why.
 
     Full reference: get(kind='skill', id='precis-link-help'), or
     search(kind='skill', q='typed links between refs') for a topical lookup.
@@ -3307,6 +3309,7 @@ _LINK_HELP: dict[str, str] = {
     "rel": "Relation slug. Defaults to 'related-to' on add.",
     "reason": "Edge why (meta.reason). '.' = reviewed-obvious. "
     "memory/finding/paper/taxon/todo/gripe only.",
+    "note": "Edge note. finding/structure only; other kinds use reason=.",
 }
 
 CLI_HELP: dict[str, dict[str, str]] = {
