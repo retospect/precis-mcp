@@ -43,6 +43,11 @@ deployment setting it is gated on is unset), `store required`, or a
 for this run* and told you what to do instead. Example: a draft-editing
 tick gates off the `tex` file kind and the reason reads `this project's
 deliverable is draft 'X' — write prose with put(kind='draft' ...) …`.
+`store required` means this process booted with no database, so every
+DB-backed kind (memory, todo, paper, skill, …) answers like this, not
+`unknown kind`. Do not retry: the operator must bind `PRECIS_DATABASE_URL`
+and restart, or the call must go to a deployment that has a store. The
+cold-start banner omits these kinds.
 When the reason is an instruction, follow it. Otherwise the kind is
 simply not callable from this session: use a kind that is live, and tell
 the user which kind is off and why instead of retrying.
@@ -85,7 +90,7 @@ get(kind="skill", id="precis-help")  # live kinds + verbs in this build
 get(kind="skill", id="precis-overview")  # full kind topology + Needs column
 ```
 
-The cold-start banner already names every absent kind:
+The cold-start banner names absent kinds, except `store required` ones:
 
 ```text
 Kinds unavailable: math (missing WOLFRAM_APP_ID), patent (prohibited).
