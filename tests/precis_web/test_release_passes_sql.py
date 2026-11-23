@@ -74,8 +74,7 @@ def _poll_job(store: Store, node_id: int, sha: str, rng: str, run_id: str = "") 
 
 
 def _ruling_ask(store: Store, root_id: int, *, blocks: str = "") -> Any:
-    """The ruling ask the tick files under a pass root — the exhausted
-    release-fix loop's ``_mint_loop_ask`` shape (parented to the root,
+    """A ruling ask filed under a pass root (parented to the root,
     tagged ``plan:<root>``, ``blocks`` the root; ``blocks="nothing"``
     gives the informational no-run stall ask instead)."""
     ref = store.insert_ref(
@@ -278,7 +277,7 @@ def test_pending_poll_job_surfaces_the_running_ci(store: Store) -> None:
 
 
 def test_exhausted_loop_ruling_outranks_the_red_gate(store: Store) -> None:
-    """The exhausted release-fix loop's ruling ask parks the pass on a
+    """A ruling ask on the pass root parks the pass on a
     human call — the step names the ask, not "CI red" (td609076)."""
     mint = T.mint_release_pass(store)
     _cut(store, mint, "r7", SHA, RNG)

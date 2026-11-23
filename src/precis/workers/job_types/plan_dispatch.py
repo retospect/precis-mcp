@@ -33,12 +33,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    'nothing'``) counts as closed here and in step 3: it is a record for the
    human, not a child still at work (gr589823). A ``waiting-for:`` tag on
    the loop itself parks it outright — no re-mint, no close (td610546).
-   A body with no minter
-   closes the loop with a comment naming the gap. A ``release-fix`` loop's automatic cap is
-   :data:`_RELEASE_FIX_AUTO_CAP` (its node stamps no ``max``): the
-   second red iteration files a ruling ask (naming the round, the head
-   sha and the failing CI) and closes the loop — a third fix is a human
-   call (me573231).
+   A body with no minter closes the loop with a comment naming the gap.
+   Release fixes continue on each red verdict until the release is green.
 2a. **reviews** — a reviewer generator (``meta.generate.role ==
    'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
    its newest comment starting ``review:`` posted since that job was minted
@@ -587,6 +583,7 @@ import math
 import os
 import re
 from collections.abc import Iterator, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -1234,16 +1231,6 @@ _ASK_OPTIONS: list[str] = [
     "retry with a different lane/model",
     "rewrite the brief",
     "won't do",
-]
-#: Automatic ``release-fix`` iterations the tick runs unattended
-#: (me573231): two red fixes, then the exhausted-loop ask — a third fix
-#: never starts by itself. A release-fix loop stamps no ``meta.loop.max``
-#: (``nodes.TICK_CAPPED_BODIES``); one an older pass stamped is ignored.
-#: The one number is ``templates.RELEASE_FIX_CAP``.
-_RELEASE_FIX_AUTO_CAP = _templates.RELEASE_FIX_CAP
-_LOOP_ASK_OPTIONS: list[str] = [
-    "close this pass and let release_poll start a fresh one",
-    "hand release with /go",
 ]
 #: Action lines kept in the job summary.
 _NOTES_CAP = 60
@@ -1990,48 +1977,33 @@ def _step_loops(
     store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
 ) -> None:
     for n in plan.todos():
-        if node_kind(n.meta) != "loop" or _closed(n) or plan.paused(n):
+        if node_kind(n.meta) != "loop" or plan.paused(n):
+            continue
+        spec = dict(n.meta.get("loop") or {})
+        body = spec.get("body")
+        if _closed(n) and not (
+            n.status == "done" and body == "release-fix" and spec.get("exhausted_ask")
+        ):
             continue
         if plan.blocked(n):
             continue
-        # A ``waiting-for:`` tag parks the loop itself — neither re-mint
-        # nor close while it waits (the reach the phases step gives the
-        # same tag on a phase or generator, td610546).
+        # A parked loop or an unfinished iteration still owns the work.
         if any(t.startswith("waiting-for:") for t in n.open_tags):
             continue
-        # An informational ask (``blocks: "nothing"``) is a record, not a
-        # gate: it does not hold the loop open (gr589823).
         if not all(_closed(c) or _informational_ask(c) for c in plan.child_todos(n)):
             continue
-        spec = dict(n.meta.get("loop") or {})
         try:
             count = int(spec.get("count") or 0)
-            cap = int(spec.get("max") or 0)
+            cap = None if body == "release-fix" else int(spec.get("max") or 0)
         except (TypeError, ValueError):
             _close_loop(w, res, n, f"meta.loop count/max unreadable: {spec!r}")
             continue
-        body = spec.get("body")
-        if body == "release-fix":
-            # me573231: the automatic cap governs, not the stamped max.
-            cap = _RELEASE_FIX_AUTO_CAP
         until = _gates.evaluate(store, spec.get("until") or {}, todo_id=n.id, now=now)
         if until.open:
-            _close_loop(w, res, n, f"until is met ({until.why})")
+            if not _closed(n):
+                _close_loop(w, res, n, f"until is met ({until.why})")
             continue
-        if count >= cap:
-            if body == "release-fix" and not spec.get("exhausted_ask"):
-                if w.dry_run:
-                    res.notes.append(
-                        f"loop td{n.id}: would file the exhausted release-fix ask"
-                    )
-                else:
-                    ask_id = _mint_loop_ask(store, n, count, until.why)
-                    w.stamp_meta(n, {"loop": {**spec, "exhausted_ask": ask_id}})
-                    res.notes.append(
-                        f"loop td{n.id}: {count} red release-fix iteration(s), "
-                        f"asked in td{ask_id}"
-                    )
-                res.asks += 1
+        if cap is not None and count >= cap:
             _close_loop(w, res, n, f"max {cap} iteration(s) reached ({until.why})")
             continue
         if not isinstance(body, str) or body not in _templates.BODIES:
@@ -2044,15 +2016,36 @@ def _step_loops(
                 "register it, then reopen this loop",
             )
             continue
-        if not w.dry_run:
-            try:
-                _templates.mint_body(store, n.id, body, iteration=count + 1)
-            except BadInput as exc:
-                _close_loop(w, res, n, f"loop body {body!r} refused: {exc.cause}")
-                continue
-        w.stamp_meta(n, {"loop": {**spec, "count": count + 1}})
+        try:
+            with nullcontext() if w.dry_run else store.atomic() as conn:
+                if body == "release-fix":
+                    # Serialize with deploy launch and any moved-head poll.
+                    if conn is not None:
+                        conn.execute(_release._LOCK_ROOT_SQL, (n.root,))
+                        ref = store.get_ref(kind="todo", id=n.id, conn=conn)
+                        if ref is None or ref.meta.get("loop") != spec:
+                            continue
+                    release = _release.release_of(store, n.id)
+                    if (
+                        release is None
+                        or _release.deploy_started(store, n.id) is not None
+                        or _release.newest_red_run(store, str(release.get("sha") or ""))
+                        is None
+                    ):
+                        continue
+                if not w.dry_run:
+                    _templates.mint_body(store, n.id, body, iteration=count + 1)
+                next_spec = {**spec, "count": count + 1}
+                next_spec.pop("exhausted_ask", None)
+                w.stamp_meta(n, {"loop": next_spec})
+                if _closed(n):
+                    w.set_status(n, "open")
+        except BadInput as exc:
+            _close_loop(w, res, n, f"loop body {body!r} refused: {exc.cause}")
+            continue
         res.loops_minted += 1
-        res.notes.append(f"loop td{n.id}: minted {body} iteration {count + 1}/{cap}")
+        suffix = f"/{cap}" if cap is not None else ""
+        res.notes.append(f"loop td{n.id}: minted {body} iteration {count + 1}{suffix}")
 
 
 # ── (2a) reviews ───────────────────────────────────────────────────
@@ -5909,13 +5902,18 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
     unsettled_subtrees: set[int] = set()
     for n in sorted(plan.todos(), key=lambda x: (-x.depth, x.id)):
         kids = plan.child_todos(n)
+        release_root = n.id == n.root and "release-pass" in n.open_tags
         # Propagate unfinished work through closed intermediate todos.
         # Otherwise the outer phase can close and drop the remaining
         # work from the next tick's candidate scan (gr722570).
         if any(
             c.id in unsettled_subtrees
             or isinstance(c.meta.get(_templates.PENDING_LAND_KEY), dict)
-            or not (_closed(c) or _informational_ask(c))
+            or not (
+                _closed(c)
+                or _informational_ask(c)
+                or (release_root and _is_ask_node(c))
+            )
             for c in kids
         ):
             unsettled_subtrees.add(n.id)
@@ -8485,8 +8483,8 @@ def _mint_rerun_ask(store: Any, n: _Node, why: str, continued: str) -> int | Non
     already continued (or still waits) without it — so it is
     ``blocks: "nothing"`` with no ``blocked-by`` edge, and the only
     option is ``acknowledged``. ``why`` names the error TYPE only,
-    never internals. Insert shape of :func:`_mint_loop_ask`; the
-    ``ci_rerun_stalled`` marker on the fix node is the dedupe."""
+    never internals. The ``ci_rerun_stalled`` marker on the fix node
+    is the dedupe."""
     context = (
         f"the validated-flake rerun stalled: {why} (fix td{n.id}, plan td{n.root})"
     )
@@ -10740,72 +10738,6 @@ def _mint_stamp_ask(store: Any, n: _Node, gid: int, sha: str, err: str) -> int:
         )
         store.add_link(
             src_ref_id=n.root, dst_ref_id=ref.id, relation="blocked-by", conn=conn
-        )
-        finish_mint(store, ref.id, conn=conn)
-    return int(ref.id)
-
-
-def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
-    """The ruling ask an exhausted ``release-fix`` loop files (me573231):
-    ``count`` automatic iterations ended red — named with the round, the
-    head sha and the failing CI — and a further fix never starts by
-    itself. Insert shape of :func:`_mint_ask`, minus the ``blocked-by``
-    link (the ask parks the whole pass, not one node). ``blocks`` names the
-    pass root, not ``"nothing"``: an informational ask no longer holds its
-    root open (gr589823), and this one must — the parking is the point."""
-    rel = _release.release_of(store, n.id)
-    rn = str((rel or {}).get("rN") or "?")
-    sha12 = str((rel or {}).get("sha") or "")[: _release.LANDED_SHA_LEN] or "?"
-    context = f"release {rn} at {sha12}: {why}"[:_ASK_CONTEXT_CAP]
-    meta: dict[str, Any] = {
-        "ask": {
-            "kind": "ruling",
-            "options": list(_LOOP_ASK_OPTIONS),
-            "blocks": f"td{n.root}",
-            "context": context,
-        }
-    }
-    check_ask_meta(meta)
-    title = (
-        f"release {rn}: {count} fix iteration(s) ended red — "
-        "close this pass or hand the release to a human?"
-    )
-    branch = _release.release_branch(rn) if rn != "?" else "the release branch"
-    body = (
-        f"The {rn} pass's release-fix loop minted {count} fix iteration(s) "
-        f"on {branch} and every one ended red ({why}). No further iteration "
-        f"is minted: {_RELEASE_FIX_AUTO_CAP} run unattended, the next is a "
-        "human call (me573231). release_poll mints no fresh pass while this "
-        "pass's root stays open, and this ask holds the root open until it is "
-        f"closed. Fix forward on {branch} by hand — a fix written on a tree cut "
-        f"from origin/{branch}, landed with `scripts/ship --onto {branch}`, "
-        "or a fix main already has cherry-picked onto it — then push; the "
-        "release head's own check.yml run is the verdict. Or answer 'hand "
-        "release with /go' to run the release yourself. Main gets the fixes "
-        "when the release merges back after its deploy."
-    )
-    with store.tx() as conn:
-        ref = store.insert_ref(
-            kind="todo",
-            slug=None,
-            title=title,
-            meta=meta,
-            parent_id=n.root,
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "open"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
-        )
-        for value in ("ask-user", "showstopper", f"plan:{n.root}"):
-            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
-        store.chunks.insert_chunks(
-            ref.id,
-            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
-            conn=conn,
         )
         finish_mint(store, ref.id, conn=conn)
     return int(ref.id)

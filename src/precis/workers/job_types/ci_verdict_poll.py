@@ -696,6 +696,9 @@ def _rerun_baseline(meta: dict[str, Any]) -> int | None:
         return None
 
 
+_STOPPED_CONCLUSIONS = frozenset({"cancelled", "timed_out"})
+
+
 def verdict_of(
     runs: list[dict[str, Any]], sha: str, branch: str = ""
 ) -> tuple[str, str, str]:
@@ -718,7 +721,12 @@ def verdict_of(
         return (
             "cancelled",
             run_id,
-            f"run {run_id} concluded {conclusion or 'without a conclusion'}",
+            f"run {run_id} concluded {conclusion or 'without a conclusion'}"
+            + (
+                " — over budget (no verdict)"
+                if conclusion in _STOPPED_CONCLUSIONS
+                else ""
+            ),
         )
     return "red", run_id, f"run {run_id} concluded failure"
 
@@ -825,8 +833,9 @@ def gate_verdict(
     The returned state adds ``cancelled`` to :func:`verdict_of`'s
     contract: a completed run whose conclusion is no verdict
     (``cancelled``, ``timed_out``, … — gr752626). It passes through
-    unreadable jobs unchanged — no verdict is recorded from it either
-    way — and the dispatch's stopped-run rung re-fires it once."""
+    unreadable jobs unchanged. A failed workflow with a stopped
+    blocking job also has no verdict. The stopped-run rung re-fires
+    the incomplete attempt once."""
     state, run_id, why = verdict_of(runs, sha, branch)
     if state == "green" or not run_id:
         return state, run_id, why
@@ -842,6 +851,21 @@ def gate_verdict(
             f"run {run_id}: lint and gate-fast legs green; the soak does "
             f"not gate ({why})",
         )
+    if state == "red":
+        stopped = [
+            str(job.get("name") or "unnamed job")
+            for job in jobs
+            if str(job.get("conclusion") or "") in _STOPPED_CONCLUSIONS
+            and job.get("name") != SOAK_VERDICT_JOB
+            and not _SOAK_LEG_RE.fullmatch(str(job.get("name") or ""))
+        ]
+        if stopped:
+            names = ", ".join(stopped)
+            return (
+                "cancelled",
+                run_id,
+                f"run {run_id} over budget (no verdict): {names}",
+            )
     return state, run_id, why
 
 
@@ -1067,26 +1091,28 @@ def _mint_hang_ask(
         str(j.get("name") or "")
         for j in jobs or []
         if str(j.get("status") or "") != "completed"
-        or str(j.get("conclusion") or "") in ("cancelled", "timed_out")
+        or str(j.get("conclusion") or "") in _STOPPED_CONCLUSIONS
     ]
     legs = (
         f"; the unfinished leg(s): {', '.join(h for h in hung if h)[:200]}"
         if hung
         else ""
     )
-    title = (
-        f"{NAME}: {WORKFLOW_FILE} run {run_id} on {where} ended "
-        f"{conclusion} again ({sha[:9]})"
+    outcome = (
+        f"over budget ({conclusion})"
+        if hung or conclusion in _STOPPED_CONCLUSIONS
+        else conclusion
     )
+    title = f"{NAME}: {WORKFLOW_FILE} run {run_id} on {where} ended {outcome} again ({sha[:9]})"
     context = (
         f"{WORKFLOW_FILE} run {run_id} on {where} for {sha[:9]} ended "
-        f"{conclusion} on attempt {attempt} — a re-run was already asked "
+        f"{outcome} on attempt {attempt} — a re-run was already asked "
         f"for; the leg is likely hung{legs}; answering executes nothing"
     )
     body = (
         f"A release cut pushed {where} at {sha[:9]}, and its {WORKFLOW_FILE} "
-        f"run {run_id} ended {conclusion} — a re-run was already asked for, "
-        f"and attempt {attempt} ended {conclusion} again{legs}. A stopped "
+        f"run {run_id} ended {outcome} — a re-run was already asked for, "
+        f"and attempt {attempt} ended {outcome} again{legs}. A stopped "
         "run is no verdict (gr752626): nothing was recorded and no fix "
         "iteration was spent — a second stop on the same run is a hang, "
         "not a red. The verdict poll keeps watching — a push supersedes "

@@ -11,7 +11,10 @@ on existing fields, never by a new kind:
   remove those descendants from the candidate scan;
 - gate: ``meta.gate = {kind, args}`` — ``sha-in-prod``, ``tests-green``,
   ``answer``, ``not-before``, ``drc-clean``; evaluated, never dispatched;
-- loop: ``meta.loop = {max, until, body}``;
+- loop: ``meta.loop = {max, until, body}``. Release fixes omit ``max``
+  and continue on red CI so the same release can reach deploy. A stopped CI
+  attempt supplies no verdict. Release-pass root asks do not extend the
+  pass once its work has settled.
 - generator: ``meta.generate = {role, from}``.
 
 Edges: containment is ``parent_id``, sequence is a ``blocked-by`` link,

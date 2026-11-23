@@ -1698,6 +1698,20 @@ def test_rerun_failure_superseded_by_newer_check_run_is_not_red(rig: Rig) -> Non
     assert "CI red" not in out.stderr
 
 
+@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out"])
+def test_stopped_gate_shard_reports_over_budget(rig: Rig, conclusion: str) -> None:
+    sha = rig.shas["c3"]
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / sha).write_text(
+        f"gate-fast (3.13, 2)\tcompleted\t{conclusion}\t{url}\t{url}\t9\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, *FAST)
+    assert out.returncode == 2
+    assert "CI over budget (no verdict): gate-fast (3.13, 2)" in out.stdout
+    assert "CI red" not in out.stderr
+
+
 def test_stale_run_cancelled_shard_does_not_poison_fresh_run(rig: Rig) -> None:
     """gr504329: check-runs are sha-keyed, so a cancelled shard from a
     superseded workflow run used to read as this run's red. The verdict

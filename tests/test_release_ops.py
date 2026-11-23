@@ -725,6 +725,30 @@ def test_poll_records_red_when_a_gate_leg_failed(
     assert gates.read_ci_verdicts(store)[-1]["verdict"] == "red"
 
 
+@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out"])
+def test_poll_reports_stopped_gate_leg_as_over_budget(
+    store: Store, monkeypatch: pytest.MonkeyPatch, conclusion: str
+) -> None:
+    mint = _cut(store)
+    jobs = _gate_jobs(soak=None, leg2=("completed", conclusion))
+    _fake_github_jobs(
+        monkeypatch, [_run(43, "completed", "failure", run_attempt=2)], jobs
+    )
+    parks: list[str] = []
+
+    def defer(at: datetime, note: str) -> bool:
+        parks.append(note)
+        return True
+
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]}, defer=defer)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert gates.read_ci_verdicts(store) == []
+    assert len(parks) == 1
+    assert "over budget (no verdict): gate-fast (3.13, 2)" in parks[0]
+    assert ctx.stamped["ci_verdict_poll"]["state"] == "cancelled"
+
+
 @pytest.mark.parametrize("conclusion", ["cancelled", "failure", "success"])
 def test_poll_superseded_run_adopts_head_without_a_fix_iteration(
     store: Store, monkeypatch: pytest.MonkeyPatch, conclusion: str
@@ -3838,6 +3862,9 @@ def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
     the head's run 41 and copies the standing brief into every fixer."""
     mint, it = _red_iteration(store)
     rs._append_comment(store, mint.root_id, "brief: Carry the corrective from main.")
+    rs._append_comment(
+        store, it["fix"], "handoff: The fixture expires at midnight UTC."
+    )
     rs._append_comment(store, mint.ids["loop"], "brief: Obsolete guidance.")
     rs._append_comment(store, mint.ids["loop"], "brief: Apply it only in your scope.")
     _two_fixes_land_and_restamp(store, mint, it, monkeypatch)
@@ -3866,6 +3893,7 @@ def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
         brief = _todo_comments(store, fix)[0]
         assert brief.startswith("brief: release r7")
         assert "Obsolete guidance" not in brief
+        assert f"td{it['fix']}: handoff: The fixture expires at midnight UTC." in brief
         assert "steer: followed" in brief
         assert (
             brief.index("Standing brief from the release owner")

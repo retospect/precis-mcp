@@ -75,7 +75,7 @@ pinned to that host the same way.
   INFRASTRUCTURE red, not a test red (gr611682, the coordinator ruling):
   the fix node never closes ``no-op`` on it — closing it let the loop
   re-cut and republish the same sha, so the same jobless run re-read as
-  red every iteration until the cap. :func:`_infra_done` re-reads the
+  red in successive iterations. :func:`_infra_done` re-reads the
   run live instead: green now → record the green and close the fix
   nodes moot; the run's head not the current release head → superseded
   (gr685062), no rerun and no park — close the fix nodes moot and
@@ -1191,6 +1191,56 @@ def _suspects_block(
         return ""
 
 
+def _previous_findings(store: Any, digest_id: int) -> str:
+    """Quote earlier fixer handoffs, newest first, within a fixed brief budget."""
+    digest = store.get_ref(kind="todo", id=digest_id)
+    if digest is None or digest.parent_id is None:
+        return ""
+    loop = int(digest.parent_id)
+    with store.pool.connection() as conn:
+        earlier = conn.execute(
+            """
+            SELECT ref_id FROM refs
+             WHERE parent_id = %s AND ref_id < %s AND kind = 'todo'
+               AND retired_at IS NULL AND meta ->> 'op' = 'ci_red_digest'
+             ORDER BY ref_id DESC
+            """,
+            (loop, digest_id),
+        ).fetchall()
+    if not earlier:
+        return ""
+    lines = [
+        f"### Previous fix findings under td{loop} (newest first)",
+        "Use these observations when diagnosing the current run. Read the "
+        "earlier fix todos under the loop for full handoffs and land outcomes.",
+    ]
+    room = 3000
+    for (prior_digest,) in earlier:
+        for tid in _fix_targets(store, int(prior_digest)):
+            comments = _cvp._fix_comments(store, tid)
+            handoff = next(
+                (c for c in comments if c.lower().startswith("handoff:")), ""
+            )
+            landed = next((c for c in comments if c.startswith("landed:")), "")
+            filed = next(
+                (c for c in comments if c.startswith("filed from this hand-off")), ""
+            )
+            evidence = mask_secrets(
+                "\n".join(part for part in (landed, filed, handoff) if part)
+            )
+            if not evidence:
+                continue
+            excerpt = evidence[:700]
+            entry = f"- td{tid}: " + "\n  ".join(excerpt.splitlines())
+            if len(evidence) > len(excerpt):
+                entry += " …"
+            if len(entry) > room:
+                return "\n".join(lines)
+            lines.append(entry)
+            room -= len(entry)
+    return "\n".join(lines)
+
+
 def _standing_brief(store: Any, digest_id: int) -> str:
     """Read the latest brief at each scope when the digest is ready to post."""
     root = _release.plan_root(store, digest_id)
@@ -1344,6 +1394,8 @@ def _digest_done(
     standing = _standing_brief(ctx.store, todo_id)
     if standing:
         head += f"\n\n{standing}\n"
+    if previous := _previous_findings(ctx.store, todo_id):
+        head += f"\n\n{previous}\n"
     if owner_scope:
         return _owner_done(
             ctx,

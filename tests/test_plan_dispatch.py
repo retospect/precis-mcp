@@ -5919,18 +5919,25 @@ def test_blocking_ask_still_holds_the_root_open(store: Store) -> None:
     assert _status(store, ask) == "open"
 
 
-def test_loop_ask_blocks_its_pass_root(store: Store) -> None:
-    """gr589823 / me573231: the exhausted release-fix ask parks the pass,
-    so it names the pass root in ``blocks`` (not ``"nothing"``) and the
-    root stays open while it is."""
-    mint = _one_task_plan(store)
-    task, root = mint.ids["task"], mint.root_id
-    _mark_done(store, task)
-    node: Any = SimpleNamespace(id=task, root=root)
-    ask = pd._mint_loop_ask(store, node, 2, "CI red")
-    assert _meta(store, ask)["ask"]["blocks"] == f"td{root}"
-    assert pd.run_pass(store).phases_closed == 0
-    assert _status(store, root) == "open"
+def test_release_pass_closes_over_a_root_ask_after_merge_back(store: Store) -> None:
+    from precis.workers.job_types import release_poll
+
+    mint = T.mint_release_pass(store)
+    root = mint.root_id
+    merge_back = mint.ids["merge_back"]
+    _mark_done(
+        store, *(tid for tid in mint.ids.values() if tid not in (root, merge_back))
+    )
+    ask = _ask_child(store, root, f"td{root}")
+    store.add_link(src_ref_id=root, dst_ref_id=ask, relation="blocked-by")
+    pd.run_pass(store)
+    assert release_poll._open_pass_id(store) == root
+
+    _mark_done(store, merge_back)
+    pd.run_pass(store)
+    assert _status(store, root) == "done"
+    assert _status(store, ask) == "open"
+    assert release_poll._open_pass_id(store) is None
 
 
 def _spent_loop_plan(store: Store) -> T.PlanMint:

@@ -3,8 +3,8 @@ approval — the plan tick answers the release-pass approval ask
 ``deploy r<N>`` itself once CI is recorded green on the cut's exact sha
 and the shared ``release.round`` record names an open round on that head
 sha (me573231: no range inspection; an absent, unreadable or other-sha's
-round refuses). A second red ``release-fix`` iteration files a ruling ask
-and closes the loop — a third fix never starts by itself."""
+round refuses). A red ``release-fix`` iteration never ends the loop: it
+keeps fixing forward until CI clears (gr760128)."""
 
 from __future__ import annotations
 
@@ -487,7 +487,7 @@ def test_round_open_states_match_the_script() -> None:
     assert R._ROUND_OPEN_STATES == script._OPEN_STATES
 
 
-# ── a second red fix loop asks; a third never starts by itself ──────
+# ── release fixes continue until green ─────────────────────────────
 
 
 def _red_pass(
@@ -517,37 +517,22 @@ def _loop_children(store: Store, loop_id: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-@pytest.mark.parametrize("auto", [False, True], ids=["auto-off", "auto-on"])
-def test_second_red_fix_loop_files_an_ask_and_mints_no_third(
-    store: Store, auto: bool
-) -> None:
-    """me573231: two red fix iterations run unattended; the second red
-    files the ruling ask and stops — a third fix loop is a human call."""
-    mint = _red_pass(store, count=2)
-    if auto:
-        psettings.set_setting("release.auto_deploy", "true", store=store)
+@pytest.mark.parametrize("count", [2, 6])
+def test_red_release_loop_mints_the_next_iteration(store: Store, count: int) -> None:
+    """gr760128: a red head keeps the loop going without a handoff ask."""
+    mint = _red_pass(store, count=count)
+    loop = mint.ids["loop"]
+    spec = _meta(store, loop)["loop"]
+    store.stamp_ref_meta(loop, {"loop": {**spec, "max": 2}})
     res = pd.run_pass(store)
-    assert res.asks == 1, res.notes
-    assert res.loops_minted == 0, res.notes
-    assert _status(store, mint.ids["loop"]) == "done"
-    assert _loop_children(store, mint.ids["loop"]) == []
+    assert res.asks == 0 and res.loops_minted == 1, res.notes
+    assert _status(store, loop) == "open"
+    assert _meta(store, loop)["loop"]["count"] == count + 1
+    assert len(_loop_children(store, loop)) == 4
 
-    asks = [i for i in _ask_ids(store) if i != mint.ids["approval"]]
-    assert len(asks) == 1, asks
-    tags = {str(t.value) for t in store.tags_for(asks[0])}
-    assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= tags
-    ask = _meta(store, asks[0])["ask"]
-    assert ask["kind"] == "ruling"
-    # The ruling parks the whole pass: it names the root, never "nothing"
-    # (an informational ask no longer holds its root open, gr589823).
-    assert ask["blocks"] == f"td{mint.root_id}"
-    context = ask["context"]
-    assert "r7" in context and "CI red" in context and "31" in context
-
-    # A second pass files no second ask; the loop stays closed.
     res = pd.run_pass(store)
     assert res.asks == 0 and res.loops_minted == 0
-    assert [i for i in _ask_ids(store) if i != mint.ids["approval"]] == asks
+    assert _ask_ids(store) == [mint.ids["approval"]]
 
 
 def test_first_red_fix_loop_mints_the_second_iteration(store: Store) -> None:
@@ -558,15 +543,23 @@ def test_first_red_fix_loop_mints_the_second_iteration(store: Store) -> None:
     assert _loop_children(store, mint.ids["loop"]) != []
 
 
-def test_an_exhausted_stamped_loop_closes_without_a_second_ask(
-    store: Store,
-) -> None:
+def test_a_legacy_exhausted_loop_resumes_on_red(store: Store) -> None:
     mint = _red_pass(store, count=2, exhausted_ask=4242)
+    loop = mint.ids["loop"]
+    _close(store, loop)
     res = pd.run_pass(store)
-    assert res.asks == 0, res.notes
-    assert res.loops_minted == 0
-    assert _status(store, mint.ids["loop"]) == "done"
-    assert _loop_children(store, mint.ids["loop"]) == []
+    assert res.asks == 0 and res.loops_minted == 1, res.notes
+    assert _status(store, loop) == "open"
+    assert _meta(store, loop)["loop"]["count"] == 3
+    assert len(_loop_children(store, loop)) == 4
+
+
+def test_a_release_loop_without_a_verdict_mints_no_fix(store: Store) -> None:
+    mint = _red_pass(store, count=2)
+    R.record_head(store, mint.root_id, "a" * 40)
+    res = pd.run_pass(store)
+    assert res.asks == 0 and res.loops_minted == 0, res.notes
+    assert _status(store, mint.ids["loop"]) == "open"
 
 
 def _iteration_body(store: Store, loop_todo_id: int, **_ctx: Any) -> T.PlanMint:
@@ -582,9 +575,7 @@ def _iteration_body(store: Store, loop_todo_id: int, **_ctx: Any) -> T.PlanMint:
 def test_a_non_release_loop_keeps_its_stamped_cap(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only a ``release-fix`` loop stops at two automatic iterations
-    (me573231); any other body honours its stamped ``meta.loop.max`` —
-    a third iteration mints, no ask is filed."""
+    """Non-release bodies continue to honour their stamped max."""
     monkeypatch.setitem(T.BODIES, "test-body", _iteration_body)
 
     def build(m: T._Minter) -> None:
@@ -771,7 +762,7 @@ def test_disarming_after_an_armed_mint_resurfaces_the_ask(store: Store) -> None:
 
 
 def test_a_red_verdict_keeps_the_ask_hidden(store: Store) -> None:
-    """The second-red case is the loop's own ruling ask, not this one —
+    """The loop always fixes forward and files no ruling ask —
     a red verdict on the cut's sha never resurfaces the approval ask."""
     mint = _armed_pass(store)
     R.record_ci_verdict(store, SHA, RNG, "red", "33")

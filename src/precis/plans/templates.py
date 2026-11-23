@@ -64,12 +64,6 @@ GATE_SHA_NOTE = (
     "The sha in meta.gate is a placeholder ('0000000'): the build task's land "
     "writes the real sha here once it is known. Until then this gate stays false."
 )
-#: The ``release-fix`` loop's one iteration cap (me573231: two red fix
-#: rounds, then a human call). Not stamped on the loop (T4 dropped the
-#: stamped max): ``plan_dispatch._RELEASE_FIX_AUTO_CAP`` reads this.
-#: release-train.md says progress is the limit;
-#: the cap stays until T5's no-progress alarm replaces it.
-RELEASE_FIX_CAP = 2
 _PCB_LOOP_MAX = 5
 _GRIPE_ID_RE = re.compile(r"(?:gr|gripe:)?(\d+)", re.IGNORECASE)
 
@@ -3047,7 +3041,7 @@ def mint_release_head_poll(store: Store, loop_todo_id: int) -> PlanMint:
     ``meta.release`` onto the head, so the loop waits for this poll like
     for any child and then judges ``until`` on the new head: green closes
     it, red mints the next ``release-fix`` iteration. Not a loop body —
-    it counts no iteration against the fix cap."""
+    it does not increment the fix iteration count."""
     _loop, root = _loop_context(store, loop_todo_id)
 
     def build(m: _Minter) -> None:

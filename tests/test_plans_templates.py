@@ -527,13 +527,8 @@ def test_release_pass_shape(store: Store) -> None:
     assert gate == {"kind": "tests-green", "args": {"range": "0000000"}}
     loop = _meta(store, mint.ids["loop"])["loop"]
     assert loop["until"] == gate
-    # The tick owns a release-fix loop's limit: no stamped max (T4).
+    assert loop["body"] == "release-fix"
     assert "max" not in loop
-    # One cap, read by the tick (T1 review): templates.RELEASE_FIX_CAP.
-    from precis.plans import templates as T
-    from precis.workers.job_types import plan_dispatch as pd
-
-    assert T.RELEASE_FIX_CAP == pd._RELEASE_FIX_AUTO_CAP == 2
     approval = _meta(store, mint.ids["approval"])
     assert approval["gate"] == {"kind": "answer"}
     assert approval["ask"]["kind"] == "approval"

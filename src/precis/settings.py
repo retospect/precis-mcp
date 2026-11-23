@@ -500,9 +500,8 @@ REGISTRY: dict[str, SettingSpec] = {
             "(gr595272). Default off; the "
             "owner turns it on (scripts/prod-precis settings set "
             "release.auto_deploy true). DB-only — no env fallback, so a "
-            "drifted host cannot arm it. Rollback, superseding a partial "
-            "rollout and a pass whose second red fix loop ends still "
-            "ask a human.",
+            "drifted host cannot arm it. Rollback and superseding a partial "
+            "rollout still ask a human.",
         ),
         SettingSpec(
             key="release.cut_host",

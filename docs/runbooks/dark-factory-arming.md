@@ -106,8 +106,7 @@ red run, the digest posted as a `brief:` on the fix) → fix → `recut`
 (`release_cut`, records the new
 cut and range on the root, the gate, the loop and the approval options) →
 `poll` (`ci_verdict_poll` on the new sha); red again mints the next
-iteration — two automatic iterations, then the loop files a ruling ask
-and a third never starts by itself) → `approval` → `deploy` (`release_deploy`:
+iteration, with no iteration cap and no hand-off ask: always fix forward) → `approval` → `deploy` (`release_deploy`:
 `scripts/release --deploy-only r<N>`, pinned) → `confirm`
 (`release_confirm`: the runtime attestation below).
 
@@ -260,8 +259,8 @@ unchanged: answer `deploy r<N>` or `hold`. Turning it off also holds an
 already minted unattended pass. Existing legacy asks retain their answer
 handling and never overwrite a human hold. The standing approval covers
 every range, including migrations and harness diffs (me573231).
-Rollback, superseding a partial rollout and exhausted release-fix loops
-remain human decisions.
+Rollback and superseding a partial rollout remain human decisions.
+The release-fix loop continues on the same branch until CI clears.
 
 ### Red-test waiver (release.red_waiver)
 

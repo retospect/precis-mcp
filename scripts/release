@@ -420,10 +420,8 @@ def _check_run_rows(head: str) -> tuple[list[list[str]], int] | bool:
     return rows, current_run
 
 
-def _latest_bad(rows: list[list[str]], keep: Any) -> list[list[str]]:
-    """Latest-per-name rows whose verdict is completed non-OK — a rerun's
-    newer check-run of the same name supersedes, and a latest still
-    running is not red yet. ``keep(name)`` picks the leg family."""
+def _latest_checks(rows: list[list[str]], keep: Any) -> list[list[str]]:
+    """The latest completed check per name in the requested leg family."""
     latest: dict[str, list[str]] = {}
     for r in rows:
         if not keep(r[0]):
@@ -431,9 +429,7 @@ def _latest_bad(rows: list[list[str]], keep: Any) -> list[list[str]]:
         old = latest.get(r[0])
         if old is None or _run_id(r) >= _run_id(old):
             latest[r[0]] = r
-    return [
-        r for r in latest.values() if r[1] == "completed" and r[2] not in OK_CONCLUSIONS
-    ]
+    return [r for r in latest.values() if r[1] == "completed"]
 
 
 def _bad_verdict(bad: list[list[str]]) -> dict[str, Any]:
@@ -463,21 +459,25 @@ def _blocking_leg(name: str) -> bool:
     )
 
 
-def ci_red(head: str) -> dict[str, Any] | bool | None:
-    """False = gh unreadable; None = no completed red; else the failing jobs."""
+_STOPPED_CONCLUSIONS = frozenset({"cancelled", "timed_out"})
+_OVER_BUDGET = "over budget (no verdict)"
+
+
+def ci_red(head: str) -> dict[str, Any] | bool | str | None:
+    """The red verdict, a stopped-run report, False if unreadable, or None."""
     scoped = _check_run_rows(head)
     if scoped is False:
         return False
     rows, current_run = scoped
-    terminal = None
-    if current_run:
-        terminal = completed_run_red(str(current_run))
-        if isinstance(terminal, dict):
-            return terminal
-    bad = _latest_bad(rows, _blocking_leg)
-    if not bad:
+    checks = _latest_checks(rows, _blocking_leg)
+    stopped = [r[0] for r in checks if r[2] in _STOPPED_CONCLUSIONS]
+    if stopped:
+        return f"CI {_OVER_BUDGET}: {', '.join(stopped)}"
+    terminal = completed_run_red(str(current_run)) if current_run else None
+    if isinstance(terminal, (dict, str)):
         return terminal
-    return _bad_verdict(bad)
+    bad = [r for r in checks if r[2] == "failure"]
+    return _bad_verdict(bad) if bad else terminal
 
 
 def soak_red(head: str) -> dict[str, Any] | bool | None:
@@ -490,12 +490,15 @@ def soak_red(head: str) -> dict[str, Any] | bool | None:
         return False
     rows, _run = scoped
     verdict_job = runpy.run_path(str(HERE / "lib/soak_verdict.py"))["VERDICT_JOB"]
-    bad = _latest_bad(rows, lambda name: name.startswith("soak") or name == verdict_job)
+    checks = _latest_checks(
+        rows, lambda name: name.startswith("soak") or name == verdict_job
+    )
+    bad = [r for r in checks if r[2] not in OK_CONCLUSIONS]
     return _bad_verdict(bad) if bad else None
 
 
-def completed_run_red(run_id: str) -> dict[str, Any] | bool | None:
-    """A completed non-green workflow is red if a gate job never went green."""
+def completed_run_red(run_id: str) -> dict[str, Any] | bool | str | None:
+    """Classify a completed workflow and its blocking jobs."""
     try:
         cp = subprocess.run(
             ["gh", "run", "view", run_id, "--json", "status,conclusion,jobs,url"],
@@ -514,8 +517,21 @@ def completed_run_red(run_id: str) -> dict[str, Any] | bool | None:
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
         print(f"gh run view {run_id} unreadable: {_error_detail(exc)}", file=sys.stderr)
         return False
-    if run.get("status") != "completed" or run.get("conclusion") in OK_CONCLUSIONS:
+    if run.get("status") != "completed":
         return None
+    conclusion = run.get("conclusion")
+    if conclusion in _STOPPED_CONCLUSIONS:
+        return f"CI {_OVER_BUDGET}: run {run_id} concluded {conclusion}"
+    if conclusion != "failure":
+        return None
+    stopped = [
+        str(job.get("name") or "unnamed job")
+        for job in run.get("jobs", [])
+        if _blocking_leg(str(job.get("name") or ""))
+        and job.get("conclusion") in _STOPPED_CONCLUSIONS
+    ]
+    if stopped:
+        return f"CI {_OVER_BUDGET}: {', '.join(stopped)}"
     jobs = [
         job["name"]
         for job in run.get("jobs", [])
@@ -659,6 +675,7 @@ def _wait_fresh_verdict(head: str, args: argparse.Namespace) -> int:
     deadline = time.monotonic() + args.ci_timeout * 60
     limit = _max_candidate_hours()
     say(f"waiting for the re-run verdict on {head[:9]}")
+    last_stop = ""
     while True:
         facts = gate_facts()
         cand = str(facts.get("candidate") or "")
@@ -672,6 +689,9 @@ def _wait_fresh_verdict(head: str, args: argparse.Namespace) -> int:
             say(f"verdict fresh on {head[:9]} ({age:.1f}h)")
             return 0
         red = ci_red(head)
+        if isinstance(red, str) and red != last_stop:
+            say(red)
+            last_stop = red
         if isinstance(red, dict):
             print(
                 f"re-run CI on {head[:9]} went red — failing: {', '.join(red['jobs'])}",
@@ -1830,6 +1850,7 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
     """0 = release head is green; else the exit code to return."""
     deadline = time.monotonic() + args.ci_timeout * 60
     warned = False
+    last_stop = ""
     say(f"waiting for CI on {branch}")
     while True:
         facts = gate_facts()
@@ -1865,6 +1886,9 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
                 # `gh run rerun` can lag the old failure: confirm one poll later
                 time.sleep(args.poll)
                 red = ci_red(head)
+            if isinstance(red, str) and red != last_stop:
+                say(red)
+                last_stop = red
             if isinstance(red, dict):
                 note_ci_verdict(head, "red", red["run_id"])
                 print(

@@ -3621,8 +3621,8 @@ def follow_moved_head(store: Any, root_id: int, *, dry_run: bool = False) -> str
     loop reopens and one poll mints under it
     (``templates.mint_release_head_poll``). The loop then judges its
     ``until`` on the new head like after any iteration: green closes it,
-    red mints a ``release-fix`` iteration or, at the cap, closes it
-    again. No iteration is counted.
+    red mints the next ``release-fix`` iteration. The poll itself does not
+    increment the fix iteration count.
 
     Nothing happens while a poll or restamp is still open under an open
     loop — that iteration reads the live head itself

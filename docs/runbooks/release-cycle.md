@@ -49,7 +49,7 @@ release loop (td570415) runs the stages below unattended through
 | Stage | Op | Who answers on a failure |
 |---|---|---|
 | Cut | `release_cut` | retry cap exhausted → a human ask |
-| Gate | `ci_verdict_poll`; a red verdict runs `ci_red_digest` → fix → `release_cut` recut, at most 2 automatic loops | the second red files a ruling ask; a third fix is a human call |
+| Gate | `ci_verdict_poll`; each red verdict runs `ci_red_digest` → fix on the release branch → restamp → poll | later fixes receive earlier findings. A stopped run is over budget and supplies no verdict |
 | Approval | manual `approval` ask when `release.auto_deploy` is off | a human answers `deploy r<N>` or `hold`; armed passes mint no approval node |
 | Carry (only when the gate holds the release on a corrective commit that is on main but not on `release/r<N>`) | `release_confirm` in `carry` mode, minted by `release_poll` | the factory cherry-picks the commit onto the branch; a conflict, or a pick that is not an exact copy, pushes nothing and files the carry ask with the reason; `release.auto_carry` off files the ask at once |
 | Deploy | `release_deploy`, gated by `may_release(deploy)` | window, in-flight releases, prod/main ancestry, engine reviews and exact-head green CI must clear; GitHub outages hold deployment; retry cap exhausted → a human ask |
@@ -61,7 +61,6 @@ These always stay with a human or the coordinator, armed or not:
 - Rollback, and the `good/r<N>` tag (`scripts/round good`).
 - Superseding a partial rollout: `scripts/round supersede --partial --reason "<why>"`.
 - Deleting a remote release branch.
-- A red fix loop past the automatic cap.
 - A failed runtime probe (a `release_confirm` mismatch or gap).
 - Any stuck-release ruling ask — answering it executes nothing.
 
@@ -82,7 +81,7 @@ release has run once.
    (`git push origin --delete release/r221`) — the owner's to approve.
 3. An infra-caused red CI run is not told apart from a test red
    (`ci_verdict_poll::verdict_of`, `ci_red_digest::_digest_done`), so one
-   would spend one of the two automatic fix iterations; a shared
+   can still spawn a fix iteration on an infrastructure failure other than a stopped job. A shared
    classifier is ruled into td574946 S6, not built yet.
 4. `release.round` must hold no open round before arming — a hand
    release (r233) was open on 2026-11-06Z.
