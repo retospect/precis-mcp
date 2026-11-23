@@ -8262,6 +8262,14 @@ def _claim_score(plan: _Plan, n: _Node, job_type: str | None = None) -> float:
     return score
 
 
+_DEVIN_EMPTY_RESPONSE = re.compile(
+    r'^Error: Agent error: [^\n]*\{\s*"cognition\.ai/errorKind"\s*:\s*'
+    r'"empty_response"\s*,\s*"cognition\.ai/retryable"\s*:\s*true\s*\}',
+    re.MULTILINE,
+)
+_DEVIN_EMPTY_RESPONSE_KEY = "Devin agent error: retryable empty_response"
+
+
 def _review_lane_tables(
     lane_table: tuple[_lanes.Lane, ...], vendors: tuple[str, ...]
 ) -> Iterator[tuple[frozenset[str], tuple[_lanes.Lane, ...]]]:
@@ -8312,11 +8320,14 @@ def _review_lane(
     shadow record for the pick on the minted job (td572552 S4b; ``None``
     under the default legacy mode).
 
-    Three steps, each a pick over a table shrunk by hand (never
-    ``exclude_vendor``, whose own fallback could hand back an excluded
-    vendor): first exclude every build vendor, then only the original
-    builder's vendor, then try the full table. Advance whenever the picker
-    finds no available lane under the current exclusion (gr730165).
+    When the last attempt failed with a retryable Devin empty response,
+    its lane is known, and the review has no model pin, first try flat-rate
+    lanes outside every build vendor and the failed attempt's vendor.
+    The usual sequence excludes every build vendor, then only the original
+    builder's vendor, then tries the full table. Advance whenever the
+    picker finds no available lane in the current table (gr730165).
+    Filter the tables before picking because ``exclude_vendor`` can fall
+    back to an excluded vendor.
 
     There is no per-lane review preference: inside a step the pick is
     :func:`~precis.plans.lanes.pick_lane`'s ``(tier, live / cap, live)``
@@ -8338,7 +8349,28 @@ def _review_lane(
     vendors = _builder_vendors(plan, n, lane_table)
     counts = _lanes.live_lane_counts(w.store)
     backoff = _lanes.lane_backoffs(w.store)
-    for excluded, table in _review_lane_tables(lane_table, vendors):
+    tables = list(_review_lane_tables(lane_table, vendors))
+    attempts = _attempt_jobs(plan, n)
+    last = attempts[-1] if attempts else None
+    if (
+        last is not None
+        and last.status == "failed"
+        and "model" not in _resolve_op(n)[1]
+    ):
+        previous = next(
+            (ln for ln in lane_table if ln.name == last.meta.get("lane")), None
+        )
+        if previous is not None and _DEVIN_EMPTY_RESPONSE.search(
+            _job_event_text(w.store, last.id)
+        ):
+            excluded = frozenset((*vendors, previous.vendor))
+            alternatives = tuple(
+                ln
+                for ln in lane_table
+                if ln.vendor not in excluded and ln.cost_class != _lanes.COST_METERED
+            )
+            tables.insert(0, (excluded, alternatives))
+    for excluded, table in tables:
         lane = _lanes.pick_lane(
             w.store, cls, lanes=table, counts=counts, backoff=backoff
         )
@@ -11459,6 +11491,12 @@ def _rescue_node(
         (ln for ln in lines if not ln.lstrip().startswith(("run_slice:", "---"))),
         lines[0] if lines else None,
     )
+    if (
+        cls == "review"
+        and last.status == "failed"
+        and _DEVIN_EMPTY_RESPONSE.search(text)
+    ):
+        error_line = _DEVIN_EMPTY_RESPONSE_KEY
     rungs_tried = " → ".join(
         f"{j.meta.get('lane')}/{j.meta.get('model') or 'default'}" for j in ended
     )

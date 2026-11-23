@@ -53,13 +53,13 @@ approved edits against rule body text.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
-``plan_dispatch`` prefers review lanes outside all contributing build
-vendors. Fallback keeps a saturated lane from prolonging a file-overlap
-hold. A review without a readable verdict gets at least two attempts by default,
-even on a single-rung lane. Workers prepare release refs for sandboxed
-reviewers that lack Git write access. A hub-pinned review can only claim
-there. At zero executor capacity the dispatcher raises an unplaced ask
-because capability advertisements cannot reveal the claim hold.
+``plan_dispatch`` prefers independent review vendors. Fallback limits
+file-overlap holds. Verdictless reviews default to at least two attempts.
+Retryable Devin empty responses prefer another independent flat-rate
+vendor and share a rescue signature keyed by the terminal error.
+Workers prepare release refs for reviewers without Git write access.
+Hub-pinned reviews claim only at their hub. Zero executor capacity raises
+an unplaced ask because capability advertisements hide the claim hold.
 After an ask re-arms a build, a fresh brief or acknowledged answer sends
 the pushed head back to a builder before review. The ask's brief wins only
 if its comment ``ord`` exceeds the selected brief's. A subsequent push or

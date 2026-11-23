@@ -10957,6 +10957,67 @@ def test_review_cap_is_the_picked_lanes_rungs(
     assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_devin_empty_review_response_prefers_another_vendor(
+    store: Store, pinned: bool
+) -> None:
+    mint = _reviewed(store, "")
+    review = mint.ids["review"]
+    if pinned:
+        store.stamp_ref_meta(
+            review, {"op": {"type": "run_slice", "params": {"lane": "devin"}}}
+        )
+    ((first, _),) = _jobs_under(store, review)
+    store.stamp_ref_meta(first, {"lane": "devin", "model": "swe-2-high"})
+    _set_job_status(store, first, "failed")
+    store.remove_tag(review, Tag.open("claimed-by:lane-claude-sub"))
+    store.add_tag(
+        review, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+    )
+
+    def empty_response(job: int, progress: str) -> None:
+        store.chunks.insert_chunks(
+            job,
+            [
+                ChunkInsert(
+                    ord=10,
+                    text=(
+                        "run_slice: session failed (exit 1)\n--- log tail ---\n"
+                        f"{progress}\n"
+                        "Error: Agent error: The model ended its turn without a response. "
+                        'Send a message to continue.: {\n  "cognition.ai/errorKind": '
+                        '"empty_response",\n  "cognition.ai/retryable": true\n}'
+                    ),
+                    meta={"chunk_kind": "job_event"},
+                ),
+            ],
+        )
+
+    empty_response(first, "Checking the first handler.")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.rescued) == (1, 0)
+    _, (retry, meta) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == ("devin" if pinned else "codex")
+    if not pinned:
+        return
+
+    store.stamp_ref_meta(retry, {"lane": "devin", "model": "swe-2-max"})
+    _set_job_status(store, retry, "failed")
+    empty_response(retry, "Checking a different handler.")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.rescued) == (0, 1)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'related-to'",
+            (review,),
+        ).fetchall()
+    (gripe,) = [int(row[0]) for row in rows]
+    ref = store.get_ref(kind="gripe", id=gripe)
+    assert ref is not None
+    assert ref.title == "[rescue] review: devin agent error: retryable empty_response"
+
+
 def test_review_rescue_signs_the_verdict_miss_not_the_launch_line(
     store: Store,
 ) -> None:
