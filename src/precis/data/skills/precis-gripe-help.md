@@ -485,7 +485,14 @@ automatically when a `Reto <date>:` ruling comment lands or the
 gripe leaves `needs_spec`; the triage tick sheds a `reto:ask` older
 than its ruling — comment or body line alike — and never re-asks
 the settled question, while an ask posed after the ruling stands
-(gr633601, td652983).
+(gr633601, td652983). Answering on the linked ask todo settles it
+the same way: an `answer: …` comment or body line there (with the
+todo closed) is read as the ruling — the tick clears `reto:ask` from
+the gripe even when no `Reto <date>:` line ever reaches its chunks,
+and a duplicate ask or re-stamped tag afterwards is a stale marker,
+not a fresh question (td776546). Only new question content — a
+`needs-spec:` park or a different recommendation — re-opens a
+settled gripe.
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made {write}
@@ -1018,7 +1025,9 @@ An answered ask sheds its tag: once the question is ruled on and the
 gripe carries the answer, remove `reto:ask` in that same write (a
 `Reto <date>:` ruling — comment or body line — or a move off
 `needs_spec` drops it for you; a ruling newer than the ask also
-suppresses triage's own re-ask of that question).
+suppresses triage's own re-ask of that question). An `answer:` on
+the linked ask todo counts as the ruling with or without the tag
+drop — the tick reads it and clears `reto:ask` itself (td776546).
 
 ## When precis stops responding
 ## A put timed out — did it land?

@@ -2571,6 +2571,379 @@ class TestAskGenerationAfterRuling:
         assert "reto:ask" not in _open_tag_values(store, gid)
 
 
+def _linked_ask(store: Store, gid: int, *, digest: bool = True) -> int:
+    """A live ask todo linked to the gripe — digest-marked
+    (``meta.digest`` + ``meta.ask_of``) the way :func:`_write_ask`
+    mints, or a separate structured ask linked only by ``blocked-by``
+    when ``digest=False``."""
+    with store.tx() as conn:
+        meta: dict[str, Any] = (
+            {"digest": gripe_triage._DIGEST_META, "ask_of": gid}
+            if digest
+            else {"ask": {"kind": "ruling", "options": ["ship", "leave as filed"]}}
+        )
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=f"Apply triage's recommendation on gr{gid}?",
+            meta=meta,
+            conn=conn,
+        )
+        tid = int(ref.id)
+        store.add_tag(tid, Tag.closed("STATUS", "open"), set_by="system", conn=conn)
+        store.add_tag(tid, Tag.open("ask-user"), set_by="system", conn=conn)
+        store.add_link(
+            src_ref_id=gid,
+            dst_ref_id=tid,
+            relation="blocked-by",
+            set_by="system",
+            conn=conn,
+        )
+    return tid
+
+
+def _close_ask(
+    store: Store,
+    tid: int,
+    *,
+    answer: str | None = "answer: ship the small fix",
+    body_line: bool = False,
+    days_ago: float = 0.0,
+) -> None:
+    """Close the ask the way the owner does — STATUS:done and the
+    ``ask-user`` tag shed (the answering put's ``untags``) — with the
+    ruling recorded as an ``answer:`` comment, a ``todo_body`` line
+    (the gr645663 spelling), or nothing when ``answer`` is ``None``."""
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT coalesce(max(ord) + 1, 0) FROM chunks WHERE ref_id = %s",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        ord_ = int(row[0])
+        if answer is not None:
+            text = f"context\n\n{answer}" if body_line else answer
+            store.chunks.insert_chunks(
+                tid,
+                [
+                    ChunkInsert(
+                        ord=ord_,
+                        text=text,
+                        meta={
+                            "chunk_kind": "todo_body" if body_line else "todo_comment"
+                        },
+                    )
+                ],
+                conn=conn,
+            )
+            if days_ago:
+                conn.execute(
+                    "UPDATE chunks SET created_at = now() - make_interval(days => %s) "
+                    "WHERE ref_id = %s AND ord = %s",
+                    (days_ago, tid, ord_),
+                )
+        store.add_tag(
+            tid,
+            Tag.closed("STATUS", "done"),
+            set_by="agent",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.remove_tag(tid, Tag.open("ask-user"), conn=conn)
+
+
+class TestAnsweredLinkedAsks:
+    """gr763387: a ruling that lands ON the ask — the ask closed with
+    an ``answer:``, no ``Reto <date>:`` line ever reaching the gripe
+    (Reto ruled gr761540 on td761702) — settles the pending question
+    all the same: ``reto:ask`` sheds, the stranded scan mints no
+    duplicate, and a verify-state gripe is settled whatever its tag
+    says."""
+
+    def test_answered_digest_ask_sheds_tag(self, store: Store) -> None:
+        """The triage-minted ask itself is answered and closed — the
+        tag sheds on the next tick and nothing re-mints (the answered
+        row stays as the closed record it is)."""
+        gid = _gripe(store, "ruled on its own ask", status="triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid)
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == [tid]
+
+    def test_answered_foreign_ask_sheds_tag(self, store: Store) -> None:
+        """The report's exact shape: the ruling landed on a DIFFERENT
+        ask node. Its ask metadata identifies it after closing
+        removes the ``ask-user`` tag."""
+        gid = _gripe(store, "ruled on a different ask", status="triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _close_ask(store, _linked_ask(store, gid, digest=False))
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == []
+
+    def test_answered_dependency_leaves_ruling_pending(self, store: Store) -> None:
+        gid = _gripe(store, "waiting for a ruling", status="triaged")
+        with store.tx() as conn:
+            dep = store.insert_ref(
+                kind="todo", slug=None, title="Investigate the fix", conn=conn
+            )
+            store.add_link(
+                src_ref_id=gid,
+                dst_ref_id=dep.id,
+                relation="blocked-by",
+                set_by="system",
+                conn=conn,
+            )
+        _close_ask(store, int(dep.id))
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        assert len(_digest_todos(store)) == 1
+
+    def test_answer_by_body_line_sheds_tag(self, store: Store) -> None:
+        """The ``answer:`` convention's second spelling — a line in
+        the ask's ``todo_body`` (gr645663) — settles the same."""
+        gid = _gripe(store, "ruled in the ask body", status="triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, body_line=True)
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == [tid]
+
+    def test_auto_verify_sheds_tag_and_retires_ask(self, store: Store) -> None:
+        """A gripe whose fix is on main has nothing left to rule: its
+        tag sheds and its live digest ask retires — the mint loop
+        gr761540 showed (td762435, then td762983)."""
+        gid = _gripe(store, "fix on main", status="auto_verify")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _linked_ask(store, gid)
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == []
+
+    def test_stranded_auto_verify_mints_nothing(self, store: Store) -> None:
+        """… and a stranded ``reto:ask`` on a verify-state gripe mints
+        no fallback ask on the way out."""
+        gid = _gripe(store, "stranded on main", status="auto_verify")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _comment_on(store, gid, "recommend: ship the small fix")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == []
+
+    def test_new_recommendation_after_answer_survives(self, store: Store) -> None:
+        """A genuinely new question re-opens the gripe: the tag stamped
+        after the answer survives BECAUSE the recommendation after it
+        differs from the one the answer settled — a different question,
+        not a stale marker (td776546's content scope)."""
+        gid = _gripe(store, "answered once, asked anew", status="triaged")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="agent")
+        _comment_on(store, gid, "recommend: redo it on B")
+        _comment_on(store, gid, "recommend: PRIO:high")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        todos = _digest_todos(store)
+        # The closed answered row plus the fresh fallback mint.
+        assert len(todos) == 2
+        assert tid in todos
+        body = _body(store, next(todo for todo in todos if todo != tid))
+        assert "Its recommendation: redo it on B." in body
+
+    def test_same_recommendation_echo_after_answer_sheds(self, store: Store) -> None:
+        """The re-mint's echo of the SAME recommendation is a stale
+        marker, not a fresh question: the tag stamped after the answer
+        sheds and nothing re-mints — the timestamp alone must not keep
+        an answered question alive (td776546, the review on gr763387's
+        fix)."""
+        gid = _gripe(store, "answered, echoed", status="triaged")
+        _comment_on(store, gid, "recommend: ship the small fix", days_ago=5)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="agent")
+        _comment_on(store, gid, "recommend: ship the small fix")
+        _comment_on(store, gid, "recommend: PRIO:high")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == [tid]
+
+    def test_restamped_tag_alone_after_answer_sheds(self, store: Store) -> None:
+        """A bare re-stamped tag after the answer — no question content
+        at all — is the settled question's marker and sheds."""
+        gid = _gripe(store, "answered, bare restamp", status="triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="agent")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == [tid]
+
+    def test_duplicate_ask_after_answer_retires(self, store: Store) -> None:
+        """The incident loop's shape at a live status: the answered ask
+        is closed, a duplicate digest ask was minted after the answer
+        carrying the same recommendation — one tick sheds the tag and
+        retires the duplicate, and mints nothing."""
+        gid = _gripe(store, "answered, duplicated", status="triaged")
+        _comment_on(store, gid, "recommend: ship the small fix", days_ago=5)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        dup = _linked_ask(store, gid)
+        _backdate_ref(store, dup, 1)
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == [tid]
+
+    def test_spec_park_after_answer_parks_again(self, store: Store) -> None:
+        """A ``needs-spec:`` park newer than the answer is fresh
+        question content — the settled-question suppression doesn't
+        reach it."""
+        gid = _gripe(store, "answered, then vague")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        _comment_on(store, gid, "needs-spec: decide the follow-up design", days_ago=1)
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(gid, fix="spec", recommend="decide the follow-up")
+                    ]
+                }
+            ),
+        )
+        assert _status(store, gid) == "needs_spec"
+
+    def test_closed_unanswered_ask_still_pending(self, store: Store) -> None:
+        """A linked ask closed WITHOUT an ``answer:`` is no ruling —
+        the question is still pending and re-mints."""
+        gid = _gripe(store, "closed, never answered", status="triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, answer=None)
+        _comment_on(store, gid, "recommend: ship the small fix")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        todos = _digest_todos(store)
+        # The closed unanswered row plus the fresh fallback mint.
+        assert len(todos) == 2
+        assert tid in todos
+        assert f"gr{gid}" in _body(store, todos[0])
+
+    def test_open_gripe_with_answered_ask_is_ruled(self, store: Store) -> None:
+        """The claim-side half: an open gripe whose linked ask was
+        answered is ``ruled`` — a ``fix:reto`` verdict lands
+        ``triaged`` and takes no ``reto:ask``."""
+        gid = _gripe(store, "answered, still open")
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid)
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="ship the small fix",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 0
+        assert _status(store, gid) == "triaged"
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        # The answered row stays; no new ask mints.
+        assert _digest_todos(store) == [tid]
+
+    def test_echoed_recommendation_after_answer_is_ruled(self, store: Store) -> None:
+        """The claim-side content scope (td776546): a re-claimed gripe
+        whose only post-answer content echoes the settled
+        recommendation reads as ``ruled`` — the tick writes ``triaged``
+        and re-asks nothing, killing the duplicate-mint loop at the
+        claim instead of the sweep."""
+        gid = _gripe(store, "answered, echoed, reclaimed")
+        _comment_on(store, gid, "recommend: ship the small fix", days_ago=5)
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        _comment_on(store, gid, "recommend: ship the small fix")
+        _comment_on(store, gid, "recommend: PRIO:high")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="ship the small fix",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 0
+        assert _status(store, gid) == "triaged"
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == [tid]
+
+    def test_new_recommendation_after_answer_asks_again(self, store: Store) -> None:
+        """A recommendation that differs from the settled one is a new
+        question — the tick takes ``reto:ask`` and files its ask."""
+        gid = _gripe(store, "answered, asked anew")
+        _comment_on(store, gid, "recommend: ship the small fix", days_ago=5)
+        tid = _linked_ask(store, gid)
+        _close_ask(store, tid, days_ago=3)
+        _comment_on(store, gid, "recommend: redo it on B")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="redo it on B",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        assert "reto:ask" in _open_tag_values(store, gid)
+        todos = _digest_todos(store)
+        assert len(todos) == 2
+        assert tid in todos
+
+
 class TestParseAskStrict:
     def test_empty_cost_voids_the_ask(self) -> None:
         ask = _ask()

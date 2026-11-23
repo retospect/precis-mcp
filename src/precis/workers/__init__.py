@@ -101,6 +101,9 @@ one host can't starve a review), ``dream_agent``/``anki_sync``
 (host-pinned + ``eligible()``-gated — a pinned cadence stalls while its
 host is down; health_digest's staleness alarms are the backstop).
 
+``gripe_triage`` records why ask settlement needs durable metadata
+and excludes dispatch priority nudges.
+
 Review tiers
 ------------
 Two SQL watchdog passes and two agentic reviewers, plus disk:
