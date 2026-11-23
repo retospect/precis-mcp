@@ -93,6 +93,11 @@ if TYPE_CHECKING:
 #: chains), shallow enough that a pre-existing cycle terminates fast.
 _ANCESTOR_MAX_DEPTH = 64
 
+#: Walk cap for :meth:`LinksMixin.supersede_targets_bulk` — a preprint→
+#: published upgrade chain is one hop in practice (the hygiene collapse
+#: keeps it that way); the cap is only a cycle backstop.
+_SUPERSEDE_MAX_DEPTH = 8
+
 
 def _resolve_chunk_id_for_link(
     conn: Connection, ref_id: int, ord_: int | None
@@ -2365,6 +2370,51 @@ class LinksMixin:
             seen.add(link_id)
             out.append(_row_to_link(r))
         return out
+
+    def supersede_targets_bulk(self, ref_ids: list[int]) -> dict[int, int]:
+        """``{superseded_ref_id: live_upgrade_target}`` for any of ``ref_ids``
+        that a ``supersedes`` chain points away from (gr690851).
+
+        One recursive-CTE query for the whole input set — the preprint→
+        published upgrade resolves cite keys and the retraction walk through
+        this map, and both walk *batches* of supporters, so the alternative
+        (one :meth:`links_for` per ref) would re-introduce the per-hub N+1
+        the batch cite-key map exists to kill. The walk follows
+        ``published --supersedes--> preprint`` edges to the terminal *live*
+        ref (chains collapse to one hop here, mirroring
+        :func:`~precis.ingest.paper_hygiene.collapse_superseded_chains`);
+        retired targets and ``depth >= _SUPERSEDE_MAX_DEPTH`` (cycle
+        backstop) terminate a chain early — a partial answer beats an
+        infinite one, and the acyclic constraint makes the case unreachable
+        anyway. Refs with no incoming ``supersedes`` edge are absent from
+        the result (callers treat absence as "resolves to itself")."""
+        ids = sorted({int(i) for i in ref_ids})
+        if not ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                WITH RECURSIVE walk(root_id, cur_id, depth) AS (
+                  SELECT r.ref_id, r.ref_id, 0
+                    FROM refs r
+                   WHERE r.ref_id = ANY(%s)
+                  UNION ALL
+                  SELECT w.root_id, l.src_ref_id, w.depth + 1
+                    FROM walk w
+                    JOIN links l ON l.relation = 'supersedes'
+                                AND l.dst_ref_id = w.cur_id
+                                AND l.src_ref_id <> l.dst_ref_id
+                    JOIN refs s ON s.ref_id = l.src_ref_id
+                               AND s.retired_at IS NULL
+                   WHERE w.depth < {_SUPERSEDE_MAX_DEPTH}
+                )
+                SELECT DISTINCT ON (root_id) root_id, cur_id
+                  FROM walk
+                 ORDER BY root_id, depth DESC
+                """,
+                (ids,),
+            ).fetchall()
+        return {int(root): int(cur) for root, cur in rows if int(cur) != int(root)}
 
     def neighbourhood(
         self,

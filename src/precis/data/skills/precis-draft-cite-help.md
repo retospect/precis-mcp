@@ -119,6 +119,10 @@ joins the cite graph, or follows a preprint to its published version. A
 bare id trips a `⚠ bare identifier in prose` hint on write (a hint, not a
 refusal; ignore it when a chunk quotes an identifier format on purpose).
 
+A cited preprint's bibliography entry follows a verified publication once
+the upgrade sweep links it. Passage handles still reach the held preprint
+text. Verify the passage in the held publication before changing its anchor.
+
 ## Cite a paper we don't have yet — request it, don't fake it
 
 1. **Re-check the corpus.** `search(kind='paper', q=…)` — may already be

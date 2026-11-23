@@ -22,8 +22,10 @@ class RefLookupMemo:
     """Delegating store proxy that memoises ``get_ref`` / ``resolve_handle``
     (hits and misses)."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, *, original_citations: bool = False) -> None:
         self._store = store
+        self._original_citations = original_citations
+        self._cite_targets: dict[int, int | None] = {}
         self._refs: dict[tuple[Any, Any], Any] = {}
         self._idents: dict[Any, Any] = {}
         self._handles: dict[Any, Any] = {}
@@ -68,6 +70,25 @@ class RefLookupMemo:
         resolved = self._store.resolve_handle(handle)
         self._handles[handle] = resolved
         return resolved
+
+    def supersede_targets_bulk(self, ref_ids: list[int]) -> dict[int, int]:
+        """Memoize bibliographic replacements for the duration of a render."""
+        if self._original_citations:
+            return {}
+        resolve = getattr(self._store, "supersede_targets_bulk", None)
+        missing = [
+            ref_id
+            for ref_id in dict.fromkeys(ref_ids)
+            if ref_id not in self._cite_targets
+        ]
+        if missing:
+            found = resolve(missing) if callable(resolve) else {}
+            self._cite_targets.update((ref_id, found.get(ref_id)) for ref_id in missing)
+        return {
+            ref_id: target
+            for ref_id in ref_ids
+            if (target := self._cite_targets[ref_id]) is not None
+        }
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._store, name)

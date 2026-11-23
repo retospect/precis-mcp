@@ -87,6 +87,12 @@ or remove the citation. The reference list retains the retraction year
 for a fully retracted paper. Use **Check retractions** in the export pane
 to refresh the stored notices.
 
+The export pane shows **N upgraded to a published version** when cited
+preprints have verified publications. Bibliographies and retraction checks
+use the published papers. Passage links and quotations still point to the
+held preprint text. To cite a passage in the publication, verify the quote
+against the held published text and update the passage link yourself.
+
 In the export pane, **fetch missing DOIs** looks up cited papers with
 an arXiv, PubMed or Semantic Scholar identifier and saves matched DOIs
 to their library records. Press again to continue through a large draft.

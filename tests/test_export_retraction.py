@@ -67,7 +67,7 @@ def patched_walk(monkeypatch):
         monkeypatch.setattr(
             R,
             "cited_paper_refs",
-            lambda store, ref, cited_slugs=None: (list(refs), list(unresolved)),
+            lambda store, ref, **kwargs: (list(refs), list(unresolved)),
         )
 
     return _install

@@ -1,10 +1,11 @@
 """Ingest pipeline: PDF → refs → chunks → derived queue.
 
-Public surface mirrors the pipeline stages:
+The preprint sweep verifies Crossref publication after S2 matching and
+serializes the upgrade while retaining the held preprint for provenance.
 
-* :func:`precis.ingest.add.precis_add` — the v2 ingest entry point
-  (PDF / DOI / arXiv). See :mod:`precis.ingest.add` for the
-  three-way dispatch.
+Public surface
+
+* :func:`precis.ingest.add.precis_add` — v2 ingest entry point for PDF, DOI and arXiv.
 * :class:`precis.ingest.add.IngestResult` — outcome of a single
   ``precis_add`` call (success or idempotent skip).
 * :func:`precis.ingest.blocks.classify_density` and

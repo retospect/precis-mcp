@@ -239,6 +239,7 @@ class DraftRetractionReport:
     #: True when the papers were re-checked upstream, False when the
     #: report is a read of stored state.
     checked: bool = False
+    upgraded_preprints: list[CitedPaper] = field(default_factory=list)
 
     @property
     def recent_count(self) -> int:
@@ -337,43 +338,57 @@ class DraftRetractionReport:
 # through the monkeypatched `cited_paper_refs` seam and pass bare
 # `object()` as store — no protocol could accept that.
 def cited_paper_refs(
-    store: Any, ref: Any, *, cited_slugs: list[str] | None = None
+    store: Any,
+    ref: Any,
+    *,
+    cited_slugs: list[str] | None = None,
+    upgrades: list[int] | None = None,
 ) -> tuple[list[Any], list[str]]:
     """``(refs, unresolved_slugs)`` for the sources a draft cites.
 
     ``cited_slugs`` is reused from an already-run export when the caller
     has it (``ExportResult.cited_slugs``); otherwise the body is rendered
     once to compute it — same contract as
-    :func:`precis.export.sources.collect_cited_sources`, which this
-    deliberately mirrors rather than calls (that one also resolves PDFs
-    off disk, which a retraction walk has no use for).
+    :func:`precis.export.sources.collect_cited_sources`. Pass ``upgrades``
+    to collect the published target ID for each distinct cited preprint
+    that was upgraded.
     """
     # Local imports: both modules import each other's neighbours at load.
     from precis.export._ref_cache import RefLookupMemo
     from precis.export.latex import render_body
     from precis.export.sources import _resolve_source_ref
+    from precis.taproot.cite import bibliographic_targets
 
-    # One memo for the whole walk: the render re-resolves each cite at
-    # every ``[n]`` marker, and the resolve loop re-reads the same refs —
-    # unmemoised this was the fat half of the export preflight (gr493192).
     store = RefLookupMemo(store)
-
     if cited_slugs is None:
-        cited_slugs = render_body(store, ref).cited_slugs
+        # Preserve the draft's original targets for the pane. Once an export
+        # emits its final keys, a direct publication cite and an upgraded cite
+        # are indistinguishable.
+        original_store: Any = RefLookupMemo(store, original_citations=True)
+        cited_slugs = render_body(original_store, ref).cited_slugs
 
-    refs: list[Any] = []
     unresolved: list[str] = []
-    seen: set[str] = set()
-    for slug in cited_slugs:
-        if slug in seen:
-            continue
-        seen.add(slug)
-        sref = _resolve_source_ref(store, slug)
-        if sref is None:
+    raw: dict[int, Any] = {}
+    for slug in dict.fromkeys(cited_slugs):
+        source = _resolve_source_ref(store, slug)
+        if source is None:
             unresolved.append(slug)
         else:
-            refs.append(sref)
-    return refs, unresolved
+            raw[source.id] = source
+
+    remap = bibliographic_targets(store, list(raw))
+    targets = store.fetch_refs_by_ids(list(set(remap.values()))) if remap else {}
+    refs: dict[int, Any] = {}
+    for ref_id, source in raw.items():
+        target = targets.get(remap.get(ref_id))
+        if target is not None and target.slug:
+            source = target
+            if upgrades is not None and (getattr(raw[ref_id], "meta", None) or {}).get(
+                "preprint_upgraded_to"
+            ):
+                upgrades.append(target.id)
+        refs[source.id] = source
+    return list(refs.values()), unresolved
 
 
 def _check_need_key(r: Any) -> tuple[bool, Any]:
@@ -415,6 +430,7 @@ def draft_retraction_report(
     cited_slugs: list[str] | None = None,
     check: bool = False,
     check_slugs: Collection[str] | None = None,
+    upgrade_targets: Collection[int] = (),
     force: bool = False,
     ttl_days: int = RETRACTION_TTL_DAYS,
     doi_ttl_days: int = DOI_VALIDATION_TTL_DAYS,
@@ -450,7 +466,10 @@ def draft_retraction_report(
     """
     from precis.ingest.doi_fetch import missing_doi_entry_type_note
 
-    refs, unresolved = cited_paper_refs(store, ref, cited_slugs=cited_slugs)
+    upgrades = list(upgrade_targets)
+    refs, unresolved = cited_paper_refs(
+        store, ref, cited_slugs=cited_slugs, upgrades=upgrades
+    )
 
     to_check = refs
     if check_slugs is not None:
@@ -562,7 +581,13 @@ def draft_retraction_report(
                 ),
             )
         )
-    return DraftRetractionReport(papers=papers, unresolved=unresolved, checked=check)
+    by_id = {paper.ref_id: paper for paper in papers}
+    return DraftRetractionReport(
+        papers=papers,
+        unresolved=unresolved,
+        checked=check,
+        upgraded_preprints=[by_id[ref_id] for ref_id in upgrades if ref_id in by_id],
+    )
 
 
 def retraction_coverage_entries(

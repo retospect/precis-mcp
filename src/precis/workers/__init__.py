@@ -2,18 +2,17 @@
 
 Derived-queue core
 -----------------------------
-Derived artifact tables are the queue: a chunk missing a ``bge-m3`` row in
-``chunk_embeddings`` needs embedding; no separate ``block_jobs`` table.
-Ingest writes rows without enqueueing or waiting. Outages delay derived
-work without losing it: missing output remains claimable.
+Derived artifact tables are the queue. Chunks missing a ``bge-m3`` embedding
+remain claimable through outages, without a separate ``block_jobs`` table.
 
 Each :class:`WorkerHandler` owns one ``(output_table, model)`` pair.
-:meth:`claim_batch` locks missing-output chunks with ``FOR UPDATE OF c SKIP
-LOCKED``; :meth:`process` is pure, and :meth:`write_ok`/:meth:`write_failed`
-persist results or poison-pill failures. :meth:`status` reports
-``(total, ok, failed, pending)`` for CLI/health. :func:`run_handler_once`
-handles one batch; :func:`run_loop` rotates handlers until idle, then sleeps
-and polls.
+:meth:`claim_batch` locks chunks with ``FOR UPDATE OF c SKIP LOCKED``.
+:meth:`process` is pure. :meth:`write_ok`/:meth:`write_failed` persist results
+or failures. :meth:`status` reports ``(total, ok, failed, pending)``.
+:func:`run_handler_once` handles one batch. :func:`run_loop` rotates handlers
+and polls when idle.
+
+Preprint upgrade retries oldest checks first. Limiter refusals preserve retry eligibility.
 
 Pass taxonomy
 -------------

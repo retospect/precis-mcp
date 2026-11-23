@@ -302,6 +302,11 @@ Undo restores the whole ref with its retained content and logs a
 `restored` event. Force does not bypass the merged-alias or merge-tombstone
 guards, and only modifies `retire=True`. It never purges files or chunks.
 
+The cited-preprint upgrade sweep keeps both records live, tags the preprint
+`STATUS:superseded` and links the publication to it with `supersedes`.
+Draft bibliographies follow that link. Passage anchors still use the held
+preprint text.
+
 The same force door retires a preprint once the corpus holds the
 published version of record *with its body* (arXiv, ChemRxiv,
 Research Square and kin):

@@ -1933,9 +1933,9 @@ def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
         # cited in the running text.
         return _inline_paper_by_slug(base, ctx)
     if ctx.footnote_refs:
-        return _source_footnote(
-            base, "paper", _slug_chunk_excerpt(base, chunk_ord, ctx), ctx
-        )
+        excerpt = _slug_chunk_excerpt(base, chunk_ord, ctx)
+        key, _ = _resolve_si_slug(base, ctx)
+        return _source_footnote(key, "paper", excerpt, ctx)
     base, resolved_si = _resolve_si_slug(base, ctx)
     group = walker.register_group([(base, si or resolved_si)], ctx.cited, ctx.si_cited)
     return _cite_mark(group, ctx)
@@ -2444,16 +2444,19 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
     the end bibliography carries the entry the footnote's ``[N]`` points at.
     ``None`` (no key, or a fake store without the method) drops the number,
     keeping the bold title line."""
+    from precis.taproot.cite import bibliographic_key
+
     fn = getattr(ctx.store, "ref_cite_keys", None)
     if not callable(fn):
         return None
     try:
         aliases = fn(paper_ref_id)
+        if not aliases:
+            return None
+        key = bibliographic_key(ctx.store, paper_ref_id, str(aliases[0]))
     except Exception:  # pragma: no cover — store hiccup
         return None
-    if not aliases:
-        return None
-    key = ctx.doi_aliases.canonical(str(aliases[0]))
+    key = ctx.doi_aliases.canonical(key)
     walker.register(ctx.cited, key)
     return key
 

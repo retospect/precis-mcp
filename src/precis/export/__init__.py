@@ -19,6 +19,11 @@ and retain the retraction year in the reference list for full retractions.
 A verdict is scoped to the notice, cited paper and exact revision of its
 citing block. Edits require the revised claim to be judged again.
 
+Draft citations and retraction notices use the published bibliography key
+when a preprint has been superseded. The retraction report takes its upgrade
+count from the draft's original citation targets and checks each resolved
+paper once. Passage handles continue to address the held text.
+
 reMarkable uploads share the cloud backoff policy across local and
 container rmapi runs. Only rate limits and connection-establishment
 failures allow replay because an interrupted upload may already have

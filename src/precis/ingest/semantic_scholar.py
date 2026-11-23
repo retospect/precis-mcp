@@ -12,7 +12,7 @@ from semanticscholar import SemanticScholar
 
 from precis.identity import normalize_arxiv, normalize_doi
 from precis.utils import rate_limit
-from precis.utils.http import _status_of, call_with_backoff
+from precis.utils.http import VendorUnavailable, _status_of, call_with_backoff
 
 log = logging.getLogger(__name__)
 
@@ -177,7 +177,9 @@ def _search_fast_fail(sch: SemanticScholar, query: str, limit: int) -> Any:
 _BATCH_CHUNK_SIZE = 500
 
 
-def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] | None]:
+def get_papers_batch(
+    ids: list[str], api_key: str = "", *, propagate: bool = False
+) -> list[dict[str, Any] | None]:
     """Batch-resolve S2 metadata for ``ids``, one slot per input id.
 
     ``ids`` may mix S2 paper-id shas with the lib's prefixed forms
@@ -194,7 +196,8 @@ def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] |
     caller enriching many stubs at once doesn't lose the whole batch to
     one bad id, and a whole-chunk API failure (network blip, exhausted
     retry budget) degrades every id in that chunk to ``None`` rather
-    than raising.
+    than raising. With ``propagate=True``, failures raise, and exhausted
+    rate limits surface as ``S2RateLimited``.
 
     S2's batch response is a JSON array positionally aligned with the
     request, with ``null`` for an unresolved id — the ``semanticscholar``
@@ -217,7 +220,20 @@ def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] |
         chunk = ids[start : start + _BATCH_CHUNK_SIZE]
         try:
             papers, _not_found = _get_papers_with_retry(sch, chunk)
-        except Exception:
+        except Exception as exc:
+            if propagate:
+                if (
+                    isinstance(exc, rate_limit.RateLimited)
+                    or _status_of(exc) == 429
+                    or (
+                        isinstance(exc, VendorUnavailable)
+                        and (exc.cooldown or exc.status == 429)
+                    )
+                ):
+                    raise S2RateLimited(
+                        f"Semantic Scholar batch deferred: {exc}"
+                    ) from exc
+                raise
             out.extend([None] * len(chunk))
             continue
         lookup: dict[str, Any] = {}

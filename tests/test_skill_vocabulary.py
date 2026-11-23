@@ -103,6 +103,7 @@ _ALLOWLIST: dict[str, str] = {
     "idea_feed": "operator-only pass/alert id; skills carry no worker internals",
     "mail_poll": "operator-only pass/alert id; skills carry no worker internals",
     "openalex_enrich": "operator-only pass/alert id; skills carry no worker internals",
+    "preprint_upgrade": "operator-only pass/alert id; skills carry no worker internals",
     "openalex_snapshot": "operator-only pass/alert id; skills carry no worker internals",
     "paper_glossary": "operator-only pass/alert id; skills carry no worker internals",
     "paper_meta_enrich": "operator-only pass/alert id; skills carry no worker internals",

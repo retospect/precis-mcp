@@ -1370,6 +1370,20 @@ def build_ref_passes(
 
         ref_passes.append(_citer_watch_pass)
 
+    # Preprint → published upgrade (gr690851). Dark by default (§L: a
+    # `service prio` row lights it); this registration is the manual
+    # `--only preprint_upgrade` hatch. Cadence-throttled inside the pass
+    # (24 h default), so a lit pass doesn't re-probe the corpus every
+    # cycle; S2 externalIds linkage + high-confidence title match only.
+    if _register("preprint_upgrade"):
+        from precis.workers.preprint_upgrade import run_preprint_upgrade_pass
+        from precis.workers.runner import BatchResult as _BatchResult
+
+        def _preprint_upgrade_pass(batch_size: int) -> _BatchResult:
+            return run_preprint_upgrade_pass(store, limit=None)
+
+        ref_passes.append(_preprint_upgrade_pass)
+
     # Upstream issue/PR watch (gr543879). Same shape as citer_watch
     # above: no `default_profiles`, so this registration is for a
     # manual `--only upstream_watch` run only — the STANDING trigger is

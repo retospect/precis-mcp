@@ -394,6 +394,12 @@ Most work lands at one of these. Each has a convention that bites:
   in `meta.journal`. The worker repairs old papers and refreshes every 30 days;
   substantive name disagreements create deduplicated review todos. Citation
   exporters prefer that journal over a provider's raw `meta.venue`.
+- **Upgrade a cited preprint** → `ingest/preprint_upgrade.py` verifies the
+  Crossref publication and writes a `supersedes` link and
+  `STATUS:superseded` tag. `taproot/cite.py` resolves the bibliography through
+  the link while draft and claim evidence stays on the held preprint.
+  `export/retraction.py` checks the publication and supplies the upgrade
+  count from original draft citations.
 - **Clerical paper review** → `ingest/paper_review.py` maintains one open
   table todo per review type. The paper reconcile pass folds older open
   title and stub-identity todos into those tables.

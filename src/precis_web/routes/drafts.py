@@ -1373,6 +1373,11 @@ def _retraction_report_json(report: Any) -> dict[str, Any]:
         "checked": report.checked,
         "summary": report.summary(),
         "coverage": report.coverage_summary(),
+        # gr690851: the published upgrades of cited preprints — the pane
+        # renders this as a "N upgraded to a published version" segment.
+        "upgraded_preprints": [
+            _retraction_paper_json(p) for p in report.upgraded_preprints
+        ],
         "recent_count": report.recent_count,
         # Always False now (retractions are marked, not blocked); kept so
         # older pane scripts reading the key keep working.
@@ -1921,13 +1926,15 @@ async def retraction_check_route(request: Request, ident: str) -> Response:
         # ``cited_paper_refs`` renders the draft body to learn what it
         # cites — seconds on a big draft. It belongs in here, inside the
         # budget, not on the event loop ahead of it.
-        refs, unresolved = cited_paper_refs(store, ref)
+        upgrades: list[int] = []
+        refs, unresolved = cited_paper_refs(store, ref, upgrades=upgrades)
         selected = select_for_check(refs, _RETRACTION_CHECK_CAP)
         report = draft_retraction_report(
             store,
             ref,
             cited_slugs=[r.slug for r in refs],
             check_slugs=[r.slug for r in selected],
+            upgrade_targets=upgrades,
             check=scope != "none",
             force=force,
             mailto=_crossref_mailto(),
@@ -2013,7 +2020,8 @@ async def doi_fetch_route(request: Request, ident: str) -> Response:
     force = str(form.get("force") or "") in ("1", "true", "yes", "on")
 
     def _run() -> tuple[Any, list[str], list[Any], int]:
-        refs, unresolved = cited_paper_refs(store, ref)
+        upgrades: list[int] = []
+        refs, unresolved = cited_paper_refs(store, ref, upgrades=upgrades)
         ids = store.identifiers_for_refs([r.id for r in refs]) if refs else {}
         targets = [
             r
@@ -2028,7 +2036,11 @@ async def doi_fetch_route(request: Request, ident: str) -> Response:
             store, [r.id for r in selected], force=force, mailto=_crossref_mailto()
         )
         report = draft_retraction_report(
-            store, ref, cited_slugs=[r.slug for r in refs], check=False
+            store,
+            ref,
+            cited_slugs=[r.slug for r in refs],
+            upgrade_targets=upgrades,
+            check=False,
         )
         return report, unresolved, checks, len(targets)
 

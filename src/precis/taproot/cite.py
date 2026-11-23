@@ -50,6 +50,12 @@ def _keyed_edges(
     alias at all is dropped rather than failing the whole hub, and its
     ``ref_id`` is reported back so the caller can warn about it.
 
+    A superseded preprint resolves through its ``supersedes`` chain to the
+    published version's ``cite_key`` (gr690851): the upgrade is honored
+    wherever the cite renders, while the evidence edge itself still names
+    the preprint — the corpus evidence is unchanged, only the bibliographic
+    citation moves.
+
     ``cite_key_map`` — a pre-fetched ``{paper_ref_id: aliases}`` map
     (:func:`~precis.store.Store.ref_cite_keys_bulk`) — skips the
     per-paper ``store.ref_cite_keys`` round trip entirely when given
@@ -59,17 +65,39 @@ def _keyed_edges(
     """
     keyed: list[tuple[EvidenceEdge, str]] = []
     skipped: list[int] = []
+    if not edges:
+        return keyed, skipped
+    remap = bibliographic_targets(store, [e.paper_ref_id for e in edges])
     for edge in edges:
-        aliases = (
-            cite_key_map.get(edge.paper_ref_id, [])
-            if cite_key_map is not None
-            else store.ref_cite_keys(edge.paper_ref_id)
-        )
+        resolved_id = remap.get(edge.paper_ref_id, edge.paper_ref_id)
+        if cite_key_map is not None and resolved_id == edge.paper_ref_id:
+            aliases = cite_key_map.get(resolved_id, [])
+        else:
+            # No remap: the map miss means "no aliases" (preserved
+            # verbatim). Remapped: the caller's bulk map predates the
+            # remap, so the published target's aliases need the real read.
+            aliases = store.ref_cite_keys(resolved_id)
         if aliases:
             keyed.append((edge, aliases[0]))
         else:
-            skipped.append(edge.paper_ref_id)
+            skipped.append(resolved_id)
     return keyed, skipped
+
+
+def bibliographic_targets(store: Any, ref_ids: list[int]) -> dict[int, int]:
+    """Resolve bibliography replacements while callers keep their evidence IDs."""
+    resolve = getattr(store, "supersede_targets_bulk", None)
+    return resolve(ref_ids) if ref_ids and callable(resolve) else {}
+
+
+def bibliographic_key(store: Any, ref_id: int, key: str) -> str:
+    """Return the published cite key, retaining the original key on a miss."""
+    target = bibliographic_targets(store, [ref_id]).get(ref_id)
+    if target is not None:
+        aliases = store.ref_cite_keys(target)
+        if aliases:
+            return str(aliases[0])
+    return key
 
 
 def _cite_keys_for_group(
@@ -523,7 +551,7 @@ def resolve_pin_handle(store: PinStore, handle: str) -> tuple[int, str] | None:
     aliases = store.ref_cite_keys(resolved.ref_id)
     if not aliases:
         return None
-    return resolved.ref_id, aliases[0]
+    return resolved.ref_id, bibliographic_key(store, resolved.ref_id, aliases[0])
 
 
 @dataclass(frozen=True)
@@ -594,7 +622,7 @@ def apply_pin(
         pinned.append((ref_id, cite_key))
 
     pinned_ref_ids = {ref_id for ref_id, _ in pinned}
-    pinned_keys = [cite_key for _, cite_key in pinned]
+    pinned_keys = list(dict.fromkeys(cite_key for _, cite_key in pinned))
 
     if op == ">":
         # Divergence advisory — replace only (see docstring: a supplement

@@ -1816,6 +1816,30 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr690851: the preprint→published upgrade sweep
+        # (precis.workers.preprint_upgrade). For a cited preprint with a
+        # discoverable published version it mints/folds the published
+        # paper (S2 externalIds linkage or a high-confidence title match
+        # only — never a weak one), links published--supersedes-->preprint
+        # and soft-retires the preprint (STATUS tag, ref kept); the shared
+        # cite resolver + the draft retraction walk then resolve the cite
+        # to the real Crossref DOI instead of a permanent "never checked".
+        # Same dark-by-default shape as citer_watch just above: this
+        # registration is for a manual `--only preprint_upgrade` run; the
+        # live gate is a service_config row.
+        name="preprint_upgrade",
+        label="Preprint → published upgrade",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_PREPRINT_UPGRADE_ENABLED",
+        uses_external=("s2", "crossref"),
+        one_line="Upgrade cited preprints to their published version "
+        "(S2-linked or high-confidence title match), soft-retiring the "
+        "preprint so the retraction watch can check the cite.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         # gr543879: the upstream issue/PR watch (workers/upstream_watch.py).
         # Same dark-by-default shape as citer_watch just above: the
         # STANDING trigger is the daily `upstream_watch` scheduler

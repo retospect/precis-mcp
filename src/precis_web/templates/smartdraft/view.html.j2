@@ -1084,7 +1084,8 @@
              // most one open at a time). Keys are the same JSON keys
              // ``_retraction_report_json`` ships (routes/drafts.py) —
              // ``papers`` (the full cited set) / ``missing_doi`` /
-             // ``unchecked`` / ``doi_unvalidated``.
+             // ``unchecked`` / ``doi_unvalidated`` / ``upgraded_preprints``
+             // (gr690851: published upgrades of cited preprints).
              expandedBucket: null,
              async loadRetraction() {
                try {
@@ -1106,6 +1107,7 @@
                const bits = [
                  mk('retracted', 'retracted', true),
                  mk('soft', 'with notices', true),
+                 mk('upgraded_preprints', 'upgraded to a published version', true),
                  mk('missing_doi', 'missing DOI', true),
                  mk('doi_invalid', 'DOI invalid', false),
                  mk('unchecked', 'never checked', true),
@@ -1278,7 +1280,7 @@
             <template x-if="expandedBucket">
               <div class="max-h-40 overflow-y-auto rounded border border-line bg-surface p-1"
                    data-retraction-list>
-                <template x-for="p in (retraction[expandedBucket] || [])" :key="p.ref_id">
+                <template x-for="(p, i) in (retraction[expandedBucket] || [])" :key="i">
                   <div>
                     <a :href="'/r/paper/' + p.slug" target="_blank" rel="noopener"
                        class="block truncate rounded px-1 py-0.5 text-[10px] text-fg-muted hover:bg-surface-subtle hover:text-info-strong"

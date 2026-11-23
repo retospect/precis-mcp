@@ -73,6 +73,7 @@ from typing import Any, Protocol
 
 from precis.export import _abbrev, _back_matter
 from precis.store.si_links import SI_PDF_ROLE, cite_target_for
+from precis.taproot.cite import bibliographic_key
 from precis.utils import handle_registry
 
 
@@ -241,11 +242,15 @@ def resolve_si_slug(
     # under the one slug the store returns for it, so aliases merge.
     own = getattr(ref, "slug", None)
     if isinstance(own, str) and own:
-        result = (own, False)
+        ref_id = getattr(ref, "id", None)
+        result = (
+            bibliographic_key(store, ref_id, own) if ref_id is not None else own,
+            False,
+        )
     if ref is not None and getattr(ref, "pdf_role", None) == SI_PDF_ROLE:
         target, is_si = cite_target_for(store, ref, target_cache)
         if is_si and target.slug:
-            result = (str(target.slug), True)
+            result = (bibliographic_key(store, target.id, str(target.slug)), True)
         else:
             warnings.append(
                 f"cite {slug!r}: supplementary record has no live parent paper"
@@ -278,8 +283,17 @@ def resolve_cite_handle(store: Any, handle: str) -> tuple[str, int | None, bool]
         return None
     # An SI ref cites as its parent paper (si-attachments ruling 3).
     parent = getattr(resolved, "cite_public_id", None)
+    key = parent or resolved.public_id
+    if getattr(resolved, "kind", None) == "paper":
+        ref_id = getattr(resolved, "ref_id", None)
+        if parent:
+            get_ref = getattr(store, "get_ref", None)
+            parent_ref = get_ref(kind="paper", id=parent) if callable(get_ref) else None
+            ref_id = getattr(parent_ref, "id", None)
+        if ref_id is not None:
+            key = bibliographic_key(store, ref_id, key)
     return (
-        parent or resolved.public_id,
+        key,
         getattr(resolved, "chunk_id", None),
         bool(parent and parent != resolved.public_id),
     )
