@@ -13007,6 +13007,10 @@ class PaperHandler(Handler):
             if scope is None
             else None,
         )
+        if scope is None and self.spec.kind == "paper":
+            fragment = _fragment_warning(self.store, ref.id)
+            if fragment:
+                body = f"{fragment}\n\n{body}"
         banner = _paper_banner(ref, store=self.store)
         if banner:
             body = f"{banner}\n\n{body}"
@@ -13424,6 +13428,46 @@ def _toc_readiness_line(store: Store, ref_id: int) -> str | None:
             "labels appear as chunk_keywords drains"
         )
     return line
+
+
+# A body this small whose last chunk stops mid-sentence is a held fragment
+# (front matter + a few intro paragraphs), not a short paper (gr779217).
+_FRAGMENT_MAX_BODY_CHARS = 12_000
+_SENTENCE_END = (".", "!", "?", ":", ")", "]", '"', "\u201d", "'", "\u2019")
+
+
+def _fragment_warning_for(total_chars: int, last_text: str) -> str | None:
+    """Warning text when a body is tiny and its last chunk ends mid-sentence."""
+    tail = last_text.rstrip()
+    if total_chars >= _FRAGMENT_MAX_BODY_CHARS or not tail:
+        return None
+    if tail.endswith(_SENTENCE_END):
+        return None
+    return (
+        f"> **Truncated body?** only {total_chars} chars held and the last "
+        "chunk ends mid-sentence — this copy looks like front matter only "
+        "(no results, methods or conclusions). Absent text here is not "
+        "evidence about the literature; re-fetch the full text before "
+        "reading or citing a negative."
+    )
+
+
+def _fragment_warning(store: Store, ref_id: int) -> str | None:
+    """:func:`_fragment_warning_for` over the paper's live body chunks."""
+    with store.pool.connection() as conn:
+        total = conn.execute(
+            "SELECT COALESCE(SUM(char_length(text)), 0) FROM chunks "
+            "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+        last = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "AND retired_at IS NULL ORDER BY ord DESC LIMIT 1",
+            (ref_id,),
+        ).fetchone()
+    if not last or total is None:
+        return None
+    return _fragment_warning_for(int(total[0]), last[0] or "")
 
 
 def _retraction_banner(ref: Ref) -> str | None:

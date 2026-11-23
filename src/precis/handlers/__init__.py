@@ -27,6 +27,8 @@ Cache eyes apply injection verdicts while retaining link rings.
 Comment visibility previews share target and state validation with apply.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
+Unscoped paper TOCs flag short bodies that end mid-sentence so readers can
+recognize possible gaps in the held copy before drawing conclusions.
 Crossref misses leave DOI health unverified because other agencies register DOIs.
 Paper tag batches commit edits with audit events. Numeric-ref tag batches
 accept 300 IDs to support deck moves, and Anki opts in for tag alone.

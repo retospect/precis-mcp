@@ -569,3 +569,12 @@ def test_toc_readiness_line_excludes_structurally_ineligible_chunks(
         " — keywords pending for 1 chunks; "
         "labels appear as chunk_keywords drains" in body
     )
+
+
+def test_fragment_warning_flags_tiny_mid_sentence_body() -> None:
+    from precis.handlers.paper import _fragment_warning_for
+
+    assert _fragment_warning_for(5000, "displays a complex pattern") is not None
+    assert _fragment_warning_for(5000, "It ends here.") is None
+    assert _fragment_warning_for(50_000, "cut off mid") is None
+    assert _fragment_warning_for(0, "") is None

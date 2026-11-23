@@ -604,6 +604,12 @@ The top-level (unscoped) TOC header also carries a readiness line —
 some chunks' embedding attempts genuinely failed) — so you can poll
 "is my edit indexed yet" instead of guessing.
 
+**Truncated body?** appears on the unscoped paper TOC when the held body
+has fewer than 12,000 characters and the last chunk appears to stop
+mid-sentence. The copy may contain only front matter and part of the
+introduction. Re-fetch the full text before drawing conclusions from
+missing sections or results.
+
 `view='summaries'` lists each body chunk's `~ord` handle, `llm-v1` gloss
 and keywords. Use the keywords where the summariser has yet to write
 a gloss. The web reader's Semantic/Keyword sidebar uses the same data.
