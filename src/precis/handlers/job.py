@@ -88,7 +88,6 @@ from precis.workers.executors import (
 from precis.workers.executors._common import (
     _BASE_CLASS_RANK,
     _BUILD_HOLD_FILTER_SQL,
-    _CLAIM_AGE_BUCKET_SQL,
     _CLAIM_ORDER_PREFIX_SQL,
     _CLASS_RANK_CASE,
     _DEFAULT_JOB_PRIO,
@@ -114,6 +113,7 @@ from precis.workers.executors._common import (
     SLICING_ENV,
     STATUS_NAMESPACE,
     WAITING,
+    _claim_age_bucket_sql,
     _claim_order_sql,
     _factory_pref_sql,
     _truthy,
@@ -6128,6 +6128,9 @@ class JobHandler(NumericRefHandler):
             class_rank=class_rank_on,
             release_freeze=True,
         )
+        bucket_sql, bucket_params = _claim_age_bucket_sql(
+            class_age, class_rank=class_rank_on, release_freeze=True
+        )
         suspended = sorted(suspended_job_types())
         susp_sql = (
             " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)" if suspended else ""
@@ -6143,7 +6146,7 @@ class JobHandler(NumericRefHandler):
                   SELECT r.ref_id, q2.qs AS qs, {rank_sql} AS claim_rank,
                          {asql} AS aged_prio, b.base_class AS bclass,
                          {_factory_pref_sql(class_rank_on)} AS factory_pref,
-                         {_CLAIM_AGE_BUCKET_SQL} AS aged_past_class_age,
+                         {bucket_sql} AS aged_past_class_age,
                          {_DISPATCH_SCORE_SQL} AS dispatch_score
                     FROM refs r
                     CROSS JOIN LATERAL (
@@ -6211,7 +6214,7 @@ class JobHandler(NumericRefHandler):
                 """,
                 (
                     *aparams,
-                    class_age,
+                    *bucket_params,
                     STATUS_NAMESPACE,
                     list(CLAIMABLE),
                     _DEFAULT_JOB_PRIO,

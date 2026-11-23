@@ -933,6 +933,60 @@ def test_deficit_favours_lane_served_least_over_window(store: Store) -> None:
     assert _claim(store, limit=1) == [starved]
 
 
+def _served_lane_with_aged_row(store: Store, *, score: float | None) -> tuple[int, int]:
+    """A ``hog`` lane that held ``h1`` for the window, one ``hog`` row
+    queued past the class age and a fresh ``starved`` row, returned as
+    ``(aged, starved)`` —
+    all background, one claim class. ``score`` stamps
+    ``meta.dispatch_score`` on both queued rows (``None`` = no stamp)."""
+    hog = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    _set_started(store, hog, 1800)
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (hog,),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '60 seconds' "
+            "WHERE ref_id = %s",
+            (hog,),
+        )
+    aged = _job(
+        store,
+        origin="background",
+        prio=8,
+        queued_s_ago=_CLASS_AGE_S + 600,
+        job_type="hog",
+    )
+    starved = _job(store, origin="background", prio=8, job_type="starved")
+    if score is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "'dispatch_score', %s::float8) WHERE ref_id = ANY(%s)",
+                (score, [aged, starved]),
+            )
+    return aged, starved
+
+
+def test_age_bucket_skips_score_less_rows_so_deficit_decides(store: Store) -> None:
+    """td763180 ruling: the age bucket bounds how long a static
+    ``dispatch_score`` beats queue age — a row with no score has none to
+    beat. Two score-less rows in one class, the older past
+    ``claim_class_age_s``: the lane deficit still picks the starved lane."""
+    _aged, starved = _served_lane_with_aged_row(store, score=None)
+    assert _claim(store, limit=1) == [starved]
+
+
+def test_age_bucket_puts_aged_scored_row_ahead_of_deficit(store: Store) -> None:
+    """The same queue with both rows score-stamped (equal scores): the
+    row past ``claim_class_age_s`` enters the bucket and claims ahead of
+    the starved lane — the ruling's ``aged_past_class_age`` before
+    ``lane_deficit``."""
+    aged, _starved = _served_lane_with_aged_row(store, score=1.0)
+    assert _claim(store, limit=1) == [aged]
+
+
 def test_deficit_outside_window_is_forgotten(store: Store) -> None:
     """Service older than the window no longer counts: ordering falls back
     to the aged order."""
