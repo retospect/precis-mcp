@@ -87,6 +87,17 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   boot; this fires on every nursery pass until the roster is fixed.
   **Raises nothing today** — :data:`_NO_ALERT` suppresses it after 0/12
   true positives on its first pass (gr452084); the count is still logged.
+* **unadmitted-load** (``warn``) — a fresh ``host_heartbeat`` census
+  reports a process group or container over the load threshold
+  (512 MiB RSS or 50% CPU) with no
+  admitted holder (no live ``resource_slot_holds`` local pid, no running
+  job's ``compute_handle``/``meta.container``/container ``--name``, not
+  an init-managed service) for two
+  consecutive beats (gr647996 S7b — the live admission check).
+* **footprint-drift** (``info``) — measured usage outrunning what was
+  admitted: the census's per-host ``meta.footprint_drift`` rows, and
+  ``job_footprint_summary`` keys whose ``rss_p95/rss_p50`` spread exceeds
+  the size-driver bound — predictor feedback for gr647996 S2.
 
 Each finding → an ``alert`` under ``alert_source = nursery:<category>``,
 deduped on ``fingerprint = "<category>:<ref_id>"`` (:mod:`precis.alerts`);
@@ -328,6 +339,13 @@ _SEVERITY: dict[str, str] = {
     "embed-lane-stalled": "critical",
     "lane-skipping": "warn",
     "kind-shrinkage": "critical",
+    # gr647996 S7b: unadmitted load is a capacity-accounting gap (the
+    # gr601479 class), not an outage — warn, not a page, until S5 drains
+    # the legitimately-unadmitted set (every gate run flags before it).
+    "unadmitted-load": "warn",
+    # Predictor feedback (measured-vs-admitted drift, size-driver misses)
+    # — an observation, not a fire.
+    "footprint-drift": "info",
 }
 
 
@@ -441,6 +459,8 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Symptom]]], ...] = (
     ("embed-lane-stalled", lambda s: _detect_embed_lane_stalled(s)),
     ("lane-skipping", lambda s: _detect_lane_skipping(s)),
     ("kind-shrinkage", lambda s: _detect_kind_shrinkage(s)),
+    ("unadmitted-load", lambda s: _detect_unadmitted_load(s)),
+    ("footprint-drift", lambda s: _detect_footprint_drift(s)),
 )
 
 
@@ -2046,6 +2066,172 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
                 fingerprint_key=f"host-dark:{host}",
                 title=f"{host} host_heartbeat silent {silent:.1f}h",
                 detail=_host_dark_detail(str(host), silent, platform, meta),
+            )
+        )
+    return out
+
+
+#: Freshness gate for census-driven detectors: a ``host_heartbeat`` row
+#: older than this is stale, so its ``meta.unadmitted`` /
+#: ``meta.footprint_drift`` snapshots read as "no longer observed" rather
+#: than "still true" — the alert self-resolves and ``host-dark`` owns the
+#: page. Well past the default 60s beat for jitter.
+UNADMITTED_FRESH_MIN = 5
+#: ``footprint-drift`` spread arm: a ``(job_type, size)`` key needs this
+#: many measured runs before its p95/p50 means anything (S2's cold-start
+#: bound), and p95/p50 past this ratio means the size features miss the
+#: driver (gr647996 §Metrics feedback).
+FOOTPRINT_SPREAD_MIN_N = 20
+FOOTPRINT_SPREAD_RATIO = 4.0
+
+
+def _detect_unadmitted_load(store: Store) -> list[Symptom]:
+    """Hosts burning real load with no admitted holder (gr647996 S7b).
+
+    The live complement of the S7a static ratchets: the heartbeat census
+    (:func:`precis.workers.heartbeat._admission_census`) matches every
+    over-threshold process group / container to a live
+    ``resource_slot_holds`` row (a *local* holder pid — a remote client's
+    hold on this host's slots names no pid here), a running job's
+    ``compute_handle`` / ``meta.container`` / deterministic container
+    ``--name``, or an init-managed service (``ppid == 1`` alone doesn't
+    declare one — reparented orphans face the match too), and writes what
+    matches nothing to ``host_heartbeat.meta.unadmitted`` with a
+    consecutive-``beats`` counter. Fire per host on any entry persisting
+    two beats (a transient compile is one beat; the gr601479-class
+    unadmitted gate/container is two). Entries carry
+    ``{key, comm, rss_mb, cpu, beats}``; the ``gate`` key prefix marks a
+    gate that ran unadmitted under the S5 outage fallback (no such
+    writers yet — the arm is forward-looking).
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT host, meta->'unadmitted' AS unadmitted
+              FROM host_heartbeat
+             WHERE ts > now() - (%(fresh)s || ' minutes')::interval
+               AND jsonb_typeof(meta->'unadmitted') = 'array'
+               AND jsonb_array_length(meta->'unadmitted') > 0
+               AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
+               AND (meta->>'retired') IS NULL
+             ORDER BY host
+             LIMIT 50
+            """,
+            {"fresh": UNADMITTED_FRESH_MIN},
+        ).fetchall()
+    out: list[Symptom] = []
+    for host, entries in rows:
+        if not isinstance(entries, list):
+            continue
+        persistent = [
+            e for e in entries if isinstance(e, dict) and int(e.get("beats") or 0) >= 2
+        ]
+        if not persistent:
+            continue
+        top = sorted(
+            persistent, key=lambda e: float(e.get("rss_mb") or 0), reverse=True
+        )[:5]
+        shown = "; ".join(
+            f"{e.get('comm')} rss={e.get('rss_mb')}MB cpu={e.get('cpu')}%" for e in top
+        )
+        out.append(
+            Symptom(
+                category="unadmitted-load",
+                ref_id=None,
+                fingerprint_key=f"unadmitted-load:{host}",
+                title=f"{host}: {len(persistent)} unadmitted load source(s)",
+                detail=(
+                    f"{host}'s census found {len(persistent)} process group(s) / "
+                    f"container(s) over the load threshold with no admitted "
+                    f"holder for 2+ consecutive beats — {shown}. Every launch "
+                    "must go through precis.workers.admission (gr647996): find "
+                    "what launched these and route it through admit()/spawn(), "
+                    "or declare it a standing resident via PRECIS_CENSUS_EXEMPT."
+                ),
+            )
+        )
+    return out
+
+
+def _detect_footprint_drift(store: Store) -> list[Symptom]:
+    """Measured usage outrunning what was admitted (gr647996 S7b).
+
+    Two arms:
+
+    * **per-host drift** — the census's ``meta.footprint_drift`` rows:
+      a holder's measured group RSS past ``admitted mem_mb`` × the
+      heartbeat's drift margin. Feeds the predictor (S2): under-sized
+      footprints are what admission must learn from.
+    * **per-job-type spread** — ``job_footprint_summary`` keys whose
+      ``rss_p95 / rss_p50 > 4``: the features minted at submit miss the
+      size driver for that ``job_type``, so no footprint request can be
+      right for it — flag for the feature extractor.
+    """
+    out: list[Symptom] = []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT host, meta->'footprint_drift' AS drift
+              FROM host_heartbeat
+             WHERE ts > now() - (%(fresh)s || ' minutes')::interval
+               AND jsonb_typeof(meta->'footprint_drift') = 'array'
+               AND jsonb_array_length(meta->'footprint_drift') > 0
+               AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
+               AND (meta->>'retired') IS NULL
+             ORDER BY host
+             LIMIT 50
+            """,
+            {"fresh": UNADMITTED_FRESH_MIN},
+        ).fetchall()
+    for host, entries in rows:
+        if not isinstance(entries, list) or not entries:
+            continue
+        shown = "; ".join(
+            f"{e.get('comm')} admitted={e.get('admitted_mb')}MB "
+            f"measured={e.get('measured_mb')}MB"
+            for e in entries[:5]
+            if isinstance(e, dict)
+        )
+        out.append(
+            Symptom(
+                category="footprint-drift",
+                ref_id=None,
+                fingerprint_key=f"footprint-drift:host:{host}",
+                title=f"{host}: measured usage over admitted footprint",
+                detail=(
+                    f"{host}: {shown}. Admitted memory undersized against "
+                    "measured RSS — feed to the footprint predictor "
+                    "(gr647996 S2)."
+                ),
+            )
+        )
+    try:
+        summaries = store.job_footprint_summary(days=30)
+    except Exception:
+        log.warning("nursery: footprint summary failed", exc_info=True)
+        return out
+    for s in summaries:
+        p50, p95, n = s["rss_p50_mb"], s["rss_p95_mb"], int(s["n"])
+        if n < FOOTPRINT_SPREAD_MIN_N or p50 <= 0:
+            continue
+        ratio = p95 / p50
+        if ratio <= FOOTPRINT_SPREAD_RATIO:
+            continue
+        jt = str(s["job_type"])
+        size = f" ({s['size_name']}={s['size_value']})" if s.get("size_name") else ""
+        out.append(
+            Symptom(
+                category="footprint-drift",
+                ref_id=None,
+                fingerprint_key=f"footprint-drift:spread:{jt}",
+                title=f"{jt}: footprint spread p95/p50 = {ratio:.1f}",
+                detail=(
+                    f"job_type {jt}{size}: rss p95 {p95}MB vs p50 {p50}MB "
+                    f"(n={n}, ratio {ratio:.1f} > {FOOTPRINT_SPREAD_RATIO}) — "
+                    "the minted size features miss this type's memory driver; "
+                    "no footprint request can fit it. Extend the feature "
+                    "extractor (gr647996 S2) or declare a size key."
+                ),
             )
         )
     return out

@@ -73,8 +73,9 @@ seeds remain for ``axis:<id>``/``topic:<slug>``. Same table controls in-pass
 ``concurrency`` (hard-capped for ``classify``) and expiring reserve mode,
 checked inside heavy-executor claims.
 
-Admission (gr647996): :func:`.admission.admit` reserves a whole footprint
-on one host or nothing, over ``resource_slots``; see :mod:`.admission`.
+Admission (gr647996): :func:`.admission.admit` atomically reserves footprints
+over ``resource_slots``. :mod:`.heartbeat` reconciles running load; inherited
+cgroups cannot establish service identity.
 
 Scheduler cadences
 ------------------

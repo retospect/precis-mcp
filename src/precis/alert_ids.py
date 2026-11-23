@@ -577,6 +577,25 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         severity="warn",
     ),
     _nursery(
+        "unadmitted-load",
+        "unadmitted-load:{host}",
+        "A host runs load over the threshold with no admitted holder.",
+        severity="warn",
+        triage="Find what launched it; route it through admit() (gr647996).",
+    ),
+    _nursery(
+        "footprint-drift",
+        "footprint-drift:host:{host}",
+        "Measured usage outruns the admitted footprint on a host.",
+        severity="info",
+    ),
+    _nursery(
+        "footprint-drift",
+        "footprint-drift:spread:{job_type}",
+        "A job_type's footprint p95/p50 spread misses its size driver.",
+        severity="info",
+    ),
+    _nursery(
         "stale-halt",
         "stale-halt:{ref_id}",
         "A legacy or contextless halted todo awaiting review.",

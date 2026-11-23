@@ -74,6 +74,8 @@ panel for pull-style monitoring.
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) — every daemon on that host is locked out of the NAS | <5 min · **critical** |
 | `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity, skipping a worker-less dev checkout (empty or zero-unit `worker_units`, no `activity`) — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
 | `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
+| `unadmitted-load` | a host's heartbeat census found a process group or container over the load threshold (512 MiB RSS or 50% CPU) with no admitted holder (no live `resource_slot_holds` local pid, no running job's `compute_handle`/`meta.container`/container `--name`, not an init-managed service — reparented orphans still face the match) for 2+ consecutive beats — the live admission check (gr647996 S7b) | <5 min · warn |
+| `footprint-drift` | measured usage outruns what was admitted: a holder's group RSS past admitted `mem_mb` × drift margin, or a `job_footprint_summary` key whose rss p95/p50 spread exceeds the size-driver bound (n≥20) — predictor feedback for gr647996 S2 | <5 min · info |
 
 The three **worker-health** detectors watch daemon liveness / work
 flow, not the todo graph; together with `orphaned-coordinator`,

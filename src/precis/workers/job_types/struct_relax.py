@@ -413,8 +413,12 @@ def build_run_argv(
     mem_mb: float | None = None,
 ) -> list[str]:
     """The container ``run`` argv ssh'd to the node (pure). Deterministic
-    ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6;
-    see :func:`kill_container` / :func:`reap_stale_containers`, gripe 50905).
+    ``--name precis-job-<ref_id>`` where ``ref_id`` is the *structure* ref
+    (``params.structure_ref_id`` — the name is the per-structure mutex),
+    never the job row's id, so the sweeper can kill it by name (§23 #6;
+    see :func:`kill_container` / :func:`reap_stale_containers`, gripe 50905)
+    and the heartbeat admission census can attribute it through the
+    running job's params (gr657246).
     ``gpus=0`` omits the GPU flag (CPU fallback — same image). ``gpu_card``
     binds the run to the one card footprint admission picked
     (:func:`_gpu_flags`); ``None`` passes every card through. ``-e
@@ -572,8 +576,9 @@ def _container_still_present(
 def kill_container(
     ref_id: int, *, node: str | None = None, container_cmd: str = _CONTAINER_CMD
 ) -> bool:
-    """Force-remove job ``ref_id``'s compute container by its deterministic
-    ``precis-job-<ref_id>`` name (see :func:`build_run_argv`), and VERIFY it
+    """Force-remove the compute container for structure ``ref_id`` by its
+    deterministic ``precis-job-<ref_id>`` name (see :func:`build_run_argv`
+    — the ref is the structure, not the job), and VERIFY it
     is actually gone (gripe 310809 — an ``rm -f`` that exits nonzero, or
     that lies about success on a wedged dockerd/GPU, used to be reported as
     a kill regardless).
