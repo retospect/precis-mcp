@@ -59,6 +59,9 @@ def test_semantic_mode_raising_embedder_raises_upstream() -> None:
     with pytest.raises(Upstream) as exc_info:
         query_vec_for(_RaisingEmbedder(), "conceptual paraphrase", mode="semantic")
     assert "hybrid" in str(exc_info.value.next)
+    # gr714744: the flag is what lets dispatch pick this Upstream out of
+    # every other and run the one mode='hybrid' retry the next= names.
+    assert exc_info.value.embedder_semantic_down
 
 
 def test_default_mode_raising_embedder_still_degrades() -> None:
@@ -99,6 +102,7 @@ def test_semantic_mode_capacity_error_surfaces_retry_after() -> None:
     assert "capacity" in str(exc_info.value)
     assert "~2 s" in str(exc_info.value)
     assert "Capacity, not absence" in str(exc_info.value.next)
+    assert exc_info.value.embedder_semantic_down
 
 
 class _CapacityBatchEmbedder:

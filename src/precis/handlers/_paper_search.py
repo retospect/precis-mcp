@@ -55,7 +55,11 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Tag
 from precis.store._chunks_ops import _or_retry
 from precis.utils import handle_registry
-from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
+from precis.utils.embed_query import (
+    query_vec_for,
+    record_query_vector,
+    semantic_unavailable_upstream,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import distance_as_similarity, scores_are_distances
@@ -382,7 +386,10 @@ def _embed_query_batch(
         if (mode or "").strip().lower() == "semantic":
             raise semantic_unavailable_upstream(exc) from exc
         return []
-    return [v for v in vecs if v is not None]
+    vectors = [v for v in vecs if v is not None]
+    if vectors:
+        record_query_vector()
+    return vectors
 
 
 def _hint_args_suffix(args: dict[str, Any], kwargs: dict[str, Any]) -> str:

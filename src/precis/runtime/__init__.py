@@ -67,6 +67,11 @@ Default searches can salvage a canceled kind with one lexical retry inside
 its deadline. Explicit kind lists and modes preserve the selected search
 semantics.
 
+Single-kind dispatch retries an explicit semantic search once as hybrid
+after a query embedding error so deduplication can still use lexical
+candidates. The response reports query embedding recovery or discloses
+lexical-only coverage so an empty fallback cannot establish absence.
+
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.
 Call-local stage evidence retains pre-cut candidates (50 plus the total),

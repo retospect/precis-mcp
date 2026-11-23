@@ -161,6 +161,14 @@ class Denied(PrecisError):
 class Upstream(PrecisError):
     """A downstream system (DB, paid tool, network) failed."""
 
+    #: ``semantic_unavailable_upstream`` (``utils/embed_query.py``) sets
+    #: this on the instance it raises for an explicit ``mode='semantic'``
+    #: embed-leg failure: dispatch retries that search once as
+    #: ``mode='hybrid'`` — degraded and disclosed — instead of surfacing
+    #: the refusal (gr714744). Class-level ``False`` keeps every other
+    #: Upstream out of the retry.
+    embedder_semantic_down: bool = False
+
 
 class RateLimited(PrecisError):
     """A provider throttled this caller."""

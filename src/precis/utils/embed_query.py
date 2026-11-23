@@ -17,7 +17,12 @@ One deliberate exception: an explicit ``mode='semantic'`` request with
 a wired-but-failing embedder raises loudly instead of degrading — the
 caller asked for the vector leg by name, and silently answering with
 zero hits reads as "no matches" and has corrupted a campaign (gripe
-#254606). :func:`query_vec_for` owns that split.
+#254606). :func:`query_vec_for` owns that split. The raise is not the
+last word, though: the flagged ``Upstream`` (``embedder_semantic_down``)
+is caught once at the single-kind dispatch boundary and retried as
+``mode='hybrid'`` with the degrade disclosed on the response (gr714744)
+— the caller gets the lexical candidates the refusal would have cost
+them, still without a silent zero.
 
 Gripe #450123 (option d): a busy-but-alive embedder service (bounded
 admission queue timed out) is a *different* failure than a genuinely
@@ -31,12 +36,24 @@ same mode='semantic' loudness split) can't drift apart.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import Upstream
 
 log = logging.getLogger(__name__)
+
+# None outside dispatch's hybrid retry. A successful embed stays recorded
+# even if a later leg cannot embed another query.
+retry_has_query_vector: ContextVar[bool | None] = ContextVar(
+    "retry_has_query_vector", default=None
+)
+
+
+def record_query_vector() -> None:
+    if retry_has_query_vector.get() is False:
+        retry_has_query_vector.set(True)
 
 
 def _embedder_unavailable_cause(exc: BaseException) -> EmbedderUnavailable | None:
@@ -67,11 +84,16 @@ def semantic_unavailable_upstream(exc: Exception) -> Upstream:
     the concrete retry window instead of a bare "unavailable" — capacity
     is not absence, and a caller that reads a zero-hit degrade as "does
     not exist" has corrupted campaigns before (gripe #254606).
+
+    The returned error carries ``embedder_semantic_down = True`` so the
+    single-kind dispatch boundary can tell it apart from every other
+    ``Upstream`` a search can raise and run the one ``mode='hybrid'``
+    retry its ``next=`` advertises (gr714744).
     """
     cause = _embedder_unavailable_cause(exc)
     if cause is not None and cause.retry_after_s is not None:
         n = cause.retry_after_s
-        return Upstream(
+        err = Upstream(
             "query embedder at capacity — the explicit mode='semantic' "
             "leg cannot run (zero hits here would be a false answer); "
             f"the service asked for a retry in ~{n:g} s",
@@ -82,16 +104,20 @@ def semantic_unavailable_upstream(exc: Exception) -> Upstream:
                 "not exist"
             ),
         )
+        err.embedder_semantic_down = True
+        return err
     next_text = "retry, or use mode='hybrid' to accept lexical-only degrade"
     if cause is not None:
         next_text += (
             ". Capacity, not absence: do not conclude the hub or passage does not exist"
         )
-    return Upstream(
+    err = Upstream(
         "query embedder unavailable — the explicit mode='semantic' "
         "leg cannot run (zero hits here would be a false answer)",
         next=next_text,
     )
+    err.embedder_semantic_down = True
+    return err
 
 
 def embed_query(embedder: Any | None, q: str) -> list[float] | None:
@@ -105,7 +131,7 @@ def embed_query(embedder: Any | None, q: str) -> list[float] | None:
     if embedder is None:
         return None
     try:
-        return embedder.embed_one(q)
+        vector = embedder.embed_one(q)
     except Exception:
         log.warning(
             "embed_query: query embed failed for %r; falling back to lexical-only",
@@ -113,6 +139,9 @@ def embed_query(embedder: Any | None, q: str) -> list[float] | None:
             exc_info=True,
         )
         return None
+    if vector is not None:
+        record_query_vector()
+    return vector
 
 
 def query_vec_for(
@@ -133,6 +162,9 @@ def query_vec_for(
     the vector leg — a wired-but-raising embedder there raises
     :class:`~precis.errors.Upstream` instead of silently returning zero
     hits the caller will misread as "no matches in the corpus".
+    In-process callers keep seeing that raise; the agent-facing dispatch
+    boundary converts it into one disclosed ``mode='hybrid'`` retry
+    (gr714744).
     """
     m = mode.strip().lower() if mode is not None else None
     if m in ("lexical", "verbatim", "literal"):

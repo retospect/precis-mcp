@@ -1745,6 +1745,82 @@ def scrub_upstream(err: PrecisError) -> None:
         )
 
 
+def _semantic_hybrid_retry(
+    method: Any, verb: str, kind: str, clean: dict[str, Any], exc: Upstream
+) -> Response:
+    """One ``mode='hybrid'`` retry for an explicit ``mode='semantic'``
+    search whose query-embed leg failed (gr714744).
+
+    ``semantic_unavailable_upstream`` raises a flagged ``Upstream``
+    (``embedder_semantic_down`` — gripe #254606 keeps the leg loud at
+    the handler level so a silent zero-hit page can never read as
+    "no matches"). But the bare refusal is itself a dead end for a
+    dedup check: the lexical legs still answer, so the dispatch
+    boundary runs the degrade the error's own ``next=`` names — once —
+    and discloses it on the response. The flagged error only ever
+    comes out of a semantic embed leg, so the flag alone selects the
+    retry; any other ``Upstream``, and every non-search verb, re-raises
+    untouched.
+    """
+    if verb != "search" or not exc.embedder_semantic_down:
+        raise exc
+    # Rewrite mode= only where the caller's own spelling put it: a
+    # top-level kwarg, or a nested args= key on a kind whose search
+    # declares an ``args`` param (``ArgsView`` is a dict). Adding a
+    # fresh mode= kwarg to a handler that never saw one would be a
+    # strictness-gate violation of our own making.
+    retry = dict(clean)
+    rewrote = "mode" in retry
+    if rewrote:
+        retry["mode"] = "hybrid"
+    nested = retry.get("args")
+    if isinstance(nested, dict) and "mode" in nested:
+        retry["args"] = {**nested, "mode": "hybrid"}
+        rewrote = True
+    if not rewrote:
+        raise exc
+    from precis.utils.embed_query import (
+        _embedder_unavailable_cause,
+        retry_has_query_vector,
+    )
+
+    token = retry_has_query_vector.set(False)
+    try:
+        response = method(**retry)
+        recovered = retry_has_query_vector.get()
+    finally:
+        retry_has_query_vector.reset(token)
+    log.info(
+        "search(kind=%s): mode='semantic' embed leg failed; answered "
+        "once via hybrid fallback (%s)",
+        kind,
+        exc.cause,
+    )
+    cause = _embedder_unavailable_cause(exc)
+    window = (
+        f" in ~{cause.retry_after_s:g} s"
+        if cause is not None and cause.retry_after_s is not None
+        else " shortly"
+    )
+    if recovered:
+        note = (
+            "_(the initial semantic search could not embed the query; "
+            "query embedding recovered on the hybrid retry)_"
+        )
+    else:
+        note = (
+            "_(semantic leg skipped on the hybrid retry — the query embedder "
+            "was unavailable; lexical-only coverage, not absence — "
+            f"retry mode='semantic'{window} for the vector leg)_"
+        )
+    lines = response.body.splitlines()
+    if lines:
+        lines.insert(1, note)
+    else:
+        lines.append(note)
+    return replace(response, body="\n".join(lines))
+
+
 # ── transient retry (gr494831 step 1) ──────────────────────────────────
 #
 # A lock timeout, saturated pool or serialization abort usually heals in a
@@ -5141,7 +5217,15 @@ class DispatchMixin(RuntimeShape):
                 # retry somewhere else.
                 call_ctx = IN_FLIGHT_CALL.set((verb, kind, dict(clean)))
                 try:
-                    response = method(**clean)
+                    try:
+                        response = method(**clean)
+                    except Upstream as exc:
+                        # gr714744: an explicit mode='semantic' search
+                        # whose embed leg failed gets one disclosed
+                        # mode='hybrid' retry, not a bare refusal.
+                        response = _semantic_hybrid_retry(
+                            method, verb, kind, clean, exc
+                        )
                 finally:
                     IN_FLIGHT_CALL.reset(call_ctx)
             response = self._nudge_writer(kind, verb, wctx, response)
