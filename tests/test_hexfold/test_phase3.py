@@ -239,18 +239,24 @@ terminate: post.out = H
 """
 
 
+# gr778232: on sheet(20,20) the {7x6 @fit} collar solve ran ~216 s on the
+# macOS nightly legs — the sustained CPU+deepcopy churn under xdist is the
+# recurring "worker crashed" signature there. sheet(12,12) keeps the same
+# story at ~5 s: six disjoint heptagon wedges still cannot seat near the
+# hole, so the solver walks the C6 orbit out to the rim (collar.far) and
+# the seam+collar heptagons still count euler.residual -6.
 COLLARED_PILLAR = PILLAR.replace(
-    "post: tube(6,0,len=4)", "post: tube(6,0,len=4)"
+    "sheet(20,20) - hex(0)@(9,9,A):0", "sheet(12,12) - hex(0)@(6,6,A):0"
 ).replace(
     "substrate.hole --fuse k=0--> post.in",
     "substrate.hole --fuse{7x6 @fit} k=0--> post.in",
 )
 
 
-@pytest.mark.slow  # 324s in the 2026-09-26 gate profile
-@pytest.mark.timeout(720)  # CI worst 269s x2.5 for runner variance (gr503084)
+@pytest.mark.slow
+@pytest.mark.timeout(180)  # ~5s local, ~30s CI est (gr778232) x3+ variance (gr503084)
 @pytest.mark.nightly(
-    reason="216 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
+    reason="~30 s est. on the nightly legs after the gr778232 fixture shrink (was 216 s at run 42354225792, me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
 def test_collared_pillar_is_over_curved() -> None:
     # the seam already supplies six heptagons; the collar doubles them:
