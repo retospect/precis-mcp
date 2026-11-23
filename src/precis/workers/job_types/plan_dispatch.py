@@ -395,6 +395,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    files or joins the signature gripe, and the rescue pass owns what
    follows — one diagnose-and-re-arm, then its own ask on a second
    exhaustion (``meta.rescue.n >= 1``), the end of the autonomous road;
+   a clean exit the quality sampling flagged (``meta.outcome.review``
+   on the succeeded attempt) also mints the run-quality judge for the
+   attempt (gr753725) — the expensive layer adjudicates the suspiciously
+   cheap completion instead of the flag stalling on the job row. Judge
+   tasks are excluded from this escalation to prevent recursive judging;
    answering that ask re-arms the node and clears the rescue tag in the
    same step (``_step_rearm``). A failed job stamped ``no_commit``
    (``run_slice``'s mark for a clean exit that wrote nothing — the
@@ -11456,6 +11461,68 @@ def _review_miss(store: Any, n: _Node, last: _Node) -> str | None:
     return f"review job:{last.id} left {what}"
 
 
+def _sampled_review(last: _Node) -> list[str]:
+    """The quality-sampling reasons ``run_slice`` stamped on a succeeded
+    attempt's ``meta.outcome.review`` (gr753725), or ``[]`` — an
+    unsampled run, a job with no outcome record, or a failed attempt.
+    A clean exit the sampling flagged is a deliverable miss the cheap
+    half already marked for the expensive layer: the rescue owns its
+    escalation."""
+    outcome = last.meta.get("outcome")
+    if not isinstance(outcome, dict):
+        return []
+    review = outcome.get("review")
+    if not isinstance(review, dict) or not review.get("sampled"):
+        return []
+    return [str(r) for r in (review.get("reasons") or []) if str(r)]
+
+
+def _judge_pending(store: Any, job_id: int) -> bool:
+    """A live judge todo already covers ``job_id`` (``meta.judges.job`` —
+    the run_quality pass's idempotency backlink)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM refs WHERE kind = 'todo' AND retired_at IS NULL "
+            "AND (meta->'judges'->>'job')::bigint = %s LIMIT 1",
+            (int(job_id),),
+        ).fetchone()
+    return row is not None
+
+
+def _escalate_sampled_miss(w: _Writer, n: _Node, last: _Node) -> tuple[str, int | None]:
+    """Mint the run-quality judge for a clean deliverable miss the
+    sampling flagged (gr753725): the judge is the automatic
+    adjudication a suspiciously cheap completion needs — without this
+    the flag stalls silently on the job row until a human notices.
+    Idempotent on the run_quality pass's own markers
+    (``outcome.review.minted``, the ``meta.judges`` backlink) and inert
+    on a dry run or while the factory kill switch holds; a mint failure
+    is a note, never a rescue failure. Returns ``(step suffix, judge
+    root id)`` — the id only when this call minted it."""
+    if n.meta.get("judges"):
+        return " — judge tasks are exempt from quality escalation", None
+    if w.dry_run:
+        return " — its judge mints with the rescue", None
+    if read_only_reason(w.store) is not None:
+        return " — its judge mint held (factory off)", None
+    outcome = last.meta.get("outcome")
+    review = outcome.get("review") if isinstance(outcome, dict) else None
+    if (isinstance(review, dict) and review.get("minted")) or _judge_pending(
+        w.store, last.id
+    ):
+        return " — its judge already runs", None
+    from precis.workers import run_quality as _run_quality
+
+    try:
+        root_id = _run_quality.mint_review(
+            w.store, {"id": last.id, "meta": dict(last.meta)}
+        )
+    except Exception:
+        log.warning("plan_dispatch: judge mint for td%d raised", n.id, exc_info=True)
+        return " — its judge mint failed", None
+    return f" — judge plan td{root_id} minted to adjudicate it", int(root_id)
+
+
 def _rescue_node(
     plan: _Plan, w: _Writer, res: PassResult, n: _Node, cap: int, attempts: int
 ) -> None:
@@ -11464,7 +11531,10 @@ def _rescue_node(
     files or joins the signature gripe, and the rescue pass owns what
     follows — one diagnose-and-re-arm, then the rescue pass's own ask on
     a second exhaustion (``meta.rescue.n >= 1``), the end of the
-    autonomous road."""
+    autonomous road. A clean exit the quality sampling flagged
+    (``meta.outcome.review`` on the succeeded attempt) escalates in the
+    same call: the run-quality judge plan mints for the attempt
+    (gr753725), except when the task is itself a judge."""
     from precis.workers import factory_rescue as _rescue
 
     cls = "review" if _is_reviewer(n) else "builder"
@@ -11521,6 +11591,20 @@ def _rescue_node(
         step += (
             "; the newest attempt exited clean — a deliverable miss, not a lane failure"
         )
+        sampled = _sampled_review(last)
+        if sampled:
+            # gr753725: a clean exit the quality sampling flagged is the
+            # case the expensive layer exists for — the rescue mints its
+            # judge, or the flag stalls silently on the job row.
+            note, judge_root = _escalate_sampled_miss(w, n, last)
+            step += (
+                f"; the sampling flagged the clean exit ({', '.join(sampled)}){note}"
+            )
+            if judge_root is not None:
+                res.notes.append(
+                    f"td{n.id}: judge plan td{judge_root} minted for the "
+                    "sampled clean exit"
+                )
     verdict = _verdict_line(text)
     if verdict is None:
         # The log tail missed it — the posted ``handoff:`` comment still

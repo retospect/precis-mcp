@@ -11090,6 +11090,170 @@ def test_review_rescue_signs_the_verdict_miss_not_the_launch_line(
     assert "no `review:` comment" in rescue_comment
 
 
+def _rescued_no_verdict_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch, outcome: dict[str, Any] | None
+) -> tuple[int, int, Any]:
+    """A reviewer at retry cap whose newest (retry) attempt exited clean
+    with ``outcome`` stamped — the gr753725 fixture. Returns
+    ``(review, retry, mint)``."""
+    use_lanes(monkeypatch)
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    (_old, (retry, _retry_meta)) = _jobs_under(store, review)
+    store.chunks.insert_chunks(
+        retry,
+        [
+            ChunkInsert(
+                ord=1,
+                text=(
+                    f"run_slice: launched td{review} on lane devin "
+                    "(model swe-2-high, effort high) pid 42 in /work "
+                    "(mcp token: none)"
+                ),
+                meta={"chunk_kind": "job_event"},
+            ),
+            ChunkInsert(
+                ord=2,
+                text=(
+                    f"run_slice td{review} on lane devin: exit 0.\n"
+                    f"branch slice/{review}: up to date with origin\n"
+                    "Outcome: completed (gate_pass=True; review sampled — "
+                    "suspicious-cheap)."
+                ),
+                meta={"chunk_kind": "job_summary"},
+            ),
+        ],
+    )
+    if outcome is not None:
+        store.stamp_ref_meta(retry, {"outcome": outcome})
+    _set_job_status(store, retry, "succeeded")
+    return review, retry, mint
+
+
+def _judge_plans(store: Store, job: int) -> list[tuple[int, dict[str, Any]]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'todo' "
+            "AND retired_at IS NULL "
+            "AND (meta->'judges'->>'job')::bigint = %s ORDER BY ref_id",
+            (job,),
+        ).fetchall()
+    return [(int(r[0]), dict(r[1])) for r in rows]
+
+
+def test_clean_exit_rescue_escalates_a_sampled_judge(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr753725: a reviewer whose clean exit the sampling flagged
+    (suspicious-cheap, gate pass, no verdict) rescues AND mints the
+    run-quality judge for the attempt — the expensive layer adjudicates
+    the cheap completion instead of the flag stalling on the job row
+    until a human notices."""
+    from precis.workers import run_quality
+
+    monkeypatch.setattr(run_quality, "_judge_model", lambda: "claude-opus-5-5")
+    review, retry, _mint = _rescued_no_verdict_review(
+        store,
+        monkeypatch,
+        {
+            "outcome": "completed",
+            "gate_pass": True,
+            "review": {
+                "sampled": True,
+                "reasons": ["suspicious-cheap"],
+                "minted": False,
+            },
+        },
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+    # The escalation: exactly one judge plan, stamped on the attempt.
+    ((judge_task, judge_meta),) = _judge_plans(store, retry)
+    assert judge_meta["judges"] == {"job": retry, "todo": review}
+    assert judge_meta["task_class"] == "review"
+    ((_, retry_meta),) = [
+        (jid, meta) for jid, meta in _jobs_under(store, review) if jid == retry
+    ]
+    assert retry_meta["outcome"]["review"]["minted"] is True
+    # The judge rides the frontier pin on the MCP lane, never a default.
+    assert judge_meta["op"]["params"]["model"] == "claude-opus-5-5"
+    assert judge_meta["op"]["params"]["lane_capability"] == "mcp"
+    # The evidence — the node's rescue comment and the signature gripe —
+    # says the sampling drove the escalation.
+    (rescue_comment,) = [
+        c for c in _todo_comments(store, review) if c.startswith("rescue: review")
+    ]
+    assert "the sampling flagged the clean exit (suspicious-cheap)" in rescue_comment
+    judge_ref = store.get_ref(kind="todo", id=judge_task)
+    assert judge_ref is not None and judge_ref.parent_id is not None
+    assert f"judge plan td{int(judge_ref.parent_id)}" in rescue_comment
+    with store.pool.connection() as conn:
+        (gripe,) = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+                "AND relation = 'related-to'",
+                (review,),
+            ).fetchall()
+        ]
+    gripe_body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(gripe))
+    assert "the sampling flagged the clean exit (suspicious-cheap)" in gripe_body
+    assert f"judge plan td{int(judge_ref.parent_id)}" in gripe_body
+    # Idempotent: the rescue tag is a no-op next pass — no second judge.
+    pd.run_pass(store)
+    assert len(_judge_plans(store, retry)) == 1
+
+
+def test_sampled_clean_exit_rescue_of_judge_mints_no_judge(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sampled judge task still enters rescue at its retry cap."""
+    review, retry, _mint = _rescued_no_verdict_review(
+        store,
+        monkeypatch,
+        {
+            "outcome": "completed",
+            "gate_pass": True,
+            "review": {"sampled": True, "reasons": ["suspicious-cheap"]},
+        },
+    )
+    (judged_job, _), _ = _jobs_under(store, review)
+    store.stamp_ref_meta(review, {"judges": {"job": judged_job, "todo": review}})
+
+    res = pd.run_pass(store)
+
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+    assert _judge_plans(store, retry) == []
+    (rescue_comment,) = [
+        c for c in _todo_comments(store, review) if c.startswith("rescue: review")
+    ]
+    assert "judge tasks are exempt from quality escalation" in rescue_comment
+
+
+def test_clean_exit_rescue_without_sampling_mints_no_judge(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escalation binds the sampling flag: an unsampled clean exit
+    rescues exactly as before, with no judge plan."""
+    review, retry, _mint = _rescued_no_verdict_review(
+        store,
+        monkeypatch,
+        {"outcome": "completed", "gate_pass": True},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+    assert _judge_plans(store, retry) == []
+    (rescue_comment,) = [
+        c for c in _todo_comments(store, review) if c.startswith("rescue: review")
+    ]
+    assert "sampling flagged" not in rescue_comment
+
+
 def test_review_reads_a_glued_handoff(store: Store) -> None:
     """td573578: a ``handoff:`` that glues ``review: FIX — …`` to the
     narration is the verdict (the LAST token in the comment). The fixture

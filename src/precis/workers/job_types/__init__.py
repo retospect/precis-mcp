@@ -55,6 +55,8 @@ approved edits against rule body text.
 
 ``plan_dispatch`` prefers independent review vendors. Fallback limits
 file-overlap holds. Verdictless reviews default to at least two attempts.
+Rescue sends sampled clean exits at the retry cap to run-quality judging.
+Judge tasks still enter rescue, with their backlink preventing another judge.
 Retryable Devin empty responses prefer another independent flat-rate
 vendor and share a rescue signature keyed by the terminal error.
 Workers prepare release refs for reviewers without Git write access.

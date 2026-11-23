@@ -28,7 +28,9 @@ run whose test session disagreed with its code session
 suspiciously fast or cheaply — the bottom decile of cost or wall time
 for the category (:func:`category_stats`). "How often the gates lied"
 — a gate pass the review failed — is :func:`gate_lied_rate`, keyed by
-the same category.
+the same category. When a sampled clean exit exhausts the lane ladder,
+the plan tick's rescue can mint the judge for that attempt immediately
+(gr753725). Judge tasks are excluded to prevent recursive judging.
 
 The router constraint — a run's test session on a different model
 than its code sessions — is :func:`code_session_models` plus
