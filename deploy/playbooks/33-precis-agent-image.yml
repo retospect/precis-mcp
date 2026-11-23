@@ -591,13 +591,55 @@
           # anyway: this whole block is already gated on the image being
           # stale, so reaching a zero exit here IS the change.
           changed_when: (agent_build.rc | default(1)) == 0
-          # failed_when deferred to false (gr335099): the fatal assert moves
-          # to the end of this block so the diagnostics tasks right below —
-          # and the cleanup tasks after them — still run on a build that
-          # never converged, instead of the host halting mid-block with no
-          # capture and a stale build dir/tarball left behind.
+          # failed_when deferred to false (gr335099): the fatal assert sits at
+          # the end of this block's `always:` so the diagnostics and cleanup
+          # tasks before it still run on a build that never converged, instead
+          # of the host halting mid-block with no capture and a stale build
+          # dir/tarball left behind. `always:` (not the block tail) because a
+          # task that RAISES on the controller — not fails: gr690411 was a
+          # FileNotFoundError on the 68th async poll — aborts the block and
+          # would skip anything inline.
           failed_when: false
 
+      always:
+        - name: "Wait for the build wrapper to finish on the host (gr690411 — bounded)"
+          # Why first in `always:`: when the controller dies on the build task
+          # the wrapper KEEPS RUNNING on the host, and its stall record (the
+          # WATCHDOG line + `done rc=`) lands in the trail only when the
+          # wrapper exits — up to ~_agent_build_stall_sec AFTER the abort
+          # (the 2026-09-27 incident's gap was 78 s). A slurp taken at abort
+          # time reads a trail whose record has not been written yet. Wait
+          # for the wrapper process to be gone first: instant on the ordinary
+          # path (it already exited before the block returned), bounded by
+          # stall + escalation margin, best-effort so an expiring wait never
+          # aborts this chain before the slurp.
+          #
+          # The `[p]` bracket and `.sh` suffix are load-bearing (td771340):
+          # ansible runs this snippet as `bash -c '<this whole text>'`, so
+          # the checker's own cmdline contains the pattern text — a bare
+          # `precis-agent-build` match would find the checking shell itself,
+          # `until` would never return rc 0, and the wait would burn its
+          # full bound on EVERY run. The bracket keeps the literal pattern
+          # from matching the regex it forms, and `.sh` keeps sibling
+          # processes under the `precis-agent-build` base DIR out of the
+          # match set (matching on the trail path instead would re-add the
+          # literal string to this cmdline and self-match again).
+          ansible.builtin.shell: |
+            if pgrep -f '[p]recis-agent-build\.sh' >/dev/null 2>&1; then
+              exit 1
+            fi
+            exit 0
+          args:
+            executable: /bin/bash
+          register: _agent_build_wrapper_wait
+          # default() the rc read — same pitfall the build task's own
+          # comment documents: a failed result without rc errors the
+          # until-expression instead of retrying.
+          until: (_agent_build_wrapper_wait.rc | default(1)) == 0
+          retries: "{{ ((_agent_build_stall_sec | int + 90) / 15) | int }}"
+          delay: 15
+          changed_when: false
+          failed_when: false
         # ── timing + progress trail, captured on EVERY build, not just a
         # failed one. This is the gap that made the three 2026-09-26
         # incidents (3684s / 92s / 7329s) undiagnosable: all of them ended
@@ -610,39 +652,70 @@
           failed_when: false
 
         - name: "Report agent-image build timing + progress tail"
+          # Gated like the diagnostics below: on an earlier block failure
+          # (context copy/untar/wheel stage) the build never ran, and an
+          # "rc=absent — poll raised mid-run" line would mislabel it as a
+          # gr690411 event. The controller-raise path still registers a
+          # failed agent_build, so real gr690411 runs still report.
+          when: agent_build is defined
           vars:
+            _trail_raw: "{{ agent_build_trail.content | default('') | b64decode }}"
             # splitlines() over split('\n'): a literal \n inside a Jinja
             # string is an escaping trap across YAML quoting styles, and the
             # method needs no argument. Character classes over \d for the
             # same reason.
-            _trail: "{{ (agent_build_trail.content | default('') | b64decode).splitlines() }}"
+            _trail: "{{ _trail_raw.splitlines() }}"
             # No capture group, so regex_search returns the matched string
             # (not a one-element list needing `first`, which raises on a
             # miss). A killed wrapper never printed this line at all — hence
             # the default, which must survive `default(omit)`-style falsiness,
-            # so default(..., true).
+            # so default(..., true). gr690411: when the controller dies
+            # mid-poll, the wrapper's stdout (BUILD_ELAPSED_SEC) is lost with
+            # it — fall back to the elapsed= field of the `done` line the
+            # wrapper wrote into the trail before exiting (the wait task
+            # above guarantees that line has landed).
             _elapsed: >-
               {{ (agent_build.stdout | default('')
                   | regex_search('BUILD_ELAPSED_SEC=[0-9]+')
-                  | default('BUILD_ELAPSED_SEC=?', true))
-                 | replace('BUILD_ELAPSED_SEC=', '') }}
+                  | default('', true))
+                 | replace('BUILD_ELAPSED_SEC=', '')
+                 | default(
+                      (_trail_raw | regex_search('elapsed=[0-9]+') | default('', true))
+                      | replace('elapsed=', ''),
+                      true)
+                 | default('?', true) }}
+            # Same fallback for the wedge flag: stdout's BUILD_STALLED=1 is
+            # gone on the controller-death path, but the WATCHDOG line is in
+            # the trail by then.
+            _stalled: >-
+              {{ 'BUILD_STALLED=1' in (agent_build.stdout | default(''))
+                 or 'precis-agent-build: WATCHDOG' in _trail_raw }}
           ansible.builtin.debug:
             msg: >-
               {{ inventory_hostname }}: agent image build rc={{ agent_build.rc
-                 | default('timed out at the ' ~ _agent_build_timeout_sec ~ 's async ceiling') }},
+                 | default('no result on the controller — the poll raised mid-run '
+                          ~ '(gr690411) or hit the ' ~ _agent_build_timeout_sec
+                          ~ 's async ceiling') }},
               elapsed {{ _elapsed }}s, pull source
               {{ 'mirror.gcr.io' if (_agent_pull_via_mirror | default(false) | bool) else 'canonical' }}{{
                  ' — WATCHDOG FIRED: the build went silent for '
                  ~ _agent_build_stall_sec ~ 's; the last step below is where it wedged'
-                 if 'BUILD_STALLED=1' in (agent_build.stdout | default('')) else '' }}
+                 if _stalled else '' }}
               | last progress: {{ _trail[-25:] | join(' / ') | truncate(2000) }}
 
         # ── diagnostics (gr335099) — same shape as the pre-pull preflight's:
         # captured on a terminal build failure, before the fatal assert at
-        # the end of this block, so the next incident has buildx state to
-        # read without a live operator re-creating the wedge.
+        # the end of this `always:` section, so the next incident has buildx
+        # state to read without a live operator re-creating the wedge.
         - name: "Diagnostics: docker buildx inspect (gr335099 — build failure)"
-          when: (agent_build.rc | default(1)) != 0
+          # `agent_build is defined` first (td771340): when an EARLIER block
+          # task failed (context copy/untar/wheel stage) the build never ran,
+          # and a bare `default(1)` read would fire these diagnostics and the
+          # trailing assert, masking that task's real error behind a
+          # "did not converge / rc=absent" gr690411 message. The
+          # controller-raise path registers a FAILED agent_build result, so
+          # gr690411 coverage is preserved.
+          when: agent_build is defined and (agent_build.rc | default(1)) != 0
           ansible.builtin.command: "{{ _agent_container_bin }} buildx inspect"
           environment: "{{ _agent_docker_env }}"
           register: agent_build_diag_inspect
@@ -650,7 +723,7 @@
           failed_when: false
 
         - name: "Diagnostics: buildx/buildkitd builder logs, if any (gr335099 — build failure)"
-          when: (agent_build.rc | default(1)) != 0
+          when: agent_build is defined and (agent_build.rc | default(1)) != 0
           ansible.builtin.shell: |
             set -uo pipefail
             builder_container="$({{ _agent_container_bin }} ps -aq --filter 'name=buildx_buildkit' | head -n1)"
@@ -667,12 +740,15 @@
           failed_when: false
 
         - name: "Report build failure diagnostics (gr335099)"
-          when: (agent_build.rc | default(1)) != 0
+          when: agent_build is defined and (agent_build.rc | default(1)) != 0
           ansible.builtin.debug:
             msg:
               - "buildx inspect (rc={{ agent_build_diag_inspect.rc | default('n/a') }}): {{ agent_build_diag_inspect.stdout | default('') }} {{ agent_build_diag_inspect.stderr | default('') }}"
               - "builder logs: {{ agent_build_diag_logs.stdout | default('') }}"
 
+        # ── cleanup + the deferred fatal assert (gr335099), last in
+        # `always:` so they run on the ordinary-failure path AND the
+        # controller-raise path (gr690411) alike.
         - name: Clean up old precis-agent build dirs (gr302869 pt.2 — keep only the current sha)
           ansible.builtin.shell: |
             set -uo pipefail
@@ -697,21 +773,30 @@
             state: absent
 
         - name: "Fail this host if the agent-image build did not converge after retries (gr335099 — diagnostics captured above)"
+          # `agent_build is defined` (td771340): on an earlier block failure
+          # this assert's `default(1)` would fire and mask that task's real
+          # error behind the "did not converge / rc=absent" fail_msg — the
+          # block's own failure already reddens the host, so skip here. The
+          # controller-raise path registers a failed agent_build, so a
+          # gr690411 abort still hits this assert.
+          when: agent_build is defined
           ansible.builtin.assert:
             that: (agent_build.rc | default(1)) == 0
             quiet: true
             fail_msg: >-
               {{ inventory_hostname }}: `{{ _agent_container_bin }} build --target agent`
-              failed after {{ _agent_build_timeout_sec }}s async ceiling x3 retries
-              (rc={{ agent_build.rc | default('timed out') }}) — gr335099. rc=124 means
-              the PROGRESS watchdog killed it: the build wrote nothing for
+              did not converge after {{ _agent_build_timeout_sec }}s async ceiling x3 retries
+              (rc={{ agent_build.rc | default('absent — the controller never got a result:
+              either the async ceiling killed the poll or it raised mid-poll (gr690411);
+              the trail + timing report above carry the evidence') }}) — gr335099. rc=124
+              means the PROGRESS watchdog killed it: the build wrote nothing for
               {{ _agent_build_stall_sec }}s, which is a wedge, not a slow build — the
               trail at {{ _agent_build_log }} on the host names the step it died on,
-              and the timing report a few tasks up has its tail. Diagnostics
-              (buildx inspect + builder logs, if any) were captured above before this
-              assert. Fix per the mirror-fallback assert's guidance a few tasks up if
-              this is a registry-reachability mode; otherwise inspect the build
-              context / Dockerfile for the actual build error.
+              and the timing report above has its tail. Diagnostics (buildx inspect +
+              builder logs, if any) were captured above before this assert. Fix per the
+              mirror-fallback assert's guidance a few tasks up if this is a
+              registry-reachability mode; otherwise inspect the build context /
+              Dockerfile for the actual build error.
 
     - name: Assert the precis-agent image is present
       when: agent_runtime.rc == 0
