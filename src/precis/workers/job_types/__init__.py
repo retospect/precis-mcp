@@ -93,12 +93,13 @@ sync the host checkout's locked paper and web extras into their clone's
 venv for the mypy and pytest gates. Repository review, PR analysis and
 land use the shared clone setup, which only copies the host venv.
 
-``run_slice`` delegates CLI argv, stdin and output parsing to
-``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and
-Devin hand off through their final output, and all three pass the same
-pre-land deny-path check. Persisting ``meta.adapter`` keeps an in-flight
-job's parser stable when lane configuration changes. Devin's explicit
-model must be in the selected lane's list to prevent paid overage.
+``_slice_adapters`` owns CLI argv, stdin and output parsing.
+Codex's terminal missing-credentials 401 parks the lane attempt-free.
+Checking the failure event protects against assistant quotations.
+Only ``claude_p`` gets a precis MCP grant. Codex and Devin hand off
+through final output. All three pass the pre-land deny-path check.
+``meta.adapter`` pins the parser across lane configuration changes.
+Devin's model must be on the lane's list to prevent paid overage.
 Claude, Devin and Kimi commit, rebase and push their own attempt ref
 (``Adapter.pushes``); Codex, whose sandbox keeps ``.git`` read-only, leaves
 its edits and the worker commits and pushes after it exits. Workspace

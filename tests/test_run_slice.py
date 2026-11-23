@@ -6345,11 +6345,14 @@ def test_kimi_session_ending_in_auth_wording_does_not_park(
     assert parked == []
 
 
-def test_codex_session_ending_in_auth_wording_does_not_park(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("terminal_auth_failure", [False, True])
+def test_codex_auth_park_requires_terminal_failure_event(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    terminal_auth_failure: bool,
 ) -> None:
-    """Review R2-3: a codex ``last-message.md`` ending in ``Not logged
-    in`` is session text — the lane is NOT parked, the attempt counts."""
+    """gr701296: the Codex event parks the lane, but quoted errors do not."""
     parked = _parks(monkeypatch)
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
     monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
@@ -6361,11 +6364,31 @@ def test_codex_session_ending_in_auth_wording_does_not_park(
     assert handle is not None and ctx.meta_set["adapter"] == "codex_exec"
     tree = Path(handle["worktree"])
     (tree / "scratch").mkdir(parents=True, exist_ok=True)
-    (tree / "scratch" / "last-message.md").write_text(
-        "Not logged in\n", encoding="utf-8"
+    message = (
+        "unexpected status 401 Unauthorized: Missing bearer or basic "
+        "authentication in header, url: https://api.openai.com/v1/responses"
     )
-    _finish(handle, 1, "codex exec output\n")
+    failure = json.dumps({"type": "turn.failed", "error": {"message": message}})
+    if terminal_auth_failure:
+        reconnect = json.dumps(
+            {"type": "error", "message": f"Reconnecting... ({message})"}
+        )
+        log = f"{reconnect}\n{failure}\n"
+    else:
+        (tree / "scratch" / "last-message.md").write_text(
+            f"Not logged in\n{failure}\n", encoding="utf-8"
+        )
+        log = f'{failure}\n{{"type":"turn.started"}}\n'
+    _finish(handle, 1, log)
     pctx = _poll_ctx(store, ctx)
+    if terminal_auth_failure:
+        assert run_slice.poll(pctx, handle) is False
+        assert "attempt:1" not in store.tag_strings(42)
+        assert pctx.meta_set["attempt_free"] == "lane-auth"
+        assert [(name, reason) for _, name, reason, _ in parked] == [
+            ("codex", "auth:http-401")
+        ]
+        return
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert "attempt:1" in store.tag_strings(42)

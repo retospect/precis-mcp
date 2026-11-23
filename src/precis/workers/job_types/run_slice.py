@@ -10157,7 +10157,8 @@ def _lane_outage(
     adapter's final message is session text — ``devin_tree``'s whole
     log, kimi's last assistant message, codex's ``last-message.md`` —
     and quoting auth-shaped prose must never park a lane) — then the
-    401/403 status, then the lane's own binary reported missing by the
+    401/403 status or Codex's terminal missing-credentials event, then
+    the lane's own binary reported missing by the
     process itself (exit 127, or no exit record under a near-empty log,
     never a line inside a session transcript). The ``key`` is the
     phrase mark (``not-logged-in``, ``http-401``, ``cli-missing``),
@@ -10180,6 +10181,14 @@ def _lane_outage(
             obj = None
         if isinstance(obj, dict):
             status = obj.get("api_error_status")
+            if adapter == "codex_exec" and obj.get("type") == "turn.failed":
+                error = obj.get("error")
+                message = error.get("message") if isinstance(error, dict) else None
+                if isinstance(message, str) and message.casefold().startswith(
+                    "unexpected status 401 unauthorized: "
+                    "missing bearer or basic authentication in header"
+                ):
+                    return "auth", None, "http-401"
             extra = obj.get("api_error")
             if isinstance(extra, str) and extra:
                 api_error = extra
