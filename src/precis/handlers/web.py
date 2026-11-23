@@ -237,6 +237,25 @@ class WebHandler(CacheBackedHandler):
         other spelling routes to the cache-backed base get.
         """
         if view == "tree":
+            # gr772063 — with a real id=, q= is find-in-ref and can't
+            # double as the tree view's fallback address; refuse the
+            # pair rather than silently reading q= as an id.
+            if (
+                isinstance(q, str)
+                and q.strip()
+                and id is not None
+                and not (isinstance(id, str) and not id.strip())
+            ):
+                raise BadInput(
+                    "get(kind='web'): q= (find-in-ref) doesn't combine "
+                    "with view='tree' — drop view= for the find, or "
+                    "drop q= to read the repo tree",
+                    next=(
+                        "get(kind='web', id=<repo>, view='tree') — "
+                        "the tree read; get(kind='web', id=<ref>, q=<term>) "
+                        "— the find"
+                    ),
+                )
             return self._repo_tree_view(id=id, q=q, tags=tags, untags=untags)
         return super().get(
             id=id,

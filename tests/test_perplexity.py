@@ -2018,3 +2018,267 @@ def test_long_query_escalation_hint_falls_back_to_template(
     # A hint-sized query keeps the verbatim, copy-pasteable form.
     resp2 = websearch.get(id="short query here")
     assert "id='short query here'" in resp2.body
+
+
+# ── get(id=<cached ref>, q='…') — find-in-ref, never a new query ─────
+# gr772063: a read-only reviewer called
+# get(kind='perplexity-research', id='338200', q='parylene …') meaning
+# "find a line inside rr338200"; q= minted a fresh paid row instead.
+# id= resolves → the get is a free find; an unresolved id= + q= refuses.
+
+
+def test_id_plus_q_finds_inside_cached_ref(websearch: WebsearchHandler) -> None:
+    """The gripe's shape: ``id=<ref id>, q=`` scans the stored report —
+    no second Sonar call, no new row."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.last_payload = None
+    _StubClient.call_count = 0
+    resp = websearch.get(id=str(ref.id), q="Dario")
+    assert "Dario Amodei" in resp.body
+    assert "find 'Dario'" in resp.body or 'find "Dario"' in resp.body
+    assert "Perplexity" in resp.body  # attribution footer rides the find
+    assert _StubClient.call_count == 0  # never upstream
+    # Nothing new was minted.
+    assert len(websearch.store.list_refs(kind="websearch", limit=10)) == 1
+
+
+def test_id_plus_q_int_id_finds(websearch: WebsearchHandler) -> None:
+    """The unquoted-int incident shape — ``id=<int>`` used to lose to
+    ``q=`` in ``_coerce_query`` and bill the query."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.last_payload = None
+    _StubClient.call_count = 0
+    resp = websearch.get(id=ref.id, q="co-founded")
+    assert "co-founded" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_handle_id_finds(websearch: WebsearchHandler) -> None:
+    """``id='wx<ref>'`` — the record handle resolves to the stored row."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    resp = websearch.get(id=f"wx{ref.id}", q="Dario")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_slug_id_finds(websearch: WebsearchHandler) -> None:
+    """``id=<stored slug>`` — the /recent-advertised address resolves too."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    resp = websearch.get(id=ref.slug, q="Dario")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_reports_no_match(websearch: WebsearchHandler) -> None:
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    resp = websearch.get(id=str(ref.id), q="string the report never says")
+    assert "no match" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_scoped_by_chunk_selector(websearch: WebsearchHandler) -> None:
+    """``id='<slug>~<ord>'`` + q= finds inside that chunk only."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    chunks = websearch.store.chunks.list_chunks_for_ref(ref.id)
+    assert chunks
+    _StubClient.call_count = 0
+    resp = websearch.get(id=f"{ref.slug}~{chunks[0].ord}", q="Dario")
+    assert _StubClient.call_count == 0
+    # Dario sits in the first chunk of the stub report.
+    assert "Dario Amodei" in resp.body
+    # A selector that covers no chunk reports a clean empty scan.
+    resp2 = websearch.get(id=f"{ref.slug}~{chunks[-1].ord + 5}", q="Dario")
+    assert "no match" in resp2.body
+
+
+def test_id_plus_q_unresolved_id_refuses_without_fetch(
+    websearch: WebsearchHandler,
+) -> None:
+    """``id`` resolving to nothing + ``q`` is ambiguous — refuse rather
+    than bill whichever string loses the coin flip."""
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="resolves to no cached"):
+        websearch.get(id="999999999", q="a real query")
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_uncached_query_id_refuses_without_fetch(
+    websearch: WebsearchHandler,
+) -> None:
+    """Two competing query texts — ``id`` is no ref here either."""
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="resolves to no cached"):
+        websearch.get(id="one query", q="another query")
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_view_refuses(websearch: WebsearchHandler) -> None:
+    """view= + q= contradict — the refusal names the view='body' read."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="view='body'"):
+        websearch.get(id=str(ref.id), q="Dario", view="body")
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_refresh_refuses(websearch: WebsearchHandler) -> None:
+    """q= (find) + refresh (paid re-fetch) contradict — refuse the mix."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="refresh"):
+        websearch.get(id=str(ref.id), q="Dario", refresh=True)
+    with pytest.raises(BadInput, match="refresh"):
+        websearch.get(id=str(ref.id), q="Dario", mode="refresh")
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_research_tier_finds_free(research: ResearchHandler) -> None:
+    """The gripe's own tier: find inside a cached deep-research report
+    never re-bills sonar-deep-research."""
+    research.get(id="landscape of post-quantum signatures")
+    ref = research.store.list_refs(kind="perplexity-research", limit=1)[0]
+    _StubClient.last_payload = None
+    _StubClient.call_count = 0
+    resp = research.get(id=str(ref.id), q="Dario")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_q_alone_still_runs_the_query(websearch: WebsearchHandler) -> None:
+    """Spend only on the single-slot query path — ``q=`` alone is the
+    unchanged fresh-query call."""
+    resp = websearch.get(q="who is the CEO of Anthropic")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 1
+
+
+def test_id_plus_q_tags_apply(websearch: WebsearchHandler) -> None:
+    """``tags=`` rides the find — the one-call bookmark still lands on
+    the stored row the find read."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    resp = websearch.get(id=str(ref.id), q="Dario", tags=["bookmark"])
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 0
+    tags = websearch.store.tags_for(ref.id)
+    assert any(str(t) == "bookmark" for t in tags)
+
+
+def test_id_plus_q_handle_selector_finds(websearch: WebsearchHandler) -> None:
+    """``id='wx<ref>~<ord>'`` — the record handle plus a chunk selector
+    resolves the same stored row the bare handle names."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    chunks = websearch.store.chunks.list_chunks_for_ref(ref.id)
+    _StubClient.call_count = 0
+    resp = websearch.get(id=f"wx{ref.id}~{chunks[0].ord}", q="Dario")
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_literal_refuses(websearch: WebsearchHandler) -> None:
+    """``literal=True`` says 'treat my input verbatim' — contradicting
+    the find-in-ref pair, so the mix refuses instead of guessing."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="literal"):
+        websearch.get(id=str(ref.id), q="Dario", literal=True)
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_stray_kwargs_refuse(websearch: WebsearchHandler) -> None:
+    """kwargs that mean something on other paths (paging, ttl) can't
+    ride silently into a find that ignores them."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="ttl_days"):
+        websearch.get(id=str(ref.id), q="Dario", ttl_days=7)
+    with pytest.raises(BadInput, match="cursor"):
+        websearch.get(id=str(ref.id), q="Dario", cursor="abc")
+    assert _StubClient.call_count == 0
+
+
+def test_id_plus_q_context_arg_widens(websearch: WebsearchHandler) -> None:
+    """``args={'context': N}`` widens the ±3-line find window — the
+    shared find surface's knob works on the cache path too."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    resp = websearch.get(id=str(ref.id), q="Dario", context=10)
+    assert "Dario Amodei" in resp.body
+    assert _StubClient.call_count == 0
+
+
+@pytest.mark.parametrize("blank_id", ["", "   "])
+def test_blank_id_with_q_still_lists(
+    websearch: WebsearchHandler, blank_id: str
+) -> None:
+    resp = websearch.get(id=blank_id, q="who is the CEO of Anthropic")
+    assert resp.body == websearch.get(id="/recent").body
+    assert _StubClient.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("q", "context", "message"),
+    [("Dario", "invalid", "takes an int"), ("re:[", None, "bad find-in-ref regex")],
+)
+@pytest.mark.parametrize("withheld", [False, True])
+def test_invalid_find_preserves_tags(
+    websearch: WebsearchHandler,
+    q: str,
+    context: str | None,
+    message: str,
+    withheld: bool,
+) -> None:
+    websearch.get(id="who is the CEO of Anthropic", tags=["bookmark"])
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    if withheld:
+        with websearch.store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE cache_state SET meta = jsonb_set(meta, '{inject,verdict}',"
+                " '\"high\"') WHERE ref_id = %s",
+                (ref.id,),
+            )
+    before = {str(tag) for tag in websearch.store.tags_for(ref.id)}
+    assert "bookmark" in before
+    with pytest.raises(BadInput, match=message):
+        websearch.get(
+            id=ref.id, q=q, context=context, tags=["new"], untags=["bookmark"]
+        )
+    assert {str(tag) for tag in websearch.store.tags_for(ref.id)} == before
+
+
+def test_blank_id_without_q_still_lists(websearch: WebsearchHandler) -> None:
+    """``id=''`` alone keeps serving the /recent listing."""
+    websearch.get(id="who is the CEO of Anthropic")
+    _StubClient.call_count = 0
+    resp = websearch.get(id="")
+    assert _StubClient.call_count == 0
+    assert "websearch" in resp.body
+
+
+def test_id_plus_q_shaping_args_refuse(websearch: WebsearchHandler) -> None:
+    """no_sources / max_bytes shape a fetched body's render — a find
+    can't honour them, so the pair refuses rather than dropping them."""
+    websearch.get(id="who is the CEO of Anthropic")
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    _StubClient.call_count = 0
+    with pytest.raises(BadInput, match="no_sources"):
+        websearch.get(id=str(ref.id), q="Dario", no_sources=True)
+    with pytest.raises(BadInput, match="max_bytes"):
+        websearch.get(id=str(ref.id), q="Dario", max_bytes=4096)
+    assert _StubClient.call_count == 0

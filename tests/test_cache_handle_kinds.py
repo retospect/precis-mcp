@@ -382,6 +382,12 @@ def test_high_injection_cache_eye_withholds_body_and_keeps_links(
     out = runtime_with_store.dispatch("get", {"id": f"{handle}~0"})
     assert "body withheld" in out, out
     assert text not in out
+    out = runtime_with_store.dispatch(
+        "get", {"id": f"{handle}~missing", "q": "external"}
+    )
+    assert "body withheld" in out, out
+    assert "~answer" not in out
+    assert text not in out
 
 
 @pytest.mark.usefixtures("no_provider_fetch")

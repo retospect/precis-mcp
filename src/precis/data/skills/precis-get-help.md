@@ -275,7 +275,12 @@ returns the matching passages (`args={'context': N}` honoured). Over that cap a 
 the remainder — a `~` selector (`slug~N`, `me<id>~<section>`) or a list of
 ids reads its part in full, up to the same 24 kB. `q=` does not combine with `view=`, a list
 (`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't
-honour `q` refuses it; it is never silently ignored. To rank refs by
+honour `q` refuses it; it is never silently ignored. On the
+query-addressed cache kinds (`web`, `youtube`, `wikipedia`, `websearch`,
+`perplexity-reasoning`, `perplexity-research`) the same pair works when
+`id=` resolves a **stored row** — a cached ref's own free find, never a
+new upstream call. An unresolved `id=` + `q=` is refused as ambiguous.
+An explicitly blank `id=` lists recent cached refs (gr772063). To rank refs by
 content instead, use `search(kind=…, q=…)`.
 
 ## Find the help skill for a specific kind

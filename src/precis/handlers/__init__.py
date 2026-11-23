@@ -18,6 +18,8 @@ character cursor; the cohort cursor still advances to the next gripe.
 Paper import promotes source-and-quote matches (:mod:`precis.finding_drafts`).
 Hub-mint concurrency awaits production timing measurements.
 Cached record selectors preserve ref identity despite numeric slug collisions.
+Cache finds resolve stored rows without fetching. Withheld bodies also hide
+section handles, and tag changes follow find validation.
 Cache eyes apply injection verdicts while retaining link rings.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.

@@ -876,3 +876,72 @@ def test_over_cap_get_refusal_names_range_call(
     assert not is_error
     assert len(out.encode("utf-8")) <= 4096
     assert "dQw4w9WgXcQ~0..3" in out
+
+
+# ── get(id=<cached ref>, q='…') — find-in-ref (gr772063) ─────────────
+# youtube's own get shortcuts (languages view, /recent listing, ~ chunk
+# selector) run ahead of the base's fetch path and would drop q=, so
+# youtube.get intercepts the id+q pair first — the find must come out.
+
+
+def test_id_plus_q_finds_inside_cached_transcript(handler: YouTubeHandler) -> None:
+    """id=<slug> + q= is a find over the stored transcript — no fetch."""
+    handler.get(id="dQw4w9WgXcQ")
+    _StubApi.fetch_calls.clear()
+    ref = handler.store.list_refs(kind="youtube", limit=1)[0]
+    resp = handler.get(id=ref.slug, q="hello")
+    assert "find 'hello'" in resp.body
+    assert "hello" in resp.body
+    assert _StubApi.fetch_calls == []
+
+
+def test_id_plus_q_scoped_by_chunk_selector(handler: YouTubeHandler) -> None:
+    """id='<slug>~<ord>' + q= — youtube's own ~ shortcut must not swallow
+    q=; the find scopes to that chunk."""
+    handler.get(id="dQw4w9WgXcQ")
+    _StubApi.fetch_calls.clear()
+    ref = handler.store.list_refs(kind="youtube", limit=1)[0]
+    resp = handler.get(id=f"{ref.slug}~0", q="hello")
+    assert "hello" in resp.body
+    assert _StubApi.fetch_calls == []
+
+
+def test_id_plus_q_no_match_reports(handler: YouTubeHandler) -> None:
+    handler.get(id="dQw4w9WgXcQ")
+    _StubApi.fetch_calls.clear()
+    ref = handler.store.list_refs(kind="youtube", limit=1)[0]
+    resp = handler.get(id=ref.slug, q="never-in-transcript")
+    assert "no match" in resp.body
+    assert _StubApi.fetch_calls == []
+
+
+def test_id_plus_q_unresolved_id_refuses(handler: YouTubeHandler) -> None:
+    """An id= that resolves to nothing + q= is ambiguous — refuse."""
+    _StubApi.fetch_calls.clear()
+    with pytest.raises(BadInput, match="resolves to no cached"):
+        handler.get(id="ZZZZZZZZZZZ", q="some term")
+    assert _StubApi.fetch_calls == []
+
+
+def test_id_plus_q_view_refuses(handler: YouTubeHandler) -> None:
+    """view= + q= contradict."""
+    handler.get(id="dQw4w9WgXcQ")
+    ref = handler.store.list_refs(kind="youtube", limit=1)[0]
+    with pytest.raises(BadInput, match="view"):
+        handler.get(id=ref.slug, q="hello", view="toc")
+
+
+def test_id_plus_q_language_arg_refuses(handler: YouTubeHandler) -> None:
+    """languages= is a fetch-shaping arg — a find can't honour it."""
+    handler.get(id="dQw4w9WgXcQ")
+    ref = handler.store.list_refs(kind="youtube", limit=1)[0]
+    with pytest.raises(BadInput, match="languages"):
+        handler.get(id=ref.slug, q="hello", languages="en")
+
+
+@pytest.mark.parametrize("blank_id", ["", "   "])
+def test_blank_id_with_q_still_lists(handler: YouTubeHandler, blank_id: str) -> None:
+    _StubApi.fetch_calls.clear()
+    resp = handler.get(id=blank_id, q="dQw4w9WgXcQ", page=1)
+    assert resp.body == handler.get(id="/recent", page=1).body
+    assert _StubApi.fetch_calls == []

@@ -14,8 +14,9 @@ opts a kind in; the dispatcher then routes ``get`` + non-None ``q`` to
 ``handler.find_in_ref`` *before* ``get`` runs, so a subclass's ``view=``
 interception can never drop ``q`` silently (``view``+``q`` is a
 ``BadInput`` here). Kinds where ``q`` is the compute/fetch query
-(calc, the cache-backed fetchers) do not opt in and are untouched;
-kinds that never declared ``q`` at all still refuse it at the strictness
+(calc, the cache-backed fetchers) do not opt in. Cache-backed fetchers
+resolve the pair in their own handlers before calling this renderer.
+Kinds that never declared ``q`` at all still refuse it at the strictness
 gate.
 
 Matching: case-insensitive literal substring by default; ``q='re:<pat>'``
@@ -229,6 +230,12 @@ def _compile_matcher(q: str) -> Callable[[str], bool]:
             next="drop the 're:' prefix for case-insensitive literal text",
         ) from exc
     return lambda line: rx.search(line[:_MAX_REGEX_LINE_CHARS]) is not None
+
+
+def validate_find_query(q: str, *, context: Any = None) -> None:
+    """Validate find arguments when the stored body cannot be scanned."""
+    _clamp_context(context)
+    _compile_matcher(q)
 
 
 def _span_finder(q: str) -> re.Pattern[str]:

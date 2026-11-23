@@ -249,6 +249,31 @@ class YouTubeHandler(CacheBackedHandler):
         literal: bool = False,
         **_kw: Any,
     ) -> Response:
+        # gr772063 — id+q is find-in-ref on the stored row. Intercepted
+        # ahead of this kind's own shortcuts (languages view, /recent
+        # listing, ~ selector) which would drop q= or misroute it.
+        if isinstance(q, str) and q.strip() and id is not None:
+            if isinstance(id, str) and not id.strip():
+                return self._render_recent_videos(page=page, page_size=page_size)
+            extras = {
+                "languages": languages,
+                "page": page,
+                "page_size": page_size,
+                "ttl_days": ttl_days,
+                **_kw,
+            }
+            return self._get_id_plus_q(
+                id=id,
+                q=q.strip(),
+                view=view,
+                mode=mode,
+                refresh=refresh,
+                tags=tags,
+                untags=untags,
+                literal=literal,
+                context=extras.pop("context", None),
+                extras=extras,
+            )
         if view == "languages":
             # `languages` view is a side query, not cached. Returns the
             # list of available tracks for the given video so the agent
@@ -1074,6 +1099,11 @@ class YouTubeHandler(CacheBackedHandler):
             return _extract_video_id(prefix)
         except BadInput:
             return prefix.strip()
+
+    def _find_selector_prefix(self, prefix: str) -> str:
+        """Find-in-ref takes the same ``<url-or-id>~<sel>`` spellings the
+        chunk-selector read does — resolve the prefix to the slug first."""
+        return self._selector_slug(prefix)
 
     def _stored_ref_video_id(self, video_input: str) -> str | None:
         """The video id behind a bare-digits input — the shape a ``yt<N>``

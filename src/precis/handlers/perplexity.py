@@ -494,6 +494,35 @@ class _PerplexityBase(CacheBackedHandler):
         resolved signature's own params, so ``args={'no_fetch': True}``
         (an advertised call) must appear here or it would refuse.
         """
+        # gr772063 — id+q is find-in-ref on the stored row (the base
+        # get's own intercept). The return-shaping args bound a FETCHED
+        # body's render; on a find they'd be dropped silently, so the
+        # pair refuses them the way it refuses view= / refresh.
+        if (
+            isinstance(q, str)
+            and q.strip()
+            and id is not None
+            and not (isinstance(id, str) and not id.strip())
+        ):
+            shaping = sorted(
+                name
+                for name, value in (
+                    ("args['no_sources']", no_sources),
+                    ("args['max_bytes']", max_bytes),
+                )
+                if value not in (None, False)
+            )
+            if shaping:
+                raise BadInput(
+                    f"get(kind={self.spec.kind!r}): q= (find-in-ref) "
+                    f"doesn't combine with {shaping!r} — they shape a "
+                    "fetched body's render; a find returns matching "
+                    "passages only",
+                    next=(
+                        f"get(kind={self.spec.kind!r}, id=<ref>, "
+                        f"q={q.strip()!r}) — drop the shaping args"
+                    ),
+                )
         cap = _coerce_max_bytes(max_bytes, kind=self.spec.kind)
         token = _RETURN_OPTS.set((bool(no_sources), cap))
         try:

@@ -475,8 +475,53 @@ class CacheBackedHandler(Handler):
         refresh: bool = False,
         no_fetch: bool = False,
         literal: bool = False,
+        context: Any = None,
         **_kw: Any,
     ) -> Response:
+        # An explicit blank id is the legacy recent-cache listing.
+        if isinstance(id, str) and not id.strip() and isinstance(q, str) and q.strip():
+            return self._render_recent()
+        # ``context`` belongs to the id+q find (gr486840's ±N window) —
+        # declared so ``args={'context': N}`` isn't gate-refused, but a
+        # context on any other shape drops silently: refuse it here.
+        if context is not None and not (
+            isinstance(q, str) and q.strip() and id is not None
+        ):
+            raise BadInput(
+                f"get(kind={self.spec.kind!r}): args['context'] only "
+                "applies to find-in-ref — get(id=<ref>, q=<term>)",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id=<ref>, q=<term>, "
+                    "args={'context': 5}) widens the match window"
+                ),
+            )
+        # gr772063 — ``get(id=<cached ref>, q='…')`` is find-in-ref, never
+        # a fresh query. A get whose id= resolves a stored row is a read:
+        # ``q`` scans that row's chunks instead of minting a new billed
+        # fetch (the gripe's reviewer spent ~$0.10 on a sonar-deep-research
+        # call it believed was a read of rr338200). An id that resolves
+        # nothing combined with ``q`` is refused: both slots can't be "the
+        # query" and guessing which to bill is the spend this fixes.
+        if isinstance(q, str) and q.strip() and id is not None:
+            return self._get_id_plus_q(
+                id=id,
+                q=q.strip(),
+                view=view,
+                mode=mode,
+                refresh=refresh,
+                tags=tags,
+                untags=untags,
+                literal=literal,
+                context=context,
+                extras={
+                    "cursor": cursor,
+                    "limit": limit,
+                    "rel": rel,
+                    "of_kind": of_kind,
+                    "ttl_days": ttl_days,
+                    **{f"args[{k!r}]": v for k, v in _kw.items()},
+                },
+            )
         # Bare get / "/" / "/recent" → listing of the most recent refs.
         # Promoted from PerplexityHandler so every cache-backed kind
         # behaves the same (math/web/youtube used to BadInput here).
@@ -832,6 +877,236 @@ class CacheBackedHandler(Handler):
         self._attribute_touch(ref.id)
         return self._render_view(ref, cache, hit=False, view=view)
 
+    # ── id= + q= : find-in-ref on a stored row (gr772063) ─────────────
+
+    def _get_id_plus_q(
+        self,
+        *,
+        id: str | int,
+        q: str,
+        view: str | None,
+        mode: str | None,
+        refresh: bool,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        literal: bool,
+        context: Any = None,
+        extras: dict[str, Any] | None = None,
+    ) -> Response:
+        """``get(id=<cached ref>, q='…')`` — find matching passages inside
+        the stored row, never a fresh upstream call (gr772063).
+
+        On a query-addressed kind ``id=`` and ``q=`` both carry the
+        query, so the pair is ambiguous: the caller either meant "find
+        ``q`` inside the ref ``id`` names" (the read shape every
+        text-bearing kind honours) or handed two competing queries.
+        When ``id`` resolves a stored row — a ref id, its universal
+        handle, ``<kind>:<id>``, a stored slug, or a ``<slug>~<sel>``
+        section address — the first reading wins and ``q`` scans the
+        cached chunks for free; when it resolves nothing the call is
+        refused rather than billed against whichever string lost the
+        coin flip. A spend still only happens through the single-slot
+        query path (``id=`` or ``q=`` alone).
+
+        ``extras`` carries the caller's other ``get`` kwargs — any that
+        are set are refused rather than silently dropped, the same
+        stance the dispatcher's own find route takes (gr486840).
+        """
+        strays = sorted(
+            k for k, v in (extras or {}).items() if v is not None and v is not False
+        )
+        if strays:
+            raise BadInput(
+                f"get(kind={self.spec.kind!r}): q= (find-in-ref) doesn't "
+                f"combine with {strays!r} — drop them, or drop q=",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id=<ref>, q=<term>) "
+                    "finds inside one stored ref"
+                ),
+            )
+        if literal:
+            raise BadInput(
+                f"get(kind={self.spec.kind!r}): args={{'literal': True}} "
+                "doesn't combine with id= + q= — literal marks a lone "
+                "query input as verbatim text, but with both slots set "
+                "the pair is a find-in-ref (id= names the stored row, "
+                "q= the term) and can't read as one verbatim query",
+                next=(
+                    f"get(kind={self.spec.kind!r}, q={q!r}, "
+                    "args={'literal': True}) — drop id= to run q= "
+                    "verbatim",
+                ),
+            )
+        if view is not None:
+            raise BadInput(
+                f"get(kind={self.spec.kind!r}): q= (find-in-ref) doesn't "
+                f"combine with view={view!r} — drop view=, or drop q= for "
+                "the plain read",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id=<ref>, view='body') "
+                    "reads the whole stored body",
+                    f"get(kind={self.spec.kind!r}, id='<slug>~<section>') "
+                    "reads one stored section",
+                ),
+            )
+        if mode is not None and mode != "refresh":
+            raise BadInput(
+                f"unknown mode={mode!r} for kind={self.spec.kind!r}",
+                options=["refresh"],
+                next=(
+                    "drop mode= or pass mode='refresh' / refresh=True "
+                    "to bypass cache freshness and re-fetch"
+                ),
+            )
+        if refresh or mode == "refresh":
+            raise BadInput(
+                f"get(kind={self.spec.kind!r}): q= (find-in-ref) doesn't "
+                "combine with refresh — a refresh re-fetches upstream "
+                "(paid) while q= scans the stored row",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id=<ref>, refresh=True) "
+                    "re-fetches first — then run the find on the new body",
+                ),
+            )
+        # Same up-front validation as the fetch path — a bad axis must not
+        # land a tag write the find result then can't acknowledge.
+        for s in tags or []:
+            Tag.parse_strict(s, kind=self.spec.kind)
+        for s in untags or []:
+            Tag.parse_strict(s, kind=self.spec.kind)
+
+        selector: tuple[str, str] | None = None
+        entry: tuple[Ref, CacheEntry] | None = None
+        if (
+            self.spec.supports_chunk_selectors
+            and isinstance(id, str)
+            and "~" in id.strip()
+        ):
+            # ``<slug>~<sel>`` — the section address scopes the find
+            # to that chunk range instead of the whole stored row.
+            sel_id = id.strip()
+            prefix, _, section = sel_id.partition("~")
+            prefix, section = prefix.strip(), section.strip()
+            if prefix:
+                prefix = self._find_selector_prefix(prefix)
+                entry = self._selector_entry(prefix)
+                if entry is None:
+                    # Slug-first, then the ref-id/handle forms — a
+                    # ``rr<id>~<sel>`` spelling reads the same stored
+                    # row ``rr<id>`` names.
+                    entry = self._entry_by_ref_id(prefix)
+                selector = (prefix, section)
+        else:
+            entry = self._entry_by_ref_id(id)
+            if entry is None and isinstance(id, str):
+                entry = self.store.get_cache_entry_by_slug(
+                    kind=self.spec.kind, slug=id.strip()
+                )
+        if entry is None:
+            raise BadInput(
+                f"{self.spec.kind}: get(id={id!r}, q={q!r}) — id= resolves "
+                f"to no cached {self.spec.kind} ref. q= is find-in-ref "
+                "only when id= addresses a stored row; with an unresolved "
+                "id= both slots read as the query, and picking one "
+                "silently can bill the wrong text.",
+                next=(
+                    f"get(kind={self.spec.kind!r}, q={q!r}) — run q= as "
+                    "the query alone (a fetch, billed on paid kinds)",
+                    f"get(kind={self.spec.kind!r}, id='/recent') — list "
+                    "the cached refs a find can scope to",
+                ),
+            )
+        ref, cache = entry
+        tagged_ref_id = ref.id
+        from precis.handlers._find_in_ref import find_response, validate_find_query
+
+        # An injection-withheld row never leaks content through the find —
+        # serve the metadata-only render the plain read would. Tag ops
+        # still land: the bookmark is metadata, not body.
+        withhold, notice = cache_body_notice(cache.meta)
+        if withhold:
+            validate_find_query(q, context=context)
+            resp = self._render(ref, cache, hit=True)
+            self._apply_tag_ops_if_any(tagged_ref_id, tags, untags)
+            return resp
+
+        display = ref.slug or str(ref.id)
+        if selector is not None:
+            sel_range = self._resolve_find_range(ref, *selector)
+            # A provider may serve the addressed range from a derived
+            # chunk window (youtube re-chunks legacy one-blob
+            # transcripts) — same substitution _render_chunk_selector
+            # makes.
+            prepared = self._prepare_chunk_read(ref, sel_range[1])
+            if prepared.id != ref.id:
+                ref = prepared
+                display = ref.slug or display
+            chunks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=sel_range)
+        else:
+            chunks = self.store.chunks.list_chunks_for_ref(ref.id)
+        resp = find_response(
+            kind=self.spec.kind,
+            display=display,
+            chunks=chunks,
+            q=q,
+            context=context,
+            ref_id=ref.id,
+        )
+        self._apply_tag_ops_if_any(tagged_ref_id, tags, untags)
+        body = resp.body.rstrip("\n")
+        if notice:
+            body = f"{notice}\n\n{body}"
+        body += f"\n\n- {self.attribution}\n" + render_next_section(
+            [
+                (
+                    f"get(kind={self.spec.kind!r}, id={display!r}, view='body')",
+                    "read the whole stored report",
+                ),
+            ]
+        )
+        return Response(
+            body=body,
+            cost=self._cost_str(cache, hit=True),
+            ref_id=ref.id,
+        )
+
+    def _resolve_find_range(
+        self, ref: Ref, prefix: str, section: str
+    ) -> tuple[int, int]:
+        """``<prefix>~<section>`` → the ``(lo, hi)`` chunk range a
+        ``q=`` find scopes to.
+
+        Accepts the numeric forms (``~3``, ``~3..7``) plus the named
+        ``~<block-slug>`` handle search emits — the same grammar
+        :meth:`_render_named_section` resolves, including a leading
+        ``<ord>-`` prefix. An unknown selector refuses with the stored
+        ref's valid handles instead of scanning (or billing) the wrong
+        thing.
+        """
+        parsed = _parse_chunk_selector(f"{prefix}~{section}")
+        if parsed is not None:
+            _, lo, hi = parsed
+            return lo, hi
+        block = self.store.chunks.get_chunk(ref.id, slug=section) if section else None
+        if block is None and section:
+            m = _ORD_PREFIXED_SECTION_RE.match(section)
+            if m is not None:
+                block = self.store.chunks.get_chunk(ref.id, slug=m.group(1))
+        if block is not None:
+            return block.ord, block.ord
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        handles = [f"{prefix}~{b.slug or b.ord}" for b in blocks]
+        raise BadInput(
+            f"{self.spec.kind}: {section!r} is not a stored section of "
+            f"{prefix!r} ({len(handles)} sections exist) — a `~` id "
+            "never fires a fresh paid call.",
+            options=handles[:_NAMED_SECTION_OPTIONS_MAX],
+            next=(
+                f"get(kind={self.spec.kind!r}, id={prefix!r}, q=...) "
+                "finds across the whole stored ref"
+            ),
+        )
+
     # ── stored-row reads (ref id / slug / handle) ─────────────────────
 
     def _serve_stored(
@@ -1055,6 +1330,12 @@ class CacheBackedHandler(Handler):
             if len(joined.encode("utf-8")) > kept:
                 return blocks[k - 1].ord
         return None
+
+    def _find_selector_prefix(self, prefix: str) -> str:
+        """``<prefix>~<sel>`` → the slug the find scopes to — identity by
+        default; kinds whose public id isn't the slug (youtube takes a
+        URL prefix and resolves the bare video id) override."""
+        return prefix
 
     def _selector_entry(self, prefix: str) -> tuple[Ref, CacheEntry] | None:
         """Explicit ref addresses stay exact. Bare selectors prefer legacy slugs."""

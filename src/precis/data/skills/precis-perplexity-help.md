@@ -46,8 +46,8 @@ get(kind="perplexity-reasoning", q="compare DAC and BECCS for net-negative emiss
 get(kind="perplexity-research", q="landscape of post-quantum signature schemes")
 ```
 
-`id=` and `q=` are equivalent, and **both are the search query itself,
-not a lookup key** — see the next section before you paste a number in.
+Pass fresh query text in one slot, `q=` or `id=`. Use a stored handle
+for a cached read.
 The response body carries the answer with inline `[N]` citations and a
 trailing `Sources:` block. Each cited URL gets a stub `web` ref on
 first render if the URL is uncached. Markers print as `[web:<id>]`.
@@ -57,18 +57,9 @@ Cache hits return the same body for free.
 Every answer also prints a `cite as [wx<id>]` (or `rr`/`rz`) pointer —
 paste it into a note/memory to auto-link this exact cached answer.
 
-## `id=` is the QUERY, not a ref-id — don't paste a number
 ## How do I retrieve an existing websearch ref by its number?
-## Why did get(kind='websearch', id=171157) run a paid search?
 
-These kinds are **addressed by query text**. There is no "fetch ref
-#N" path through `get` here: whatever you pass as `id=`/`q=` is sent
-to Perplexity as a fresh **paid** search on a cache miss. So a bare
-number — a gripe id, a prior ref-id — does **not** round-trip as a
-query. `get(id=171157)` would web-search the literal string `"171157"`
-and cache junk ("171 is a composite number").
-
-The exception: these kinds DO carry universal handles now — `wx`,
+`id=` accepts universal handles — `wx`,
 `rr`, `rz` (and `wb`/`yt` for web/youtube). A stored ref's own handle
 or bare ref-id reads it back **for free, never upstream**:
 
@@ -110,6 +101,23 @@ slug before `~` with `get(kind="perplexity-research", id="report-slug",
 args={"no_fetch": True})`; a cache miss refuses to fetch. If absent, find
 the original query. `args={"literal": True}` and `put(mode='import')`
 remain explicit escapes for handle-shaped query text.
+
+## Locate a passage inside a stored websearch/research answer
+
+```python
+get(kind="perplexity-research", id="rr338200", q="parylene 7 µm")
+get(kind="websearch", id="<slug>~0..3", q="Dario")   # scope to a range
+```
+
+`id=` resolving to a stored row (ref id, `wx`/`rr`/`rz` handle,
+`<kind>:<id>`, slug, or `slug~<sel>`) plus `q=` is **find-in-ref**: the
+stored chunks are scanned for `q` — the same renderer other kinds use,
+with `re:<pat>` and term-wise fallback — and the call is **free**, never
+a new Sonar request. An `id=` that resolves **no** cached row combined
+with `q=` is refused as ambiguous. An explicitly blank `id=` lists recent
+cached reports. Omit `id=` to run `q=` as the query.
+`view=`, refresh, `literal` and paging kwargs
+don't combine with the pair.
 
 ## A long answer exceeds the result budget
 
