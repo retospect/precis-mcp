@@ -3202,6 +3202,15 @@ class TodoHandler(NumericRefHandler):
         guards.stamp_claim_lease(conn, ref_id, added)
         if any(str(t) in ("STATUS:done", "STATUS:won't-do") for t in added):
             guards.release_claims(conn, ref_id)
+            if any(str(t) == "STATUS:won't-do" for t in added):
+                # A won't-do todo that ``fixes`` a gripe at STATUS:fixing
+                # is the claim's answer: one ``work:`` line on the gripe,
+                # inside this tag write's transaction. Function-local
+                # import — gripe.py imports precis.todo lazily for the
+                # same cycle.
+                from precis.handlers.gripe import todo_wontdo_work_note
+
+                todo_wontdo_work_note(self.store, ref_id, conn=conn)
 
     # ── link: reserved virtual rel='parent' is the move surface ───
 

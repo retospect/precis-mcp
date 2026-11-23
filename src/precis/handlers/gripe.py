@@ -4036,3 +4036,86 @@ def gripe_close_cascade(
                 replace_prefix=True,
                 conn=conn,
             )
+
+
+def todo_wontdo_work_note(store: Store, todo_id: int, *, conn: Any) -> None:
+    """Post a ``work:`` line on each fixing gripe a won't-do todo fixes.
+
+    Runs inside the todo's ``tag`` transaction (from
+    ``TodoHandler._after_tag_mutation``, which gates on
+    ``STATUS:won't-do``) so the note lands atomically with the close.
+    Only a ``fixes`` edge onto a gripe still at ``STATUS:fixing``
+    qualifies — the gripe took the todo as its claim's answer; an
+    open/triaged gripe has no claim in flight and a closed one is
+    settled. Other relations (``blocked-by``, ``related-to``, …) never
+    reach here. The gist is the todo's newest visible ``todo_comment``
+    (``meta.hidden_comments`` ords skipped), falling back to
+    ``won't-do``.
+
+    Idempotent: a tag call's ``added`` lists the requested tags, not
+    only the new ones, so re-tagging ``STATUS:won't-do`` reaches here
+    again — a gripe already carrying ``work: td<N> dropped`` gets no
+    second line.
+    """
+    targets = {
+        r[0]
+        for r in conn.execute(
+            "SELECT l.dst_ref_id FROM links l "
+            "JOIN refs r ON r.ref_id = l.dst_ref_id "
+            "WHERE l.src_ref_id = %s AND l.relation = 'fixes' "
+            "AND r.kind = 'gripe' AND r.retired_at IS NULL",
+            (todo_id,),
+        ).fetchall()
+    }
+    if not targets:
+        return
+    row = conn.execute(
+        "SELECT COALESCE(r.meta->'hidden_comments', '[]'::jsonb) "
+        "FROM refs r WHERE r.ref_id = %s",
+        (todo_id,),
+    ).fetchone()
+    hidden_ords = {int(o) for o in (row[0] or [])} if row else set()
+    newest = conn.execute(
+        "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
+        "AND c.chunk_kind = 'todo_comment' "
+        "AND NOT (c.ord = ANY(%s::int[])) "
+        "ORDER BY c.ord DESC LIMIT 1",
+        (todo_id, sorted(hidden_ords)),
+    ).fetchone()
+    gist = (
+        " ".join(newest[0].split())[:120] if newest is not None else ""
+    ) or "won't-do"
+    for gid in targets:
+        cur = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t "
+            "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s "
+            "AND t.namespace = 'STATUS' LIMIT 1",
+            (gid,),
+        ).fetchone()
+        if cur is None or str(cur[0]) != "fixing":
+            continue
+        already = conn.execute(
+            "SELECT 1 FROM chunks c WHERE c.ref_id = %s "
+            "AND c.chunk_kind = 'gripe_comment' AND c.text LIKE %s LIMIT 1",
+            (gid, f"work: td{todo_id} dropped%"),
+        ).fetchone()
+        if already is not None:
+            continue
+        (ord_,) = conn.execute(
+            "SELECT coalesce(max(ord), 0) + 1 FROM chunks WHERE ref_id = %s",
+            (gid,),
+        ).fetchone()
+        store.chunks.insert_chunks(
+            gid,
+            [
+                ChunkInsert(
+                    ord=int(ord_),
+                    text=f"work: td{todo_id} dropped ({gist})",
+                    meta={
+                        "chunk_kind": "gripe_comment",
+                        "work_notice": todo_id,
+                    },
+                )
+            ],
+            conn=conn,
+        )
