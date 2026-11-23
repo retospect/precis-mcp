@@ -37,6 +37,22 @@ in the PDF via ``embedfile`` + a ``data-package.json`` sidecar, generated
 from snapshots frozen into figure chunks at mint time so the numbers
 always match the plotted pixels).
 
+"AI contributions" is the exception to vanishes-when-empty (gr725421):
+every exported manuscript carries the statement. A draft's own
+top-level "AI contributions" heading is used as written
+(:func:`.walker.has_ai_contributions` — the seeded title chunk never
+counts, and a heading nested under it still does); otherwise the export
+generates the section from provenance — ``chunk_events.source.writer``
+stamps, ``touched``-linked ``agentlog`` runs, the minters and later
+content editors on cited ``TAPROOT:claim`` hubs (a trust review is not
+drafting), the install's own software record cited whole through the
+bibliography, the passage-summarisation call log and configured embedder — one line per
+model across every role, ending in a marked line asking the human
+authors to state what they checked (:mod:`._ai_contributions`).
+Fork creation events credit copying and bound inherited attribution to
+the source history visible when the text was copied. On reMarkable, the software
+citation uses the same self-contained footnote as body citations.
+
 Inline cite-link group (LaTeX/docx, independent ``doi_links``/
 ``library_links`` switches, both default on): a ``doi`` hyperlink plus a
 per-install library-discovery-search hyperlink appended right after each

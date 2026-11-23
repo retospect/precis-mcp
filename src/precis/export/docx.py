@@ -618,6 +618,13 @@ class _Ctx:
     #: Trust-mark bookkeeping (the trust-surfaces export marking), mirrors
     #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
     trust: Any = None
+    #: The draft being exported — :meth:`DocxRenderer.back_matter` rolls up
+    #: its writing models for the generated "AI contributions" section
+    #: (gr725421). ``0`` when the renderer was built by hand (tests).
+    draft_ref_id: int = 0
+    #: the draft carries an author-written "AI contributions" heading —
+    #: used as written, so the generated section stays out.
+    has_ai_contributions: bool = False
     #: figures whose ``meta["figure"]["data_package"]`` snapshot was present,
     #: mirrors ``export/latex.py``'s ``_Ctx.data_package``.
     data_package: list[DataPackageFigure] = field(default_factory=list)
@@ -1004,6 +1011,10 @@ def export_docx(
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
         repeat_cites=repeat_cites,
+        draft_ref_id=ref.id,
+        has_ai_contributions=walker.has_ai_contributions(
+            chunks, getattr(ref, "title", None)
+        ),
     )
     # Export-level advisories (gr592892: unset PRECIS_WEB_BASE_URL →
     # every dev record-handle link is path-only).
@@ -1042,13 +1053,29 @@ def export_docx(
         doc,
         title_dc=title_dc,
         depth_of=lambda c: max(int(c.depth) - shift, 0),
-        back_matter=walker.back_matter_handles(chunks),
+        back_matter=walker.back_matter_handles(chunks, title_dc),
         equation_of=_standalone_equation,
         numbers=walker.XrefNumbers(ctx.xref, ctx.numbered_headings, ctx.eq_numbers),
         on_chunk=lambda n: progress.report("rendering", n, len(chunks)),
         cursor=ctx.cursor,
     )
     ctx.warnings.extend(ctx.doi_aliases.same_work_warnings())
+
+    # gr725421: the generated "AI contributions" section cites the
+    # install's own software record whole. Its key registers now — after
+    # the body walk (it numbers last, where the section sits) and before
+    # the back-matter loop prints References — so the numbered list
+    # carries the entry the generated mark points at. A patent cites
+    # in-text: nothing registers.
+    if ctx.draft_ref_id and not ctx.has_ai_contributions and not ctx.patent_mode:
+        from precis.export._ai_contributions import software_record_cite_key
+
+        precis_key = software_record_cite_key(store)
+        if precis_key:
+            # The number must match what the section's ``_cite`` emits:
+            # register the SI-canonicalised key, not the raw handle slug.
+            precis_key, _si = _resolve_si_slug(precis_key, ctx)
+            ctx.cite_number(precis_key)
 
     # Back matter in the one order both exporters share
     # (``export/_back_matter.py``); a block that does not apply is left out.
@@ -2669,6 +2696,8 @@ class DocxRenderer:
             _append_references(sink, ctx)
         elif name == "acronyms":
             _append_acronyms(sink, ctx)
+        elif name == "ai_contributions":
+            _append_ai_contributions(sink, ctx)
         elif name == "published":
             _append_published_claims(sink, ctx)
 
@@ -2680,6 +2709,7 @@ _DOCX_BACK_MATTER = (
     "data_package",
     "references",
     "acronyms",
+    "ai_contributions",
     "published",
 )
 
@@ -3308,6 +3338,39 @@ def _append_unverified_claims(doc: Any, ctx: _Ctx) -> None:
         p = doc.add_paragraph()
         p.add_run(f"{title} ").bold = True
         p.add_run(f"({tag}){detail}")
+
+
+def _append_ai_contributions(doc: Any, ctx: _Ctx) -> None:
+    """The generated "AI contributions" section (gr725421), mirroring
+    :func:`precis.export.latex.build_ai_contributions_section`: one
+    paragraph per recorded contribution, the author-check line in red
+    like the retraction-coverage lines. An entry carrying ``cite`` (the
+    install's software record, pre-registered at :func:`export_docx` so
+    the printed References list already holds it) emits its mark through
+    the same :func:`_cite` machinery a body citation uses — numbered,
+    EndNote, Word or Zotero field, or a patent's in-text cite. No-op
+    when the draft carries an author-written section under that heading
+    (``ctx.has_ai_contributions``, set at :func:`export_docx`) or the
+    render context names no draft (hand-built test renderers). Entries
+    are shared with the LaTeX exporter via
+    :func:`precis.export._ai_contributions.ai_contribution_entries`."""
+    if ctx.has_ai_contributions or not ctx.draft_ref_id:
+        return
+    from docx.shared import RGBColor
+
+    from precis.export._ai_contributions import ai_contribution_entries
+
+    entries = ai_contribution_entries(ctx.store, ctx.draft_ref_id)
+    doc.add_heading("AI contributions", level=1)
+    for entry in entries:
+        paragraph = doc.add_paragraph()
+        run = paragraph.add_run(entry.text)
+        if entry.marked:
+            run.font.color.rgb = RGBColor(255, 0, 0)
+        if entry.cite:
+            paragraph.add_run(" ")
+            _cite(entry.cite, ctx, paragraph)
+            _flush_cites(ctx, paragraph)
 
 
 def _append_published_claims(doc: Any, ctx: _Ctx) -> None:

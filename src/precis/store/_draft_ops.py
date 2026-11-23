@@ -104,6 +104,28 @@ def content_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _event_source(source: dict[str, Any] | None) -> Jsonb:
+    """One ``chunk_events.source`` payload: the caller's event fields plus
+    the active write context's attribution (``writer`` stamp, ``model``).
+
+    A draft edit through an MCP session leaves no ``agentlog`` run, so
+    the writer stamp lives on the event itself — the export's generated
+    "AI contributions" section rolls these up (gr725421). The context's
+    fields win over a caller-supplied ``source`` key of the same name, so
+    a caller cannot spoof the stamp."""
+    from precis.store.revision_context import current_revision_context
+
+    ctx = current_revision_context()
+    out = dict(source or {})
+    if ctx is None:
+        return Jsonb(out)
+    if ctx.writer:
+        out["writer"] = ctx.writer
+    if ctx.model:
+        out["model"] = ctx.model
+    return Jsonb(out)
+
+
 def own_content_sha(texts: Iterable[str]) -> str:
     """The ``mode='replace-content'`` span sha: ``content_sha`` over the
     block's own-content chunk texts joined by a blank line (the same
@@ -788,7 +810,7 @@ class DraftStore(_AbbrevMixin):
                 (chunk_id, event_kind, content_sha, source)
             VALUES (%s, 'created', %s, %s)
             """,
-            (chunk_id, sha, Jsonb(source or {})),
+            (chunk_id, sha, _event_source(source)),
         )
         return DraftChunk(
             chunk_id=chunk_id,
@@ -2567,7 +2589,12 @@ class DraftStore(_AbbrevMixin):
                 """INSERT INTO chunk_events
                        (chunk_id, event_kind, content_sha, prev_text, source)
                    VALUES (%s, 'edited', %s, %s, %s)""",
-                (chunk_id, sha, prev, Jsonb(source or {"reason": "draft-title"})),
+                (
+                    chunk_id,
+                    sha,
+                    prev,
+                    _event_source(source or {"reason": "draft-title"}),
+                ),
             )
         return old, True
 
@@ -2630,6 +2657,8 @@ class DraftStore(_AbbrevMixin):
 
         assert row is not None
         new_chunk_id = int(row[0])
+        # The event opens a new chunk history. Its fork reason lets
+        # export credit the writer model for copying the source text.
         conn.execute(
             """
             INSERT INTO chunk_events
@@ -2639,7 +2668,13 @@ class DraftStore(_AbbrevMixin):
             (
                 new_chunk_id,
                 src["content_sha"],
-                Jsonb({"reason": "fork", "src_chunk_id": src["chunk_id"]}),
+                _event_source(
+                    {
+                        "reason": "fork",
+                        "src_chunk_id": src["chunk_id"],
+                        "src_event_id": src["src_event_id"],
+                    }
+                ),
             ),
         )
         return new_chunk_id
@@ -2708,12 +2743,14 @@ class DraftStore(_AbbrevMixin):
             )
 
             # -- 2/3. chunks + side tables ------------------------------
+            # Read the source event cutoff in the same snapshot as the text.
             chunk_rows = conn.execute(
                 """
                 SELECT chunk_id, ord, chunk_kind, text, pos, parent_chunk_id,
                        content_sha, meta, section_path, keywords, retired_at,
-                       handle
-                  FROM chunks WHERE ref_id = %s ORDER BY chunk_id
+                       handle, coalesce((SELECT max(e.event_id) FROM chunk_events e
+                                        WHERE e.chunk_id = c.chunk_id), 0)
+                  FROM chunks c WHERE ref_id = %s ORDER BY chunk_id
                 """,
                 (src_ref_id,),
             ).fetchall()
@@ -2734,6 +2771,7 @@ class DraftStore(_AbbrevMixin):
                     "section_path": list(r[8] or []),
                     "keywords": list(r[9]) if r[9] else None,
                     "retired_at": r[10],
+                    "src_event_id": r[12],
                 }
                 new_chunk_id = self._insert_forked_chunk(
                     conn, ref_id=new_ref.id, src=src_chunk
@@ -3269,7 +3307,9 @@ class DraftStore(_AbbrevMixin):
                 "VALUES (%s, 'edited', %s)",
                 (
                     chunk_id,
-                    Jsonb({"reason": "figure-data-package-refresh", "derived": True}),
+                    _event_source(
+                        {"reason": "figure-data-package-refresh", "derived": True}
+                    ),
                 ),
             )
 
@@ -3300,7 +3340,7 @@ class DraftStore(_AbbrevMixin):
             c.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "render-recipe"})),
+                (chunk_id, _event_source({"reason": "render-recipe"})),
             )
 
         if conn is not None:
@@ -3482,7 +3522,10 @@ class DraftStore(_AbbrevMixin):
             conn.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({**(source or {}), "reason": "figure-provenance"})),
+                (
+                    chunk_id,
+                    _event_source({**(source or {}), "reason": "figure-provenance"}),
+                ),
             )
         return self.get_draft_chunk(handle)
 
@@ -3523,7 +3566,7 @@ class DraftStore(_AbbrevMixin):
             conn.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "set-style", "style": style})),
+                (chunk_id, _event_source({"reason": "set-style", "style": style})),
             )
         return self.get_draft_chunk(handle)
 
@@ -3598,7 +3641,7 @@ class DraftStore(_AbbrevMixin):
         conn.execute(
             "INSERT INTO chunk_events (chunk_id, event_kind, source) "
             "VALUES (%s, 'edited', %s)",
-            (chunk_id, Jsonb({"reason": "patch-meta", "keys": list(patch)})),
+            (chunk_id, _event_source({"reason": "patch-meta", "keys": list(patch)})),
         )
         return True
 
@@ -3655,7 +3698,7 @@ class DraftStore(_AbbrevMixin):
             conn.execute(
                 "INSERT INTO chunk_events (chunk_id, event_kind, source) "
                 "VALUES (%s, 'edited', %s)",
-                (chunk_id, Jsonb({"reason": "set-term-attrs"})),
+                (chunk_id, _event_source({"reason": "set-term-attrs"})),
             )
         return self.get_draft_chunk(handle)
 
@@ -3856,7 +3899,9 @@ class DraftStore(_AbbrevMixin):
                 "VALUES (%s, 'edited', %s)",
                 (
                     chunk_id,
-                    Jsonb({"reason": f"set-{key.replace('_', '-')}", "target": target}),
+                    _event_source(
+                        {"reason": f"set-{key.replace('_', '-')}", "target": target}
+                    ),
                 ),
             )
         return self.get_draft_chunk(handle)
@@ -3983,11 +4028,10 @@ class DraftStore(_AbbrevMixin):
         source: dict[str, Any] | None,
         extra: dict[str, Any] | None,
     ) -> None:
-        payload = {**(source or {}), **(extra or {})}
         conn.execute(
             "INSERT INTO chunk_events (chunk_id, event_kind, source) "
             "VALUES (%s, %s, %s)",
-            (chunk_id, kind, Jsonb(payload)),
+            (chunk_id, kind, _event_source({**(source or {}), **(extra or {})})),
         )
 
     @_write_retried
@@ -4129,7 +4173,7 @@ class DraftStore(_AbbrevMixin):
             """INSERT INTO chunk_events
                    (chunk_id, event_kind, content_sha, prev_text, source)
                VALUES (%s, 'edited', %s, %s, %s)""",
-            (row[0], sha, row[5], Jsonb(source or {})),
+            (row[0], sha, row[5], _event_source(source)),
         )
 
     @_write_retried
@@ -4832,7 +4876,7 @@ class DraftStore(_AbbrevMixin):
                     """INSERT INTO chunk_events
                            (chunk_id, event_kind, content_sha, prev_text, source)
                        VALUES (%s, 'edited', %s, %s, %s)""",
-                    (prev_chunk_id, sha, prev_row[5], Jsonb(source or {})),
+                    (prev_chunk_id, sha, prev_row[5], _event_source(source)),
                 )
             conn.execute(
                 "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s",

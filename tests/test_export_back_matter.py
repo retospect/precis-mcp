@@ -35,6 +35,7 @@ def test_latex_full_order_follows_constant() -> None:
         unverified_section="%UNV",
         data_package_section="%DPK",
         published_section="%PUB",
+        ai_contributions_section="%AIC",
         appendix="%SRC",
     )
     marks = {
@@ -42,6 +43,7 @@ def test_latex_full_order_follows_constant() -> None:
         "data_package": "%DPK",
         "references": "\\printbibliography",
         "acronyms": "\\printglossaries",
+        "ai_contributions": "%AIC",
         "published": "%PUB",
         "sources": "%SRC",
     }
@@ -67,6 +69,7 @@ def test_latex_follows_the_shared_constant(monkeypatch) -> None:
             "unverified",
             "data_package",
             "published",
+            "ai_contributions",
             "sources",
         ),
     )

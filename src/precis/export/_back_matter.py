@@ -21,6 +21,7 @@ BACK_MATTER_ORDER: tuple[str, ...] = (
     "data_package",
     "references",
     "acronyms",
+    "ai_contributions",
     "published",
     "sources",
 )

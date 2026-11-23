@@ -687,6 +687,10 @@ class RenderResult:
     #: finding ref id -> cite keys that finding's cite sites emitted in the
     #: body (see :attr:`_Ctx.claim_cites`).
     claim_cites: dict[int, list[str]] = field(default_factory=dict)
+    #: the draft carries an author-written "AI contributions" heading
+    #: (:func:`walker.has_ai_contributions`) — the export uses it as
+    #: written instead of generating the section (gr725421).
+    has_ai_contributions: bool = False
 
 
 @dataclass
@@ -2784,13 +2788,13 @@ def render_body(
         library_links = False
 
     chunks = store.drafts.reading_order(ref.id)
-    back_matter = _back_matter_handles(chunks)
     # ``create_draft`` seeds every draft with a depth-0 heading carrying the
     # title; ``\maketitle`` already prints it, so rendering that chunk too
     # made every paper open with "1 <Title>" and number its sections 1.x.
     # Skip it (keeping its label for cross-refs) and lift the rest one
     # level so the real sections number from 1.
     title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
+    back_matter = _back_matter_handles(chunks, title_dc)
     # Lift only when the body is nested UNDER the title chunk; a draft whose
     # sections sit beside it at depth 0 already numbers from 1.
     shift = walker.depth_shift(chunks, title_dc)
@@ -2846,6 +2850,9 @@ def render_body(
         trust=ctx.trust,
         data_package=ctx.data_package,
         claim_cites=ctx.claim_cites,
+        has_ai_contributions=walker.has_ai_contributions(
+            chunks, getattr(ref, "title", None)
+        ),
     )
 
 
@@ -3686,6 +3693,37 @@ def build_data_package_section(entries: list[DataPackageFigure]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def build_ai_contributions_section(
+    store: Any, ref_id: int, *, cite_context: _Ctx | None = None
+) -> str:
+    """The generated "AI contributions" end-matter section (gr725421):
+    one line per recorded contribution — the writing models on the
+    draft's chunks and logged runs and on the claim hubs it cites,
+    precis itself (cited whole through the normal citation path), the
+    background summariser and embedder models — ending in a red marked
+    line asking the human authors to state what they checked. Always
+    non-empty (the fallback lines say "not recorded" rather than
+    vanishing). Called only when the draft has no author-written
+    section under that heading. Entries come from
+    :func:`precis.export._ai_contributions.ai_contribution_entries`,
+    shared with the docx exporter."""
+    from precis.export._ai_contributions import ai_contribution_entries
+
+    ctx = cite_context or _Ctx(keymap={}, known_handles=set(), store=store)
+    lines = ["\\section*{AI contributions}", ""]
+    for entry in ai_contribution_entries(store, ref_id):
+        text = _tex(entry.text)
+        if entry.cite:
+            mark = _cite(entry.cite, ctx)
+            if not ctx.footnote_refs:
+                text += " " if ctx.patent_mode else "~"
+            text += _merge_adjacent_cites(mark, ctx).removesuffix("\x02")
+        if entry.marked:
+            text = "\\textcolor{red}{" + text + "}"
+        lines.append(f"\\par\\noindent {text}")
+    return "\n".join(lines)
+
+
 def build_supplement_section(entries: list[Any]) -> str:
     """Format the shared supplement entries without assigning numbers here."""
     rows = [
@@ -3715,6 +3753,7 @@ def assemble_document(
     unverified_section: str = "",
     published_section: str = "",
     data_package_section: str = "",
+    ai_contributions_section: str = "",
     extra_preamble: str = "",
     bib_style: str = _BIB_STYLE_DEFAULT,
     title_tex: str | None = None,
@@ -3742,9 +3781,9 @@ def assemble_document(
     :func:`build_published_claims_section`/
     :func:`build_data_package_section`) are optional pre-rendered blocks
     placed in :data:`~precis.export._back_matter.BACK_MATTER_ORDER`
-    (unverified, data package, bibliography, glossaries, published, sources
-    appendix) — each empty-means-absent (AC 6: an all-clean draft's output
-    is unchanged).
+    (unverified, data package, bibliography, glossaries, AI contributions,
+    published, sources appendix) — each empty-means-absent (AC 6: an
+    all-clean draft's output is unchanged).
 
     ``extra_preamble`` injects right after the checked-in preamble (same
     slot as the reMarkable geometry) — :func:`export_draft` passes
@@ -3785,6 +3824,7 @@ def assemble_document(
         "data_package": data_package_section or None,
         "references": "\\printbibliography",
         "acronyms": "\\printglossaries",
+        "ai_contributions": ai_contributions_section or None,
         "published": published_section or None,
         "sources": appendix or None,
     }
@@ -3852,8 +3892,8 @@ def _export_poster(
     )
 
     chunks = store.drafts.reading_order(ref.id)
-    back_matter = _back_matter_handles(chunks)
     title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
+    back_matter = _back_matter_handles(chunks, title_dc)
     shift = walker.depth_shift(chunks, title_dc)
 
     def depth_of(c: Any) -> int:
@@ -3898,6 +3938,22 @@ def _export_poster(
             back_matter=back_matter,
         )
         bodies.append((title, hint, lines))
+    # gr725421: the generated "AI contributions" block — the ruling is
+    # every export, poster included. Its software-record cite registers
+    # before the ``ctx.cited`` checks below, so a poster whose only cite
+    # is this one still gets biblatex and a References block.
+    ai_block: list[str] = []
+    if not walker.has_ai_contributions(chunks, getattr(ref, "title", None)):
+        from precis.export._ai_contributions import ai_contribution_entries
+
+        for entry in ai_contribution_entries(store, ref.id):
+            text = _tex(entry.text)
+            if entry.cite:
+                text += f"~\\cite{{{entry.cite}}}"
+                walker.register(ctx.cited, entry.cite)
+            if entry.marked:
+                text = "\\textcolor{red}{" + text + "}"
+            ai_block.append(f"\\par\\noindent {text}")
     if ctx.cited:
         # \printbibliography lands inside a references-titled block when
         # the draft scaffolded one, else as an extra block on column 3.
@@ -3907,6 +3963,8 @@ def _export_poster(
             for _t, _h, lines in bodies:
                 if (_t or "").strip().casefold() == "references":
                     lines.append("\\printbibliography")
+    if ai_block:
+        bodies.append(("AI contributions", None, ai_block))
     columns: list[list[str]] = [[] for _ in range(_POSTER_COLUMNS)]
     counts = [0] * _POSTER_COLUMNS
     for i, (title, hint, lines) in enumerate(bodies):
@@ -4166,6 +4224,26 @@ def export_draft(
         rendered.warnings.append(style_warning)
     cite_links = (doi_links or library_links) and not patent_mode
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
+    # Capture the author's citations before the generated section registers
+    # the software record for the bibliography.
+    body_cite_count = len(rendered.cited_slugs)
+    ai_contributions_tex = ""
+    if not rendered.has_ai_contributions:
+        ai_contributions_tex = build_ai_contributions_section(
+            mstore,
+            ref.id,
+            cite_context=_Ctx(
+                keymap={},
+                known_handles=set(),
+                store=mstore,
+                cited=rendered.cited_slugs,
+                warnings=rendered.warnings,
+                doc_type=doc_type or "",
+                footnote_refs=remarkable,
+                doi_links=doi_links,
+                library_links=library_links and audience != "external",
+            ),
+        )
     # A patent specification has no bibliography — everything is cited
     # in-text, so ``cited_slugs`` stays empty and refs.bib is a stub.
     from precis.config import load_config
@@ -4195,7 +4273,9 @@ def export_draft(
         from precis.export.sources import collect_cited_sources, safe_source_filename
 
         source_bundle = collect_cited_sources(
-            mstore, ref, cited_slugs=rendered.cited_slugs
+            mstore,
+            ref,
+            cited_slugs=rendered.cited_slugs[:body_cite_count],
         )
         if source_bundle.present:
             src_dir = target_dir / "sources"
@@ -4247,6 +4327,7 @@ def export_draft(
         unverified_section=unverified_tex,
         published_section=published_tex,
         data_package_section=data_package_tex,
+        ai_contributions_section=ai_contributions_tex,
         extra_preamble="\n".join(
             ([_CITE_LINK_PREAMBLE] if cite_links else [])
             + (["\\usepackage{embedfile}"] if data_package_tex else [])
@@ -4316,6 +4397,7 @@ __all__ = [
     "RenderResult",
     "assemble_document",
     "build_acronyms",
+    "build_ai_contributions_section",
     "build_author_block",
     "build_bib",
     "build_data_package_section",

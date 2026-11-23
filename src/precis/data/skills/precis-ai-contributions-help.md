@@ -111,14 +111,21 @@ the background. No `agentlog` run names them, so add one line each:
 
 | Model | Role | Where to read it |
 |---|---|---|
-| summariser | wrote the passage summaries that search displays | the `llm` card whose `view='tote'` lists the `llm_summarize` source |
+| summariser | wrote the passage summaries that search displays | `get(kind='llm', id='op:llm_summarize', view='stats')` — the by-model split |
 | embedder | computed the vectors behind semantic search; generates no text | the Embedder block of `get(kind='skill', id='precis-status')` |
 | claim drafting | drafted the claim hubs the draft cites | the hub's `trust:` line; "unstamped" means unrecorded |
 
-No lookup maps a source to its model yet (gr725421): open the tote of
-the local cards that `get(kind='llm', id='/')` lists. A summary does not
-record which model wrote it. Say so, and say that the authors checked
-cited statements against the source passages, not against summaries.
+The per-op stats view maps a source to its models (gr725421 fixed it):
+`id='op:<source>', view='stats'` prints a "by model:" split. A summary
+does not record which model wrote it. Say so, and say that the authors
+checked cited statements against the source passages, not against
+summaries.
+
+The Word/PDF export writes this section for you (gr725421): a draft
+with no "AI contributions" heading gets a generated one — writing-model
+roll-ups from chunk events and cited hubs, precis and its background
+models, and a marked line for the authors' check. An author-written
+section under that heading is used as written.
 
 ## Gather the facts from precis provenance
 
@@ -152,6 +159,11 @@ from the `llm` card before writing it.
   gives model + role per section ([[precis-agentlog-help]]). `meta.model`
   may be a tier name (`opus`); resolve the exact version from the `llm`
   card ([[precis-llm-help]]) and the run's job.
+- Edits made through an MCP session leave no `agentlog` run — the
+  writer stamp sits on `chunk_events.source.writer` instead (gr725421;
+  `args={'writer': {'model': …}}` on put/edit, plus the client's
+  declared model). The generated export section rolls those up; to read
+  them directly, query `chunk_events` on the draft's chunks.
 - Machine-written links carry `meta.{model,prompt_version,run_id,why}`:
   that annotation names the model behind a machine-minted edge on a
   finding or chunk ([[precis-link-help]]).

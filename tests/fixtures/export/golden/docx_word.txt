@@ -2383,6 +2383,44 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:pStyle>
 </w:pPr>
 <w:r>
+<w:t>AI contributions</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>precis-mcp (Stamm, R.; Zenodo, DOI 10.5281/zenodo.22863181): the manuscript-preparation system that held this draft's text, notes, sources and claim records.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>No passage-summarisation model is recorded in the call log for the last 30 days.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>a mock embedder (development install): computed the vectors behind semantic search.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>No writing model is on record for this draft; if AI tools contributed to the text, the authors name each and what it did.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:color w:val="FF0000">
+</w:color>
+</w:rPr>
+<w:t>The human authors state here what they checked and take responsibility for: which AI-assisted text was verified, and against what (the source passages, the lab notebook, the test suites).</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
 <w:t>Published claim artifacts</w:t>
 </w:r>
 </w:p>

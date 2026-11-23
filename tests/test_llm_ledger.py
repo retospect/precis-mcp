@@ -135,6 +135,14 @@ class TestOpStats:
         assert "by model:" in body
         assert "model-a" in body and "model-b" in body
 
+    def test_single_model_is_named_with_dates(self, store: Any) -> None:
+        src = "test_op:solo"
+        _log_call(store, "model-solo", source=src, cost=0.0)
+        body = _handler(store).get(id=f"op:{src}", view="stats").body
+        assert "by model:" in body
+        assert "model-solo: 1 calls" in body
+        assert " to " in body
+
     def test_empty_source(self, store: Any) -> None:
         body = _handler(store).get(id="op:no-such-source", view="stats").body
         assert "no llm_call_log rows" in body

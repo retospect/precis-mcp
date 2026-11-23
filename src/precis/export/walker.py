@@ -743,6 +743,7 @@ BACK_MATTER_HEADINGS = frozenset(
         "competing interests",
         "data availability",
         "supporting information",
+        "ai contributions",
     }
 )
 
@@ -760,6 +761,26 @@ EQ_SKIP_KINDS = frozenset(
 
 def is_back_matter_heading(text: str) -> bool:
     return " ".join((text or "").split()).casefold() in BACK_MATTER_HEADINGS
+
+
+def has_ai_contributions(chunks: list[Any], title: str | None) -> bool:
+    """Whether the draft carries an author-written "AI contributions"
+    section (gr725421): a heading under that exact name
+    (whitespace-normalised, case-insensitive) that renders as a top-level
+    section — a depth-0 heading, or a depth-1 heading when the body is
+    nested under the seeded title chunk (:func:`depth_shift` lifts that
+    level in both renderers). The seeded title chunk itself never
+    counts — a draft *titled* "AI contributions" is not an authored
+    section, so it still gets the generated one."""
+    title_dc = title_heading_dc(chunks, title)
+    shift = depth_shift(chunks, title_dc)
+    return any(
+        c.chunk_kind == "heading"
+        and str(getattr(c, "dc", None)) != title_dc
+        and int(c.depth) - shift <= 0
+        and " ".join((c.text or "").split()).casefold() == "ai contributions"
+        for c in chunks
+    )
 
 
 def is_glossary_heading(c: Any) -> bool:
@@ -803,16 +824,19 @@ def depth_shift(chunks: list[Any], title_dc: str | None) -> int:
     return 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
 
 
-def back_matter_handles(chunks: list[Any]) -> frozenset[str]:
+def back_matter_handles(
+    chunks: list[Any], title_dc: str | None = None
+) -> frozenset[str]:
     """``dc`` handles of every heading inside a back-matter section: a
-    matching depth-0 heading and the headings nested under it, up to the
-    next depth-0 heading."""
+    matching top-level heading and its descendants. The seeded title
+    is skipped and the same depth shift as the body render applies."""
     out: set[str] = set()
     inside = False
+    shift = depth_shift(chunks, title_dc)
     for c in chunks:
-        if c.chunk_kind != "heading":
+        if c.chunk_kind != "heading" or c.dc == title_dc:
             continue
-        if c.depth == 0:
+        if int(c.depth) <= shift:
             inside = is_back_matter_heading(c.text or "")
         if inside:
             out.add(c.dc)
@@ -887,7 +911,7 @@ def number_xrefs(
     tabs = 0
     title_dc = title_heading_dc(chunks, title)
     shift = depth_shift(chunks, title_dc)
-    back_matter = back_matter_handles(chunks)
+    back_matter = back_matter_handles(chunks, title_dc)
     current = ""  # number of the enclosing numbered section
     current_name = ""  # its heading text
     in_back = False  # inside unnumbered journal back matter

@@ -92,6 +92,8 @@ from precis.runtime.canon import resolve as resolve_canon
 from precis.runtime.trust_verb import (
     TRUST_VERBS,
     WRITER_NUDGE,
+    WRITER_NUDGE_DRAFT,
+    WRITER_NUDGE_KINDS,
     WRITER_VERBS,
     create_receipt,
     edit_trust,
@@ -5343,21 +5345,23 @@ class DispatchMixin(RuntimeShape):
     @staticmethod
     def _nudge_writer(kind: str, verb: str, wctx: Any, response: Response) -> Response:
         """Tell an MCP session with no known model how to name itself, once
-        per session, on a memory write (write-attribution)."""
+        per session and kind, on a memory or draft write
+        (write-attribution; gr725421 for the draft side)."""
         writer = getattr(wctx, "writer", None)
         if (
-            kind != "memory"
+            kind not in WRITER_NUDGE_KINDS
             or verb not in TRUST_VERBS
             or not writer
             or "session_id" not in writer
             or "model" in writer
         ):
             return response
+        nudge = WRITER_NUDGE_DRAFT if kind == "draft" else WRITER_NUDGE
         from precis.utils.hint_ledger import was_shown
 
-        if was_shown(WRITER_NUDGE):
+        if was_shown(nudge):
             return response
-        return replace(response, body=f"{response.body.rstrip()}\n{WRITER_NUDGE}")
+        return replace(response, body=f"{response.body.rstrip()}\n{nudge}")
 
     def _stamp_recalled(self, kind: str, ident: Any) -> None:
         """Record an agent read of one ref's own view (``refs.last_recalled_at``).

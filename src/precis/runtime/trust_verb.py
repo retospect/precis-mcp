@@ -69,6 +69,19 @@ WRITER_NUDGE = (
     "direct input (precis-memory-help)"
 )
 
+#: Same nudge on a draft write (gr725421): the stamp lands on
+#: ``chunk_events.source.writer`` and feeds the export's generated
+#: "AI contributions" section.
+WRITER_NUDGE_DRAFT = (
+    "writer: model unknown — pass args={'writer': {'model': '<your model id>'}} "
+    "on draft writes; it lands on the chunk event and feeds the export's "
+    "'AI contributions' section (precis-ai-contributions-help)"
+)
+
+#: Kinds whose writes nudge an unnamed session once — a writer stamp is
+#: what their AI-contribution/provenance surfaces read.
+WRITER_NUDGE_KINDS = frozenset({"memory", "draft"})
+
 
 def pop_trust_payload(args: dict[str, Any], extras_key: str) -> dict[str, Any] | None:
     """Remove and validate ``args={'trust': {...}}`` before the handler's

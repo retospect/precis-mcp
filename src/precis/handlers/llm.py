@@ -1322,11 +1322,18 @@ class LlmHandler(NumericRefHandler):
         by_model = llm_catalog.llm_op_models(
             self.store, source, window_days=window_days
         )
-        if len(by_model) > 1:
+        if by_model:
+            spans = llm_catalog.llm_op_model_span(
+                self.store, source, window_days=window_days
+            )
             lines += ["", "by model:"]
             for model, r in by_model:
                 err = f", err {r.error_rate:.0%}" if r.error_rate is not None else ""
-                lines.append(f"  {model}: {r.calls} calls, ${r.cost_usd:.4f}{err}")
+                span = spans.get(model)
+                when = f", {span[0]} to {span[1]}" if span else ""
+                lines.append(
+                    f"  {model}: {r.calls} calls, ${r.cost_usd:.4f}{err}{when}"
+                )
         if local_first:
             lines += ["", local_first]
         return "\n".join(lines)

@@ -680,6 +680,37 @@ def llm_op_models(
     return [(r[0] or "?", _tote_row(r[1:])) for r in rows]
 
 
+def llm_op_model_span(
+    store: Store, source: str, *, window_days: int = 30
+) -> dict[str, tuple[Any, Any]]:
+    """``{model: (first_date, last_date)}`` of the logged calls for one
+    ``source`` over the window (gr725421: the by-source roll-up the
+    AI-contributions export and skill read)."""
+    sql = (
+        "SELECT model, min(ts)::date, max(ts)::date FROM llm_call_log "
+        "WHERE source = %s AND ts > now() - (%s * interval '1 day') "
+        f"AND {_NOT_GATED} GROUP BY model"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (source, window_days)).fetchall()
+    return {(r[0] or "?"): (r[1], r[2]) for r in rows}
+
+
+def llm_op_model_usage(
+    store: Store, sources: list[str], *, window_days: int = 30
+) -> list[tuple[str, int, Any, Any]]:
+    """Count and date range of logged attempts per named model across sources."""
+    sql = (
+        "SELECT model, count(*), min(ts)::date, max(ts)::date FROM llm_call_log "
+        "WHERE source = ANY(%s) AND ts > now() - (%s * interval '1 day') "
+        "AND model NOT IN ('', '?') "
+        f"AND {_NOT_GATED} GROUP BY model ORDER BY count(*) DESC, model"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (sources, window_days)).fetchall()
+    return [(str(model), int(calls), first, last) for model, calls, first, last in rows]
+
+
 class HealthRow(NamedTuple):
     """Calls, error share and p95 latency for one path/model/transport."""
 
@@ -1498,6 +1529,7 @@ __all__ = [
     "decision_rollup",
     "derive_observed_axes",
     "list_reviews",
+    "llm_op_model_span",
     "llm_op_models",
     "llm_op_tote",
     "llm_tote",

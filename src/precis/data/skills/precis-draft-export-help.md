@@ -40,6 +40,18 @@ Pull the same lists any time without exporting:
 `get(kind='draft', id=<slug>, view='hygiene')`.
 
 
+## AI contributions
+
+Word and PDF use an authored top-level “AI contributions” section as
+written. Lacking one, the export adds a section from recorded draft
+writes, agent runs, and cited claim records. It names precis and its
+background models and marks missing provenance. The generated precis
+citation is a self-contained footnote in reMarkable PDFs.
+
+Replace the red author prompt with what the authors checked. The
+hygiene view flags when export will generate the section. See
+[[precis-ai-contributions-help]] for wording and provenance.
+
 ## Retraction checks
 
 The export pane offers `retraction_check`: `stale` (default; check citations

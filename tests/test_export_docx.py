@@ -286,11 +286,13 @@ def test_glossary_terms_become_a_sorted_used_only_acronym_list(
     texts = [p.text for p in doc.paragraphs]
     assert "Glossary" not in texts
     i = texts.index("Acronyms")
-    assert texts[i + 1 :] == [
+    assert texts[i + 1 : i + 4] == [
         "CNT: carbon nanotube",
         "ha: hexylamine",
         "pG: pristine graphene",
     ]
+    # The generated "AI contributions" section follows (gr725421).
+    assert texts[i + 4] == "AI contributions"
     assert not any(t.startswith("DFT") for t in texts)  # never used in the body
     # The look lives in two styles, not in direct run formatting.
     entry = doc.paragraphs[i + 1]
@@ -3859,6 +3861,7 @@ def test_docx_back_matter_follows_shared_constant(
             "unverified",
             "data_package",
             "published",
+            "ai_contributions",
             "sources",
         ),
     )

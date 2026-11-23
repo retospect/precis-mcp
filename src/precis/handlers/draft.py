@@ -6574,7 +6574,9 @@ class DraftHandler(Handler):
                 "get(kind='draft', id='dc<container>') renders its items in full)"
             )
         lines.extend(self._work_lines(ref.id))
-        lines.extend(self._hygiene_lines(ref.id, chunks))
+        lines.extend(
+            self._hygiene_lines(ref.id, chunks, title=getattr(ref, "title", None))
+        )
         flat_body = "\n".join(lines)
         # Fit by structure, not by cutting (gr537833): an un-sliced outline
         # that can't fit the context cap renders one level deep instead —
@@ -6777,7 +6779,7 @@ class DraftHandler(Handler):
             )
         foot = [
             *self._work_lines(ref.id),
-            *self._hygiene_lines(ref.id, chunks),
+            *self._hygiene_lines(ref.id, chunks, title=getattr(ref, "title", None)),
         ]
         if len(foot) > self._LEVEL_FOOTER_LINES:
             foot = [
@@ -6878,7 +6880,13 @@ class DraftHandler(Handler):
         )
 
     def _hygiene_lines(
-        self, ref_id: int, chunks: list[Any], *, elide: bool = True
+        self,
+        ref_id: int,
+        chunks: list[Any],
+        *,
+        elide: bool = True,
+        title: str | None = None,
+        ai_contributions_present: bool | None = None,
     ) -> list[str]:
         """Whole-draft specificity debt, surfaced on every ``get`` — not
         just a fresh write — so a legacy/bulk-authored draft that never
@@ -7096,6 +7104,27 @@ class DraftHandler(Handler):
         out.extend(self._hygiene_caption_lines(chunks, limit=limit))
 
         out.extend(self._hygiene_link_origin_lines(text))
+
+        # gr725421: a draft with no "AI contributions" section still
+        # exports with one — the export generates it. Informational only,
+        # and only on the full ``view='hygiene'`` report (``elide=False``):
+        # nearly every draft lacks the section, so a footer line on every
+        # ``get`` would be noise. The check is manuscript-wide: a subtree
+        # report passes ``ai_contributions_present`` computed over the
+        # whole draft, or a section authored elsewhere would read as
+        # missing (gr725421 review).
+        from precis.export import walker as _export_walker
+
+        if not elide and not (
+            ai_contributions_present
+            if ai_contributions_present is not None
+            else _export_walker.has_ai_contributions(chunks, title)
+        ):
+            out.append(
+                'ℹ no "AI contributions" section — every export '
+                "generates one; add a top-level heading of that name to "
+                "write your own (precis-ai-contributions-help)."
+            )
 
         if not out:
             return []
@@ -7330,6 +7359,15 @@ class DraftHandler(Handler):
                     next="get(kind='draft', id='<slug>', view='hygiene')",
                 )
             chunks = self.store.drafts.reading_order(root.ref_id)
+            # gr725421 review: the "AI contributions" line describes the
+            # whole manuscript — a section authored anywhere in the draft
+            # counts even when this report is scoped to one subtree.
+            from precis.export import walker as _export_walker
+
+            draft_ref = self.store.get_ref(kind="draft", id=root.ref_id)
+            ai_present = _export_walker.has_ai_contributions(
+                chunks, getattr(draft_ref, "title", None)
+            )
             scoped: list[Any] = []
             collecting = False
             root_depth = 0
@@ -7349,7 +7387,14 @@ class DraftHandler(Handler):
         else:
             chunks = self.store.drafts.reading_order(ref.id)
             ref_id = ref.id
-        lines = self._hygiene_lines(ref_id, chunks, elide=False)
+            ai_present = None
+        lines = self._hygiene_lines(
+            ref_id,
+            chunks,
+            elide=False,
+            title=getattr(ref, "title", None),
+            ai_contributions_present=ai_present,
+        )
         header = (
             f"# {title} — hygiene report"
             if title

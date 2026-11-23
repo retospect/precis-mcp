@@ -279,6 +279,14 @@ B     -0.4
 \printbibliography
 \printglossaries
 
+\section*{AI contributions}
+
+\par\noindent precis-mcp (Stamm, R.; Zenodo, DOI 10.5281/zenodo.22863181): the manuscript-preparation system that held this draft's text, notes, sources and claim records.
+\par\noindent No passage-summarisation model is recorded in the call log for the last 30 days.
+\par\noindent a mock embedder (development install): computed the vectors behind semantic search.
+\par\noindent No writing model is on record for this draft; if AI tools contributed to the text, the authors name each and what it did.
+\par\noindent \textcolor{red}{The human authors state here what they checked and take responsibility for: which AI-assisted text was verified, and against what (the source passages, the lab notebook, the test suites).}
+
 \appendix
 \section{Published claim artifacts}
 
