@@ -2367,21 +2367,22 @@ class RefsMixin:
         Order of the input is not preserved — callers that care
         should map results back via the returned set membership.
 
-        v2: slugs resolve via ``ref_identifiers`` (``id_kind='cite_key'``)
-        JOINed back to ``refs`` to enforce the kind filter and the
-        soft-delete predicate.
+        Paper slugs include rekey redirects. For each slug, a live
+        cite key takes precedence over a live alias, as in get_ref.
         """
         unique = list({s for s in slugs if s})
         if not unique:
             return []
         sql = (
-            "SELECT r.ref_id FROM refs r "
+            "SELECT DISTINCT ON (ri.id_value) r.ref_id FROM refs r "
             "JOIN ref_identifiers ri "
             "  ON ri.ref_id = r.ref_id "
-            "  AND ri.id_kind = 'cite_key' "
+            "  AND (ri.id_kind = 'cite_key' "
+            "       OR (r.kind = 'paper' AND ri.id_kind = 'cite_key_alias')) "
             "WHERE r.kind = %s "
             "  AND ri.id_value = ANY(%s) "
             "  AND r.retired_at IS NULL"
+            " ORDER BY ri.id_value, (ri.id_kind = 'cite_key') DESC"
         )
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (kind, unique)).fetchall()

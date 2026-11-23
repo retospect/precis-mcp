@@ -80,6 +80,20 @@ def test_status_rows_follow_input_order(papers: PaperHandler, store: Store) -> N
     assert rows[1].startswith(f"  {pa_a} -> {pa_a} ")
 
 
+def test_status_resolves_cite_key_alias(papers: PaperHandler, store: Store) -> None:
+    old_key = "alias2024old"
+    live_key = "alias2024new"
+    ref_id = _paper(store, old_key)
+    store.set_ref_identifier(ref_id, "cite_key", live_key)
+    handle = handle_registry.format_handle("paper", ref_id)
+
+    body = papers.get(id=[old_key, live_key], view="status").body
+
+    rows = [line for line in body.splitlines() if line.startswith("  ")]
+    assert rows[0].startswith(f"  {old_key} -> {handle}  [{live_key}] ")
+    assert rows[1] == f"  {live_key}  same as {old_key}"
+
+
 def test_status_exact_duplicate_input_is_same_as(
     papers: PaperHandler, store: Store
 ) -> None:
