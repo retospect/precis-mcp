@@ -537,11 +537,13 @@ _E_NOTATION_RE = re.compile(
 )
 
 #: `≈`-spacing: a "symbol" is a single letter/Greek letter, or an
-#: identifier with a subscript underscore (`K_d`, `E_g`, `ΔG_aq`, `R_Q`)
+#: identifier with a subscript underscore (`E_b`, `ΔG_aq`) or Unicode
+#: subscripts (`f₀`, `xₙ`)
 #: -- deliberately narrow so ordinary words ("reaches", "near") never
 #: match (they have no underscore and are rarely a single letter).
 _APPROX_SYMBOL_RE = re.compile(
-    r"^[A-Za-zΑ-Ωα-ωΔδ]$|^[A-Za-zΑ-Ωα-ωΔδ][A-Za-z0-9]*_[A-Za-z0-9]+$"
+    r"[A-Za-zΑ-Ωα-ω](?:[A-Za-zΑ-Ωα-ω0-9]*"
+    r"(?:_[A-Za-z0-9]+|[₀-₉ₐ-ₜᵢ-ᵪ]+))?"
 )
 _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: A computed expression on the left of `≈` (`exp(8.12)`, `x[0]`): a
@@ -550,7 +552,7 @@ _APPROX_EXPR_RE = re.compile(r"^[A-Za-zΑ-Ωα-ωΔδ_][A-Za-z0-9_]*[(\[].*[)\]]
 
 
 def _is_approx_lhs(token: str) -> bool:
-    return bool(_APPROX_SYMBOL_RE.match(token) or _APPROX_EXPR_RE.match(token))
+    return bool(_APPROX_SYMBOL_RE.fullmatch(token) or _APPROX_EXPR_RE.match(token))
 
 
 def _approx_operand(text: str) -> str:
@@ -725,13 +727,12 @@ def _format_superscript_exponent(exp: str) -> str:
     return sign + exp.translate(_SUPERSCRIPT_DIGIT_MAP)
 
 
-def _check_approx_spacing(sentence: str) -> str | None:
-    """Return one ``approx-spacing`` warning for the first ``≈`` whose
-    spacing doesn't match its context, or ``None``.
+def _check_approx_spacing(sentence: str) -> tuple[int, int, str] | None:
+    """Return offsets and a warning for the first mis-spaced ``≈``.
 
     Quantity context (nothing, or a non-symbol word, to the left) wants no
     space before the number: ``≈1 Å``. Relation context (a symbol -- single
-    letter, ``K_d``-style subscript identifier, or a computed call such as
+    letter, subscripted identifier, or a computed call such as
     ``exp(8.12)`` -- immediately to the left) wants a space on both sides:
     ``n ≈ 10²²``, ``exp(8.12) ≈ 3400×``.
     """
@@ -740,30 +741,38 @@ def _check_approx_spacing(sentence: str) -> str | None:
             continue
         before = sentence[:i]
         after = sentence[i + 1 :]
-        left_attached = bool(before) and not before[-1].isspace()
-
-        if left_attached:
-            token = _approx_operand(before)
-            if _is_approx_lhs(token):
-                return (
-                    f"approx-spacing: {token}≈… found -- a binary relation "
-                    "with a symbol on the left wants a space on both sides "
-                    "of '≈' (e.g. 'n≈10²²' -> 'n ≈ 10²²')."
-                )
-            continue
-
-        prev_token = _approx_operand(before)
-        if prev_token and _is_approx_lhs(prev_token):
-            continue  # 'n ≈ 10²²' -- correct relation form
-
-        after_stripped = after.lstrip()
-        if after != after_stripped and after_stripped[:1].isdigit():
-            return (
-                "approx-spacing: '≈ …' found -- '≈' modifying a bare "
+        token = _approx_operand(before)
+        if before and not before[-1].isspace():
+            if not _is_approx_lhs(token):
+                continue  # 'word≈…' -- not a relation operand, not ours
+            start = before.rindex(token)
+            message = (
+                "a binary relation with a symbol on the left wants a "
+                "space on both sides of '≈' (e.g. 'n≈10²²' -> 'n ≈ 10²²')."
+            )
+        elif token and _is_approx_lhs(token):
+            continue  # 'n ≈ 10²²' -- correct relation form; a missing
+            # right space or end of line is tolerated
+        else:
+            after_stripped = after.lstrip()
+            if after == after_stripped or not after_stripped[:1].isdigit():
+                continue
+            start = i
+            message = (
+                "'≈' modifying a bare "
                 "quantity takes no space (e.g. '≈ 1 Å' -> '≈1 Å'); a space "
                 "on both sides is only for a binary relation with a symbol "
                 "on the left ('n ≈ 10²²')."
             )
+        end = i + 1
+        tail = after.lstrip()
+        if tail:
+            end = len(sentence) - len(tail) + len(tail.split(maxsplit=1)[0])
+        return (
+            start,
+            end,
+            f"approx-spacing: {sentence[start:end]!r} found -- {message}",
+        )
     return None
 
 
@@ -917,7 +926,7 @@ def lint_notation(sentence: str) -> list[str]:
 
     approx_warning = _check_approx_spacing(sentence)
     if approx_warning:
-        warnings.append(approx_warning)
+        warnings.append(approx_warning[2])
 
     # ── canon v3 ─────────────────────────────────────────────────────────
 
@@ -1288,9 +1297,7 @@ def _authored_finding_spans(
     Runs :func:`lint_notation` line by line over :func:`mask_unauthored`
     text. ``start``/``end`` index the flagged token in the ORIGINAL ``text``:
     masking is same-length (newlines preserved), so masked-line offsets map
-    onto it 1:1. A ``None`` token keeps span ``(0, 0)`` — only the
-    symbol-less ``approx-spacing`` variant yields one, and it names no
-    token to anchor an edit to.
+    onto it 1:1. A finding without a token keeps span ``(0, 0)``.
     """
     out: list[tuple[str, str | None, int, int, str]] = []
     seen: set[tuple[str, str | None]] = set()
@@ -1311,7 +1318,11 @@ def _authored_finding_spans(
             needle = m.group(1) if m else None
             if code == "tex-residue":
                 needle = next((c for c in ("$", "\\") if c in line), None)
-            if needle and " " in needle and needle in line:
+            if code == "approx-spacing" and (approx := _check_approx_spacing(line)):
+                lo, hi, _ = approx
+                start, end = line_offset + lo, line_offset + hi
+                token = line[lo:hi]
+            elif needle and " " in needle and needle in line:
                 token = needle.strip()
                 at = line.index(needle)
                 start = line_offset + at + (len(needle) - len(needle.lstrip()))
@@ -1363,9 +1374,8 @@ def lint_authored_notation_spans(
 
     Same skips, dedup and token rules as :func:`lint_authored_notation`;
     ``start``/``end`` index the flagged token in the original text (the
-    masking pass preserves length). A ``None`` token — only the symbol-less
-    ``approx-spacing`` variant produces one — carries span ``(0, 0)`` and
-    cannot anchor an edit. Advisory only; ``[]`` for empty or clean input.
+    masking pass preserves length). A ``None`` token carries span ``(0, 0)``.
+    Advisory only; ``[]`` for empty or clean input.
     """
     return [
         (code, token, start, end)

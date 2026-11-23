@@ -612,3 +612,16 @@ def test_notation_checked_even_when_clean() -> None:
     audit = shape.audit_shape(title="Clean", body="Area is 3 cm².", check_git=False)
     assert "notation" in audit.checked_codes
     assert "notation" not in {f.code for f in audit.findings}
+
+
+def test_notation_audit_locates_bad_approximation_after_subscripted_symbols() -> None:
+    body = "The rate is f₀ ≈ 10¹² s⁻¹ and E_b ≈ 47 k_BT."
+    clean = shape.audit_shape(title="Estimates", body=body, check_git=False)
+    assert "notation" not in {f.code for f in clean.findings}
+
+    bad = shape.audit_shape(
+        title="Estimates", body=f"{body} The gap is ≈ 1 Å.", check_git=False
+    )
+    (finding,) = [f for f in bad.findings if f.code == "notation"]
+    assert "1 spot(s)" in finding.message
+    assert "'≈ 1' found" in finding.message

@@ -764,6 +764,40 @@ def test_approx_spacing_quantity_extra_space_fires() -> None:
     assert any("approx-spacing" in w for w in warnings)
 
 
+@pytest.mark.parametrize("span", ["≈ 10¹²", "f₀≈10¹²", "f₀≈ 10¹²"])
+def test_approx_spacing_anchors_the_offending_span(span: str) -> None:
+    from precis.taproot.notation import lint_authored_notation_spans
+
+    prefix = "Estimates\nThe rate is f₀ ≈ 10¹² s⁻¹ and a second estimate reads "
+    text = f"{prefix}{span} in the report."
+    assert lint_authored_notation_spans(text) == [
+        ("approx-spacing", span, len(prefix), len(prefix) + len(span))
+    ]
+    assert any(f"{span!r} found" in warning for warning in lint_notation(text))
+
+
+def test_approx_spacing_left_spaced_symbol_does_not_fire() -> None:
+    # 'n ≈10' and '≈' ending a line: a space before '≈' with a symbol on
+    # the left is already the relation form; the right side is tolerated.
+    for sentence in [
+        "Carrier density n ≈10²² cm⁻³ is reported.",
+        "The binding energy E_b ≈",
+        "The binding energy f₀ ≈",
+    ]:
+        assert not any("approx-spacing" in w for w in lint_notation(sentence)), sentence
+
+
+def test_approx_spacing_line_wrapped_relation_does_not_fire() -> None:
+    # A hard wrap leaves '≈' ending a line; the line-wise authored lint
+    # must not flag it.
+    from precis.taproot.notation import lint_authored_notation_spans
+
+    text = "Estimates\nThe binding energy E_b ≈\n47 k_BT in the report."
+    assert not any(
+        code == "approx-spacing" for code, *_ in lint_authored_notation_spans(text)
+    )
+
+
 # ── negative cases — must NOT fire ──────────────────────────────────────
 
 
