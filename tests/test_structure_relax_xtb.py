@@ -13,6 +13,7 @@ refusal / render tests stub or block the import and run on every platform.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import types
@@ -42,6 +43,19 @@ _NECK_SPEC = (
     "t.out --fuse k=0--> c.hole\n"
     "terminate: t.in = H\n"
 )
+
+
+def _skip_unless_tblite() -> None:
+    """Skip without *loading* tblite: ``importorskip("tblite")`` dlopens a
+    wheel that bundles its own OpenMP runtimes, which cannot share a macOS
+    process with another OMP carrier an earlier test on the same xdist
+    worker may have loaded (gr495146) — that dlopen is the recurring
+    "worker 'gwN' crashed while running" signature on the hosted macOS
+    legs (gr778235). The real backend runs in ``IsolatedTBLite``'s spawned
+    child on darwin anyway, so the worker only needs to know the package
+    is resolvable."""
+    if importlib.util.find_spec("tblite") is None:
+        pytest.skip("tblite is not installed")
 
 
 def _neck() -> tuple[StructScene, list[str], np.ndarray, np.ndarray]:
@@ -86,11 +100,16 @@ def _dimer() -> StructScene:
 
 @pytest.mark.slow
 @pytest.mark.timeout(1200)  # CI worst 474s x2.5 for runner variance (gr503084)
-def test_xtb_relaxes_the_pillar_neck() -> None:
+def test_xtb_relaxes_the_pillar_neck(monkeypatch: pytest.MonkeyPatch) -> None:
     """GFN2-xTB on the fused tube→C60 neck: converges from the stick seed,
     the six seam C–C bonds land at 1.40 ± 0.02 Å (the 2026-10-11
     reference), and no non-bonded pair falls under 2.0 Å."""
-    pytest.importorskip("tblite")
+    _skip_unless_tblite()
+    # gr778235: bound the spawned child's OMP fan-out — each tblite worker
+    # thread takes the OMP_STACKSIZE floor (1G) plus per-thread scratch,
+    # and the hosted macOS legs (-n auto on ~7 GB runners) are where
+    # xdist workers die under memory pressure.
+    monkeypatch.setenv("OMP_NUM_THREADS", "2")
     scene, labels, bonds, inst = _neck()
     res = relax(scene, fidelity="xtb", steps=1500)
     assert res.rung == "xtb" and res.model == "gfn2-xtb"
@@ -314,7 +333,7 @@ def test_charge_and_multiplicity_refused_off_xtb() -> None:
 def test_xtb_charged_species_hydroxide() -> None:
     """OH- at charge -1: the GFN2 Mulliken charges sum to -1, the relax
     converges, and its energy differs from the neutral OH doublet's."""
-    pytest.importorskip("tblite")
+    _skip_unless_tblite()
     from precis.structure import export
     from precis.structure.relax import _xtb_calculator
 
@@ -337,7 +356,7 @@ def test_xtb_open_shell_nitric_oxide() -> None:
     2026-10-17; experiment 1.151 Å), and NO+ (charge +1, singlet; 1.052 Å)
     comes out shorter, as the removed electron leaves the antibonding pi*
     orbital."""
-    pytest.importorskip("tblite")
+    _skip_unless_tblite()
     no = _diatomic("N", "O", 1.20)
     res = relax(no, fidelity="xtb", multiplicity=2, steps=100)
     assert res.converged is True
@@ -418,9 +437,9 @@ def test_tblite_present_wherever_it_is_promised() -> None:
     PRECIS_REQUIRE_TBLITE=1 (a compute host carrying the wheelhouse wheel).
     The geometry test above skips without tblite; this one keeps a lost
     wheel from going unnoticed."""
-    import importlib.util
     import os
     import platform
+    import subprocess
 
     promised = os.environ.get("PRECIS_REQUIRE_TBLITE") == "1" or (
         importlib.util.find_spec("pymatgen") is not None
@@ -432,7 +451,20 @@ def test_tblite_present_wherever_it_is_promised() -> None:
             "no tblite promised here: no [estimate] extra, or linux-aarch64 "
             "without PRECIS_REQUIRE_TBLITE=1"
         )
-    from tblite.ase import TBLite  # noqa: F401 — the import is the assertion
+    # The import is the assertion — in a spawned child, the same shape
+    # IsolatedTBLite uses (gr778235): loading the wheel's bundled OpenMP
+    # runtimes into an xdist worker that may already carry another OMP
+    # carrier is the recurring "worker crashed" signature on the hosted
+    # macOS legs (gr495146 mechanised the clash; the real backend never
+    # runs in-process there).
+    proc = subprocess.run(
+        [sys.executable, "-c", "import tblite.ase"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
 
 
 def test_se_summary_reports_live_xtb_rung(store: Any) -> None:
