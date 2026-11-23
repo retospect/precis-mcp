@@ -121,11 +121,12 @@ does not record which model wrote it. Say so, and say that the authors
 checked cited statements against the source passages, not against
 summaries.
 
-The Word/PDF export writes this section for you (gr725421): a draft
-with no "AI contributions" heading gets a generated one — writing-model
+Every export (Word, PDF, poster) writes this section for you (gr725421): a
+draft with no "AI contributions" heading gets a generated one — writing-model
 roll-ups from chunk events and cited hubs, precis and its background
 models, and a marked line for the authors' check. An author-written
-section under that heading is used as written.
+section under that heading is used as written. `view='hygiene'` on the
+draft says when the export will generate one.
 
 ## Gather the facts from precis provenance
 
@@ -162,7 +163,8 @@ from the `llm` card before writing it.
 - Edits made through an MCP session leave no `agentlog` run — the
   writer stamp sits on `chunk_events.source.writer` instead (gr725421;
   `args={'writer': {'model': …}}` on put/edit, plus the client's
-  declared model). The generated export section rolls those up; to read
+  declared model; an unnamed session gets a one-time nudge on draft
+  writes). The generated export section rolls those up; to read
   them directly, query `chunk_events` on the draft's chunks.
 - Machine-written links carry `meta.{model,prompt_version,run_id,why}`:
   that annotation names the model behind a machine-minted edge on a
