@@ -28,6 +28,7 @@ from precis.workers.auto_check_evaluators import (
     discord_reply_received,
     paper_ingested,
     placement_legal,
+    ref_done,
     route_complete,
     tag_present,
     time_past,
@@ -78,6 +79,7 @@ def test_validate_known_registry_keys() -> None:
         "discord_reply_received",
         "time_past",
         "tag_present",
+        "ref_done",
         "child_job_succeeded",
         "derived_job_succeeded",
         "all_child_findings_resolved",
@@ -276,6 +278,42 @@ def test_tag_present_false_when_no_match(store: Store) -> None:
         )
         is False
     )
+
+
+# ── ref_done evaluator ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("status", [None, "open", "done", "won't-do"])
+def test_ref_done_checks_named_target(
+    handler: TodoHandler, store: Store, status: str | None
+) -> None:
+    from precis.store.types import Tag
+
+    target = store.insert_ref(kind="todo", slug=None, title="Target", meta={})
+    if status is not None:
+        store.add_tag(
+            target.id, Tag.closed("STATUS", status), set_by="agent", replace_prefix=True
+        )
+    spec = {"type": "ref_done", "ref": f"td{target.id}"}
+    waiting = handler.put(text="Wait for target", meta={"auto_check": spec})
+
+    assert ref_done.evaluate(store, spec) is (status == "done")
+    run_auto_check_pass(store, limit=auto_check._open_auto_check_total(store))
+    expected = "STATUS:done" if status == "done" else "STATUS:open"
+    assert expected in {str(tag) for tag in store.tags_for(_id_of(waiting.body))}
+
+
+def test_ref_done_requires_handle() -> None:
+    with pytest.raises(BadInput, match="needs a ref handle"):
+        validate_auto_check_spec({"type": "ref_done"})
+
+
+def test_ref_done_put_refuses_missing_target(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="must name a live record"):
+        handler.put(
+            text="Wait for missing target",
+            meta={"auto_check": {"type": "ref_done", "ref": "gr999999999"}},
+        )
 
 
 # ── discord_reply_received evaluator ───────────────────────────────

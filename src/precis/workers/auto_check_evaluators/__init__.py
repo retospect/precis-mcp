@@ -5,9 +5,7 @@ Each evaluator is a small callable that takes the store + the
 ``None`` (= not yet, leave the leaf open). The registry is a flat
 ``dict[str, Evaluator]`` keyed by the ``type`` field on the spec.
 
-Adding a new evaluator is two lines: write the module, register it
-below. No protocol class, no decorators — keep the surface tiny so
-asa-worker can read this file in one glance.
+Add an evaluator by writing its module and registering it below.
 
 Validation
 ==========
@@ -15,9 +13,10 @@ Validation
 ``validate_auto_check_spec`` is called from the handler boundary
 (``TodoHandler.put``) so a typo in the ``type`` field surfaces
 *at write time* with the full list of registered types in the
-error. Schema specifics (the doi / ask_message_id / at fields)
-are validated by the evaluator itself when it runs — we don't
-re-implement that surface here.
+error. Evaluators can opt into write-time argument checks through
+``VALIDATORS``. ``STORE_VALIDATORS`` adds checks that need live data
+when the caller supplies a store. Evaluators also validate their inputs
+when polled so existing specs still get checked.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ from precis.workers.auto_check_evaluators import (
     netlist_drc_clean,
     paper_ingested,
     placement_legal,
+    ref_done,
     route_complete,
     tag_present,
     time_past,
@@ -65,6 +65,7 @@ REGISTRY: dict[str, Evaluator] = {
     "discord_reply_received": discord_reply_received.evaluate,
     "time_past": time_past.evaluate,
     "tag_present": tag_present.evaluate,
+    "ref_done": ref_done.evaluate,
     "child_job_succeeded": child_job_succeeded.evaluate,
     "derived_job_succeeded": derived_job_succeeded.evaluate,
     "all_child_findings_resolved": all_child_findings_resolved.evaluate,
@@ -88,10 +89,15 @@ REGISTRY: dict[str, Evaluator] = {
 VALIDATORS: dict[str, Callable[[dict[str, Any]], None]] = {
     "paper_ingested": paper_ingested.validate,
     "checklist_clean": checklist_clean.validate,
+    "ref_done": ref_done.validate,
+}
+
+STORE_VALIDATORS: dict[str, Callable[[Store, dict[str, Any]], None]] = {
+    "ref_done": ref_done.validate_with_store,
 }
 
 
-def validate_auto_check_spec(spec: Any) -> None:
+def validate_auto_check_spec(spec: Any, *, store: Store | None = None) -> None:
     """Reject obviously-malformed ``meta.auto_check`` blocks at write time.
 
     Confirms:
@@ -106,6 +112,8 @@ def validate_auto_check_spec(spec: Any) -> None:
     :data:`VALIDATORS`), so a spec that can never evaluate is refused
     at the handler boundary instead of raising on every runner pass.
     Evaluators without one keep validating lazily at dispatch.
+    A supplied store enables additional checks such as resolving record
+    handles (see :data:`STORE_VALIDATORS`).
     """
     if not isinstance(spec, dict):
         raise BadInput(
@@ -153,6 +161,9 @@ def validate_auto_check_spec(spec: Any) -> None:
     validator = VALIDATORS.get(type_name)
     if validator is not None:
         validator(spec)
+    store_validator = STORE_VALIDATORS.get(type_name)
+    if store is not None and store_validator is not None:
+        store_validator(store, spec)
 
 
 __all__ = ["REGISTRY", "VALIDATORS", "Evaluator", "validate_auto_check_spec"]

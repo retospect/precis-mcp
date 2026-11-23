@@ -15,7 +15,7 @@ strategic roots drives 7-day picks. Reparenting goes through the reserved
 
 **auto_check leaves.** ``meta.auto_check`` wait-for-condition evaluators
 live under ``workers/auto_check_evaluators/``: ``paper_ingested``,
-``discord_reply_received``, ``time_past``, ``tag_present``,
+``discord_reply_received``, ``time_past``, ``tag_present``, ``ref_done``,
 ``child_job_succeeded``, ``derived_job_succeeded``,
 ``all_child_findings_resolved``, ``placement_legal``, ``route_complete``,
 ``netlist_drc_clean`` (the last three are the pcb-guided-place-route
@@ -1708,16 +1708,13 @@ class TodoHandler(NumericRefHandler):
             from precis.workers.schedule.seed import ensure_watches_root
 
             parent_int = ensure_watches_root(self.store)
-        # Validate ``meta.auto_check`` shape so a typo in the
-        # evaluator name surfaces at write-time instead of at the
-        # next poll. The check is lightweight — type-specific arg
-        # validation happens in the evaluator itself.
+        # Reject invalid evaluator names and registered argument errors at write time.
         if meta is not None and "auto_check" in meta:
             from precis.workers.auto_check_evaluators import (
                 validate_auto_check_spec,
             )
 
-            validate_auto_check_spec(meta["auto_check"])
+            validate_auto_check_spec(meta["auto_check"], store=self.store)
         # A put landing inside a live plan subtree mints the child held
         # (``waiting-for:mint``), unconditionally (td603429): the row
         # commits open and linkless and the ``blocked-by`` links land in
