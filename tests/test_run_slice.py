@@ -3367,6 +3367,48 @@ def test_review_target_names_followups_on_main(
     assert "not already fixed" not in target
 
 
+@pytest.mark.parametrize("readable", [True, False])
+def test_postland_release_review_reads_the_squash_without_fetching_in_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, readable: bool
+) -> None:
+    store = _Store()
+    sha = "a" * 40
+    store.add_todo(
+        7,
+        "Build it",
+        body="Build.",
+        comments=(f"landed: {sha} — the fix",),
+        meta={"land_target": "release/r12"},
+    )
+    calls: list[list[str]] = []
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        assert cwd == tmp_path
+        calls.append(args)
+        if args[0] == "fetch":
+            return _proc()
+        return _proc(sha, rc=0) if readable else _proc(rc=1)
+
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    target = run_slice._review_target(
+        store, {"generate": {"role": "reviewer", "from": "td7"}}, tree=tmp_path
+    )
+    assert calls == [
+        [
+            "fetch",
+            "-q",
+            "origin",
+            "+refs/heads/release/r12:refs/remotes/origin/release/r12",
+        ],
+        ["rev-parse", f"{sha}^{{commit}}"],
+    ]
+    assert target is not None and "git fetch" not in target
+    if readable:
+        assert f"git show {sha}" in target
+    else:
+        assert "stale checkout: landed squash unavailable" in target
+
+
 def test_stamp_branch_files_records_the_branch_diff(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -53,20 +53,17 @@ approved edits against rule body text.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
-``plan_dispatch`` prefers review lanes outside every contributing builder's
-vendor. Availability drives fallback so a held or saturated lane cannot
-keep a pre-land review and its build's file-overlap hold waiting when
-another lane can run the review.
-A review pinned to the hub holding its build can only claim there.
-If that host's executor cap is zero, plan dispatch raises an unplaced ask
-because capability advertisements alone cannot reveal the claim hold.
-After a coordinator ask re-arms a build, a fresh brief or an acknowledged
-answer sends the pushed head to a builder before it can return to review.
-The ask's brief wins only at a higher comment ``ord`` than the brief
-selection's own pick — a newer lander failure handoff or marked pre-land
-review hand-back stays the brief — and the request reads as spent once a
-build pushed past it or a builder/reviewer handoff comment came after it,
-so subsequent attempts route normally.
+``plan_dispatch`` prefers review lanes outside all contributing build
+vendors. Fallback keeps a saturated lane from prolonging a file-overlap
+hold. A review without a readable verdict gets at least two attempts by default,
+even on a single-rung lane. Workers prepare release refs for sandboxed
+reviewers that lack Git write access. A hub-pinned review can only claim
+there. At zero executor capacity the dispatcher raises an unplaced ask
+because capability advertisements cannot reveal the claim hold.
+After an ask re-arms a build, a fresh brief or acknowledged answer sends
+the pushed head back to a builder before review. The ask's brief wins only
+if its comment ``ord`` exceeds the selected brief's. A subsequent push or
+builder/reviewer handoff spends the request and restores normal routing.
 
 Release fixers receive the pass and fix-loop briefs when the digest posts,
 so the owner can steer future iterations before their fix todos exist.

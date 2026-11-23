@@ -2930,29 +2930,27 @@ def _review_target(
             landed = hit.group(1)
             break
     body, latest, _latest_ord = _brief_parts(store, target_id)
-    # release-train T3 review F3: a release fix's squash is on its release
-    # branch, not main — fetched here (the reviewer's worktree shares
-    # the checkout's objects and refs) and named in the brief.
+    # A release fix's squash is on its release branch, which the worker
+    # fetches into the reviewer clone before the brief tells it what to read.
     onto = _release.land_target_of(ref.meta, body, latest)
     ref_name = f"origin/{onto}" if onto else "origin/main"
     lines = [f"td{target_id}: {str(ref.title or '').strip()}", ""]
     if landed:
-        if onto:
-            if tree is not None:
-                if root is not None:
-                    # the hub follows the release branch before the clone asks
-                    _sync_base(root, onto, None)
-                _fetch_review_branch(tree, onto)
-            lines.append(
-                f"Landed squash: `{landed}` — it is on {ref_name}, not main: "
-                f"run `git fetch -q origin {onto}`, then read it with "
-                f"`git show {landed}` in this clone."
+        if onto and tree is not None:
+            if root is not None:
+                _sync_base(root, onto, None)
+            _fetch_review_branch(tree, onto)
+        if tree is not None and _land_head(tree, f"{landed}^{{commit}}") is None:
+            return (
+                f"td{target_id}: STALE CHECKOUT — landed squash `{landed}` "
+                f"from {ref_name} is unreadable in this clone. Write no "
+                "`review:` comment and no verdict. End with the one line "
+                "`stale checkout: landed squash unavailable`."
             )
-        else:
-            lines.append(
-                f"Landed squash: `{landed}` — read it with `git show {landed}` "
-                "in this clone (it is on origin/main)."
-            )
+        lines.append(
+            f"Landed squash: `{landed}` — read it with `git show {landed}` "
+            f"in this clone (it is on {ref_name})."
+        )
         try:
             followups = [] if onto else _followups_on_main(slice_root(), landed)
         except RuntimeError:

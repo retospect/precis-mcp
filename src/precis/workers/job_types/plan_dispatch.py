@@ -4300,10 +4300,10 @@ def _step_reviews(
                 else "no `review:` comment"
             )
             job_type_, params_ = _resolve_op(n)
+            w.stamp_meta(n, {"review": {**record, "verdict": None}})
             cap = _retry_cap(
                 n, _cap_rungs(plan, lane_table, n, job_type_, params_, rules)
             )
-            w.stamp_meta(n, {"review": {**record, "verdict": None}})
             w.comment(
                 n,
                 f"plan_dispatch: job:{newest.id} succeeded with {what}; want "
@@ -7568,10 +7568,16 @@ def _retry_cap(n: _Node, rungs: tuple[_lanes.Rung, ...]) -> int:
     """The attempts budget (td584381 S1a): an explicit ``meta.retries``
     pins the number; else the node climbs its whole lane ladder — one
     rung per attempt — before the cap fires. No ladder at all keeps
-    :data:`DEFAULT_RETRIES`, the no-lane case that still mints the ask."""
+    :data:`DEFAULT_RETRIES`, the no-lane case that still mints the ask.
+    A review that exited without a readable verdict gets a second try
+    even on a single-rung lane (gr681634)."""
     if n.meta.get("retries") is not None:
         return _retries(n)
-    return len(rungs) or DEFAULT_RETRIES
+    cap = len(rungs) or DEFAULT_RETRIES
+    review = n.meta.get("review")
+    if _is_reviewer(n) and isinstance(review, dict) and review.get("verdict") is None:
+        return max(cap, 2)
+    return cap
 
 
 def _ladder_spent(plan: _Plan, n: _Node, rungs: tuple[_lanes.Rung, ...]) -> bool:

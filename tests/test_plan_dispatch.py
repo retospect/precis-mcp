@@ -10895,6 +10895,27 @@ def test_review_without_verdict_retries_once_then_rescues(
     assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
+def test_single_rung_review_retries_a_missing_verdict_once(store: Store) -> None:
+    mint = _reviewed(store, "")
+    review = mint.ids["review"]
+    store.stamp_ref_meta(
+        review, {"op": {"type": "run_slice", "params": {"lane": "codex"}}}
+    )
+    ((first, _),) = _jobs_under(store, review)
+    store.stamp_ref_meta(first, {"lane": "codex"})
+
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.rescued) == (1, 0)
+    assert any("retry cap 2" in c for c in _todo_comments(store, review))
+    (_old, (retry, meta)) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == "codex"
+
+    _set_job_status(store, retry, "succeeded")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.rescued) == (0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+
+
 def test_review_cap_is_the_picked_lanes_rungs(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
