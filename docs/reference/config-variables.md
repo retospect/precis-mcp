@@ -182,6 +182,7 @@ roots) lives with the node that owns the capability — topology:
 | `PRECIS_PYTHON_ROOTS` | python-kind repos | Empty/unset ⇒ `python` kind hidden. |
 | `PRECIS_PODCAST_DIR` / `PRECIS_PODCAST_BASE_URL` | Podcast output + feed URL | |
 | `PRECIS_CLAUDE_BIN` / `PRECIS_MCP_CONFIG` | claude CLI + MCP config for spawned agents | Agentic passes need them. |
+| `PRECIS_CHAT_MCP_CONFIG` | Path to the rendered MCP config for Ask chat on the web host | The web startup preflight warns when the path is unset or does not name a file. |
 
 ---
 

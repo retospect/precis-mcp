@@ -80,6 +80,9 @@ def create_app(
             from precis.store.migrate import check_schema_at_startup
 
             check_schema_at_startup(app.state.runtime.config.database_url)
+        from precis_web.chat_turns import log_preflight
+
+        log_preflight()
         nas_stop = threading.Event()
         # PRECIS_MCP_READ_ONLY=1 (scripts/guide-web): the attestation
         # thread UPDATEs host_heartbeat, so it must not run (gr461387).

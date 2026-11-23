@@ -1,0 +1,19 @@
+{
+  "_comment": "Managed by Ansible role precis_web. Edits will be overwritten.",
+  "mcpServers": {
+    "precis": {
+      "type": "stdio",
+      "command": "{{ precis_web_venv }}/bin/precis",
+      "args": ["serve"],
+      "env": {
+        {# §L (gr171431 §1): password-free — the daemon DSN carries no
+           password; libpq resolves it from the run-as user's .pgpass. #}
+        "PRECIS_DATABASE_URL": "{{ precis_web_daemon_dsn | default(precis_web_dsn) }}",
+        {# gr196677: pin libpq's password file explicitly — the spawned
+           `precis serve` needs an explicit path from the web host's inventory. #}
+        "PGPASSFILE": "{{ precis_web_chat_pgpass_file | mandatory }}",
+        "PRECIS_MCP_DENY_VERBS": "delete"
+      }
+    }
+  }
+}

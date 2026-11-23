@@ -1,11 +1,13 @@
 """precis_web — the cluster web surface for precis-mcp.
 
-FastAPI service, imports ``precis`` directly, server-side rendered (Jinja +
-HTMX + Alpine), served over the Tailscale LAN behind **HTTP Basic auth**
+FastAPI service importing ``precis``, server-rendered (Jinja + HTMX + Alpine),
+on the Tailscale LAN behind **HTTP Basic auth**
 (``auth.py``). :func:`create_app` (``app.py``) wires one router per page,
 error handlers, and a lifespan building the single
 :class:`precis.runtime.PrecisRuntime`. ``precis web`` lazily imports
 the ``[web]`` extra.
+
+**Ask chat.** Startup logs ``chat_turns.preflight`` warnings and proceeds.
 
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
