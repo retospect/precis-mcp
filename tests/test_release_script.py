@@ -1310,7 +1310,7 @@ def test_deploy_only_resume_names_the_release_not_the_round(rig: Rig) -> None:
 
 def _overlay(rig: Rig, *, git_repo: bool = False, remote: bool = True) -> Path:
     """A `deploy/inventory` overlay in the rig checkout — the `.git`-less
-    file copy the fix-lane provisioning places by default, or an own-repo
+    file copy from legacy fix-lane provisioning, or an own-repo
     clone carrying the `deploy-helper` remote."""
     rig.env.pop("PRECIS_OVERLAY_DIR", None)
     overlay = rig.root / "deploy" / "inventory"
@@ -1327,7 +1327,7 @@ def _overlay(rig: Rig, *, git_repo: bool = False, remote: bool = True) -> Path:
 
 
 def test_deploy_only_refuses_a_plain_directory_overlay(rig: Rig) -> None:
-    """gr700433: the lane's overlay is a `.git`-less file copy, which
+    """gr700433: a legacy `.git`-less file copy is an overlay which
     overlay-sync's preflight skips silently — under the release pass the
     deploy refuses before `round deploy`, in the exit-75 no-host-touched
     shape ``release_deploy.poll`` reads, instead of rendering stale."""

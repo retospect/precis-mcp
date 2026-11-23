@@ -112,9 +112,8 @@
     precis_worker_git_ref_is_sha: "{{ (precis_worker_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
   tasks:
     - name: Refuse to deploy from an overlay older than this tree
-      # These overlay vars feed roles and the post-migrate settings task; a
-      # copy that predates them (the factory's file copy is refreshed only by
-      # a controller deploy) would otherwise fail halfway, after restarts.
+      # These overlay vars feed roles and the post-migrate settings task.
+      # An inventory that predates them would fail after service restarts.
       ansible.builtin.assert:
         that:
           - gateway_host is defined
@@ -590,6 +589,10 @@
 
 - name: Maintain the gateway deploy account’s Colima VM
   ansible.builtin.import_playbook: playbooks/20j-deploy-colima.yml
+
+# Install the clean fix-lane overlay after 20b copies credentials.
+- name: "Fix-lane overlay clone       (gateway, gr772444)"
+  ansible.builtin.import_playbook: playbooks/20k-precis-fix-lane-overlay.yml
 
 # Dedicated agent worker lane on the gateway — a second tiny
 # `--only job_claude_inproc --only job_inproc` worker so the planner

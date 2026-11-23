@@ -26,6 +26,8 @@ build/
 deploy/inventory/
 deploy/inventory
 deploy/.vault-pass
+/deploy/.overlay-mirror.git/
+/deploy/.overlay-stage-*/
 deploy/*.local.yml
 
 # OS junk

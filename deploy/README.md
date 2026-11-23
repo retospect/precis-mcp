@@ -372,15 +372,17 @@ overlay of its own. Set `precis_fix_lane_deploys: true` (with
 `precis_fix_lane_enabled`) in the gateway's host_vars and the
 `precis_worker_agent` role places, on every play, from the controller:
 
-- the overlay tree (`scripts/deploy` passes its symlink-resolved path as
-  `precis_overlay_dir`; `.git/` skipped) into `deploy/inventory/` — real
-  files, dirs 0700, files 0600.
-
-  > **gr700433** Factory cut and deploy preflights require the pinned
-  > render's overlay to be a git clone with the `deploy-helper` remote.
-  > Pinned renders use `PRECIS_OVERLAY_DIR` or the main checkout's
-  > `deploy/inventory`, with a sibling `.vault-pass`. See
-  > `docs/runbooks/cluster-overlay-sync.md`.
+- the overlay at `deploy/inventory/`. After 20b copies the controller's
+  files, `20k-precis-fix-lane-overlay.yml` refreshes a private bare mirror
+  at `deploy/.overlay-mirror.git` from the controller overlay's Git `main`
+  branch (a bundle carries history across the connection; the fetch is
+  forced so a rewritten controller main cannot wedge later deploys) and
+  installs a clean clone of it with the remote named `deploy-helper`
+  (gr772444). The mirror lives in the deploy user's own home because a
+  shared helper in another login's home fails git's dubious-ownership
+  check for the deploy user — on the clone and on every release-time
+  overlay-sync fetch. See
+  [cluster overlay sync](../docs/runbooks/cluster-overlay-sync.md).
 - the vault key (the sibling path `scripts/deploy` passes with the overlay) as `deploy/.vault-pass`, 0600;
 - the prod DSN into `~deploy/.secrets/pw/PRECIS_DATABASE_URL`, 0600 (what
   `scripts/round` looks for);

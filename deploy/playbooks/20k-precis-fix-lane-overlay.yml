@@ -1,0 +1,141 @@
+---
+# 20b provides the vault pass and other deploy credentials. Rebuild its
+# inventory copy from Git so files left behind by 20b cannot enter a release.
+#
+# The clone always comes from a private bare mirror under the deploy user's
+# own fix repo. A shared helper in another login's home cannot serve as the
+# clone source: git >= 2.35.2 refuses it as "dubious ownership" for the
+# deploy user, and the release-time overlay-sync fetch (also run as deploy)
+# would hit the same refusal on every run. The mirror is refreshed from the
+# controller overlay's main on every deploy, so the installed clone tracks
+# the controller exactly as 20b's file copy did.
+- name: Provision the fix-lane overlay clone on the gateway
+  hosts: gateway
+  become: true
+  vars:
+    _fix_repo_dir: "{{ precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo') }}"
+    _fix_overlay_dir: "{{ _fix_repo_dir }}/deploy/inventory"
+    _fix_overlay_mirror: "{{ _fix_repo_dir }}/deploy/.overlay-mirror.git"
+  tasks:
+    - name: Fix-lane overlay clone
+      when:
+        - os_family == "darwin"
+        - precis_fix_lane_enabled | default(false) | bool
+        - precis_fix_lane_deploys | default(false) | bool
+        - not ansible_check_mode
+      block:
+        - name: Create a private staging directory on the gateway
+          ansible.builtin.tempfile:
+            state: directory
+            path: "{{ _fix_repo_dir }}/deploy"
+            prefix: .overlay-stage-
+          become_user: deploy
+          register: fix_lane_overlay_stage
+
+        # A Git bundle carries history across the controller connection.
+        # The gateway does not need credentials to clone from the controller.
+        - name: Keep the private overlay mirror current from the controller
+          block:
+            - name: Create a private bundle file on the controller
+              ansible.builtin.tempfile:
+                state: file
+                suffix: .bundle
+              delegate_to: localhost
+              become: false
+              register: fix_lane_overlay_bundle
+
+            - name: Bundle the controller overlay's main branch
+              ansible.builtin.command:
+                argv:
+                  - git
+                  - -C
+                  - "{{ precis_overlay_dir }}"
+                  - --git-dir=.git
+                  - bundle
+                  - create
+                  - "{{ fix_lane_overlay_bundle.path }}"
+                  - refs/heads/main
+              delegate_to: localhost
+              become: false
+
+            - name: Transfer the private overlay bundle
+              ansible.builtin.copy:
+                src: "{{ fix_lane_overlay_bundle.path }}"
+                dest: "{{ fix_lane_overlay_stage.path }}/overlay.bundle"
+                owner: deploy
+                mode: "0600"
+              no_log: true
+
+            - name: Initialize the gateway's private overlay mirror
+              ansible.builtin.command:
+                argv: [git, init, --bare, --initial-branch=main, "{{ _fix_overlay_mirror }}"]
+                creates: "{{ _fix_overlay_mirror }}/config"
+              become_user: deploy
+              environment:
+                HOME: /Users/deploy
+
+            - name: Restrict access to the private overlay mirror
+              ansible.builtin.file:
+                path: "{{ _fix_overlay_mirror }}"
+                mode: "0700"
+
+            # Forced: a rewritten or reset controller main must not wedge
+            # every later deploy on a non-fast-forward refusal.
+            - name: Update the gateway mirror from the controller
+              ansible.builtin.command:
+                argv:
+                  - git
+                  - -C
+                  - "{{ _fix_overlay_mirror }}"
+                  - fetch
+                  - "{{ fix_lane_overlay_stage.path }}/overlay.bundle"
+                  - "+refs/heads/main:refs/heads/main"
+              become_user: deploy
+              environment:
+                HOME: /Users/deploy
+
+        - name: Clone the private mirror into staging
+          ansible.builtin.git:
+            repo: "file://{{ _fix_overlay_mirror }}"
+            dest: "{{ fix_lane_overlay_stage.path }}/inventory"
+            version: main
+            remote: deploy-helper
+            umask: "0077"
+          become_user: deploy
+          environment:
+            HOME: /Users/deploy
+
+        - name: Verify the staged clone contains an inventory
+          ansible.builtin.stat:
+            path: "{{ fix_lane_overlay_stage.path }}/inventory/hosts.yml"
+          become_user: deploy
+          register: fix_lane_overlay_inventory
+          failed_when: not (fix_lane_overlay_inventory.stat.isreg | default(false))
+
+        - name: Remove the file copy and any stale overlay files
+          ansible.builtin.file:
+            path: "{{ _fix_overlay_dir }}"
+            state: absent
+
+        - name: Install the clean overlay clone
+          ansible.builtin.command:
+            argv:
+              - mv
+              - "{{ fix_lane_overlay_stage.path }}/inventory"
+              - "{{ _fix_overlay_dir }}"
+          become_user: deploy
+
+      always:
+        - name: Remove the controller bundle
+          ansible.builtin.file:
+            path: "{{ fix_lane_overlay_bundle.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: fix_lane_overlay_bundle.path is defined
+
+        - name: Remove private staging files from the gateway
+          ansible.builtin.file:
+            path: "{{ fix_lane_overlay_stage.path }}"
+            state: absent
+          when: fix_lane_overlay_stage.path is defined

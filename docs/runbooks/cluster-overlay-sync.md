@@ -16,13 +16,20 @@ gate forbids real node names in tracked `deploy/` files. Deploy mechanics:
   `deploy/inventory` is a **symlink** to it.
 - On the controller (Mac), `deploy/inventory/` is its own git repo with remote
   `deploy-helper` → that agent-host path over ssh.
-- The factory's copy (`precis-fix-repo/deploy/inventory` on the agent host, used by
-  the deploy user's `scripts/release --deploy-only`) is provisioned as a
-  `.git`-less file copy, refreshed from the controller's overlay by every
-  controller deploy. The factory cut and deploy preflights refuse that copy
-  (gr700433). Set `PRECIS_OVERLAY_DIR` to the clone or place it at the main
-  checkout's `deploy/inventory`. The clone needs the `deploy-helper` remote
-  and a sibling `.vault-pass`.
+- The controller deploy provisions `precis-fix-repo/deploy/inventory` for
+  the gateway deploy account. After 20b copies the files and sibling
+  `deploy/.vault-pass`, 20k refreshes a private bare mirror at
+  `deploy/.overlay-mirror.git` from the controller overlay's Git `main`
+  branch — a bundle carries history across the controller connection and
+  the fetch is forced, so a rewritten or reset controller `main` cannot
+  wedge later deploys — then stages a clean clone of the mirror at `main`
+  and replaces the inventory directory, including untracked files left by
+  earlier deploys. The installed clone names the mirror `deploy-helper`
+  (gr772444). The mirror lives in the deploy user's own home: a shared
+  helper in the dev login's home cannot be the clone source because git's
+  dubious-ownership check (≥ 2.35.2) refuses another user's repo to the
+  deploy user, and the release-time overlay-sync fetch — also run as
+  deploy — would fail the same way on every run.
 - `.vault-pass` is hand-carried once, out of band, to
   `precis-mcp/deploy/.vault-pass` (chmod 600). It sits *beside* `inventory/`,
   never inside the overlay repo, so the key never travels in git. Re-carry only

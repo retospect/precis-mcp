@@ -144,15 +144,12 @@ the gr499104 guard the bypass would skip — a mismatch, an unreadable
 inventory, an unreachable host) changes nothing: the preflight still
 fails loudly.
 
-Factory overlay gate (gr700433): the fix-lane checkout's deploy/inventory
-is provisioned as a `.git`-less file copy, so `round deploy`'s
-overlay-sync preflight skips it silently as a plain directory and a
-factory deploy renders a stale inventory and vault. Under the release
-pass marker (PRECIS_RELEASE_PASS — the env release_deploy's launch
-carries) a deploy here refuses before `round deploy` runs unless the
-resolved overlay is its own git repo carrying the deploy-helper remote;
-the refusal exits 75 with "no host was touched", the pre-rollout refusal
-release_deploy.poll reads.
+Factory overlay gate (gr700433): the controller's 20k play provisions the
+fix-lane inventory as a Git clone with a deploy-helper remote and a sibling
+vault pass. Under PRECIS_RELEASE_PASS, cut and deploy require that layout
+so the deploy's overlay-sync preflight can reconcile the pinned render's
+inventory and vault. Refusal exits 75 with "no host was touched", the
+pre-rollout status release_deploy.poll reads.
 """
 
 from __future__ import annotations
@@ -2220,9 +2217,9 @@ def _factory_overlay_refusal(root: Path) -> str | None:
     ``PRECIS_RELEASE_PASS`` set; under that marker the resolved overlay
     must be its own git repo carrying the deploy-helper remote — the two
     things ``overlay_sync_preflight`` needs before it can reconcile. The
-    lane's copy is provisioned with ``.git/`` skipped, so the preflight
-    passes it silently and the deploy would render an inventory and vault
-    stale since the last provision (gr678654's outage shape). The legacy
+    controller's 20k play provisions that clone and 20b copies its sibling
+    vault pass. The gate catches legacy file copies, which overlay-sync
+    otherwise skips (gr700433). The legacy
     escape (``PRECIS_DEPLOY_FROM_TREE=``) and the drift override
     (``PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT``) opt out as they do in
     ``scripts/deploy``; a hand run without the marker keeps the library's

@@ -112,6 +112,10 @@
 - name: Maintain the gateway deploy account’s Colima VM
   ansible.builtin.import_playbook: playbooks/20j-deploy-colima.yml
 
+# Install the clean fix-lane overlay after 20b copies credentials.
+- name: "20k — fix-lane overlay clone (gateway, gr772444)"
+  ansible.builtin.import_playbook: playbooks/20k-precis-fix-lane-overlay.yml
+
 # DB-node exporters read their DSNs through the precis CLI, so they follow 20b
 # (the venv). 08 only renders the scrape jobs and cares about the
 # monitoring_db_exporters flag, not whether the exporters are up yet.
