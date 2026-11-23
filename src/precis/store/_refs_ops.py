@@ -3405,6 +3405,17 @@ class RefsMixin:
         apply (which retires a merge loser directly, bypassing the
         handler) — so the guard lives here once rather than at each door.
 
+        The ``kind`` probe takes the row's ``FOR NO KEY UPDATE`` lock
+        *before* that guard reads live chunks: the cite-repair write path
+        (``taproot.repair_cites._live_successor_locked``, gr690419)
+        verifies a successor's liveness under a conflicting row lock
+        (``FOR SHARE``) inside its write transaction. An unlocked check could pass on a snapshot
+        that misses the repair's uncommitted cite write, wait at the
+        ``UPDATE`` below while the repair commits, then retire the
+        freshly cited hub — minting the dangling ``[fi]`` cite the guard
+        exists to refuse. Holding the lock first serializes the two:
+        whichever transaction commits first is the state the other sees.
+
         A ``kind='concept'`` ref cascades (gr742735):
         :func:`_retire_concept_cards` retires its live precis-authored
         ``anki`` cards in the same transaction — a card whose concept is
@@ -3424,7 +3435,8 @@ class RefsMixin:
 
         def _do(c: Connection) -> int:
             row = c.execute(
-                "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL "
+                "FOR NO KEY UPDATE",
                 (ref_id,),
             ).fetchone()
             if row is not None and row[0] == "finding":

@@ -93,7 +93,15 @@ Two things that baseline showed, worth carrying forward:
   correlate, but neither implies the other — which is why the buckets are two
   axes, not one. → me690250
 
-## 4. Related
+## 4. Repair dangling finding cites
+
+Run `precis taproot repair-cites` to preview dangling `[fi]` cites in live
+draft prose and their recorded live successors. Review the proposed changes,
+then run `precis taproot repair-cites --apply` to write them. Reground
+`no-successor` rows manually. Known cases with no recorded successor include
+`dc2618395` (`fi191261` and `fi191265`) and `dc3345999` (`fi176919`).
+
+## 5. Related
 
 - The grounding gate: gripe 245842, `precis.taproot.grounding.has_grounding_prose`
   — enforced in `backfill` (both cite arms), in

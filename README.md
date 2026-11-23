@@ -557,6 +557,7 @@ precis cron | heartbeat            # Scheduler tick / liveness ping.
 precis taproot ...                 # Claim-hub authoring/repair: mint / refine /
                                    #   merge / backfill / backfill-grounding /
                                    #   repair-evidence / direct-mint / lint.
+precis taproot repair-cites        # Repoint dangling draft finding cites (dry-run default).
 precis taproot verify-edges        # Certify withheld/unverified evidence edges
                                    #   for the publish preflight (stamps the
                                    #   meta.support verdict; dry-run default).

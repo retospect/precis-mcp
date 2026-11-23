@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
@@ -30,7 +31,8 @@ if TYPE_CHECKING:
 def add_parser(subparsers: Any) -> None:
     """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
     ``merge`` / ``backfill`` / ``backfill-grounding`` / ``repair-evidence`` /
-    ``verify-edges`` / ``reword-sweep`` / ``direct-mint`` / ``lint``)."""
+    ``repair-cites`` / ``verify-edges`` / ``reword-sweep`` / ``direct-mint`` /
+    ``lint``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -266,6 +268,47 @@ def add_parser(subparsers: Any) -> None:
         "stderr either way, so stdout stays pipeable).",
     )
     re_.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    rc = tsub.add_parser(
+        "repair-cites",
+        help="Repair dangling [fi<id>] cites in live draft prose (gr690419): "
+        "repoint each to the retired hub's recorded live successor (the "
+        "merge collapse edge, the supersede stamp, the retirement "
+        "procedure's publish record, or an inbound supersedes edge), "
+        "listing what has no successor for manual regrounding. "
+        "DRY-RUN BY DEFAULT: writes a JSONL proposal and makes zero DB "
+        "writes unless --apply is given.",
+    )
+    rc_mode = rc.add_mutually_exclusive_group()
+    rc_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default: propose repairs, write nothing.",
+    )
+    rc_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Repoint the cites through the draft edit primitive (sha bump "
+        "+ edited chunk event, one transaction). Default (omitted) is a "
+        "read-only dry-run.",
+    )
+    rc.add_argument(
+        "--draft",
+        default=None,
+        help="Restrict to one draft's chunks (dr<id> handle, draft slug, or "
+        "bare ref_id). Default: every live draft chunk in the corpus.",
+    )
+    rc.add_argument(
+        "--out",
+        default=None,
+        help="Write the JSONL rows (one per chunk: repointed moves or an "
+        "unresolved no-successor/no-chunk-handle entry) here. Default: "
+        "stdout (the run summary goes to stderr either way, so stdout "
+        "stays pipeable).",
+    )
+    rc.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -1569,6 +1612,57 @@ def _run_repair_evidence(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _run_repair_cites(args: argparse.Namespace) -> None:
+    """``precis taproot repair-cites`` — the gr690419 data repair: re-point
+    dangling ``[fi]`` cites in live draft prose to the retired hub's
+    recorded live successor; list what has none for manual regrounding.
+
+    Dry-run is the default and the only mode without ``--apply``: the
+    JSONL rows are the proposal (dry run) or the record (apply); the
+    summary goes to stderr either way.
+    """
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.repair_cites import apply_cite_repairs, plan_cite_repairs
+
+    apply = bool(args.apply)
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        draft_ref_id = _resolve_draft_ref_id(store, args.draft) if args.draft else None
+        plan = plan_cite_repairs(store, draft_ref_id=draft_ref_id)
+        if apply:
+            # The write re-validates every planned move under row locks;
+            # report what was actually applied, not the proposal.
+            plan = apply_cite_repairs(store, plan)
+    except BadInput as exc:
+        print(f"taproot repair-cites: error: {exc.cause}", file=sys.stderr)
+        if isinstance(exc.next, str):
+            print(f"taproot repair-cites: next: {exc.next}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    rows = [r.to_row(applied=apply) for r in plan.rewrites] + [
+        u.to_row() for u in plan.unresolved
+    ]
+    _write_repair_rows(rows, args.out)
+    n_dangling = len(plan.rewrites) + len(plan.unresolved)
+    suffix = "" if apply else "  [DRY-RUN -- nothing written]"
+    reasons = Counter(u.reason for u in plan.unresolved)
+    breakdown = (
+        " (" + ", ".join(f"{n} {r}" for r, n in sorted(reasons.items())) + ")"
+        if reasons
+        else ""
+    )
+    print(
+        f"taproot repair-cites: {n_dangling} dangling cite(s) — "
+        f"{len(plan.rewrites)} chunk(s) repointed, "
+        f"{len(plan.unresolved)} unresolved{breakdown} "
+        f"(a no-successor row needs regrounding by hand){suffix}",
+        file=sys.stderr,
+    )
+
+
 def _run_verify_edges(args: argparse.Namespace) -> None:
     """``precis taproot verify-edges`` -- certify withheld/unverified
     evidence edges for the publish preflight (module docstring:
@@ -2623,6 +2717,8 @@ def run(args: argparse.Namespace) -> None:
         _run_backfill_grounding(args)
     elif args.taproot_cmd == "repair-evidence":
         _run_repair_evidence(args)
+    elif args.taproot_cmd == "repair-cites":
+        _run_repair_cites(args)
     elif args.taproot_cmd == "verify-edges":
         _run_verify_edges(args)
     elif args.taproot_cmd == "classify":

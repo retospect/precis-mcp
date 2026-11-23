@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -441,6 +441,97 @@ def _merge_survivor(c: Any, ref_id: int) -> int:
             return ref_id
         current = int(links[0][1])
     return ref_id
+
+
+def _recorded_successor_step(conn: Any, ref_id: int) -> int | None:
+    """One recorded successor hop for a **retired** finding, or ``None``
+    when nothing names one. Order — cheapest and most common first:
+
+    1. a merge collapse hop — ``merge_hubs`` leaves the retired loser
+       exactly one link, its ``loser --refines--> winner`` collapse
+       record. One hop only, under :func:`_merge_survivor`'s
+       only-remaining-link guard: an intermediate retired finding whose
+       own next hop is a supersede stamp or publish record is re-examined
+       by the caller's loop on the next step, so a mixed chain
+       (collapse, then stamp) still resolves — :func:`_merge_survivor`
+       is all-or-nothing and would return the original loser here;
+    2. the plain supersede stamp — ``delete(kind='finding',
+       superseded_by='fi<M>')`` writes ``meta.superseded_by = 'fi<M>'``
+       and migrates the links away, so there is no collapse edge to
+       follow;
+    3. the hub retirement procedure's publish record
+       (``nanopub_publish.retired_successor_ref_id``, gr760607), whose
+       links likewise moved to the successor;
+    4. an inbound ``supersedes`` tombstone edge (``new supersedes old``).
+
+    Non-``fi`` successors (``md:``/``python:`` stamps) name no ref and
+    fall through to the later steps.
+    """
+    row = conn.execute(
+        "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    links = conn.execute(
+        "SELECT src_ref_id, dst_ref_id, relation FROM links "
+        "WHERE src_ref_id = %s OR dst_ref_id = %s LIMIT 2",
+        (ref_id, ref_id),
+    ).fetchall()
+    if (
+        len(links) == 1
+        and int(links[0][0]) == ref_id
+        and links[0][2] == MERGE_COLLAPSE_RELATION
+    ):
+        return int(links[0][1])
+    stamped = row[1]
+    if stamped:
+        m = re.fullmatch(r"fi(\d+)", stamped.strip())
+        if m is not None:
+            return int(m.group(1))
+    rec = conn.execute(
+        "SELECT retired_successor_ref_id FROM nanopub_publish "
+        "WHERE claim_ref_id = %s AND retired_reason IS NOT NULL "
+        "ORDER BY updated_at DESC, id DESC LIMIT 1",
+        (ref_id,),
+    ).fetchone()
+    if rec is not None and rec[0] is not None:
+        return int(rec[0])
+    edge = conn.execute(
+        "SELECT l.src_ref_id FROM links l JOIN refs r ON r.ref_id = l.src_ref_id "
+        "WHERE l.dst_ref_id = %s AND l.relation = 'supersedes' "
+        "AND r.retired_at IS NULL AND r.kind = 'finding' "
+        "ORDER BY l.link_id LIMIT 1",
+        (ref_id,),
+    ).fetchone()
+    return int(edge[0]) if edge is not None else None
+
+
+def resolve_successor_ref_id(conn: Any, ref_id: int) -> int | None:
+    """The **live finding** a retired finding's records point at, or
+    ``None`` when no recorded successor exists (gr690419 — the dangling
+    ``[fi]`` cite repair repoints to this hub; ``None`` means reground by
+    hand). Follows :func:`_recorded_successor_step` hop by hop — one
+    recorded hop per step, so a successor that was itself merged or
+    superseded resolves to the final live hub even when the chain mixes
+    record kinds (a collapse edge into a supersede stamp, say) — capped
+    as :func:`_merge_survivor` caps a collapse chain.
+    """
+    current = ref_id
+    for _ in range(_MERGE_CHAIN_MAX_HOPS):
+        nxt = _recorded_successor_step(conn, current)
+        if nxt is None:
+            return None
+        row = conn.execute(
+            "SELECT retired_at IS NOT NULL, kind FROM refs WHERE ref_id = %s",
+            (nxt,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not row[0]:
+            return int(nxt) if row[1] == "finding" else None
+        current = int(nxt)
+    return None
 
 
 def _scope_named(value: str, sentence_key: str) -> bool:
@@ -2281,10 +2372,18 @@ class MergeCiteRewrite:
 def rewrite_fi_cites(text: str, loser_ref_id: int, winner_ref_id: int) -> str:
     """``[fi<loser>]`` -> ``[fi<winner>]`` in ``text``, also as one element
     of a handle list (``[fi<loser>, fi9]``), collapsing a run of identical
-    winner cites (``[fiW][fiW]`` or ``[fiW, fiW]``) to one."""
+    winner cites in bracket groups and adjacent runs affected by the
+    rewrite. An adjacent run can include lists that become singletons."""
     lo, w = f"fi{loser_ref_id}", f"fi{winner_ref_id}"
+    loser_group = fi_cite_pattern(loser_ref_id)
+    pair = rf"(?:{lo}|{w})"
+    singleton = rf"(?:\[{w}\]|(?={loser_group})\[{pair}(?:{CITE_LIST_SEP}{pair})*\])"
+    adjacent = rf"{singleton}(?:\s*{singleton})+"
 
     def _swap(m: re.Match[str]) -> str:
+        if m.group("adjacent") is not None:
+            run = m.group(0)
+            return f"[{w}]" if re.search(loser_group, run) else run
         parts = re.split(rf"({CITE_LIST_SEP})", m.group(0)[1:-1])
         kept: list[str] = []
         for i in range(0, len(parts), 2):
@@ -2294,9 +2393,7 @@ def rewrite_fi_cites(text: str, loser_ref_id: int, winner_ref_id: int) -> str:
             kept.extend(([parts[i - 1]] if kept else []) + [handle])
         return f"[{''.join(kept)}]"
 
-    out = re.sub(fi_cite_pattern(loser_ref_id), _swap, text)
-    out = re.sub(rf"\[{w}\](?:\s*\[{w}\])+", f"[{w}]", out)
-    return re.sub(rf"\[{w}(?:\s*,\s*{w})+\]", f"[{w}]", out)
+    return re.sub(rf"(?P<adjacent>{adjacent})|{loser_group}", _swap, text)
 
 
 def _plan_cite_rewrites(
@@ -2334,18 +2431,45 @@ def plan_cite_rewrites(
     return _plan_cite_rewrites(conn, loser_ref_id=old_ref_id, winner_ref_id=new_ref_id)
 
 
+def _lock_cite_drafts(conn: Any, draft_ref_ids: Iterable[int]) -> None:
+    """Lock the parent draft rows of a cite-rewrite set ``FOR UPDATE`` in
+    ``ref_id`` order after callers have taken their finding locks."""
+    conn.execute(
+        "SELECT 1 FROM refs WHERE ref_id = ANY(%s) ORDER BY ref_id FOR UPDATE",
+        (sorted({int(d) for d in draft_ref_ids}),),
+    )
+
+
 def apply_cite_rewrites(
     store: Store,
     conn: Any,
     rewrites: list[MergeCiteRewrite],
     *,
     source: dict[str, Any],
-) -> None:
+) -> list[MergeCiteRewrite]:
     """Write planned cite rewrites on ``conn`` through the draft store's
     edit primitive: sha bump, ``edited`` chunk_event, derived rows
     re-derive on the sha change. A chunk edited since the plan read it
-    fails the write rather than being overwritten."""
+    fails the write rather than being overwritten.
+
+    Each rewrite's parent draft row is locked ``FOR UPDATE`` (all of them
+    up front, in ``ref_id`` order — :func:`_lock_cite_drafts`) and its
+    liveness rechecked first: a draft soft-deleted (``refs.retired_at``)
+    after the plan ran — the bare ``retire_ref`` door retires the ref
+    without touching its chunks — leaves the chunk's own ``retired_at``
+    and text untouched, so the edit primitive's checks can't see it,
+    while its cites stop counting as live. The rewrite is dropped rather
+    than written into dead prose. Returns the rewrites actually applied,
+    so a caller reporting the run can name the skipped ones."""
+    _lock_cite_drafts(conn, (rw.draft_ref_id for rw in rewrites))
+    applied: list[MergeCiteRewrite] = []
     for rw in rewrites:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s FOR UPDATE",
+            (rw.draft_ref_id,),
+        ).fetchone()
+        if row is None or row[0] is not None:
+            continue
         store.drafts.edit_text_in_tx(
             conn,
             rw.handle,
@@ -2353,6 +2477,8 @@ def apply_cite_rewrites(
             base_sha=content_sha(rw.old_text),
             source=source,
         )
+        applied.append(rw)
+    return applied
 
 
 @dataclass(frozen=True)
@@ -2404,7 +2530,9 @@ class MergePlan:
     block_reason: str | None
     edges: list[MergeEdge]
     #: Live draft chunks whose ``[fi<loser>]`` cites the merge rewrites to
-    #: the winner (gr265228) -- reported on a dry run, applied on a real one.
+    #: the winner (gr265228). A dry run lists the proposal; a real run lists
+    #: only the rewrites :func:`apply_cite_rewrites` wrote — a draft
+    #: retired after planning is skipped, so it is absent here.
     cite_rewrites: list[MergeCiteRewrite] = field(default_factory=list)
     #: The loser edges :func:`link_claims` would refuse on the winner
     #: (gr754451); each is also part of ``block_reason``.
@@ -2710,7 +2838,7 @@ def _apply_merge_plan(
     plan: MergePlan,
     *,
     set_by: ActorSlug,
-) -> None:
+) -> list[MergeCiteRewrite]:
     """Write side of :func:`merge_hubs`: apply an already-computed,
     already-allowed (``plan.can_merge``) :class:`MergePlan` on ``conn``.
 
@@ -2719,6 +2847,10 @@ def _apply_merge_plan(
     here is a plain ``UPDATE``/``DELETE`` by ``link_id``, no risk of a
     duplicate decision changing between planning and applying within the
     same transaction.
+
+    Returns the cite rewrites actually written (the applied subset of
+    ``plan.cite_rewrites``), which :func:`merge_hubs` reports in place of
+    the dry-run proposal.
     """
     for edge in plan.edges:
         if edge.action == "repoint":
@@ -2732,7 +2864,7 @@ def _apply_merge_plan(
 
     # Re-point live draft prose citing the loser BEFORE the retire below
     # (whose cited-finding guard would otherwise refuse).
-    apply_cite_rewrites(
+    applied = apply_cite_rewrites(
         store,
         conn,
         plan.cite_rewrites,
@@ -2760,6 +2892,7 @@ def _apply_merge_plan(
     )
 
     store.retire_ref(plan.loser_ref_id, conn=conn)
+    return applied
 
 
 def _require_actor(conn: Any, set_by: str) -> None:
@@ -2858,8 +2991,9 @@ def merge_hubs(
 
     Live draft chunks citing ``[fi<loser>]`` are rewritten to cite the
     winner in the same transaction (:class:`MergeCiteRewrite`, listed in
-    ``plan.cite_rewrites``; gr265228), list cites included; a chunk edited
-    since the plan read it fails the merge rather than being overwritten.
+    ``plan.cite_rewrites``; gr265228), including cite lists. Duplicate winner
+    cites outside the rewritten groups are preserved. A chunk edited since
+    the plan read it fails the merge rather than being overwritten.
 
     **Refusal**: either side past ``'candidate'`` in ``nanopub_publish``,
     or a loser edge :func:`link_claims` would refuse on the winner
@@ -2889,6 +3023,13 @@ def merge_hubs(
 
     def _do(c: Any) -> MergePlan:
         _require_actor(c, set_by)
+        if not dry_run:
+            # Take the retirement lock before rewriting drafts. A repair
+            # may be holding this hub FOR SHARE as its live successor.
+            c.execute(
+                "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (loser_ref_id,),
+            )
         plan = _build_merge_plan(
             store, c, loser_ref_id=loser_ref_id, winner_ref_id=winner_ref_id
         )
@@ -2905,7 +3046,7 @@ def merge_hubs(
                     else merge_past_candidate_next(plan)
                 ),
             )
-        _apply_merge_plan(store, c, plan, set_by=set_by)
+        applied = _apply_merge_plan(store, c, plan, set_by=set_by)
         log.info(
             "taproot: merged hub ref_id=%s into ref_id=%s (%d edge(s) "
             "repointed, %d dropped)",
@@ -2914,7 +3055,8 @@ def merge_hubs(
             sum(1 for e in plan.edges if e.action == "repoint"),
             sum(1 for e in plan.edges if e.action != "repoint"),
         )
-        return plan
+        # A real run reports what it wrote, not the dry-run proposal.
+        return replace(plan, cite_rewrites=applied)
 
     if conn is not None:
         return _do(conn)

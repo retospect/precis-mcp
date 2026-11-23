@@ -3937,11 +3937,18 @@ class DraftStore(_AbbrevMixin):
 
     # -- mutations -----------------------------------------------------------
 
-    def _row(self, conn: psycopg.Connection, handle: str) -> tuple[Any, ...] | None:
+    def _row(
+        self,
+        conn: psycopg.Connection,
+        handle: str,
+        *,
+        for_update: bool = False,
+    ) -> tuple[Any, ...] | None:
         return conn.execute(
             """SELECT chunk_id, ref_id, chunk_kind, parent_chunk_id, pos,
                       text, retired_at
-                 FROM chunks WHERE handle = %s""",
+                 FROM chunks WHERE handle = %s"""
+            + (" FOR UPDATE" if for_update else ""),
             (_bare(handle),),
         ).fetchone()
 
@@ -4069,9 +4076,14 @@ class DraftStore(_AbbrevMixin):
         """The write half of :meth:`edit_text` on a caller-owned open
         transaction ``conn`` (same checks, UPDATE and ``edited`` event) —
         for callers that must edit draft prose atomically with other
-        writes, e.g. a hub merge re-pointing ``[fi<id>]`` cites."""
+        writes, e.g. a hub merge re-pointing ``[fi<id>]`` cites.
+
+        The row is locked ``FOR UPDATE`` on read: the existence/retired/
+        ``base_sha`` checks and the logged ``prev_text`` then hold
+        through the write — an unlocked check could let a concurrent
+        edit commit between it and the UPDATE and be overwritten."""
         sha = content_sha(text)
-        row = self._row(conn, handle)
+        row = self._row(conn, handle, for_update=True)
         if row is None:
             raise NotFound(f"no draft chunk ¶{_bare(handle)}")
         if row[6] is not None:

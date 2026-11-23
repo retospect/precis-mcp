@@ -1758,7 +1758,8 @@ def test_rewrite_fi_cites_collapses_only_winner_runs() -> None:
 
     assert rewrite_fi_cites("a [fi1] b [fi1]", 1, 2) == "a [fi2] b [fi2]"
     assert rewrite_fi_cites("[fi1][fi2] [fi3]", 1, 2) == "[fi2] [fi3]"
-    assert rewrite_fi_cites("[fi2, fi2]", 1, 2) == "[fi2]"
+    assert rewrite_fi_cites("[fi2, fi2]", 1, 2) == "[fi2, fi2]"
+    assert rewrite_fi_cites("[fi1, fi2][fi2]", 1, 2) == "[fi2]"
     assert rewrite_fi_cites("[fi10]", 1, 2) == "[fi10]"
 
 

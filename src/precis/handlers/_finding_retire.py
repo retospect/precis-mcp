@@ -36,7 +36,7 @@ successor.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
@@ -68,6 +68,8 @@ class RetirePlan:
     rows: list[RetireRow]
     #: The row the retirement lands on: the live row, else the newest.
     target: RetireRow
+    #: Dry run: the proposed cite rewrites. After :func:`apply`: only the
+    #: ones written (the receipt's count comes from this, not the proposal).
     cite_rewrites: list[MergeCiteRewrite]
 
     @property
@@ -203,9 +205,13 @@ def guard(
 
 def apply(store: Store, conn: Any, plan: RetirePlan) -> list[str]:
     """Write the plan on the delete transaction, before the hub retires:
-    draft cites, the publish record, the owner todo. Returns receipt lines."""
+    draft cites, the publish record, the owner todo. Returns receipt lines.
+
+    The receipt counts the cite rewrites actually written: a draft retired
+    after the plan is skipped by :func:`apply_cite_rewrites`, so the plan's
+    proposal can name more cites than the write touched."""
     if plan.cite_rewrites:
-        apply_cite_rewrites(
+        applied = apply_cite_rewrites(
             store,
             conn,
             plan.cite_rewrites,
@@ -214,6 +220,7 @@ def apply(store: Store, conn: Any, plan: RetirePlan) -> list[str]:
                 "superseded": f"fi{plan.ref_id}->fi{plan.successor_ref_id}",
             },
         )
+        plan = replace(plan, cite_rewrites=applied)
     t = plan.target
     if not store.nanopub_record_retirement(
         t.id,
