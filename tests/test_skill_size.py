@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 from precis._result_budget import DEFAULT_MAX_BODY_BYTES
-from tests._skill_roots import skill_files
+from tests._skill_roots import BUILTIN_SKILLS_DIR, skill_files
 
 #: Hard cap in bytes — the one knob. A skill over this fails the gate
 #: unless allowlisted. Sits 2 KiB under the response cap because a serve
@@ -128,6 +128,25 @@ def test_skill_file_under_size_cap(path: Path) -> None:
         "restructuring the skill for /toc + ~N section access, not raising "
         "this cap. If it genuinely needs more room short-term, add it to "
         "_ALLOWLIST in this test with a justification."
+    )
+
+
+def test_key_memory_help_under_cap_not_allowlisted() -> None:
+    """The key-memory skill must stay inside the hard cap without an
+    allowlist exemption (gr741446, brief item 7) — it rides the startup
+    text and the narrow grant, so an oversized file is a dead end the
+    parametrized sweep alone doesn't call out by name."""
+    from precis.key_memory import HELP_SKILL
+
+    path = BUILTIN_SKILLS_DIR / f"{HELP_SKILL}.md"
+    assert path.is_file(), f"{HELP_SKILL}.md missing from the built-in corpus"
+    assert HELP_SKILL not in _ALLOWLIST, (
+        f"{HELP_SKILL} must not ride _ALLOWLIST — restructure it instead"
+    )
+    size = path.stat().st_size
+    assert size <= FAIL_BYTES, (
+        f"{HELP_SKILL} is {size} bytes (cap {FAIL_BYTES}) — split it for "
+        "/toc + ~N section access; do not raise the cap or allowlist it"
     )
 
 

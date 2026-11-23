@@ -838,6 +838,11 @@ def test_oauth_key_memory_grant_never_opens_a_private_kind(
     for scope, private_allowed in (("gtd", False), ("learning", True)):
         _raw, identity = _grant(store, config, alice.id, (scope,))
         with user_scope(alice.id, oauth=identity):
+            help_args = {"kind": "skill", "id": "precis-key-memory-help"}
+            assert core._personal_call_allowed("get", help_args, store)
+            assert not core._personal_call_allowed(
+                "get", {**help_args, "view": "toc"}, store
+            )
             for ident in (f"me{own}", own):
                 mine: dict[str, Any] = {"kind": "memory", "id": ident}
                 assert core._personal_call_allowed("get", mine, store), (scope, ident)

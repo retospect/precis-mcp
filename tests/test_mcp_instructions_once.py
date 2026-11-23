@@ -105,6 +105,7 @@ def test_authenticated_banner_includes_one_live_voice_pointer(
     assert server.mcp.instructions.count(_VOICE) == 1
     instructions = server._authenticated_instructions(user, server.mcp.instructions)
     assert instructions.count(_VOICE) == 1
+    assert instructions.count("get(kind='skill', id='precis-key-memory-help')") == 1
     assert "precis-word-handles-help" not in instructions
 
 

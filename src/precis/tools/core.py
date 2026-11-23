@@ -533,9 +533,11 @@ def _personal_call_allowed(
     startup text names.
     """
     from precis import private_kinds
+    from precis.key_memory import HELP_SKILL, may_read
     from precis.whoami import CALL as WHOAMI
 
     verbs = {"get", "search", "put", "edit", "delete", "tag", "link"}
+    key_memory_help = {"kind": "skill", "id": HELP_SKILL}
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
     if oauth is not None and "mcp:full" in oauth.scopes:
@@ -546,8 +548,6 @@ def _personal_call_allowed(
         and verb == "get"
         and (payload.get("kind") == "memory" and payload.keys() == {"kind", "id"})
     ):
-        from precis.key_memory import may_read
-
         # Grant-only: a memory read that is not the caller's own hub falls
         # through to the checks below unchanged, so a private-kind id
         # (``memory`` + ``learning:…``) still reaches the private-kind
@@ -566,6 +566,7 @@ def _personal_call_allowed(
                 if entry.oauth_scope in oauth.scopes and entry.help_published
             ),
             {"kind": "skill", "id": "precis-oauth-help"},
+            key_memory_help,
             WHOAMI,
         )
     if verb in verbs and private_kind_of(payload) is not None:
@@ -582,6 +583,7 @@ def _personal_call_allowed(
             for entry in private_kinds.PRIVATE_KINDS.values()
             if entry.help_published
         ),
+        key_memory_help,
         WHOAMI,
     )
 
