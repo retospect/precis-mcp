@@ -93,7 +93,13 @@ caches; learning events record engagement, never concept mastery.
 user ID, handle, kind, previous handle and UTC timestamp. The owner alone
 can see the latest steps on `/learning`, which shows a 90-day window. Each
 append prunes expired rows for that owner. `POST /learning/walk/clear`
-deletes the owner's entire walk.
+deletes the owner's entire walk. The daily `walk_cards` scheduler cadence
+(`src/precis/workers/walk_cards.py`) reads every enabled login's retained
+walk and queues the concepts they focused or met one graph hop out via
+`queue_asked_term` (`source="walk"` — never a new term, never a carded or
+mastered concept, idempotent per live walk submission); the forge mints
+them under its usual daily cap and stamps the cards `meta.source="walk"`
++ `meta.walk_date`.
 
 `precis.oauth` adds independently revocable user/app grants backed by the same
 account IDs. Web routes own consent and token exchange; `oauth_transport`

@@ -378,6 +378,19 @@ _LATEST_HIGHLIGHT = """
     ORDER BY queued_at DESC, submission DESC
     LIMIT 1
 """
+#: The newest live ``walk`` submission's ``at`` stamp (gr743232): the
+#: ``walk_cards`` pass queues via ``queue_asked_term`` like any capture
+#: door but files no ``anki_highlight_context`` row — its provenance
+#: rides only in ``meta.asked_submissions``. Surfaced so the mint can
+#: stamp the card's ``meta.source``/``meta.walk_date``.
+_LATEST_WALK = """
+    SELECT s.value->>'at' AS walk_at
+    FROM jsonb_each(c.meta->'asked_submissions') s
+    WHERE s.value->>'source' = 'walk'
+      AND s.value->>'forge_skipped' IS NULL
+    ORDER BY s.value->>'at' DESC
+    LIMIT 1
+"""
 _CARD_OWNER = "COALESCE(c.owner_login, c.meta->>'asked_by')"
 
 
@@ -387,15 +400,20 @@ def _cardless_concepts(
     cohort: str | None,
     limit: int,
     paused_owners: list[str] | None = None,
-) -> list[tuple[int, str, str, str | None, str | None, str]]:
-    """Pending highlights and unmastered concepts without a live owner card."""
+) -> list[tuple[int, str, str, str | None, str | None, str, str | None]]:
+    """Pending highlights and unmastered concepts without a live owner card.
+
+    Each row is ``(ref_id, name, definition, owner, highlight submission,
+    highlight context, walk-at)`` — ``walk-at`` is the newest live
+    ``source="walk"`` queue stamp (gr743232) or ``None``."""
     cohort_clause = "AND jsonb_exists(c.meta->'cohorts', %s)" if cohort else ""
     live_card = LIVE_CARD_SQL.format(concept="c.ref_id", owner=_CARD_OWNER)
     sql = f"""
         SELECT c.ref_id, c.meta->>'name', c.meta->>'definition',
-               {_CARD_OWNER}, h.submission, h.context
+               {_CARD_OWNER}, h.submission, h.context, w.walk_at
         FROM refs c
         LEFT JOIN LATERAL ({_LATEST_HIGHLIGHT}) h ON true
+        LEFT JOIN LATERAL ({_LATEST_WALK}) w ON true
         WHERE c.kind='concept' AND c.retired_at IS NULL
           {cohort_clause}
           AND COALESCE({_CARD_OWNER}, '') <> ALL(%s)
@@ -416,8 +434,16 @@ def _cardless_concepts(
     )
     with store.pool.connection() as conn:
         return [
-            (int(cid), name or "", definition or "", owner, submission, context or "")
-            for cid, name, definition, owner, submission, context in conn.execute(
+            (
+                int(cid),
+                name or "",
+                definition or "",
+                owner,
+                submission,
+                context or "",
+                walk_at,
+            )
+            for cid, name, definition, owner, submission, context, walk_at in conn.execute(
                 sql, params
             )
         ]
@@ -525,7 +551,15 @@ def mint_daily_cards(
         paused_owners.append("")
     system = f"{skill_preamble}\n\n{_MINT_SYS}".strip() if skill_preamble else _MINT_SYS
     deck = _deck_for(cohort)
-    for concept_id, name, definition, owner, submission, context in _cardless_concepts(
+    for (
+        concept_id,
+        name,
+        definition,
+        owner,
+        submission,
+        context,
+        walk_at,
+    ) in _cardless_concepts(
         store, cohort=cohort, limit=remaining, paused_owners=paused_owners
     ):
         budget_owner = owner or solo_login
@@ -568,6 +602,12 @@ def mint_daily_cards(
         minted: list[int] = []
         deferred = False
         extra_meta = {"highlight_submission": submission} if submission else {}
+        if walk_at:
+            # gr743232: the concept reached the queue because the owner
+            # met it walking /eye — the minted card carries that
+            # provenance (contract me743214).
+            extra_meta["source"] = "walk"
+            extra_meta["walk_date"] = walk_at[:10]
         with store.tx() as conn:
             # Recheck under a transaction lock after model I/O. Concurrent
             # passes for different concepts must share the same budget.

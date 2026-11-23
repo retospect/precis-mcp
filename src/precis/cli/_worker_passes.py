@@ -1429,6 +1429,22 @@ def build_ref_passes(
 
         ref_passes.append(_idea_feed_pass)
 
+    # The /eye walk → asked-queue bridge (gr743232): queue the concepts
+    # each login focused or met one hop out as `source="walk"` asks, so
+    # the forge's asked-first mint cards them under its daily cap.
+    # Lit by default (deterministic local SQL, idempotent) — this
+    # registration is for a manual `--only walk_cards` run only; the
+    # STANDING trigger is the daily `walk_cards` scheduler cadence.
+    if _register("walk_cards"):
+        from precis.workers.runner import BatchResult as _BatchResult
+        from precis.workers.walk_cards import run_walk_cards_pass
+
+        def _walk_cards_pass(batch_size: int) -> _BatchResult:
+            r = run_walk_cards_pass(store)
+            return _BatchResult.from_dict("walk_cards", r)
+
+        ref_passes.append(_walk_cards_pass)
+
     # News ingestion (news kind). Walks the news_sources feed
     # registry, fetches + mints new articles as `news` refs. Like
     # watch_poll it makes external calls on a cadence, so it's

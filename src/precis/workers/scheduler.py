@@ -863,6 +863,30 @@ def _run_idea_feed(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_walk_cards(store: Store, batch_size: int) -> None:
+    """One /eye walk → asked-queue pass (gr743232): for every enabled
+    login with a retained walk, queue the concepts they focused directly
+    or met one hop out via ``queue_asked_term`` (``source="walk"``), so
+    the forge's asked-first minting turns them into cards under the same
+    daily cap. Fired from the daily host-agnostic ``walk_cards`` cadence
+    — any live worker can win it, same shape as ``ots_sweep``/
+    ``citer_watch``. ``batch_size`` is unused — the 90-day walk window
+    and the per-owner candidate filter bound the pass. Lit by default:
+    pure local SQL, no LLM, no external calls — the ruling asks for a
+    standing behaviour, not an opt-in sweep. spends=False."""
+    del batch_size
+    from precis.workers.walk_cards import run_walk_cards_pass
+
+    result = run_walk_cards_pass(store)
+    log.info(
+        "scheduler: walk_cards inner result claimed=%d ok=%d failed=%d owners=%d",
+        result["claimed"],
+        result["ok"],
+        result["failed"],
+        result["owners"],
+    )
+
+
 def _run_secret_check(store: Store, batch_size: int) -> None:
     """Weekly credential probe (gr496305 item 4): runs
     ``secret_status.weekly_report`` and raises one ``secret_check`` alert
@@ -1808,6 +1832,19 @@ CADENCES: tuple[Cadence, ...] = (
         name="dream_consolidate",
         interval_s=24 * 3600 + 73 * 60,
         run=_run_dream_consolidate,
+    ),
+    # gr743232: the /eye walk → asked-queue bridge
+    # (workers/walk_cards.py). Daily, host-agnostic, off the exact day
+    # boundary (+97m, clear of the other daily fires). LIT by default —
+    # the ruling (auto-queue, Reto 2026-11-20) asks for a standing
+    # behaviour: pure local SQL, no LLM, no external calls, idempotent
+    # per (owner, concept) via the live-walk-submission dedupe, so a
+    # daily re-read of the same 90-day log queues each concept once.
+    # spends=False: no model call anywhere in the pass.
+    Cadence(
+        name="walk_cards",
+        interval_s=24 * 3600 + 97 * 60,
+        run=_run_walk_cards,
     ),
     # The P4 scorer (workers/memory_recall.py) made durable: score the P4
     # recall question set weekly, record the k=5 score (native/mirror

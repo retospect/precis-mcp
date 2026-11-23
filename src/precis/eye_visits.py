@@ -17,7 +17,9 @@ same shape).
 
 Reads and links are limited to a 90-day sliding window. Each append prunes
 the owner's expired rows in the same transaction. The owner can also clear
-the whole walk on /learning.
+the whole walk on /learning. The daily ``walk_cards`` worker pass
+(:mod:`precis.workers.walk_cards`, gr743232) re-reads this log to queue
+walked concepts for the card forge.
 """
 
 from __future__ import annotations

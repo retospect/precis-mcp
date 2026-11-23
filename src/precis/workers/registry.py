@@ -1901,6 +1901,23 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr743232: the /eye walk → asked-queue bridge
+        # (workers/walk_cards.py). No `default_profiles`: the STANDING
+        # trigger is the daily `walk_cards` scheduler cadence; this
+        # registration is for a manual `--only walk_cards` run only.
+        # Unlike the dark-by-default watches above the pass is LIT — the
+        # ruling is a standing product behaviour (pure local SQL, no
+        # LLM/external spend, idempotent per owner+concept).
+        name="walk_cards",
+        label="/eye walk → card queue",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        one_line="Queue concepts met walking /eye via twin:asked "
+        "(source=walk) so the forge mints them under its daily cap.",
+        doc_skill="precis-anki-help",
+    ),
+    ServiceSpec(
         name="news_poll",
         label="News ingestion",
         category="acquisition",

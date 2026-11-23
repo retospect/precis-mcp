@@ -48,6 +48,10 @@ package holds the concept-graph layer:
   one card batch per capture, including for concepts with older cards.
   Undo removes a queue-created page edge once its last supporting submission
   is withdrawn. Shared concept and taxon matches provide graph references.
+  The daily `walk_cards` worker pass (gr743232) is a third door beside the
+  what-is grammar and the chip: it queues concepts met on the `/eye` walk
+  with `source="walk"` (existing nodes only — never a mint), and the forge
+  stamps the minted card's `meta.source`/`meta.walk_date`.
 
 Remaining: graph-edge inference, mastery-from-Anki, embedding routing,
 booklet. Anki is a **renderer, not the brain** — the concept

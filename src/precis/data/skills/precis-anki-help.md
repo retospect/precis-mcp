@@ -284,6 +284,12 @@ the reading-prep card loop — installed by `precis cast schedule`:
    notes. Sync your reviews so the forge can see the load fall. The operator
    can tune the pause threshold with `PRECIS_READING_DUE_REVIEW_LIMIT`.
 
+The daily `walk_cards` pass is a third capture door beside what-is asks and
+page highlights: it reads each login's `/eye` walk and queues the concepts
+they focused or met one hop out (`twin:asked`, `source="walk"` — never a
+new term, never a carded or mastered one). Cards the forge mints from a
+walk-queued concept carry `meta.source="walk"` + `meta.walk_date`.
+
 Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on
 the next sync — own-guid lookups only, so your hand-made cards are unreachable.
 
