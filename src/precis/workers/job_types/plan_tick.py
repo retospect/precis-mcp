@@ -986,6 +986,11 @@ def _python_roots_from_fix_repo(overlay: dict[str, str]) -> None:
     so the python kind was deferred in the tick's MCP server and repo-dev
     ``memory-review`` todos could not be verified (gr477865). An operator-set
     ``PRECIS_PYTHON_ROOTS`` wins; an unset/missing dir is a no-op.
+
+    The checkout is a factory builder repo — its HEAD moves between slice
+    branches — so the ``main`` alias is also pinned to ``origin/main``:
+    reads fetch, then answer the materialized main tree, not whatever
+    branch happens to be checked out (gr762343).
     """
     from precis.config import load_config
 
@@ -994,6 +999,7 @@ def _python_roots_from_fix_repo(overlay: dict[str, str]) -> None:
     repo = os.environ.get("PRECIS_FIX_REPO_DIR", "").strip()
     if repo and os.path.isdir(repo):
         overlay["PRECIS_PYTHON_ROOTS"] = f"main:{repo}"
+        overlay["PRECIS_PYTHON_PIN_ROOTS"] = "main"
 
 
 def _draft_prose_kind_gate(store: Store, parent_ref_id: int) -> tuple[str, str] | None:

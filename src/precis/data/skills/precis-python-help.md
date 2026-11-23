@@ -114,6 +114,20 @@ When the call itself paid a full corpus (re)build, the line also carries
 `checked n files in N s` when the stat-walk was the cost) followed by
 `later calls reuse it`.
 
+Pinned roots (gr762343): when the server sets
+`PRECIS_PYTHON_PIN_ROOTS` (comma-separated aliases; plan_tick pins
+`main` of the fix-repo checkout), reads of those aliases answer a
+materialized `refs/remotes/origin/main` tree — not the working tree.
+Use it for builder checkouts whose HEAD moves between branches. On
+access the server fetches (TTL-bounded), and when origin/main moved it
+re-indexes the new tree before answering; the summary line then also
+carries `pin refresh reparsed n files in N s`. A refresh that
+overran its budget or a clone without origin/main degrades loudly:
+`pin refresh CUT SHORT: …; pinned index is behind origin/main (at <sha>)`
+(or `answered from the working tree` when no pinned tree exists yet).
+Writes never go through the pin — put/edit/delete keep targeting the
+working tree.
+
 Drill down with `view='provenance'` on an alias, file or symbol id: it renders
 the full block (alias/root, corpus framing and full SHA256, freshness window,
 reparsed/reused counts, index limitations, parse-error count, the exact

@@ -989,7 +989,11 @@ def test_tick_env_overlay_python_roots_from_fix_repo(
 ) -> None:
     monkeypatch.delenv("PRECIS_PYTHON_ROOTS", raising=False)
     monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path))
-    assert _overlay()["PRECIS_PYTHON_ROOTS"] == f"main:{tmp_path}"
+    overlay = _overlay()
+    assert overlay["PRECIS_PYTHON_ROOTS"] == f"main:{tmp_path}"
+    # gr762343: the builder checkout's HEAD moves between slice branches,
+    # so the main alias is pinned to origin/main on reads.
+    assert overlay["PRECIS_PYTHON_PIN_ROOTS"] == "main"
 
 
 def test_tick_env_overlay_python_roots_operator_wins(
@@ -998,6 +1002,7 @@ def test_tick_env_overlay_python_roots_operator_wins(
     monkeypatch.setenv("PRECIS_PYTHON_ROOTS", "x:/srv/x")
     monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path))
     assert "PRECIS_PYTHON_ROOTS" not in _overlay()
+    assert "PRECIS_PYTHON_PIN_ROOTS" not in _overlay()
 
 
 def test_tick_env_overlay_python_roots_missing_dir_noop(
@@ -1006,8 +1011,10 @@ def test_tick_env_overlay_python_roots_missing_dir_noop(
     monkeypatch.delenv("PRECIS_PYTHON_ROOTS", raising=False)
     monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path / "nope"))
     assert "PRECIS_PYTHON_ROOTS" not in _overlay()
+    assert "PRECIS_PYTHON_PIN_ROOTS" not in _overlay()
     monkeypatch.delenv("PRECIS_FIX_REPO_DIR")
     assert "PRECIS_PYTHON_ROOTS" not in _overlay()
+    assert "PRECIS_PYTHON_PIN_ROOTS" not in _overlay()
 
 
 def test_disable_prose_file_kind_gates_tex(monkeypatch: pytest.MonkeyPatch) -> None:

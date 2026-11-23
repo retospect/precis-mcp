@@ -44,6 +44,10 @@ class _Reads:
     indexes: dict[str, RepoIndex] = field(default_factory=dict)
     files: dict[int, dict[str, ModuleIndex]] = field(default_factory=dict)
     external: list[str] = field(default_factory=list)
+    # alias → (display root, fragment) for origin/main-pinned aliases
+    # (gr762343): the index answers a materialized tree, but the summary
+    # line keeps naming — and observing git at — the configured checkout.
+    pins: dict[str, tuple[Path, str]] = field(default_factory=dict)
 
 
 _reads: ContextVar[_Reads | None] = ContextVar("python_provenance", default=None)
@@ -74,6 +78,12 @@ def _utc_now() -> str:
 def note_index(alias: str, idx: RepoIndex) -> None:
     if (reads := _reads.get()) is not None:
         reads.indexes[alias] = idx
+
+
+def note_pin(alias: str, root: Path, fragment: str) -> None:
+    """Record a pinned alias's display root and summary fragment (gr762343)."""
+    if (reads := _reads.get()) is not None:
+        reads.pins[alias] = (root, fragment)
 
 
 def indexed_file(alias: str, path: str) -> tuple[RepoIndex, ModuleIndex] | None:
@@ -813,6 +823,8 @@ def _render_summary(
         parts.append(corpus)
         if (note := _corpus_cost_note(idx)) is not None:
             parts.append(note)
+    if (pin_fragment := reads.pins.get(alias)) is not None:
+        parts.append(pin_fragment[1])
     parts.append(git.summary())
     if (pinned := pin.summary()) is not None:
         parts.append(pinned)
@@ -865,6 +877,8 @@ def _render_root(
             )
     lines.append(git.detail())
     lines.append(pin.detail())
+    if (pin_fragment := reads.pins.get(alias)) is not None:
+        lines.append(f"Pinned to origin/main: {pin_fragment[1]}")
     return "\n".join(lines)
 
 
@@ -894,7 +908,10 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
                     exc.cause += "\n" + WORKTREE_NOTE
                     exc.args = (exc.cause,)
                 raise
-            roots = {alias: idx.root for alias, idx in reads.indexes.items()}
+            roots = {
+                alias: reads.pins.get(alias, (idx.root, ""))[0]
+                for alias, idx in reads.indexes.items()
+            }
             if method.__name__ == "get" and kwargs.get("id") in (None, "", "/"):
                 roots = self.roots
             gdir = getattr(self, "git_dir_for", lambda _r: None)

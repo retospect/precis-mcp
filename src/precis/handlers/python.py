@@ -33,6 +33,16 @@ citing the symbol (its lazy anchor ref's ``links`` — gr702978), the
 second hop as names at ``+2hop``; per-section char budgets in
 ``_python_eye`` (gr498663).
 
+Refresh on access (gr762343): every read revalidates the consulted
+root's index against the current file stats (size/mtime/ctime —
+``RepoCache``), so files edited since the last read are re-indexed
+before the answer.  Aliases listed in ``PRECIS_PYTHON_PIN_ROOTS``
+additionally answer a materialized ``refs/remotes/origin/main`` tree
+instead of the working tree — the right reading of a builder checkout
+whose HEAD moves between branches; the summary line of such a read
+names the pinned sha and says when a refresh happened or was cut
+short (``_python_pin``).
+
 Symbols are linkable from notes: a ``python:<dotted.qualname>`` mention
 in a note/draft body mints a lazy anchor ``refs(kind='python',
 slug=<qualname>)`` row on first mention (validated against the code
@@ -74,11 +84,19 @@ from precis.handlers import _python_tests as ptests
 from precis.handlers import _python_write as write
 from precis.handlers._eye import EYE_NEXT
 from precis.handlers._mode_help import require_mode
+from precis.handlers._python_pin import (
+    PIN_ROOTS_ENV,
+    PinDecision,
+    RootPinner,
+    parse_pin_roots,
+)
 from precis.handlers._python_provenance import (
+    _obs_seconds,
     empty_root_reason,
     indexed_file,
     note_file,
     note_index,
+    note_pin,
     with_provenance,
 )
 from precis.handlers._python_semantic import SemanticIndex, rrf
@@ -447,6 +465,31 @@ def _lookup_symbol(
     return sym
 
 
+def _pin_fragment(decision: PinDecision, idx: RepoIndex) -> str:
+    """The summary-line fragment for one pinned read (gr762343).
+
+    A decision that already carries a note (fallback, cut short, failed
+    fetch) says so verbatim.  A fresh materialization composes from the
+    index observation so the read names what it just re-indexed; a warm
+    pinned index stays on the one-word state.
+    """
+    if decision.note is not None:
+        return decision.note
+    if decision.sha is None:
+        return (
+            "pin requested but origin/main unavailable; answered from the working tree"
+        )
+    fragment = f"pinned to origin/main@{decision.sha[:8]}"
+    observation = idx.observation
+    if observation is not None and observation.reparsed:
+        noun = "file" if observation.reparsed == 1 else "files"
+        fragment += (
+            f"; pin refresh reparsed {observation.reparsed} {noun} "
+            f"in {_obs_seconds(observation):.1f} s"
+        )
+    return fragment
+
+
 # ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
@@ -519,6 +562,7 @@ class PythonHandler(Handler):
         cache: RepoCache | None = None,
         worktrees: WorktreeRegistry | None = None,
         workspaces: WorkspaceRoots | None = None,
+        pinner: RootPinner | None = None,
     ) -> None:
         # ``hub`` is taken for signature uniformity; python is an
         # in-memory kind (no DB, no embedder), so we don't actually
@@ -541,6 +585,21 @@ class PythonHandler(Handler):
         self.roots = resolved
         self.cache = cache or RepoCache(snapshot_dir=_default_snapshot_dir())
         self.worktrees = worktrees
+        # Aliases whose READS answer refs/remotes/origin/main instead of
+        # the working tree (gr762343): a builder checkout's HEAD moves
+        # between branches, and "the main branch's code" is the only
+        # stable reading of such a root.  Writes never go through the
+        # pinner — they keep targeting the configured working tree.
+        configured_pins = parse_pin_roots(os.environ.get(PIN_ROOTS_ENV))
+        unknown = configured_pins - set(resolved)
+        for alias in sorted(unknown):
+            log.warning(
+                "%s: alias %r is not a configured python root; ignoring",
+                PIN_ROOTS_ENV,
+                alias,
+            )
+        self._pin_aliases = configured_pins & set(resolved)
+        self._pinner = pinner if pinner is not None else RootPinner.from_env()
         # ``ws-<slug>`` aliases — DB-backed workspace code roots
         # (structure-workspaces slice 2p). Default-built from the hub's
         # store; ``None`` when the deployment has no DB (or in tests
@@ -2375,14 +2434,6 @@ class PythonHandler(Handler):
         return None
 
     def _index(self, alias: str, root: Path) -> RepoIndex:
-        try:
-            idx = self.cache.get(root)
-        except OSError as exc:
-            raise NotFound(
-                f"Python root {alias!r} unavailable: {root}; index freshness unknown "
-                f"({type(exc).__name__})",
-                next="get(kind='python') to inspect configured roots",
-            ) from exc
         if (
             self.worktrees is not None
             and alias not in self.roots
@@ -2390,7 +2441,22 @@ class PythonHandler(Handler):
         ):
             for gone in self.worktrees.touch(alias, root):
                 self.cache.drop(gone)
+        decision: PinDecision | None = None
+        index_root = root
+        if alias in self._pin_aliases:
+            decision = self._pinner.resolve(root)
+            index_root = decision.index_root
+        try:
+            idx = self.cache.get(index_root)
+        except OSError as exc:
+            raise NotFound(
+                f"Python root {alias!r} unavailable: {index_root}; index freshness unknown "
+                f"({type(exc).__name__})",
+                next="get(kind='python') to inspect configured roots",
+            ) from exc
         note_index(alias, idx)
+        if decision is not None:
+            note_pin(alias, root, _pin_fragment(decision, idx))
         return idx
 
     def _worktree_listing(self) -> dict[str, Path]:
