@@ -1,0 +1,76 @@
+# Nearest-rank p90 of non-exempt text files on 0f9e5aeda6b8.
+# New types use the measured p90 for extensionless files.
+fallback = 675
+
+[limits]
+"(no extension)" = 675
+".cad" = 9
+".cff" = 41
+".cfg" = 42
+".cif" = 132
+".conf.j2" = 43
+".css" = 1600
+".default.j2" = 6
+".dockerignore" = 43
+".env.j2" = 34
+".epru" = 77
+".example" = 71
+".extxyz" = 32
+".gitattributes" = 11
+".gitignore" = 228
+".html" = 229
+".html.j2" = 503
+".hx" = 26
+".ini.j2" = 40
+".j2" = 39
+".js" = 1375
+".json" = 1202
+".json.j2" = 84
+".jsonl" = 167
+".jsonld" = 3104
+".keep" = 1
+".md" = 281
+".md.j2" = 56
+".mjs" = 347
+".mobileconfig.j2" = 74
+".nt" = 36
+".plist" = 61
+".plist.j2" = 263
+".psv" = 53
+".puml" = 701
+".py" = 1199
+".py.j2" = 50
+".rgignore" = 13
+".scratch-ids" = 8
+".service.j2" = 113
+".sh" = 230
+".sh.j2" = 138
+".sql" = 148
+".sql.j2" = 37
+".svg" = 26
+".tex" = 1420
+".timer.j2" = 17
+".tmpl" = 29
+".toml" = 1424
+".trig" = 71
+".tsv" = 27
+".txt" = 2307
+".txt.j2" = 98
+".typed" = 1
+".xml" = 87
+".yaml" = 358
+".yaml.j2" = 99
+".yml" = 216
+".yml.j2" = 237
+"test.py" = 913
+
+[exempt]
+"src/*/migrations/*.sql" = "Forward-only migrations and generated schema baselines."
+"src/precis/data/skills/*.md" = "Covered by the dedicated skill size and block limits."
+"src/precis_web/static/pdfjs/*" = "Vendored PDF.js distribution."
+"src/precis_web/static/prosemirror.bundle.mjs" = "Generated ProseMirror bundle."
+"src/precis_web/static/tailwind.css" = "Generated Tailwind stylesheet."
+"docs/reference/schema.md" = "Generated database schema reference."
+"scripts/classify/clusters.csv" = "Classification dataset."
+"uv.lock" = "Generated dependency lockfile."
+"tests/data/file_growth_baseline.json" = "Generated ratchet baseline of reviewed file sizes."

@@ -362,6 +362,33 @@ stays on its dedicated in-process file index: no skill rows exist in
 `chunk_embeddings`, so no partial index is built or expected for it
 (`src/precis/store/_chunks_ops.py::_ANN_PARTIAL_KINDS`).
 
+## Repository file growth
+
+Run `scripts/file-growth-report --summary` for line-count distributions and
+`scripts/file-growth-report` for path-level sizes, Python outlines, and
+30-day Git churn. The `oversized` list includes cold files and sorts by
+commit count, changed lines, then size. The checkout supplies size and
+HEAD supplies churn. Binary files and symlinks have no line count.
+
+`file-growth.toml` holds the per-type limits from the initial measured
+90th percentiles and the reason for each path exemption. New types use
+the measured extensionless limit. `scripts/file-growth-report --ratchet`
+and the full test suite report files that newly exceed a limit or grow
+beyond the reviewed baseline in `tests/data/file_growth_baseline.json`.
+They also report baseline entries that can shrink or be removed.
+`scripts/file-growth-report --baseline` prints a candidate baseline for
+review. Growth is advisory during rollout.
+
+When landing a pure split, include one `File-Split: repo/relative/path`
+commit trailer for the original path and each new sibling. Churn skips
+the whole split commit and resets the marked paths at that point.
+Keep these trailers on the commit that reaches main.
+
+The factory computes overlap paths during claim. The dispatch hold stamp
+tracks the current hold and failure handoffs describe individual conflicts
+in prose. The report leaves contention unavailable until a durable
+path-level event history exists.
+
 ## Package map
 
 Subsystem architecture lives in each package's `__init__.py` module

@@ -1,0 +1,285 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Measure tracked file sizes and 30-day Git churn for gr740200.
+
+Run scripts/file-growth-report for JSON by path or add --summary to see
+line-count distributions by type. Size uses the current checkout. Churn
+uses HEAD ancestry, excluding merges to avoid recounting merged changes.
+Churn follows paths, with a rename counted as removal and addition.
+Contention is unavailable because the factory's current hold stamp clears
+after release and failure text does not provide a complete event history.
+"""
+
+import argparse
+import ast
+import json
+import os
+import subprocess
+import tomllib
+from collections import Counter, defaultdict
+from fnmatch import fnmatchcase
+from pathlib import Path
+from typing import NamedTuple
+
+
+class Definition(NamedTuple):
+    name: str
+    lines: int
+
+
+def git(root: Path, *args: str) -> bytes:
+    return subprocess.check_output(
+        ["git", "-c", f"safe.directory={root.resolve()}", *args],
+        cwd=root,
+        timeout=60,
+    )
+
+
+def churn(root: Path) -> tuple[Counter[str], Counter[str]]:
+    commits: Counter[str] = Counter()
+    lines: Counter[str] = Counter()
+    stats = git(
+        root,
+        "log",
+        "--since=30 days ago",
+        "--no-merges",
+        "--topo-order",
+        "--format=%x00commit%x09%(trailers:key=File-Split,valueonly,separator=%x1f)",
+        "--numstat",
+        "--no-renames",
+        "-z",
+        "HEAD",
+    )
+    reset_paths: set[str] = set()
+    split_commit = False
+    for record in stats.split(b"\0"):
+        record = record.lstrip(b"\n")
+        if not record:
+            continue
+        if record.startswith(b"commit\t"):
+            markers = record.removeprefix(b"commit\t")
+            split_commit = bool(markers)
+            reset_paths.update(
+                os.fsdecode(path) for path in markers.split(b"\x1f") if path
+            )
+            continue
+        if split_commit:
+            continue
+        fields = record.split(b"\t", 2)
+        if len(fields) != 3:
+            continue
+        added, removed, name = fields
+        path = os.fsdecode(name)
+        if path in reset_paths:
+            continue
+        commits[path] += 1
+        if added != b"-":
+            lines[path] += int(added) + int(removed)
+    return commits, lines
+
+
+def file_type(path: Path, data: bytes) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".py" and path.parts[0] == "tests":
+        return "test.py"
+    if suffix == ".j2":
+        return path.suffixes[-2].lower() + suffix if len(path.suffixes) > 1 else suffix
+    if suffix:
+        return suffix
+    if data.startswith(b"#!"):
+        shebang = data.split(b"\n", 1)[0]
+        if b"python" in shebang:
+            return ".py"
+        if b"bash" in shebang or shebang.split()[-1].endswith(b"/sh"):
+            return ".sh"
+    return path.name if path.name.startswith(".") else "(no extension)"
+
+
+def python_outline(data: bytes, path: str) -> dict[str, object]:
+    try:
+        tree = ast.parse(data, filename=path)
+    except SyntaxError:
+        return {"python_outline": "syntax error"}
+    largest_class = Definition("", 0)
+    largest_function = Definition("", 0)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            start = (
+                node.decorator_list[0].lineno if node.decorator_list else node.lineno
+            )
+            definition = Definition(
+                node.name, (node.end_lineno or node.lineno) - start + 1
+            )
+            if isinstance(node, ast.ClassDef):
+                if definition.lines > largest_class.lines:
+                    largest_class = definition
+            elif definition.lines > largest_function.lines:
+                largest_function = definition
+    return {
+        "largest_class": largest_class._asdict() if largest_class.lines else None,
+        "largest_function": largest_function._asdict()
+        if largest_function.lines
+        else None,
+    }
+
+
+def tracked_paths(root: Path) -> list[str]:
+    return [
+        os.fsdecode(name)
+        for name in git(root, "ls-files", "-z", "--deduplicate").split(b"\0")
+        if name
+    ]
+
+
+def size_rows(
+    root: Path, paths: list[str], *, outlines: bool = False
+) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    for name in paths:
+        relative = Path(name)
+        path = root / relative
+        if path.is_symlink():
+            rows[name] = {"size_unavailable": "symlink"}
+        elif not path.is_file():
+            rows[name] = {"size_unavailable": "missing or non-regular"}
+        else:
+            data = path.read_bytes()
+            if b"\0" in data:
+                rows[name] = {"size_unavailable": "binary"}
+                continue
+            kind = file_type(relative, data)
+            count = data.count(b"\n") + int(bool(data) and not data.endswith(b"\n"))
+            rows[name] = {"type": kind, "lines": count}
+            if outlines and kind in {".py", "test.py"}:
+                rows[name].update(python_outline(data, name))
+    return rows
+
+
+def oversight(
+    root: Path, rows: dict[str, dict[str, object]]
+) -> tuple[dict[str, int], dict[str, str]]:
+    """Return all oversized files and explain exclusions by path."""
+    with (root / "file-growth.toml").open("rb") as handle:
+        policy = tomllib.load(handle)
+    limits = policy["limits"]
+    oversized: dict[str, int] = {}
+    exempt: dict[str, str] = {}
+    for name, row in rows.items():
+        reason = next(
+            (
+                reason
+                for pattern, reason in policy["exempt"].items()
+                if fnmatchcase(name, pattern)
+            ),
+            None,
+        )
+        if reason is not None:
+            exempt[name] = reason
+            continue
+        lines = row.get("lines")
+        if isinstance(lines, int) and lines > limits.get(
+            row["type"], policy["fallback"]
+        ):
+            oversized[name] = lines
+    return oversized, exempt
+
+
+def ratchet(
+    oversized: dict[str, int], baseline: dict[str, int]
+) -> dict[str, dict[str, int]]:
+    return {
+        "new_or_grown": {
+            name: lines
+            for name, lines in oversized.items()
+            if lines > baseline.get(name, 0)
+        },
+        "shrank_or_cleared": {
+            name: oversized.get(name, 0)
+            for name, lines in baseline.items()
+            if oversized.get(name, 0) < lines
+        },
+    }
+
+
+def measure(root: Path, *, summary: bool) -> dict[str, object]:
+    files = size_rows(root, tracked_paths(root), outlines=not summary)
+    sizes: dict[str, list[int]] = defaultdict(list)
+    unavailable: Counter[str] = Counter()
+    for row in files.values():
+        lines = row.get("lines")
+        if isinstance(lines, int):
+            sizes[str(row["type"])].append(lines)
+        else:
+            unavailable[str(row["size_unavailable"])] += 1
+
+    distribution = {}
+    for kind, counts in sizes.items():
+        counts.sort()
+        sample = len(counts)
+        distribution[kind] = {
+            "files": sample,
+            "p50": counts[(sample + 1) // 2 - 1],
+            "p90": counts[(9 * sample + 9) // 10 - 1],
+            "max": counts[-1],
+        }
+    report: dict[str, object] = {
+        "head": git(root, "rev-parse", "HEAD").decode().strip(),
+        "line_distribution": distribution,
+        "size_unavailable": unavailable,
+        "contention_unavailable": "No complete path-level factory event history",
+    }
+    if not summary:
+        commits, changed_lines = churn(root)
+        oversized, exempt = oversight(root, files)
+        for name, row in files.items():
+            row.update(
+                commits_30d=commits[name],
+                changed_lines_30d=changed_lines[name],
+                contention=None,
+                exemption=exempt.get(name),
+            )
+        report["files"] = files
+        report["oversized"] = sorted(
+            oversized,
+            key=lambda name: (
+                -commits[name],
+                -changed_lines[name],
+                -oversized[name],
+                name,
+            ),
+        )
+    return report
+
+
+def ratchet_report(root: Path, paths: list[str]) -> dict[str, dict[str, int]]:
+    oversized, _ = oversight(root, size_rows(root, paths))
+    baseline = json.loads(
+        (root / "tests/data/file_growth_baseline.json").read_text(encoding="utf-8")
+    )
+    return ratchet(oversized, baseline)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--summary", action="store_true", help="Omit per-file rows")
+    modes.add_argument(
+        "--ratchet", action="store_true", help="Report growth against the baseline"
+    )
+    modes.add_argument(
+        "--baseline", action="store_true", help="Print all current oversized files"
+    )
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    result: dict[str, object]
+    if args.ratchet:
+        result = dict(ratchet_report(root, tracked_paths(root)))
+    elif args.baseline:
+        oversized, _ = oversight(root, size_rows(root, tracked_paths(root)))
+        result = dict(oversized)
+    else:
+        result = measure(root, summary=args.summary)
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
