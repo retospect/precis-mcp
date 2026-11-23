@@ -286,6 +286,23 @@ def dispatch(request: Request, verb: str, args: dict[str, Any]) -> tuple[str, bo
         return runtime.dispatch_with_status(verb, args, fold=False)
 
 
+def record_drive_open_sync(request: Request, ref_id: int) -> None:
+    """Remember a full reader open for the authenticated browser account."""
+    from precis_web.auth import current_user
+
+    user = current_user(request)
+    if user is None:
+        return
+    try:
+        get_store(request).record_open(user.id, ref_id, attribution="human")
+    except Exception:
+        logging.getLogger(__name__).debug("Drive open record failed", exc_info=True)
+
+
+async def record_drive_open(request: Request, ref_id: int) -> None:
+    await asyncio.to_thread(record_drive_open_sync, request, ref_id)
+
+
 def human_write_context(request: Request) -> contextlib.AbstractContextManager[Any]:
     """The trust context of a write a logged-in person made in the browser
     (graph-node-trust-state slice 1): actor ``user:<abbrev>``, origin

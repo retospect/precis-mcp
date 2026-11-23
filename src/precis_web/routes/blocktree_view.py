@@ -203,7 +203,7 @@ from precis_web.blocktree_svg import (
     render_svg,
     validator_summary,
 )
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, record_drive_open, templates
 from precis_web.routes import se_print
 from precis_web.timefmt import ago as _ago
 
@@ -1580,6 +1580,7 @@ async def _view3d_page(
         if kind == "se" and se_flow_pockets(tree)
         else ""
     )
+    await record_drive_open(request, ref.id)
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",

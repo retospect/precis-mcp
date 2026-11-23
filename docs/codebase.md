@@ -342,6 +342,15 @@ stream, reply off the aggregated `LlmResult`), while a concrete claude id
 driving the live Discord progress indicator). Slack's is one blocking
 `dispatch()` call.
 
+Personal Drive lists attributed ref creations and recent opens for the
+signed-in account. Web reader routes record browser opens. Runtime reads
+record agent opens for personal MCP sessions and account-bound stdio
+servers. Legacy opens and explicitly owned refs without creation
+attribution appear under Unattributed. Refs made by raw
+`INSERT INTO refs` (pcb snapshot, agentlog, checklist graph refs) record
+no creation and never appear in the owned lists. See
+`src/precis/store/_drive_state_ops.py`.
+
 Shared context lives in `src/precis/chat/context.py::build`, behind a
 `ToolCaller` protocol and section/budget profiles. The bridge adapter
 `src/asa_bot/preamble.py::build` preserves its existing prompt; `WEB_CHAT`

@@ -38,7 +38,7 @@ from precis.figure.svg import DEFAULT_VIEWBOX, default_svg, lint_svg, sanitize_s
 from precis.figure.turn import run_turn
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.utils.text import fmt_num
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, record_drive_open, templates
 from precis_web.drive_redirects import folded_redirect
 
 if TYPE_CHECKING:
@@ -114,6 +114,7 @@ async def figure_detail(request: Request, slug: str) -> HTMLResponse:
             },
             status_code=404,
         )
+    await record_drive_open(request, ref.id)
     svg, vocab, notes, turns = _docs(store, ref.id)
     box = _viewbox(ref, svg)
     findings = lint_svg(svg, box)

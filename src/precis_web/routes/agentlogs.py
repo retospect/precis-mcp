@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse
 
 from precis.agentlog import list_recent
 from precis.errors import NotFound
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, record_drive_open, templates
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -113,6 +113,7 @@ async def agentlog_detail(request: Request, ref_id: int) -> HTMLResponse:
         ).fetchone()
     if row is None:
         raise NotFound(f"no agentlog {ref_id}")
+    await record_drive_open(request, ref_id)
     title, meta, created_at = row
     meta = dict(meta or {})
     ctx = {

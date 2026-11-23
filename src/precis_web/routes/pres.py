@@ -44,6 +44,7 @@ from precis_web.deps import (
     await_dispatch,
     get_store,
     get_web_config,
+    record_drive_open,
     redirect_or_error,
     templates,
 )
@@ -91,6 +92,7 @@ async def detail(request: Request, slug: str, chunk: str | None = None) -> HTMLR
     if ref is None:
         raise NotFound(f"presentation {slug!r} not found")
 
+    await record_drive_open(request, ref.id)
     cited_ord = -1
     if chunk is not None:
         lo = chunk.split("..", 1)[0]

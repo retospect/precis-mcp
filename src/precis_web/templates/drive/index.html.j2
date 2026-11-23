@@ -14,6 +14,9 @@
         refine the selection with kinds and filters.
       </p>
     </details>
+    {% if signed_in %}
+    <a href="/drive/personal" class="text-sm text-info-strong hover:underline">Personal Drive</a>
+    {% endif %}
   </div>
   {# Batch tab-opener + its one-time-setup reminder — the whole group stays
      hidden until the JS finds direct-download links (LibKey/arXiv) on the

@@ -50,7 +50,13 @@ from precis_web.claim_render import (
     render_claim_evidence,
     resolve_head_ref_id,
 )
-from precis_web.deps import get_embedder, get_store, get_web_config, templates
+from precis_web.deps import (
+    get_embedder,
+    get_store,
+    get_web_config,
+    record_drive_open_sync,
+    templates,
+)
 from precis_web.nanopub_render import hub_context, nearest_fragment_context
 from precis_web.routes.refs import _followup_discussions
 
@@ -189,6 +195,8 @@ def claim_view(request: Request, head: str) -> HTMLResponse:
     DB and LLM-judge calls, which as ``async def`` stalled the event loop
     and every other request with it (gr473425)."""
     ctx = claim_page_context(get_store(request), head, embedder=get_embedder(request))
+    if not ctx["missing"]:
+        record_drive_open_sync(request, ctx["hub_ref_id"])
     # htmx-aware (the ``flags.py`` pattern): the /nanopub workbench swaps
     # this claim straight into its review pane, so an htmx request gets the
     # body WITHOUT page chrome — the same ``claim/_body.html.j2`` the full

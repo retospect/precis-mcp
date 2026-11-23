@@ -8,8 +8,20 @@ postgres is reachable (the ``store`` fixture handles the skip).
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from precis.acting_user import actor_for
+from precis.config import PrecisConfig
+from precis.dispatch import boot
+from precis.embedder import MockEmbedder
+from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.store._drive_state_ops import DriveStateRow
+from precis.store.revision_context import revision_context
+from precis.user_context import user_scope
 from precis.users import hash_password
+from precis_web.app import create_app
+from precis_web.config import WebConfig
 
 
 def _user(store: Store, login: str) -> int:
@@ -22,7 +34,7 @@ def _ref(store: Store, title: str, kind: str = "memory") -> int:
     return store.insert_ref(kind=kind, slug=None, title=title, meta={}).id
 
 
-def _ids(rows) -> list[int]:
+def _ids(rows: list[DriveStateRow]) -> list[int]:
     return [r.ref_id for r in rows]
 
 
@@ -169,3 +181,88 @@ def test_hard_delete_cascades(store: Store) -> None:
             "     + (SELECT count(*) FROM web_collection_members)"
         ).fetchone()
     assert left is not None and left[0] == 0
+
+
+def test_same_account_tracks_independent_opens(store: Store) -> None:
+    alice, bob = _user(store, "alice"), _user(store, "bob")
+    shared, human_only = _ref(store, "Shared"), _ref(store, "Human only")
+
+    assert store.record_open(alice, shared)
+    assert store.record_open(alice, shared, attribution="human")
+    assert store.record_open(alice, human_only, attribution="human")
+    with user_scope(alice):
+        store.record_actor_open(shared)
+
+    assert _ids(store.recent_opens(alice, attribution="human")) == [human_only, shared]
+    assert _ids(store.recent_opens(alice, attribution="agent")) == [shared]
+    assert _ids(store.recent_opens(alice, attribution="unknown")) == [shared]
+    assert _ids(store.recent_opens(alice)) == [shared, human_only]
+    assert store.recent_opens(bob, attribution="agent") == []
+
+    assert store.forget_open(alice, shared, attribution="agent")
+    assert store.recent_opens(alice, attribution="agent") == []
+    assert _ids(store.recent_opens(alice, attribution="human")) == [human_only, shared]
+
+
+def test_ownership_attribution_and_legacy_owner(store: Store) -> None:
+    alice, bob = _user(store, "alice"), _user(store, "bob")
+    with revision_context(actor=actor_for("ali"), trust_actor_type="human"):
+        human = _ref(store, "Human creation")
+    with user_scope(alice), revision_context(actor=actor_for("ali")):
+        agent = _ref(store, "Agent creation")
+    legacy = store.insert_ref(
+        kind="memory", slug=None, title="Legacy", owner_login="alice"
+    ).id
+    # Account creation can mint an explicitly owned key memory as well.
+    assert legacy in _ids(store.drive_owned_refs(alice, attribution="unknown"))
+    assert _ids(store.drive_owned_refs(alice, attribution="human")) == [human]
+    assert _ids(store.drive_owned_refs(alice, attribution="agent")) == [agent]
+    assert store.drive_owned_refs(bob, attribution="agent") == []
+    store.retire_ref(agent)
+    assert store.drive_owned_refs(alice, attribution="agent") == []
+
+
+def test_personal_drive_lists_browser_and_agent_activity(store: Store) -> None:
+    alice = _user(store, "alice")
+    _user(store, "bob")
+    hub = boot(
+        store=store, embedder=MockEmbedder(dim=store.embedding_dim()), boot_writes=False
+    )
+    runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+    with user_scope(alice), revision_context(actor=actor_for("ali")):
+        result, is_error = runtime.dispatch_with_status(
+            "put", {"kind": "memory", "text": "A uniquely named agent memory"}
+        )
+        assert not is_error, result
+        # A memory put may also mint companion refs; keep the memory itself.
+        [created] = [
+            row
+            for row in store.drive_owned_refs(alice, attribution="agent")
+            if store.get_ref(kind="memory", id=row.ref_id) is not None
+        ]
+        result, is_error = runtime.dispatch_with_status(
+            "get", {"kind": "memory", "id": created.ref_id}
+        )
+        assert not is_error, result
+
+    app = create_app(
+        runtime=runtime, web_config=WebConfig(corpus_dir=None, auth_required=True)
+    )
+    with TestClient(app) as client:
+        browser_ref = _ref(store, "A uniquely named browser memory")
+        opened = client.get(f"/refs/memory/{browser_ref}", auth=("alice", "pw"))
+        assert opened.status_code == 200
+        human = client.get("/drive/personal", auth=("alice", "pw"))
+        assert human.status_code == 200
+        assert human.headers["cache-control"] == "private, no-store"
+        assert "A uniquely named browser memory" in human.text
+        assert "A uniquely named agent memory" not in human.text
+
+        agent_url = "/drive/personal?attribution=agent"
+        agent = client.get(agent_url, auth=("alice", "pw"))
+        assert agent.status_code == 200
+        assert agent.text.count(f'href="/refs/memory/{created.ref_id}"') == 2
+        assert "A uniquely named browser memory" not in agent.text
+        other_account = client.get(agent_url, auth=("bob", "pw"))
+        assert other_account.status_code == 200
+        assert "A uniquely named agent memory" not in other_account.text

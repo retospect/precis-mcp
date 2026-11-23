@@ -545,7 +545,14 @@ async def eye_index(request: Request, q: str | None = None) -> Any:
     )
 
 
-def _record_walk(request: Request, user: WebUser, handle: str, kind: str) -> None:
+def _record_walk(
+    request: Request,
+    user: WebUser,
+    handle: str,
+    kind: str,
+    *,
+    opened_handle: str | None,
+) -> None:
     """Append this login's walk step (gr743231) — best-effort, never fatal.
 
     Runs on a worker thread after the dispatch read; a ledger failure must
@@ -558,6 +565,14 @@ def _record_walk(request: Request, user: WebUser, handle: str, kind: str) -> Non
             EyeVisitStore(get_store(request)).record(handle=handle, kind=kind)
     except Exception:
         log.warning("eye walk record failed for %r", user.login, exc_info=True)
+    if opened_handle is not None:
+        try:
+            store = get_store(request)
+            ref_id = store.drive_read_ref_id(kind, opened_handle)
+            if ref_id is not None:
+                store.record_open(user.id, ref_id, attribution="human")
+        except Exception:
+            log.debug("Drive eye open record failed", exc_info=True)
 
 
 @router.get("/{handle:path}", response_class=HTMLResponse)
@@ -645,7 +660,12 @@ async def eye_focus(
     user = current_user(request)
     if user is not None:
         await run_in_threadpool(
-            _record_walk, request, user, canonical, str(target["kind"])
+            _record_walk,
+            request,
+            user,
+            canonical,
+            str(target["kind"]),
+            opened_handle=None if is_error else str(page_ref),
         )
     return timed_response(
         request,

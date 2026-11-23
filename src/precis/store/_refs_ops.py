@@ -688,6 +688,10 @@ class RefsMixin:
         ``anki``). ``None`` (the default) means unowned; an unknown
         login raises the DB's own FK-violation error.
 
+        Creation attribution (``web_ref_creations``) is written through
+        ``record_creation`` in the same transaction when the caller is a
+        known account.
+
         Two-step insert in the same connection: the ``refs`` row, then
         (when ``slug is not None``) a ``ref_identifiers`` row
         (``id_kind='cite_key'``). Pass a shared ``conn`` for both to join
@@ -846,6 +850,9 @@ class RefsMixin:
                 self.set_paper_authors(
                     ref_id, authors, source=authors_source or "pdf", conn=c
                 )
+            from precis.store._drive_state_ops import record_creation
+
+            record_creation(c, ref_id)
             # Re-fetch the row with the full _REFS_COLS projection so
             # the returned ``Ref`` carries the slug we just wrote (and
             # the paper_authors projection, if just written).
@@ -4517,6 +4524,19 @@ class RefsMixin:
             f"WHERE id_kind = 'cite_key' AND id_value = %s) {self._RECALL_THROTTLE}",
             (kind, value),
         )
+
+    def drive_read_ref_id(self, kind: str, ident: str) -> int | None:
+        """Resolve a successful runtime read to its stored ref for Drive."""
+        target = self._read_ident_target(kind, ident)
+        if target is None:
+            return None
+        shape, value = target
+        if shape == "chunk":
+            handle = handle_registry.try_format(kind, value, chunk=True)
+            resolved = self.resolve_handle(handle) if handle else None
+            return resolved.ref_id if resolved is not None else None
+        ref = self.get_ref(kind=kind, id=value)
+        return ref.id if ref is not None else None
 
     def bump_ref_read_for(
         self, kind: str, ident: str, *, actor: str, reader: str

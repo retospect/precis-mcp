@@ -63,6 +63,7 @@ from precis_web.deps import (
     await_dispatch,
     get_store,
     get_web_config,
+    record_drive_open,
     redirect_or_error,
     templates,
 )
@@ -1524,6 +1525,10 @@ async def dashboard(
                 for ln in store.links_for(serves_id, direction="in", relation="serves")
             },
         )
+    if focus is not None and any(
+        r["id"] == focus and r["kind"] == "todo" for r in rows
+    ):
+        await record_drive_open(request, focus)
     focused_rows, breadcrumb = _focus_rows(rows, focus)
     filtered = _filter_rows(focused_rows, require=require, exclude=exclude)
     filtered_count = len(filtered)  # full count before paginating, for the header

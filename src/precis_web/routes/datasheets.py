@@ -32,7 +32,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
 from precis.export.latex import DATASHEET_SUBTYPE_LABELS, datasheet_pub_label
-from precis_web.deps import await_dispatch, get_store, templates
+from precis_web.deps import await_dispatch, get_store, record_drive_open, templates
 from precis_web.routes.papers import _render_detail, _resolve_paper
 
 router = APIRouter(prefix="/datasheets", tags=["datasheets"])
@@ -67,6 +67,7 @@ async def detail(
         if request.url.query:
             target = f"{target}?{request.url.query}"
         return RedirectResponse(url=target, status_code=301)
+    await record_drive_open(request, ref.id)
     return _render_detail(
         request,
         ref,

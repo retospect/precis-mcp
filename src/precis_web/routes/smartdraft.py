@@ -40,7 +40,7 @@ from precis_web.claim_render import (
     claim_cite_head_sets,
     render_claims_evidence,
 )
-from precis_web.deps import get_runtime, get_store, templates
+from precis_web.deps import get_runtime, get_store, record_drive_open, templates
 from precis_web.draft_links import chunk_links
 from precis_web.linkify import popover_chip, strip_claim_cites
 from precis_web.routes.drafts import (
@@ -137,6 +137,7 @@ async def reader(
             },
             status_code=404,
         )
+    await record_drive_open(request, ref.id)
     marks = draft_eyes.load_marks(store, ref.id)
     rel_on = relevance.strip().lower() not in ("0", "false", "off", "no")
     sview_mode = "toc" if sview == "toc" else "list"

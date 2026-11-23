@@ -5425,7 +5425,14 @@ class DispatchMixin(RuntimeShape):
         (``human_write_context`` sets ``trust_origin='human'`` with the
         ``user:<abbrev>`` actor — the /eye route); every other caller is
         ``agent``, debounced on the acting user, the MCP session id or
-        the declared client, in that order."""
+        the declared client, in that order.
+
+        Beyond the count, an agent read also writes an agent open to
+        ``web_ref_views`` (Drive Return history) when the call carries a
+        personal-MCP principal or a ``user:`` actor (revision context or
+        process actor): the ref is resolved with ``drive_read_ref_id``
+        and stamped by ``record_actor_open``. Browser reads return above
+        and never count as agent opens."""
         if not self.track_ref_reads:
             return
         try:
@@ -5456,6 +5463,18 @@ class DispatchMixin(RuntimeShape):
             store.bump_ref_read_for(
                 kind, str(ident).strip(), actor="agent", reader=reader
             )
+            from precis.acting_user import ACTOR_PREFIX
+            from precis.user_context import current_principal
+
+            account_actor = (
+                outer.actor if outer is not None else None
+            ) or process_actor()
+            if current_principal() is not None or (
+                account_actor is not None and account_actor.startswith(ACTOR_PREFIX)
+            ):
+                ref_id = store.drive_read_ref_id(kind, str(ident))
+                if ref_id is not None:
+                    store.record_actor_open(ref_id)
         except Exception:
             log.debug("ref_read bump skipped for %s %r", kind, ident, exc_info=True)
 

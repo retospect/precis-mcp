@@ -27,7 +27,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis.errors import NotFound
-from precis_web.deps import get_store
+from precis_web.deps import get_store, record_drive_open
 from precis_web.routes.papers import _render_detail, _resolve_paper
 
 router = APIRouter(prefix="/cfp", tags=["cfp"])
@@ -55,4 +55,5 @@ async def detail(
         if request.url.query:
             target = f"{target}?{request.url.query}"
         return RedirectResponse(url=target, status_code=301)
+    await record_drive_open(request, ref.id)
     return _render_detail(request, ref, initial_tab=tab.strip().capitalize())

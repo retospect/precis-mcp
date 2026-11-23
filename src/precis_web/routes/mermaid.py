@@ -41,7 +41,7 @@ from precis.figure.svg import sanitize_svg
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.mermaid.mermaid import MERMAID_LANG, render_pdf, render_png, render_svg
 from precis.mermaid.turn import run_turn
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, record_drive_open, templates
 from precis_web.drive_redirects import folded_redirect
 
 if TYPE_CHECKING:
@@ -118,6 +118,7 @@ async def mermaid_detail(request: Request, slug: str) -> HTMLResponse:
         ref = resolve_live_slug_ref(store, kind="mermaid", id=slug)
     except NotFound:
         return _not_found(request, slug)
+    await record_drive_open(request, ref.id)
     source, vocab, notes, turns = _docs(store, ref.id)
     findings = MERMAID_LANG.lint(source, None)
     ctx = {

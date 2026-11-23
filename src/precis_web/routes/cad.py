@@ -68,7 +68,13 @@ from precis.cad.vec import Vec3, euler_rad_from_matrix
 from precis.cad_resolve import design_resolver
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis_web.deps import await_dispatch, get_runtime, get_store, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_runtime,
+    get_store,
+    record_drive_open,
+    templates,
+)
 from precis_web.drive_redirects import folded_redirect
 from precis_web.timefmt import ago as _ago
 
@@ -406,6 +412,7 @@ async def cad_detail(request: Request, slug: str) -> HTMLResponse:
             },
             status_code=404,
         )
+    await record_drive_open(request, ref.id)
     ctx = _detail_ctx(store, ref)
     ctx.update(
         {

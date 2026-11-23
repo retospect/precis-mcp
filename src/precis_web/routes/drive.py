@@ -51,9 +51,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
 from precis.handlers._query_identifier import resolve_query_identifier
+from precis.store._drive_state_ops import DriveAttribution, DriveStateRow
 from precis.store._stub_predicate import NO_OA_MIN_PASSES
 from precis.store._tag_filter import tag_filter_string
 from precis.workers.fetch_oa import run_oa_fetch_pass
+from precis_web.auth import current_user
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
 from precis_web.drive_tree import _TREE_EDGES, build_tree
 from precis_web.drive_views import DRIVE_VIEW_LINKS, DRIVE_VIEWS, active_view
@@ -602,7 +604,6 @@ def _poster_profiles(request: Request, store: Store) -> list[dict[str, Any]]:
     ``default=True`` so the template preselects it. Empty when nobody is
     signed in or no profiles exist."""
     from precis import profiles
-    from precis_web.auth import current_user
 
     user = current_user(request)
     if user is None:
@@ -907,6 +908,51 @@ def _breadcrumb(store: Store, folder_id: int) -> list[dict[str, Any]]:
     return crumbs
 
 
+_PERSONAL_LABELS: dict[DriveAttribution, str] = {
+    "human": "My stuff",
+    "agent": "My agent’s stuff",
+    "unknown": "Unattributed",
+}
+
+
+@router.get("/personal", response_class=HTMLResponse)
+def personal(request: Request, attribution: DriveAttribution = "human") -> HTMLResponse:
+    """Account-private creation and reading lists for one attribution."""
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=403, detail="Sign in to see personal Drive.")
+    store = get_store(request)
+    owned = store.drive_owned_refs(user.id, attribution=attribution)
+    opened = store.recent_opens(user.id, attribution=attribution)
+    refs = store.fetch_refs_by_ids(
+        list({row.ref_id for row in [*owned, *opened]}), include_deleted=False
+    )
+
+    def entries(rows: list[DriveStateRow]) -> list[dict[str, str]]:
+        return [
+            {
+                "title": display_title(ref.title) or f"{ref.kind} {ref.id}",
+                "href": ref_url(ref.kind, ref.id, ref.slug),
+                "kind": ref.kind,
+            }
+            for row in rows
+            if (ref := refs.get(row.ref_id)) is not None and ref.kind != "profile"
+        ]
+
+    return templates.TemplateResponse(
+        request,
+        "drive/personal.html.j2",
+        {
+            "active_tab": "drive",
+            "labels": _PERSONAL_LABELS,
+            "attribution": attribution,
+            "owned": entries(owned),
+            "opened": entries(opened),
+        },
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(
@@ -1045,8 +1091,6 @@ async def index(
     kind set with no ``k=`` at all.
     """
     store = get_store(request)
-    from precis_web.auth import current_user
-
     # the web login this page is for: another owner's profile never lists
     # (gr490266) — the browse filter lives in recent_refs(viewer=)
     _user = current_user(request)
@@ -1850,6 +1894,7 @@ async def index(
             "active_tab": "drive",
             "drive_views": DRIVE_VIEWS,
             "drive_view_links": DRIVE_VIEW_LINKS,
+            "signed_in": _user is not None,
             # Match the resolved filters, not the raw URL params: a ``/kind``
             # token or ``tag:`` qualifier in ``q`` overrides/extends the
             # ``k=``/``tag=`` params, and the Schedules sentinel is

@@ -60,6 +60,7 @@ from precis_web.deps import (
     await_dispatch,
     get_store,
     get_web_config,
+    record_drive_open,
     redirect_or_error,
     templates,
 )
@@ -3277,6 +3278,7 @@ async def detail(
         head = handle_registry.format_handle("finding", ref.id)
         return RedirectResponse(url=f"/claim/{head}", status_code=307)
 
+    await record_drive_open(request, ref.id)
     # Conversations render as a human-readable chat transcript (one
     # turn per body chunk) rather than the handler's agent-facing
     # overview card — a person clicking a thread wants the turns, not

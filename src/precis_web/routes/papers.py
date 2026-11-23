@@ -82,6 +82,7 @@ from precis_web.deps import (
     get_runtime,
     get_store,
     get_web_config,
+    record_drive_open,
     redirect_or_error,
     templates,
 )
@@ -879,6 +880,7 @@ async def detail(
         if request.url.query:
             target = f"{target}?{request.url.query}"
         return RedirectResponse(url=target, status_code=301)
+    await record_drive_open(request, ref.id)
     # A human opened this document — heat its body chunks so it rises for the
     # summarize hot tier (summarise it first) and the dreamer. Best-effort:
     # a bump failure must never 500 the reader. Skipped on the id→slug

@@ -98,6 +98,7 @@ from precis_web.deps import (
     await_dispatch,
     get_store,
     human_write_context,
+    record_drive_open,
     redirect_or_error,
     templates,
 )
@@ -404,6 +405,7 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
         return design_chat.chat_error(
             request, kind="pcb", slug=slug, detail=str(exc), status=409
         )
+    await record_drive_open(request, ref.id)
     return templates.TemplateResponse(request, "pcb/detail.html.j2", ctx)
 
 

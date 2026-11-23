@@ -72,7 +72,13 @@ from precis.structure.elements import covalent_radius_A as covalent_radius
 from precis.structure.probe import coordination, detect_bonds
 from precis.structure.scene import FIX_X, FIX_Y, FIX_Z
 from precis_web import design_chat, design_turn
-from precis_web.deps import await_dispatch, get_runtime, get_store, templates
+from precis_web.deps import (
+    await_dispatch,
+    get_runtime,
+    get_store,
+    record_drive_open,
+    templates,
+)
 from precis_web.drive_redirects import folded_redirect
 from precis_web.timefmt import ago as _ago
 
@@ -1068,6 +1074,7 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
     if ray not in [m.name for m in scene.measures if m.kind == "ray"]:
         ray = ""
     revisions = design_history.list_revisions(store, ref.id)
+    await record_drive_open(request, ref.id)
     return templates.TemplateResponse(
         request,
         "structure/detail.html.j2",

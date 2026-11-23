@@ -1,0 +1,29 @@
+{% extends "base.html.j2" %}
+{% block title %}Personal Drive{% endblock %}
+{% block content %}
+<a href="/drive" class="text-sm text-info-strong hover:underline">Back to Drive</a>
+<h1 class="mt-2 text-lg font-semibold">Personal Drive</h1>
+<nav aria-label="Attribution" class="my-3 flex flex-wrap gap-3 text-sm">
+  {% for key, label in labels.items() %}
+  <a href="/drive/personal?attribution={{ key }}"
+     {% if key == attribution %}aria-current="page" class="font-semibold"{% else %}class="text-info-strong hover:underline"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+<div class="grid gap-4 md:grid-cols-2">
+  {% for label, rows in [('Owned refs', owned), ('Recently opened', opened)] %}
+  <section class="rounded-md border border-line p-3">
+    <h2 class="font-medium">{{ label }}</h2>
+    <ul class="mt-2 space-y-1 text-sm">
+      {% for row in rows %}
+      <li>
+        <a href="{{ row.href }}" class="text-info-strong hover:underline">{{ row.title }}</a>
+        <span class="text-xs text-fg-muted">{{ row.kind }}</span>
+      </li>
+      {% else %}
+      <li class="text-fg-muted">No refs yet.</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}
