@@ -1286,8 +1286,9 @@ in doubt. Read the memory (`get(kind='memory', id=N, extent='fisheye+1hop')`)
 and its log, then verify against the repo through the python kind
 (`get(kind='python', id='main::<qualname>')`, `search(kind='python',
 mode='pattern', q=…)`) and the other precis kinds. For a linked memory gripe,
-follow [[precis-fix-memory-gripe-help]]: classify the disagreement and replay
-the routes around a sha-pinned, undoable repair. Ask for evidence when the
+follow [[precis-fix-memory-gripe-help]]: classify the disagreement, repair
+with a direct anchored `edit` (`reason='misled: …'`) and a read-back, then
+replay the routes. Ask for evidence when the
 claim cannot be verified and preserve still-true claims.
 
 If the python kind answers `Unsupported … disabled in this build`, the repo

@@ -133,7 +133,8 @@ does not prevent filing, and the written story still supplies the goal.
 The gardener is the fixer for `project:memory`, never the coder lane.
 Triage judges project attribution; it does not send these gripes to a
 coder. Use [[precis-fix-memory-gripe-help]] to replay the routes, classify
-the disagreement, repair through the ledger, and close or ask.
+the disagreement, repair with an anchored `edit` (`reason='misled: …'`) and
+a read-back, and close or ask.
 
 ## Why was my gripe folded into another one?
 ## Recurring friction merges into a keeper gripe

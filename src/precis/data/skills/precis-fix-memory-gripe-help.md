@@ -30,10 +30,13 @@ status: active
    changing anything.
 3. Replay both routes as written. A route is the test, not the target:
    a circuitous route is fine. Establish what each route answers and why.
-4. Name the disagreement shape below. Every change goes through the
-   review ledger, pinned to the content sha and undoable; see
-   [[precis-gardener-help]]. If the required apply door is unavailable,
-   leave a proposal and ask; do not bypass the ledger with a direct edit.
+4. Name the disagreement shape below. The agent repair path over MCP is
+   a direct anchored `edit` with `reason='misled: <what was wrong;
+   evidence checked>'`, then a read-back of the node; "through the
+   review ledger" applies only to the gardener's own consumer — there is
+   no MCP apply or undo door ([[precis-gardener-help]]). Hold and ask on
+   a `trust_origin='human'` or currently `considered` node, and never
+   apply a pending proposal's payload by hand.
 
 ## Choose the disagreement shape
 
@@ -109,7 +112,7 @@ Never:
 
 ## Replay after and close or ask
 
-Replay both original routes after applying the approved changes. Pass only
+Replay both original routes after the repairs. Pass only
 when all of these hold:
 
 - Both routes still arrive where the story says.

@@ -179,7 +179,7 @@ coverage queues review of the drafts and quests that cite the memory.
 
 Work it per [[precis-memory-help]] "Working a memory-review todo":
 verify the finding against the current revision — the repo and cited
-evidence, repairing through the ledger or an anchored edit — then
+evidence, repairing with an anchored `edit` — then
 close in this order: check `view='links'` for a prior closed review on
 the same memory, record the `kg-review` stamp on the verified SHA
 (the trust edit below), comment what changed, and mark the todo

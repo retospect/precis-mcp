@@ -200,7 +200,8 @@ edges), and an approved relink mints one structural edge.
 
 For a `project:memory` reader complaint, use
 [[precis-fix-memory-gripe-help]]: replay its routes, classify the
-disagreement, apply through the ledger, then replay before closing.
+disagreement, repair with an anchored `edit` (`reason='misled: …'`) and a
+read-back, then replay before closing.
 
 Treat `verdict='proposed'` rows as pending evidence, not truth. Do not
 apply a proposal's payload by hand: the merge bookkeeping is what makes
