@@ -16,10 +16,10 @@ readers recompute (storage/scientific rationale: `routes/rxn.py`).
 and direct quest scope when folding refs lists into Drive.
 
 **Ref readers.** ``linkify.linkify_toon`` renders memory Markdown, preserving
-single newlines and literal code while escaping HTML. ``ref_urls`` maps Drive,
+single newlines and literal code, escaping HTML. ``ref_urls`` maps Drive,
 handle resolution and tag pivots. Stored detail supports optional kinds with
 absent handlers. ORCID reads stored identity and papers. File readers use
-stored chunks because filesystem ``get`` can retire refs on missing mounts.
+stored chunks: filesystem ``get`` can retire refs on missing mounts.
 ``routes.papers.replace_pdf`` preserves identity.
 
 **Anki cards.** Keep each math span intact so TeX braces and colons stay
@@ -31,25 +31,25 @@ as JSON plus ``ring_group`` buckets.
 **Claim approval.** The open-disputes panel reads stored support verdicts
 and reasoning alongside pinned passages, including typed paper, patent
 and finding handles from ``conflict_search``. Pins must name the counterpart
-ref's chunk to avoid attributing an unrelated passage. These are advisory
-records, not adjudications. The coverage panel beside it reads the hub's
+ref's chunk so an unrelated passage is not attributed. These are advisory
+records, not adjudications. The coverage panel reads the hub's
 ``meta.conflict_search`` ledger as a dated statement; pre-approve, a
-missing or stale ledger *queues* a ``conflict_sweep`` refresh job (one
-per hub per day, dark unless the service is lit) — the web process never
-runs the search itself, and neither panel changes the approval gate.
+missing or stale ledger *queues* a ``conflict_sweep`` refresh (one per
+hub per day, dark unless lit) — the web never runs it;
+neither panel changes the approval gate.
 ``disputes`` rows offer a counter-claim mint
 (``workers.conflict_search.mint_counter_claim``).
 
-Gripe summary counts link to the existing list route with exact workflow
-status filters; the live total retains the nonterminal cohort. Filtering
-happens in SQL so a clicked count cannot silently show the whole queue. Empty
-exact-status lists name that selected status rather than making a claim about
+Gripe summary counts link to the list route with exact workflow
+status filters; the live total retains the nonterminal cohort. SQL
+filtering means a clicked count cannot silently show the whole queue.
+Empty exact-status lists name the selected status rather than claiming
 the whole live queue.
 
 **Pathway diagram.** ``refs._pathway_graph_payload`` preserves catpath's
 ``link_type`` for folding/annotations: adsorption and desorption keep their
 columns; only supply→reaction folds. Raw ``kind=supply`` still excludes
-reservoir links from kinetic fork probabilities; changing it would imply
+reservoir links from kinetic fork probabilities; changing it implies
 a measured barrier. Legacy graphs fall back to ``kind``.
 Unknown barriers draw dashed ``Ea n/a`` connectors, never zero-height peaks.
 
@@ -65,20 +65,26 @@ grounding provenance owns the left border; "around here" is
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131; roster via ``precis users``); accounts have
 no roles or per-route ACLs. ``/healthz`` is the probe exemption.
-``/podcast`` self-authenticates only with a per-user ``?t=`` token (podcast
-clients handle Basic inconsistently on enclosure URLs). Empty roster → 503
+``/podcast`` self-authenticates only with a per-user ``?t=`` token (Basic
+is inconsistent across podcast clients on enclosure URLs). Empty roster → 503
 with ``precis users add``. State-changing Origin/Referer mismatch → 403:
 Basic has no ``SameSite`` CSRF defense. A signed ``SameSite=Lax`` cookie is
-also accepted because Safari won't replay Basic into iframe subnavigations.
+also accepted — Safari won't replay Basic into iframe subnavigations.
 Presented 401s log login + peer; ``FailureTracker`` locks a (login, address)
 pair after 10 failures in 15 min, an address after 50, a login after 100
 (429 + ``Retry-After``, before scrypt); success clears the pair. Outermost ``security_headers.py``
-allows same-origin framing because the UI embeds its own PDF.js viewer;
+allows same-origin framing: the UI embeds its own PDF.js viewer;
 ``PRECIS_WEB_AUTH=off`` is local-dev only. ``/account`` handles password,
 profile (ORCID attributed by local nanopubs), sign-out and podcast URL. The
 row stores only the podcast token digest, so the vault is the other source.
-Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
+Sign-out sends a fresh 401 (evicting cached Basic credentials) and
 ends the login's sessions, as does a password change.
+
+``create_app`` builds the middleware stack eagerly: Starlette's lazy
+first-request build races under a restart's reconnect flood, and each
+racer would serve its own gate, ``FailureTracker`` and credential cache —
+splitting the lockout buckets (gr778229). One stack is one shared
+tracker; a late ``add_middleware`` now raises.
 
 **OAuth.** ``precis.oauth`` owns grants; ``routes.oauth`` authenticates authorization before reserving capacity.
 
@@ -88,10 +94,10 @@ ends the login's sessions, as does a password change.
 Status separates liveness/problems for indexing.
 
 PCB component selection (``pcb_design.py``) uses exact instance IDs in
-same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat
-context and Apply. SVG geometry caches UTF-8 payloads under entry and byte
+same-origin Gerber targets; one shown snapshot serves HTML, SVG, chat
+context and Apply. SVG geometry caches UTF-8 payloads under entry/byte
 bounds to cap retained memory; live hover facts are added per request so
-catalogue updates do not require another Gerber render. Apply commits
+catalogue updates need no Gerber re-render. Apply commits
 move/history/consumption atomically; GET never calls a model or writes the
 board. Historical revisions are summaries.
 PCB chat's ``pcb-design-chat-`` slug prefix cannot collide with legacy
@@ -100,14 +106,13 @@ links and ownership.
 
 Nav (``templates/base.html.j2``; badges ``nav.py::nav_badges``): Daily
 (Drive, Design); plain links (Quests → ``/refs/quest``, Clusters,
-Reactions → the ``/rxn`` ledger — kept top-level rather than folded
+Reactions → the ``/rxn`` ledger — top-level rather than folded
 into Drive's New form, gr664411). The former Browse ▾ kind presets are
 Drive's sidebar "Saved views" (``drive_views.py``: Drafts, Papers,
 Schedules, Structures, CAD, PCB, Figures, Mermaid, plus the Nanopubs
-workbench link); the Todos ``queue=doable`` preset the retired ToDo
-tab's dashboard list became (gr664410 — the ``/todo/{id}`` workbench
-stays per-item) is a Drive facet. Attention (Needs you, Gripes, Alerts,
-badged); Manual (top-level and unbadged because it is the no-idea-where tab);
+workbench link); the Todos ``queue=doable`` preset — the retired ToDo
+tab's dashboard (gr664410; ``/todo/{id}`` stays per-item) — is a Drive facet. Attention (Needs you, Gripes, Alerts,
+badged); Manual (top-level, unbadged — the no-idea-where tab);
 Ops ▾ (System, Categorizers, Agent Logs, Console, Env, Secrets); search submits
 to ``/drive``; "?" launches a tour only when the path matches a manifest
 ``route`` (``routes/manual.py::tour_slug_for_path``, no extra fetch); Account
@@ -119,8 +124,7 @@ graph, array nodes collapsed to ``name ×N``, L0–L3 presence badges
 derived from the loaded columns — never geometry) down to the
 ``structure`` each atomic-mode leaf is bound to
 (``se_blocks.bound_kind='structure'``/``bound_design``, not a link), plus
-a flat "Loose structures" section for every live ``structure`` no block
-binds. Pure read, ≤ 3 SELECTs per render regardless of design count; a
+a flat "Loose structures" section for every unbound live ``structure``. Pure read, ≤ 3 SELECTs per render regardless of design count; a
 node click lands on the existing ``/se/{slug}``/``/structure/{slug}``
 page.
 
@@ -128,27 +132,27 @@ SE inspection keeps 3D primary, with ``/se/{slug}/2d`` labeled Envelope
 projections because its outlines are envelope convex hulls, not realized
 solid sections. The 3D SVG export is labeled SVG snapshot: it embeds the
 canvas bitmap with vector annotations. Purposeful technical drawings need
-their own geometry contract; retiring projections would discard useful
+their own geometry contract; retiring projections discards useful
 axis views before that contract exists.
 
 **Workbench turn** (``design_turn.py``): chat POSTs for ``se``/``structure``
-designs; routes, repair and apply policy are in that module's docstring.
+designs; routes, repair and apply policy live in its docstring.
 
 **Drive (`/drive`)** unifies seek and management. The active-folder chip
-uses the sidebar tree without another lookup; missing/non-folder ids keep
-their raw label and titles stay display-only, preserving saved ids. Discover
+reuses the sidebar tree; missing/non-folder ids keep
+their raw label, titles staying display-only and preserving saved ids. Discover
 (`task=discover`, also the cookie-free landing) shows new content/work,
 including findings. ``sort=created|modified`` keeps timestamp meaning across
 browse/search; legacy ``recency`` maps to created in search and modified in
 browse. No-query relevance maps to modified after acquisition, preserving old
 queue links. Bare visits honor and label the saved kind cookie; Discover/reset
-bypass it without overwriting preferences, so findings stay visible.
+bypass it without overwriting preferences; findings stay visible.
 
 Search, effective-filter chips and reset stay visible beside the searchable
 native picker. One bucket partition drives picker and presets: SE → Design,
 finding/tex → Author, anki/citation → Derived, news → Sources, message →
 Machine. Curated buckets override; new artifacts default to Author, other
-registered/compatibility kinds to visible Other. This keeps operational kinds
+registered/compatibility kinds to visible Other, keeping operational kinds
 reachable without implying author provenance. Plugin fallbacks retain
 se/protein/route/pathway if hub introspection fails; hidden options remain
 successful form controls. Submission captures the form before scheduling:
@@ -162,7 +166,7 @@ facets, ``sort=relevance|recency|oldest|untried`` and
 ``folder=*`` ("Anywhere") lifts that filter. Explicit
 ``k=`` beats ``items_kinds``; only ``submitted=1`` writes the cookie.
 ``state=stub`` selects fetchable DOI/arXiv/S2 stubs less the cooled no-OA
-bucket, which page 1 lists read-only (``Store.manual_retrieval_list``);
+bucket, page 1 listing read-only (``Store.manual_retrieval_list``);
 defaults to
 ``sort=untried`` via ``manual:open`` ``ref_events``; ``POST
 /downloads/mark-tried`` sinks opened rows. "Fetch next 25"
@@ -185,8 +189,8 @@ routes unchanged.
 **Recent walk** — ``precis.eye_visits`` records authenticated ``/eye`` visits for ``/learning``.
 
 **Work (`/work`)** — ``routes/work.py``: read-only quest → root → slices
-hierarchy off ``precis.todo.work_view.work_model`` (the data the MCP
-``view='work'`` formats as text); rows carry ``data-handle`` and link to
+hierarchy off ``precis.todo.work_view.work_model`` (the MCP ``view='work'``
+source); rows carry ``data-handle`` and link to
 ``/eye/<handle>``; linked from the System sub-tab bar.
 
 **Gripes (`/gripes`)** — ``routes/gripes.py``: list by ``STATUS``

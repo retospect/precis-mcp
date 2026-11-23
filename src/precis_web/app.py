@@ -60,6 +60,10 @@ def create_app(
     caller that already holds one). When ``None``, the lifespan builds
     one from the environment at startup and closes it at shutdown.
     ``web_config`` — defaults to :meth:`WebConfig.from_env`.
+
+    The middleware stack is built before this returns (see the tail of
+    this function), so every ``add_middleware`` must happen inside the
+    factory — a registration after ``create_app`` returns raises.
     """
     install_access_token_redaction()
     cfg = web_config or WebConfig.from_env()
@@ -343,5 +347,16 @@ def create_app(
                 canonical_url=str(request.url),
             )
         )
+
+    # Build the middleware stack now, not on first request. Starlette's
+    # lazy build races under concurrent first requests — the flood that
+    # follows a restart's reconnects — and each racing caller served its
+    # own stack, and with it its own BasicAuthMiddleware, FailureTracker
+    # and CredentialCache. That splits the lockout buckets the burst
+    # bound counts on (gr778229: 66 scrypt burns verified against the
+    # limit+slots bound of 53). One stack built up front is one tracker;
+    # a late add_middleware now raises loudly instead of silently missing
+    # the served stack.
+    app.middleware_stack = app.build_middleware_stack()
 
     return app

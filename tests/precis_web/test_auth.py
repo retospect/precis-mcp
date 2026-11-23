@@ -1052,15 +1052,26 @@ def _fast_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _gate(app):
-    """The live ``BasicAuthMiddleware`` instance of *app* (built on first
-    request), to read the tracker the gate actually wrote."""
+    """The live ``BasicAuthMiddleware`` instance of *app*, to read the
+    tracker the gate actually wrote."""
     from precis_web.auth import BasicAuthMiddleware
 
-    TestClient(app).get("/healthz")
     node = app.middleware_stack
     while not isinstance(node, BasicAuthMiddleware):
         node = node.app
     return node
+
+
+def test_the_gate_stack_is_built_at_create_time() -> None:
+    """Starlette builds ``app.middleware_stack`` lazily on first request,
+    and the build races under concurrent first requests: each racing
+    caller can serve its own stack — its own gate, its own failure
+    tracker — splitting the lockout buckets a burst is counted against.
+    ``create_app`` builds it eagerly so one tracker is shared from the
+    first request on (gr778229)."""
+    app = _app(FakeUserStore(user=_user(), record=hash_password("pw")))
+    assert app.middleware_stack is not None
+    _gate(app)  # reaches the gate without a request first
 
 
 def _counting_scrypt(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.0):
@@ -1244,9 +1255,6 @@ def test_a_burst_of_wrong_guesses_is_verified_only_up_to_the_limit(
     calls = _counting_scrypt(monkeypatch, delay=0.05)
     store = FakeUserStore(user=_user(), record=hash_password("pw"))
     app = _app(store)
-    # Concurrent first requests can build separate middleware stacks with
-    # separate failure trackers. Build one before starting the burst.
-    _gate(app)
     n = 60
     barrier = threading.Barrier(n)
 
@@ -1277,7 +1285,6 @@ def test_a_burst_across_logins_is_verified_only_up_to_the_address_limit(
     calls = _counting_scrypt(monkeypatch, delay=0.02)
     store = FakeUserStore(user=_user(), record=hash_password("pw"))
     app = _app(store)
-    _gate(app)  # Build the middleware stack so all requests share one tracker.
     n = 120
     barrier = threading.Barrier(n)
 
