@@ -109,9 +109,10 @@ Proposal evidence and `view='smells'` carry detector names.
   prose mints nothing).
 - `memory-change` — selects just the proposal-only `source_drift` and
   `entity_claim_stale` checks described below.
-- `memory-review` — explicit opt-in for the full set of proposal-only checks.
-  Its other detectors, including `review_due`, stay off the cadence
-  pending gr732278.
+- `memory-review` — explicit opt-in for the full set of proposal-only checks;
+  only `source_drift` and `entity_claim_stale` ride the cadence (via
+  `memory-change`), the rest, including `review_due`, stay off it pending
+  gr732278. Detectors:
   `entity_claim_stale` (a state sentence's entity handle or repo anchor
   changed on record since the memory's last touch — use the change
   evidence to check whether the claim still holds), `negative_undated`
