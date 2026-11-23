@@ -7,7 +7,7 @@ answers:
   - I got an Unsupported error on a kind I expected to work — what does that mean?
   - how do I check what's actually live in this build?
   - what does reason='prohibited' mean on a kind?
-  - what does "kind routes through host(s)" mean?
+  - what does "kind routes through the <role> node" mean?
   - I am a worker and the kind my task needs is disabled — what do I do?
 applies-to: all kinds (boot-time enablement)
 tags: troubleshooting
@@ -62,16 +62,19 @@ reads no workspace files, under any id or spelling. Read the section from
 the project's memories. If none holds it, finish the part of the task that
 needs no file, then park the todo with the reason and stop.
 
-## "unknown kind" with "routes through host(s)"
+## "unknown kind" with "routes through the <role> node"
 
 ```text
 NotFound: unknown kind: patent
-Next: kind 'patent' routes through host(s): <names>; options above are kinds ...
+Next: kind 'patent' routes through the fetch node; options above are kinds ...
 ```
 
 The kind exists in the deployment but is served by another process, not
-this one. The call cannot succeed here; use one of the listed `options`
-kinds, or continue without it.
+this one. The label is the serving node's *role* (derived from its
+process name), never its hostname; when several nodes share a role the
+label carries a numeric suffix (`compute-1 node`, `compute-2 node`).
+The call cannot succeed here; use one of the listed `options` kinds, or
+continue without it.
 
 ## Check what's actually live in this build
 ## See which kinds loaded vs which got gated out

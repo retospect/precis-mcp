@@ -8,6 +8,9 @@ The boot of :func:`precis.dispatch.boot` is exercised end-to-end in
 * :meth:`Store.upsert_kind_providers` keys on
   ``(slug, host, process)`` and refreshes ``last_seen``.
 * :meth:`Store.find_kind_providers` filters by freshness.
+* :meth:`Store.find_kind_provider_routes` returns ``(host, process)``
+  pairs so agent-facing refusals can render node roles, not hostnames
+  (gr681314).
 """
 
 from __future__ import annotations
@@ -170,3 +173,34 @@ def test_boot_process_identity_falls_back_to_hostname(monkeypatch) -> None:
     host, process = boot_process_identity()
     assert host  # hostname is non-empty
     assert process == "unknown"
+
+
+def test_find_kind_provider_routes_returns_host_process_pairs(store: Store) -> None:
+    """gr681314: the route read carries the process so the refusal can
+    name the serving node's role instead of its hostname."""
+    a = _FakeSpec(kind="testkind-r1", is_numeric=False, title="R1", description="r1")
+    b = _FakeSpec(kind="testkind-r1", is_numeric=False, title="R1", description="r1")
+    store.upsert_kinds([a])
+    store.upsert_kind_providers([a], host="beta", process="precis-worker-compute")
+    store.upsert_kind_providers([b], host="alpha", process="precis-web")
+    # Same (slug, host) with a second process: both rows, sorted by host.
+    store.upsert_kind_providers([a], host="beta", process="precis-worker")
+    routes = store.find_kind_provider_routes("testkind-r1")
+    assert routes == [
+        ("alpha", "precis-web"),
+        ("beta", "precis-worker"),
+        ("beta", "precis-worker-compute"),
+    ]
+    # Freshness cutoff applies to routes exactly as to hosts.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE kind_provider SET last_seen = now() - interval '2 hours' "
+            "WHERE slug = %s",
+            ("testkind-r1",),
+        )
+        conn.commit()
+    assert store.find_kind_provider_routes("testkind-r1", max_age_seconds=3600) == []
+    assert (
+        store.find_kind_provider_routes("testkind-r1", max_age_seconds=24 * 3600)
+        == routes
+    )

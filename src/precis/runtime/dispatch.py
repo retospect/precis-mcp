@@ -118,6 +118,7 @@ from precis.utils import handle_registry, search_trace
 from precis.utils.canon import CanonState
 from precis.utils.canon import bind as canon_bind
 from precis.utils.canon import unbind as canon_unbind
+from precis.utils.hostname import node_role_labels
 from precis.utils.http import VendorError
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.secret_scan import mask_secrets
@@ -4281,8 +4282,12 @@ class DispatchMixin(RuntimeShape):
                 )
             # Federation hint: if any other process in the cluster
             # currently advertises this kind via ``kind_provider``,
-            # name the hosts so the caller knows where to route. Pure
-            # informational — the local process still rejects the
+            # name the serving node roles so the caller knows where to
+            # route — never the hostnames themselves (gr681314, Reto
+            # 2026-11-16: the agent-facing surface prints roles; the
+            # role-suffix → hostname mapping lives only in gated
+            # operator surfaces like the fleet view and job logs).
+            # Pure informational — the local process still rejects the
             # call. Skipped on stateless boots (no store) and on any
             # query error (kind_provider may be absent on a fresh DB
             # that hasn't run migration 0022 yet).
@@ -4290,13 +4295,12 @@ class DispatchMixin(RuntimeShape):
             store = getattr(self.hub, "store", None)
             if store is not None:
                 try:
-                    hosts = store.find_kind_providers(kind)
+                    routes = store.find_kind_provider_routes(kind)
                 except Exception:  # pragma: no cover - missing table / DB error
-                    hosts = []
-                if hosts:
-                    route_hint = (
-                        f"kind {kind!r} routes through host(s): {', '.join(hosts)}"
-                    )
+                    routes = []
+                labels = node_role_labels(routes)
+                if labels:
+                    route_hint = f"kind {kind!r} routes through the {', '.join(labels)}"
             if route_hint is not None:
                 next_hint = f"{route_hint}; {next_hint}"
             # A RETIRED kind leads with its successor (:data:`_RETIRED_KINDS`)
@@ -6619,8 +6623,9 @@ class DispatchMixin(RuntimeShape):
         kind is disabled on this host (with the boot-time reason); the
         breadcrumb is :func:`_disabled_kind_next` (the disabled-kinds
         skill, plus a worker's two actions for a file kind), or — when
-        the deployment serves the kind from another host — that host
-        and the skill, without the worker's actions: the host is the
+        the deployment serves the kind from another node — that node's
+        role (never its hostname, gr681314)
+        and the skill, without the worker's actions: the role is the
         read-only fallback ``precis-get-help`` documents for a kind this
         process lacks. No-op when the prefix is not a registered kind.
         """
@@ -6630,22 +6635,26 @@ class DispatchMixin(RuntimeShape):
         if verdict is None or verdict.loaded:
             return
         reason = verdict.reason or "disabled"
-        hosts: list[str] = []
+        routes: list[tuple[str, str]] = []
         store = getattr(self.hub, "store", None)
         if store is not None:
             try:
-                hosts = store.find_kind_providers(prefix)
+                routes = store.find_kind_provider_routes(prefix)
             except Exception:  # pragma: no cover - missing table / DB error
-                hosts = []
-        # A host that serves the kind is the way on: "read it there" and
-        # the worker lines ("do not retry", park the todo) contradict.
+                routes = []
+        # A node role that serves the kind is the way on: "read it
+        # there" and the worker lines ("do not retry", park the todo)
+        # contradict. The label names the role, never the hostname
+        # (gr681314); the role-suffix → hostname mapping lives only in
+        # gated operator surfaces (fleet view, job logs).
+        labels = node_role_labels(routes)
         hints = (
             [
-                f"kind {prefix!r} routes through host(s): {', '.join(hosts)} "
+                f"kind {prefix!r} routes through the {', '.join(labels)} "
                 "— read it there (read-only here)",
                 _KINDS_DISABLED_POINTER,
             ]
-            if hosts
+            if labels
             else self._disabled_kind_hints(prefix, reason)
         )
         raise Unsupported(

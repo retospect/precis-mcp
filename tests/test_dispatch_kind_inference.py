@@ -9,8 +9,8 @@ other on whether ``kind=`` was required. The dispatcher now infers
 kind='skill' from a bare kind word, kind='skill' from a served skill
 slug, and kind='paper' from a bare DOI (full DOI kept — never split on
 ``/``); a ``kind:`` prefix naming a registered-but-disabled kind raises
-``Unsupported`` naming the disabled-kinds skill and the host that reads
-it, instead of bouncing on the bare "missing kind=". Precedence:
+``Unsupported`` naming the disabled-kinds skill and the node role that
+reads it, instead of bouncing on the bare "missing kind=". Precedence:
 real ref slugs are checked first — a slug is an address, a kind word is
 not. ``put``/``edit`` stay kind-required (get-only inference).
 """
@@ -254,19 +254,68 @@ class TestDisabledFileKindWorkerNext:
     def test_kind_served_by_another_host_gets_no_worker_lines(
         self, runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When another host serves the kind, "read it there" is the way
-        on: the refusal does not also say "do not retry" or park the todo."""
+        """When another node serves the kind, "read it there" is the way
+        on: the refusal names the serving node's role (never its
+        hostname, gr681314) and does not also say "do not retry" or
+        park the todo."""
         monkeypatch.setattr(
-            runtime.hub.store, "find_kind_providers", lambda slug, **_: ["maple"]
+            runtime.hub.store,
+            "find_kind_provider_routes",
+            lambda slug, **_: [("maple", "precis-worker-research")],
         )
         out = runtime.dispatch("get", {"id": "tex:chapters/intro"})
         assert "[error:Unsupported]" in out
         assert "kind 'tex' is disabled on this host" in out
-        assert "routes through host(s): maple" in out
+        assert "routes through the research node" in out
+        assert "maple" not in out
         assert "precis-kinds-disabled-help" in out
         assert "do not retry" not in out
         assert not _next_calls(out, "search")
         assert not _next_calls(out, "tag")
+
+    def test_kind_served_by_several_hosts_of_one_role_gets_suffixes(
+        self, runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two hosts running the same process share the role; the labels
+        carry stable numeric suffixes and still leak no hostname."""
+        monkeypatch.setattr(
+            runtime.hub.store,
+            "find_kind_provider_routes",
+            lambda slug, **_: [
+                ("maple", "precis-worker-research"),
+                ("cedar", "precis-worker-research"),
+            ],
+        )
+        out = runtime.dispatch("get", {"id": "tex:chapters/intro"})
+        assert "routes through the research-1 node, research-2 node" in out
+        assert "maple" not in out
+        assert "cedar" not in out
+
+    def test_unknown_kind_route_hint_names_role_not_hostname(
+        self, runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr681314: the federation hint on an unknown kind names the
+        serving node's role; the hostname never reaches the answer."""
+        monkeypatch.setattr(
+            runtime.hub.store,
+            "find_kind_provider_routes",
+            lambda slug, **_: [("maple", "precis-worker-fetch")],
+        )
+        out = runtime.dispatch("get", {"kind": "nosuchkind", "id": "x"})
+        assert "unknown kind: nosuchkind" in out
+        assert "routes through the fetch node" in out
+        assert "maple" not in out
+
+    def test_unknown_kind_without_routes_has_plain_hint(
+        self, runtime: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No live provider → no route hint at all, just the verb filter."""
+        monkeypatch.setattr(
+            runtime.hub.store, "find_kind_provider_routes", lambda slug, **_: []
+        )
+        out = runtime.dispatch("get", {"kind": "nosuchkind", "id": "x"})
+        assert "unknown kind: nosuchkind" in out
+        assert "routes through" not in out
 
     def test_one_file_kind_off_does_not_claim_files_unreadable(
         self, runtime: PrecisRuntime, store: Store, tmp_path: Path

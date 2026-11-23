@@ -57,8 +57,10 @@ class KindsMixin:
 
         Called from boot right after :meth:`upsert_kinds`. Each
         ``(slug, host, process)`` row gets a fresh ``last_seen``; the
-        validator queries this table to render "kind X routes through
-        hosts Y/Z" hints when a kind is missing from the local hub.
+        dispatcher queries this table to render "kind X routes through
+        the <role> node" hints when a kind is missing from the local
+        hub. The ``process`` column is what lets the hint name a role
+        instead of the hostname (gr681314).
 
         Stale entries (rows whose owning process crashed and didn't
         re-upsert) are tolerated by the read side via a freshness
@@ -124,6 +126,28 @@ class KindsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (slug, f"{max_age_seconds} seconds")).fetchall()
         return [str(r[0]) for r in rows]
+
+    def find_kind_provider_routes(
+        self,
+        slug: str,
+        *,
+        max_age_seconds: int = 3600,
+    ) -> list[tuple[str, str]]:
+        """Distinct ``(host, process)`` pairs currently advertising ``slug``.
+
+        Same freshness cutoff as :meth:`find_kind_providers`; the extra
+        ``process`` column lets agent-facing refusals render node-role
+        labels (``compute node``) instead of hostnames (gr681314).
+        Sorted by host, then process, for deterministic messages.
+        """
+        sql = (
+            "SELECT DISTINCT host, process FROM kind_provider "
+            "WHERE slug = %s AND last_seen > now() - %s::interval "
+            "ORDER BY host, process"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (slug, f"{max_age_seconds} seconds")).fetchall()
+        return [(str(r[0]), str(r[1])) for r in rows]
 
     def prune_kind_providers(
         self, *, retention_days: int, conn: Connection | None = None

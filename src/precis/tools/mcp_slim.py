@@ -65,8 +65,8 @@ In voice chat, describe the ref first. Speak its `word` handle, never its number
 See get(kind='skill', id='precis-word-handles-help').
 `queries=` (paper + `answers=`; skill: fused sections) and
 `batch=` (memory) are verb params; other kinds refuse `not on <kind>
-yet`. `NotFound … routes
-through host(s)` = a host-gated kind. Kind-specific fields go in
+yet`. `NotFound … routes through the <role> node` identifies a kind
+served elsewhere. Kind-specific fields go in
 `args={...}`; an unknown key fails the call with `[error:BadInput]`
 listing the kind's accepted keys.
 

@@ -1203,7 +1203,7 @@ def get(
     `tag=`, `kinds=`: skill (`full`, deprecated for `extent=`, folds to
     `view='full'` on other kinds). NotFound
     "unknown kind" with "routes through
-    host(s)": see the full reference.
+    the <role> node": see the full reference.
 
     Full reference: get(kind='skill', id='precis-get-help').
     """

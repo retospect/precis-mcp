@@ -172,7 +172,8 @@ Compute kinds — the engine runs off the request path (mint → poll), the IR i
 what you read. Plugin kinds (`route`/`protein`), on where the tool-pack is
 enabled; `pathway` is additionally **host-gated** — it's registered only on
 the host(s) running the GPU compute lane, so calling it elsewhere raises
-`NotFound` with a `routes through host(s): …` hint (expected, not a bug).
+`NotFound` with a `routes through the <role> node` hint (expected, not
+a bug).
 
 `route` (retrosynthesis) and `pathway` (catalyst reaction-*network*
 exploration — intermediates, NEB barriers) are unrelated kinds despite the

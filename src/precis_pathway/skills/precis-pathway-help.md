@@ -32,8 +32,8 @@ to break/form to reach a target molecule), unrelated to this kind's
 reaction-*network* exploration on a catalyst surface. `pathway` is also
 **host-gated**: it's registered on whichever host(s) run the GPU compute
 lane, and calling it from a process without that provider gets `NotFound`
-with a `kind 'pathway' routes through host(s): …` hint — expected off-host,
-not a bug; retry from a host that has it.
+with a `kind 'pathway' routes through the <role> node` hint — expected
+off-host, not a bug; retry from a host that has it.
 
 ## Declutter profiles and embed pathway figures
 

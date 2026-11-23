@@ -82,9 +82,10 @@ rendering the node with its neighbourhood
 
 ## Read a host-gated kind
 
-Some kinds are host-gated: `NotFound` with `routes through host(s):
-…` means the kind exists but this process lacks its provider — retry
-from a host that has it; it is not a missing kind.
+Some kinds are host-gated: `NotFound` with `routes through the <role>
+node` means the kind exists but this process lacks its provider —
+retry from a host that has it; it is not a missing kind. The label is
+the serving node's role, not its hostname.
 
 ## Read a draft by its owning project
 
