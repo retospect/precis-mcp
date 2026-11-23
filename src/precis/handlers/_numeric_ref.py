@@ -98,7 +98,7 @@ from precis.store._search_cut import (
     fold_enabled,
     semantic_fold_distance,
 )
-from precis.store.types import _KIND_STATUS_VALUES
+from precis.store.types import _KIND_STATUS_VALUES, EdgeProposal
 from precis.utils import handle_registry, record_frame, search_trace, tag_chips
 from precis.utils.embed_query import query_vec_for
 from precis.utils.eye_batch import EyeFocus
@@ -4803,7 +4803,7 @@ class NumericRefHandler(Handler):
                 self.store, ref_id, link_target, relation
             )
             if routed is None:
-                self.store.add_link(
+                written = self.store.add_link_or_propose(
                     src_ref_id=ref_id,
                     dst_ref_id=link_target.ref_id,
                     dst_pos=link_target.pos,
@@ -4811,6 +4811,20 @@ class NumericRefHandler(Handler):
                     meta=meta,
                     merge_meta=meta is not None,
                 )
+                if isinstance(written, EdgeProposal):
+                    # gr723211: a machine-context structural call carrying
+                    # its evidence contract files a garden proposal — the
+                    # reply is the receipt, not a "linked" lie.
+                    filed = "filed" if written.filed else "already pending"
+                    return Response(
+                        body=(
+                            f"proposed {self._sense()} id={ref_id} "
+                            f"—{written.relation}→ {target} ({filed} "
+                            f"garden proposal review {written.review_id} "
+                            "for judge review — do not retry under "
+                            "another relation)"
+                        )
+                    )
             if link_target.kind == "part":
                 self._enqueue_part_datasheet(link_target.ref_id)
             if (stored_rel := canonical_relation(relation)) is not None:

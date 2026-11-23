@@ -321,7 +321,7 @@ class TestApplyLinkOpsDisputesContradicts:
 
         a = store.insert_ref(kind="memory", slug=None, title="memory a").id
         b = store.insert_ref(kind="memory", slug=None, title="memory b").id
-        n_added, _ = apply_link_ops(
+        n_added, _, proposals = apply_link_ops(
             store, a, link=f"memory:{b}", unlink=None, rel="contradicts"
         )
         assert n_added == 1
@@ -342,7 +342,7 @@ class TestApplyLinkOpsDisputesContradicts:
             store, CanonicalClaim(sentence="Claim B holds under condition Y.", scope={})
         )
 
-        n_added, _ = apply_link_ops(
+        n_added, _, proposals = apply_link_ops(
             store, a, link=f"finding:{b}", unlink=None, rel="disputes"
         )
         assert n_added == 1
@@ -353,7 +353,7 @@ class TestApplyLinkOpsDisputesContradicts:
 
         # Idempotent — link_claims' own no-op-on-existing, surfaced honestly
         # as n_added=0 rather than a second row.
-        n_added_again, _ = apply_link_ops(
+        n_added_again, _, proposals = apply_link_ops(
             store, a, link=f"finding:{b}", unlink=None, rel="disputes"
         )
         assert n_added_again == 0
@@ -372,7 +372,7 @@ class TestApplyLinkOpsDisputesContradicts:
             store, CanonicalClaim(sentence="A claim a review note disputes.", scope={})
         )
 
-        n_added, _ = apply_link_ops(
+        n_added, _, proposals = apply_link_ops(
             store, paper_id, link=f"finding:{hub_id}", unlink=None, rel="disputes"
         )
         assert n_added == 1

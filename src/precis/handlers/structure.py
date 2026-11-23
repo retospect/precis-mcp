@@ -5776,7 +5776,7 @@ class StructureHandler(Handler):
         validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
         link_meta = {"note": note.strip()} if mode == "add" and note else None
-        n_added, n_removed = apply_link_ops(
+        n_added, n_removed, proposals = apply_link_ops(
             self.store,
             ref.id,
             link=target if mode == "add" else None,
@@ -5796,6 +5796,7 @@ class StructureHandler(Handler):
                 n_links_removed=n_removed,
                 n_tags_added=0,
                 n_tags_removed=0,
+                proposals=proposals,
             )
         )
 

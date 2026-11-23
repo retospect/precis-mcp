@@ -123,16 +123,14 @@ link(kind="memory", id="me<setup>", target="pc<result>", rel="qualifies",
      reason="<method, code, functional or parameters that scope this result>")
 ```
 
-Keep `qualifies`; the reason states which setup conditions apply to this
-result, rather than a generic caveat or a copy of the setup note's title.
+Keep `qualifies`; the reason names the setup conditions that scope this
+result, not a generic caveat.
 
-A reader who lands on "ΔG = −0.42 eV" and opens
-`get(id='pc<result>', extent='fisheye+1hop')` sees `qualified-by
-me<setup>` under Argument, so the conditions travel with the number; the
-edge stays pinned to that chunk for passage-level consumers. Link only
-blocks that state a result; methods, introduction and discussion of
-others do not need it. Several results chunks fold into one ring row, so
-a dozen edges stay readable.
+A reader who lands on "ΔG = −0.42 eV" sees `qualified-by me<setup>` in
+the block's `fisheye+1hop`, so the conditions travel with the number.
+Link only blocks that state a result — methods, introduction and others'
+discussion do not. Results chunks fold into one ring row, so a dozen
+edges stay readable.
 
 **Explain the general terms through the taxonomy, not the note.** What
 "PBE+U" or a named model *is* belongs to a `taxon`, shared by every
@@ -140,19 +138,22 @@ paper that uses it; the setup note says how *this* paper used it.
 
 ```python
 search(kind="taxon", q="<the method or model, described by meaning>")
-link(kind="memory", id="me<setup>", target="taxon:<id>", rel="instance-of")
+link(kind="memory", id="me<setup>", target="taxon:<id>", rel="instance-of",
+     meta={"model": "<your model id>", "prompt_version": "<prompt version>",
+           "run_id": "<run id>",
+           "why": "<one sentence a reader can't get from the pin>",
+           "evidence": ["pc<a>"]})
 ```
 
-Run as a worker with a model identity, skip that `link`: it is refused
-`machine-edge-structural` whatever its evidence. Name the term under
-step 6 `gaps:` and in the report; do not retry under another relation
-or without the identity.
+With a worker model identity, this files a garden proposal and returns
+the review id. Cite a live paper passage that supports the classification.
+The judge sees the pinned passage and approval writes the edge. Record
+the review id in step 6. Unchanged submissions share a review. Missing
+or unavailable evidence → `machine-edge-structural`.
 
-Absent and likely to recur → mint the term with a one-sentence
-definition under its broader node
-(`get(kind='skill', id='precis-taxon-help')`,
-`get(kind='skill', id='precis-classify-help')`). A one-off in-house
-model is described in the setup note, not minted.
+Absent and likely to recur → mint the term (`precis-taxon-help`,
+`precis-classify-help`). A one-off in-house model is described in the
+note, not minted.
 
 The setup's controlled method term (`DFT/PBE+U`) is the `scope.method`
 value for every hub in step 3. Use it verbatim: paraphrased scope values
@@ -309,7 +310,8 @@ put(kind="paper", id="pa<id>",
     text="read-paper: setup me<a>; hubs fi<1> (new), fi<2> (converged); "
          "measures mx<p>, mx<q>; survey_extract jb<j>; "
          "memories edited me<x>, me<y>; new me<z>; considered: me<q>, me<r>; "
-         "gaps: SI not ingested; unclassified me<a> → taxon:<id>")
+         "gaps: SI not ingested; classify pending me<a> → taxon:<id> "
+         "review <r>")
 ```
 
 This note is step 0's marker for the next reader. Report the same list
@@ -320,10 +322,12 @@ to the caller, with each hub labelled new or existing.
 - **Ground on the full chunk.** Fisheye previews pick neighbours; judge
   on `get(kind='paper', id='<slug>~A..B')` reads.
 - **Machine-writer edges.** Run as a worker with a model identity,
-  `related-to`, `see-also` and `instance-of` are refused (step 2 says
-  where the classification goes); the typed edges above need a chunk pin in
-  `meta.evidence` and the `meta.{model,prompt_version,run_id,why}`
-  annotation (`get(kind='skill', id='precis-relations')`, machine-written
+  `related-to` and `see-also` are refused outright; `instance-of` and the
+  other structural rels file a judge-reviewed proposal when the call
+  carries `meta.evidence` plus `meta.{model,prompt_version,run_id,why}`
+  (step 2), and are refused `machine-edge-structural` without it; the
+  typed edges above write directly with the same contract
+  (`get(kind='skill', id='precis-relations')`, machine-written
   edges). On an inline
   `put(link=…, rel='derived-from', meta={…})` those five keys land on the
   edge, not the node; `link(…, meta={…})` takes them the same way.

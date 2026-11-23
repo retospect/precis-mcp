@@ -220,7 +220,7 @@ class TestContradicts:
         c = _ref(store, "memory", "c")
         assert apply_link_ops(
             store, a, link=f"memory:{b}", unlink=None, rel="contradicts"
-        ) == (1, 0)
+        ) == (1, 0, [])
         MemoryHandler(hub=hub).link(id=a, target=f"memory:{c}", rel="contradicts")
         assert {d for d, _r in _links(store, a)} == {b, c}
 
@@ -269,7 +269,7 @@ class TestFunctional:
         proj, first = self._project_with_draft(store)
         assert apply_link_ops(
             store, first, link=f"todo:{proj}", unlink=None, rel="draft-of"
-        ) == (1, 0)
+        ) == (1, 0, [])
 
     def test_remove_then_add_swaps_the_draft(self, store: Store) -> None:
         proj, first = self._project_with_draft(store)
@@ -447,7 +447,11 @@ class TestUnconstrainedUnchanged:
             (f, f"memory:{m}", "cites"),
             (m, f"finding:{f}", "cites"),
         ):
-            assert apply_link_ops(store, src, link=dst, unlink=None, rel=rel) == (1, 0)
+            assert apply_link_ops(store, src, link=dst, unlink=None, rel=rel) == (
+                1,
+                0,
+                [],
+            )
         assert {d for d, _r in _links(store, m)} == {p, f}
 
     def test_numeric_ref_link_door(self, store: Store, hub: Hub) -> None:

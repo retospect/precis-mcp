@@ -23,13 +23,14 @@ these helpers.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from precis.errors import BadInput, NotFound
 from precis.store import Store, Tag
-from precis.store.types import Relation, RelationConstraint
+from precis.store.types import EdgeProposal, Relation, RelationConstraint
 from precis.utils.link_target import (
     LinkTarget,
     check_python_alias,
@@ -733,13 +734,17 @@ def apply_link_ops(
     meta: dict[str, Any] | None = None,
     merge_meta: bool = False,
     hub: Any = None,
-) -> tuple[int, int]:
+) -> tuple[int, int, list[EdgeProposal]]:
     """Apply ``link=`` / ``unlink=`` operations against ``src_ref_id``.
 
-    Returns ``(n_added, n_removed)`` so the calling handler can
+    Returns ``(n_added, n_removed, proposals)`` so the calling handler can
     render an honest ack. ``parse_link_target`` resolves the
     string spec to a ``(ref_id, pos)`` pair via the store; bad
-    targets raise ``BadInput`` before we touch any rows.
+    targets raise ``BadInput`` before we touch any rows. The write goes
+    through :meth:`Store.add_link_or_propose`: a machine-context
+    structural edge carrying its evidence contract files a garden
+    proposal and lands in ``proposals`` (gr723211) instead of counting
+    toward ``n_added``.
 
     Caller passes either ``link=`` (add) or ``unlink=`` (remove);
     the seven-verb ``link()`` method enforces that they're not both
@@ -765,6 +770,7 @@ def apply_link_ops(
 
     n_added = 0
     n_removed = 0
+    proposals: list[EdgeProposal] = []
 
     if link is not None:
         target = resolve_add_link(store, src_ref_id, link, relation, hub=hub)
@@ -774,7 +780,7 @@ def apply_link_ops(
         if routed is not None:
             n_added = routed
         else:
-            store.add_link(
+            written = store.add_link_or_propose(
                 src_ref_id=src_ref_id,
                 dst_ref_id=target.ref_id,
                 dst_pos=target.pos,
@@ -782,7 +788,10 @@ def apply_link_ops(
                 meta=meta,
                 merge_meta=merge_meta,
             )
-            n_added = 1
+            if isinstance(written, EdgeProposal):
+                proposals.append(written)
+            else:
+                n_added = 1
         # A link to a part queues its datasheet pull + facts read —
         # the same jobs ``get(kind='part')`` runs, idempotent (gr520243).
         if n_added and target.kind == "part" and hub is not None:
@@ -805,7 +814,7 @@ def apply_link_ops(
             relation=relation if rel is not None else None,
         )
 
-    return n_added, n_removed
+    return n_added, n_removed, proposals
 
 
 def apply_tag_ops(
@@ -915,13 +924,17 @@ def format_link_tag_ack(
     n_links_removed: int,
     n_tags_added: int,
     n_tags_removed: int,
+    proposals: Sequence[EdgeProposal] = (),
 ) -> str:
     """Render a one-line ack summarising what changed.
 
     Used by the read-only handlers that gain link/tag CRUD via
     these helpers so their put-response wording is consistent.
     Empty operations are dropped from the line so an
-    ``unlink``-only call doesn't lie about adding things.
+    ``unlink``-only call doesn't lie about adding things. A
+    machine-edge proposal (:func:`apply_link_ops`, gr723211) is named
+    by its pending review id so the caller reads a receipt, not a
+    link count that never happened.
     """
 
     def _pluralise(n: int, noun: str) -> str:
@@ -935,6 +948,12 @@ def format_link_tag_ack(
         parts.append(f"+{n_links_added} {_pluralise(n_links_added, 'link')}")
     if n_links_removed:
         parts.append(f"-{n_links_removed} {_pluralise(n_links_removed, 'link')}")
+    if proposals:
+        ids = ", ".join(str(p.review_id) for p in proposals)
+        parts.append(
+            f"{len(proposals)} link {_pluralise(len(proposals), 'proposal')} "
+            f"filed for judge review ({ids})"
+        )
     if n_tags_added:
         parts.append(f"+{n_tags_added} {_pluralise(n_tags_added, 'tag')}")
     if n_tags_removed:

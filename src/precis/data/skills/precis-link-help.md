@@ -194,7 +194,11 @@ plain agent `link` call) is gated at the link admission itself:
 
 - `related-to` / `see-also` are refused — human-only.
 - Structural rels (`specialises`/`generalises`, `part-of`/`contains`,
-  `instance-of`) are refused — file a gardener-ledger proposal instead.
+  `instance-of`/`has-instance`) are never direct writes: a call carrying
+  the evidence contract below with live chunk handles files a gardener
+  proposal. The judge sees the pinned passage text. The receipt names
+  the pending review. Missing or unavailable evidence is refused
+  `machine-edge-structural` (gr723211).
 - Other rels need a chunk pin in `meta.evidence` (a `pc…` handle), the
   annotation `meta.{model,prompt_version,run_id,why}`, and — unless the
   rel is stance/provenance (`supports`, `disputes`, `qualifies`,

@@ -69,6 +69,7 @@ from precis.handlers._links_render import render_links_section, render_links_vie
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import Ref
+from precis.store.types import EdgeProposal
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     format_link_tag_ack,
@@ -198,9 +199,10 @@ class ChecklistHandler(Handler):
         ref_id = self.store.checklist_graph_ref_id(checklist["id"])
         if mode == "add" and ref_id is None:
             ref_id = self.store.checklist_ensure_graph_ref(checklist["id"])
-        added, removed = (0, 0)
+        added, removed = 0, 0
+        proposals: list[EdgeProposal] = []
         if ref_id is not None:
-            added, removed = apply_link_ops(
+            added, removed, proposals = apply_link_ops(
                 self.store,
                 ref_id,
                 link=target if mode == "add" else None,
@@ -221,6 +223,7 @@ class ChecklistHandler(Handler):
                 n_links_removed=removed,
                 n_tags_added=0,
                 n_tags_removed=0,
+                proposals=proposals,
             )
         )
 

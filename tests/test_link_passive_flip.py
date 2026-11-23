@@ -110,7 +110,7 @@ class TestHasDraftConstraint:
         draft = _ref(store, "draft", "d one", slug="done")
         assert apply_link_ops(
             store, proj, link="draft:done", unlink=None, rel="has-draft"
-        ) == (1, 0)
+        ) == (1, 0, [])
         assert _rows(store, proj, draft) == [(draft, proj, "draft-of")]
 
     def test_functional_rule_holds_through_the_passive_spelling(

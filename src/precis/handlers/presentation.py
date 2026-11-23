@@ -651,7 +651,7 @@ class PresentationHandler(Handler):
         target = require_link_target("pres", target)
         validate_link_mode(mode)
         slug, ref_id = self._resolve_pres_slug(id)
-        n_added, n_removed = apply_link_ops(
+        n_added, n_removed, proposals = apply_link_ops(
             self.store,
             ref_id,
             link=target if mode == "add" else None,
@@ -667,6 +667,7 @@ class PresentationHandler(Handler):
                 n_links_removed=n_removed,
                 n_tags_added=0,
                 n_tags_removed=0,
+                proposals=proposals,
             )
         )
 

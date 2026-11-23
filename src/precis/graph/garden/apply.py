@@ -106,8 +106,10 @@ from psycopg.types.json import Jsonb
 from precis.errors import BadInput, NotFound
 from precis.store._links_ops import (
     GARDEN_RELINK_META,
+    LINK_DOOR_DETECTOR,
     MACHINE_EDGE_STRUCTURAL,
     _reground_link_chunk,
+    link_door_evidence,
     relink_apply_door,
 )
 from precis.store.revision_context import (
@@ -1012,6 +1014,11 @@ def apply_relink(
                         "stale",
                         f"the {label} ref {rid} changed since the proposal",
                     )
+        if (
+            garden.get("detector") == LINK_DOOR_DETECTOR
+            and link_door_evidence(store, conn, garden.get("evidence") or {}) is None
+        ):
+            raise MergeRefused("stale", "the cited passage changed or is unavailable")
         dup = conn.execute(
             "SELECT link_id FROM links WHERE src_ref_id = %s "
             "  AND src_chunk_id IS NULL AND dst_ref_id = %s "

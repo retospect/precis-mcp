@@ -569,12 +569,13 @@ class MachineHandler(Handler):
         facts = {"platform": platform, "role": role, "gpu": gpu}
         ref, created = self._upsert_one(host_for(str(id)), facts=facts)
         n_tags = n_links = 0
+        proposals: list = []
         if tags:
             n_tags, _ = apply_tag_ops(
                 self.store, self.kind, ref.id, tags=tags, untags=None
             )
         if link:
-            n_links, _ = apply_link_ops(
+            n_links, _, proposals = apply_link_ops(
                 self.store,
                 ref.id,
                 link=link,
@@ -585,6 +586,8 @@ class MachineHandler(Handler):
         tail = ""
         if n_tags or n_links:
             tail = f" (+{n_tags} tag(s), +{n_links} link(s))"
+        if proposals:
+            tail += f" ({len(proposals)} link proposal(s) filed for judge review)"
         return Response(
             body=(
                 f"{'created' if created else 'updated'} machine {ref.slug} "
@@ -631,7 +634,7 @@ class MachineHandler(Handler):
         target = require_link_target(self.kind, target)
         validate_link_mode(mode)
         ref = self._resolve_ref(id)
-        n_add, n_rem = apply_link_ops(
+        n_add, n_rem, proposals = apply_link_ops(
             self.store,
             ref.id,
             link=target if mode == "add" else None,
@@ -647,6 +650,7 @@ class MachineHandler(Handler):
                 n_links_removed=n_rem,
                 n_tags_added=0,
                 n_tags_removed=0,
+                proposals=proposals,
             )
         )
 

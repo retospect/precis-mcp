@@ -12,6 +12,10 @@ via ``precis garden apply`` or the consumer (step 5), never detectors or
 proposer. Clean passes write nothing; repeated timeouts alert for starvation
 (:mod:`.service`).
 
+Machine structural link proposals pin the cited chunk text for the judge
+and recheck it at apply. The link door serializes submissions by ledger
+key and replaces stale pending reviews so edits can receive fresh review.
+
 Memory proposals pin supporting refs and edited bodies; unpinned legacy
 proposals close before paid review. Stale evidence closes with retryable rejection,
 allowing fresh review despite unchanged target content. Fresh detector actions

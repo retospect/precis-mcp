@@ -335,6 +335,7 @@ def key_block(
     key: str,
     *,
     prompt_version: str | None = None,
+    conn: Any = None,
 ) -> str | None:
     """Why ``key`` may not be proposed now: ``'pending'``, ``'rejected'``,
     or ``None`` when the slot is open.
@@ -356,7 +357,7 @@ def key_block(
     naming the same ``prompt_version`` — the runner, asking whether to
     re-ask. Without one (the emit path, after the runner decided) it
     does not block."""
-    reviews = store.reviews_for(target_kind, target_id)
+    reviews = store.reviews_for(target_kind, target_id, conn=conn)
     # An undo rejects changing/removing the restored body. Repo movement or
     # a different retirement route cannot reopen it. Other rejections retain
     # exact-key scope.
@@ -420,7 +421,9 @@ def emit_proposal(
     deterministic signal.
     """
     dedup_key = key or candidate.key
-    if _key_pending(store, candidate.target_kind, candidate.target_id, dedup_key):
+    if key_block(
+        store, candidate.target_kind, candidate.target_id, dedup_key, conn=conn
+    ):
         return None
     payload = dict(candidate.payload)
     if candidate.action == "retire" and candidate.detector in MEMORY_APPLY_DETECTORS:

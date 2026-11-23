@@ -189,6 +189,7 @@ from precis.graph.garden.proposals import (
     proposal_ref_ids,
     resolve_proposal,
 )
+from precis.store._links_ops import LINK_DOOR_DETECTOR, link_door_evidence
 from precis.utils.env import env_flag
 from precis.utils.handle_registry import parse as parse_handle
 from precis.utils.memory_reconcile import (
@@ -272,6 +273,7 @@ class ConsumerVerdict:
     model: str | None = None
     error: str | None = None
     paused: bool = False
+    retryable: bool = False
 
 
 ReviewFn = Callable[["Store", GardenProposal], ConsumerVerdict]
@@ -494,7 +496,7 @@ def auto_prune(
 _PROMPT_HEAD = """You review ONE pending maintenance proposal for a knowledge
 graph (refs = typed nodes, links = typed edges). Your verdict is final:
 an approved merge folds the loser into the winner; an approved relink
-writes the proposed structural `specialises` edge (child → parent).
+writes the proposed structural edge (payload.relation, child → parent).
 Both apply (undoable); a rejected proposal is closed.
 A cheaper proposer accepted it; you are the bar, not a cheerleader.
 
@@ -561,6 +563,11 @@ def _prompt_for(prop: GardenProposal, excerpts: dict[str, str]) -> str:
         "excerpts": excerpts,
     }
     head = _PROMPT_HEAD
+    if prop.detector == LINK_DOOR_DETECTOR:
+        head += (
+            "\nCheck the passages under the cited chunk handles in excerpts. "
+            "Approve only if they support the proposed relation between the endpoints."
+        )
     if prop.action == retraction.ACTION:
         head += (
             "\nJudge the proposed effect of this specific notice on the cited claim. "
@@ -583,9 +590,21 @@ def consume_llm(store: Store, prop: GardenProposal) -> ConsumerVerdict:
     """The default verdict — one routed FRONTIER call. No ``max_tokens``
     pin: the op chain owns the cap (gr504896)."""
     from precis.graph.garden.proposer import _parse_verdict, ref_excerpts
+    from precis.store._links_ops import LINK_DOOR_DETECTOR
     from precis.utils.llm.router import LlmRequest, Tier, route
 
     excerpts = ref_excerpts(store, proposal_ref_ids(prop))
+    if prop.detector == LINK_DOOR_DETECTOR:
+        with store.pool.connection() as conn:
+            passages = link_door_evidence(store, conn, prop.evidence)
+        if passages is None:
+            return ConsumerVerdict(
+                verdict="reject",
+                reason="stale",
+                why="the cited passage changed or is unavailable",
+                retryable=True,
+            )
+        excerpts.update(passages)
     if is_memory_action(prop.action, prop.detector):
         from precis.graph.garden.candidates import _memory_bodies
 
@@ -1431,6 +1450,7 @@ def _apply_relink(
             why=f"approved ({why}) but at apply: {exc}",
             model=model,
             report=report,
+            retryable=prop.detector == LINK_DOOR_DETECTOR and exc.reason == "stale",
         )
         return
     except (BadInput, NotFound) as exc:
@@ -2068,11 +2088,12 @@ def review_pending(
             store,
             prop,
             actor=CONSUMER_ACTOR,
-            reason=v.reason if v.reason in _MODEL_REASONS else "other",
+            reason=v.reason if v.retryable or v.reason in _MODEL_REASONS else "other",
             why=v.why,
             model=v.model,
             report=report,
             identity=identity,
+            retryable=v.retryable,
         )
         consec_errors = 0
     return retried

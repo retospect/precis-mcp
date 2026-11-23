@@ -444,7 +444,7 @@ class TestLinkVerb:
         py = PythonHandler(hub=hub, roots={"r": repo})
         hub.register_handler("python", py)
         note = store.insert_ref(kind="memory", slug=None, title="the note")
-        n_added, n_removed = apply_link_ops(
+        n_added, n_removed, proposals = apply_link_ops(
             store,
             note.id,
             link="python:r::pkg.runner.target",

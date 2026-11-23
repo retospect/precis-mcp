@@ -529,7 +529,7 @@ class OrcidHandler(Handler):
         target = require_link_target("orcid", target)
         validate_link_mode(mode)
         ref = self._resolve_ref(id)
-        n_add, n_rem = apply_link_ops(
+        n_add, n_rem, proposals = apply_link_ops(
             self.store,
             ref.id,
             link=target if mode == "add" else None,
@@ -545,6 +545,7 @@ class OrcidHandler(Handler):
                 n_links_removed=n_rem,
                 n_tags_added=0,
                 n_tags_removed=0,
+                proposals=proposals,
             )
         )
 

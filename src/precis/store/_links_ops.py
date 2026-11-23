@@ -75,6 +75,7 @@ from precis.store.types import (
     FINDING_TRUST_TIERS,
     ActorSlug,
     BibEntry,
+    EdgeProposal,
     Link,
     Ref,
     Relation,
@@ -554,10 +555,14 @@ _MACHINE_EDGE_ORIGINS: frozenset[str] = frozenset({"generated", "computed"})
 MACHINE_EDGE_HUMAN_ONLY: frozenset[str] = frozenset({"related-to", "see-also"})
 
 #: Structural relations a machine writer may never write directly: they
-#: reach the graph only as gardener-ledger proposals, which carry no
-#: evidence-chunk requirement and stay generated/unreviewed until a
-#: recorded review. Both spellings of each inverse pair are listed so the
-#: direction of the write cannot dodge the rule.
+#: reach the graph only as gardener-ledger proposals, judged by the
+#: consumer before the reviewed relink door writes them. Both spellings
+#: of each inverse pair are listed so the direction of the write cannot
+#: dodge the rule. The writer-facing door
+#: (:meth:`LinksMixin.add_link_or_propose`, gr723211) files a
+#: ref-level structural call carrying the machine evidence contract as a
+#: ``relink`` proposal and returns a receipt; ``add_link`` itself keeps
+#: refusing the direct write.
 MACHINE_EDGE_STRUCTURAL: frozenset[str] = frozenset(
     {
         "specialises",
@@ -1006,11 +1011,11 @@ def _machine_edge_admission(
             f"machine-edge-structural: a machine writer may not write "
             f"'{relation}' directly — structural edges from machines are "
             "proposals, not writes",
-            next="file a gardener-ledger proposal: "
-            "precis.graph.garden.proposals.emit_proposal(store, "
-            "GardenCandidate(action=…, payload={'relation': …})); it "
-            "needs no evidence chunk and stays generated/unreviewed "
-            "until a recorded review",
+            next="the link() verb door files the gardener-ledger proposal "
+            "for you: carry the machine evidence contract on the call — "
+            "meta={'model': …, 'prompt_version': …, 'run_id': …, "
+            "'why': …, 'evidence': ['pc<chunk id>', …]} — and it returns "
+            "a proposal receipt for the judge to decide (gr723211)",
         )
     if relation != "explains" and not _edge_evidence_pins(meta):
         raise BadInput(
@@ -1035,6 +1040,220 @@ def _machine_edge_admission(
                 "distance floor",
             )
     return None
+
+
+#: The garden proposal ``detector`` label a door-filed structural edge
+#: carries — it names the door, not a scanner: these proposals come from
+#: the writer's own ``link`` call, never from a detector pass.
+LINK_DOOR_DETECTOR = "link_door"
+
+
+def _edge_proposal_key(src_ref_id: int, dst_ref_id: int, relation: str) -> str:
+    """The dedup key a door-filed structural proposal carries — the
+    ``relink`` action's ``kind:id:other`` shape plus the relation, so an
+    ``instance-of`` question on a pair never folds into a pending
+    ``specialises`` on the same pair (or the orphan detector's own key)."""
+    return f"relink:ref:{src_ref_id}:{dst_ref_id}:{relation}"
+
+
+def _edge_evidence_text(store: Store, conn: Connection, handle: str) -> str | None:
+    resolved = store.resolve_handle(handle, conn=conn)
+    if resolved is None or resolved.chunk_id is None:
+        return None
+    row = conn.execute(
+        "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+        "WHERE c.chunk_id = %s AND c.retired_at IS NULL "
+        "AND r.retired_at IS NULL AND " + secret_fence("r", path="chunk_text"),
+        (resolved.chunk_id,),
+    ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+def _evidence_sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def link_door_evidence(
+    store: Store, conn: Connection, evidence: dict[str, Any]
+) -> dict[str, str] | None:
+    """Read the current text only if every cited passage matches its pin."""
+    pins = evidence.get("pins")
+    shas = evidence.get("chunk_shas")
+    if not isinstance(pins, list) or not pins or not isinstance(shas, dict):
+        return None
+    excerpts = {}
+    for handle in pins:
+        if not isinstance(handle, str):
+            return None
+        text = _edge_evidence_text(store, conn, handle)
+        if text is None or shas.get(handle) != _evidence_sha(text):
+            return None
+        excerpts[handle] = text
+    return excerpts
+
+
+def _propose_machine_edge(
+    store: LinksMixin,
+    c: Connection,
+    *,
+    model: str | None,
+    relation: str,
+    src_ref_id: int,
+    dst_ref_id: int,
+    meta: dict[str, Any],
+    set_by: str,
+) -> Link | EdgeProposal:
+    """File a machine structural edge to the garden ledger (gr723211,
+    the 2026-11-19 ruling): the gated ``link`` call's evidence becomes a
+    judge-reviewed ``relink`` proposal and the receipt, not a refusal,
+    returns. The consumer's Opus review decides it; an approved verdict
+    writes the edge through :func:`~precis.graph.garden.apply.apply_relink`
+    — which re-verifies this proposal, both endpoint sha pins, liveness
+    and the cycle check before its own gated write.
+
+    Returns the existing :class:`Link` when the asked-for edge already
+    exists (the desired state holds — the same no-op ``add_link``'s
+    conflict path gives). Dedup is the ledger's own: a pending proposal
+    for this edge answers ``filed=False``; a rejection on unchanged
+    content keeps the key closed and the call is refused. The proposal
+    is ref-level — a chunk-position structural call never reaches here
+    (the door delegates it to ``add_link``'s standing refusal).
+    """
+    from precis.graph.garden.candidates import GardenCandidate
+    from precis.graph.garden.proposals import (
+        _parse_note,
+        emit_proposal,
+        resolve_proposal,
+    )
+
+    ledger = cast("Store", store)
+    key = _edge_proposal_key(src_ref_id, dst_ref_id, relation)
+    c.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (key,))
+
+    # The asked-for edge already exists — the desired state holds.
+    row = c.execute(
+        f"SELECT {_LINK_SELECT_PROJ} {_LINK_SELECT_FROM} "
+        "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s AND l.relation = %s "
+        "AND l.src_chunk_id IS NULL AND l.dst_chunk_id IS NULL",
+        (src_ref_id, dst_ref_id, relation),
+    ).fetchone()
+    if row is not None:
+        return _row_to_link(row)
+
+    # The same "reason restates the endpoint" bar the write path runs.
+    _check_reason_contribution(c, meta, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
+
+    rows = c.execute(
+        "SELECT ref_id, kind, title, retired_at IS NULL, "
+        "  precis_target_sha('ref', ref_id) "
+        "FROM refs WHERE ref_id = ANY(%s)",
+        ([src_ref_id, dst_ref_id],),
+    ).fetchall()
+    endpoints = {int(r[0]): r for r in rows}
+    dead = [
+        rid_
+        for rid_ in (src_ref_id, dst_ref_id)
+        if rid_ not in endpoints or not endpoints[rid_][3]
+    ]
+    if dead:
+        raise BadInput(
+            f"machine-edge-structural: endpoint ref {dead[0]} is missing "
+            "or retired — a proposal on a dead node is noise",
+            next="link only live refs",
+        )
+    s_title = str(endpoints[src_ref_id][2] or f"ref {src_ref_id}")
+    d_title = str(endpoints[dst_ref_id][2] or f"ref {dst_ref_id}")
+    shas = {str(rid_): str(r[4]) for rid_, r in endpoints.items() if r[4]}
+    writer = {
+        "model": str(meta.get("model") or ""),
+        "prompt_version": str(meta.get("prompt_version") or ""),
+        "run_id": str(meta.get("run_id") or ""),
+        "set_by": set_by,
+    }
+    pins = _edge_evidence_pins(meta)
+    chunk_shas = {}
+    for handle in pins:
+        passage = _edge_evidence_text(ledger, c, handle)
+        if passage is None:
+            raise BadInput(
+                f"machine-edge-structural: evidence {handle!r} is not a live readable chunk",
+                next="cite a live passage in meta.evidence",
+            )
+        chunk_shas[handle] = _evidence_sha(passage)
+
+    for rev in ledger.reviews_for("ref", src_ref_id, conn=c):
+        previous = _parse_note(rev.note)
+        if previous is None or previous.get("key") != key:
+            continue
+        if rev.verdict == "proposed":
+            if (
+                rev.current
+                and (previous.get("payload") or {}).get("shas") == shas
+                and link_door_evidence(ledger, c, previous.get("evidence") or {})
+                is not None
+            ):
+                return EdgeProposal(
+                    review_id=int(rev.review_id),
+                    src_ref_id=src_ref_id,
+                    dst_ref_id=dst_ref_id,
+                    relation=relation,
+                    filed=False,
+                )
+            resolve_proposal(
+                ledger,
+                int(rev.review_id),
+                actor="graph-garden",
+                verdict="rejected",
+                extra={"reason": "stale", "retryable": True},
+                conn=c,
+            )
+        break
+
+    evidence: dict[str, Any] = {
+        "pins": pins,
+        "chunk_shas": chunk_shas,
+        "writer": writer,
+    }
+    if meta.get("reason"):
+        evidence["reason"] = meta["reason"]
+
+    rid = emit_proposal(
+        cast("Store", store),
+        GardenCandidate(
+            detector=LINK_DOOR_DETECTOR,
+            action="relink",
+            target_kind="ref",
+            target_id=src_ref_id,
+            other_id=dst_ref_id,
+            title=f"{relation}: {s_title} → {d_title}",
+            evidence=evidence,
+            payload={
+                "child": src_ref_id,
+                "parent": dst_ref_id,
+                "relation": relation,
+                "shas": shas,
+            },
+        ),
+        rationale=str(meta.get("why") or ""),
+        model=model,
+        key=key,
+        conn=c,
+    )
+    if rid is None:
+        raise BadInput(
+            f"machine-edge-structural: '{relation}' {src_ref_id} → "
+            f"{dst_ref_id} was already proposed and rejected on unchanged "
+            "content — the judge's verdict closes the key",
+            next="an edit to the source re-opens it; a different target or "
+            "relation is a new question, not a retry",
+        )
+    return EdgeProposal(
+        review_id=rid,
+        src_ref_id=src_ref_id,
+        dst_ref_id=dst_ref_id,
+        relation=relation,
+        filed=True,
+    )
 
 
 #: Stance relations a quest endpoint refuses outright — a quest relates to
@@ -1874,6 +2093,105 @@ class LinksMixin:
             return _do(conn)
         with self.pool.connection() as c:
             return _do(c)
+
+    def add_link_or_propose(
+        self,
+        *,
+        src_ref_id: int,
+        dst_ref_id: int,
+        relation: Relation = "related-to",
+        src_pos: int | None = None,
+        dst_pos: int | None = None,
+        set_by: ActorSlug = "agent",
+        meta: dict[str, Any] | None = None,
+        merge_meta: bool = False,
+        preserve_fingerprint: bool = False,
+        conn: Connection | None = None,
+    ) -> Link | EdgeProposal:
+        """The writer-facing edge door — ``add_link`` plus the ruled
+        machine-proposal outcome (gr723211, Reto 2026-11-19).
+
+        Same contract as :meth:`add_link`, with one extra result: under a
+        machine write context (:func:`_machine_write_context` — a
+        ``generated``/``computed`` origin carrying a model identity), a
+        ref-level *structural* edge carrying the full machine evidence
+        contract — ``meta.evidence`` chunk pins plus the
+        :data:`MACHINE_EDGE_META_KEYS` annotation — is neither written
+        nor refused. It is filed to the garden ledger as a
+        judge-reviewed ``relink`` proposal and an :class:`EdgeProposal`
+        receipt returns naming the pending ``reviews`` row. The garden
+        consumer's review decides it; an approval writes the edge through
+        the reviewed relink door
+        (:func:`precis.graph.garden.apply.apply_relink`), a rejection
+        keeps the proposal key closed while the source is unchanged.
+
+        Everything else delegates to :meth:`add_link` unchanged:
+
+        - a machine structural call missing the evidence contract —
+          refused ``machine-edge-structural`` as before;
+        - a structural call at a chunk position (``src_pos``/``dst_pos``)
+          — proposals are ref-level, so the standing refusal;
+        - the relink apply door's ``meta.garden_relink`` stamp — the
+          gate inside ``add_link`` itself admits or refuses it;
+        - every non-structural write and every non-machine context.
+
+        The ``link()`` verb doors (:meth:`apply_link_ops`,
+        ``NumericRefHandler._link``) call this so the caller reads a
+        proposal receipt instead of a refusal; internal doors that only
+        repoint edges keep ``add_link``. ``merge_meta`` /
+        ``preserve_fingerprint`` ride through to the write path — on the
+        proposal path no edge row is written, so both are no-ops.
+        """
+        rel_c, s_c, d_c, sp_c, dp_c = _canonical_edge(
+            relation, src_ref_id, dst_ref_id, src_pos, dst_pos
+        )
+        ctx = _machine_write_context()
+        if (
+            ctx is not None
+            and rel_c in MACHINE_EDGE_STRUCTURAL
+            and sp_c is None
+            and dp_c is None
+            and s_c != d_c
+            and not _RELINK_DOOR.get()
+            and isinstance(meta, dict)
+            and meta.get(GARDEN_RELINK_META) is None
+            and _edge_evidence_pins(meta)
+            and not [
+                key
+                for key in MACHINE_EDGE_META_KEYS
+                if not str(meta.get(key) or "").strip()
+            ]
+        ):
+
+            def _propose(c: Connection) -> Link | EdgeProposal:
+                return _propose_machine_edge(
+                    self,
+                    c,
+                    model=ctx.model,
+                    relation=str(rel_c),
+                    src_ref_id=s_c,
+                    dst_ref_id=d_c,
+                    meta=meta,
+                    set_by=str(set_by),
+                )
+
+            if conn is not None:
+                with conn.transaction():
+                    return _propose(conn)
+            with self.pool.connection() as c, c.transaction():
+                return _propose(c)
+        return self.add_link(
+            src_ref_id=src_ref_id,
+            dst_ref_id=dst_ref_id,
+            relation=relation,
+            src_pos=src_pos,
+            dst_pos=dst_pos,
+            set_by=set_by,
+            meta=meta,
+            merge_meta=merge_meta,
+            preserve_fingerprint=preserve_fingerprint,
+            conn=conn,
+        )
 
     def remove_link(
         self,

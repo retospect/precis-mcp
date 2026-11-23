@@ -661,6 +661,22 @@ class Link:
 
 
 @dataclass(frozen=True, slots=True)
+class EdgeProposal:
+    """The proposal receipt a writer-door link call returns when a machine
+    structural edge is filed to the garden ledger instead of written
+    (:meth:`LinksMixin.add_link_or_propose`, gr723211). ``review_id`` is the
+    pending ``reviews`` row the garden consumer's judge decides; ``filed``
+    is False when an identical proposal was already pending, so the call
+    deduped onto it rather than writing a second row."""
+
+    review_id: int
+    src_ref_id: int
+    dst_ref_id: int
+    relation: str
+    filed: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class RelationConstraint:
     """One ``relations`` row's constraint columns (migration 0180), as read by
     :meth:`Store.relation_constraints`. ``None`` kinds = unconstrained."""

@@ -1648,7 +1648,7 @@ class ComponentHandler(ValueEntityHandler):
         target = require_link_target("component", target)
         validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="component", id=str(id).strip())
-        n_added, n_removed = apply_link_ops(
+        n_added, n_removed, proposals = apply_link_ops(
             self.store,
             ref.id,
             link=target if mode == "add" else None,
@@ -1664,6 +1664,7 @@ class ComponentHandler(ValueEntityHandler):
                 n_links_removed=n_removed,
                 n_tags_added=0,
                 n_tags_removed=0,
+                proposals=proposals,
             )
         )
 

@@ -16,6 +16,8 @@ sides of the ``+recall`` floor.
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -27,7 +29,7 @@ from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store._links_ops import GARDEN_RELINK_META
 from precis.store.revision_context import revision_context, trust_producer
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, EdgeProposal, Link
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import link_claims, mint_hub
 
@@ -912,3 +914,275 @@ class TestApproverAllowlist:
                         }
                     },
                 )
+
+
+def _door_proposals(store: Store, target: int) -> list[dict[str, Any]]:
+    """Pending garden proposals filed against the ref, decoded."""
+    from precis.graph.garden.proposals import _parse_note
+
+    return [
+        g
+        for rev in store.reviews_for("ref", target)
+        if rev.verdict == "proposed" and (g := _parse_note(rev.note))
+    ]
+
+
+def _door_meta(store: Store) -> dict[str, Any]:
+    paper = _ref(store, "paper", "Methods paper")
+    (chunk,) = store.chunks.insert_chunks(
+        paper, [ChunkInsert(ord=0, text="The functional was PBE+U.", meta={})]
+    )
+    return _meta(evidence=[f"pc{chunk.id}"])
+
+
+class TestLinkDoorProposal:
+    """gr723211 (2026-11-19 ruling): the writer-facing door
+    (:meth:`Store.add_link_or_propose`, behind the ``link`` verb) files a
+    machine structural edge carrying its evidence contract as a
+    judge-reviewed ``relink`` proposal and returns a receipt. The
+    direct-write restriction itself is untouched — ``add_link`` still
+    refuses these calls, and so does the door when the contract is
+    missing."""
+
+    def test_evidence_bearing_structural_call_files_a_proposal(
+        self, store: Store
+    ) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        meta = _door_meta(store)
+        with _machine():
+            out = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+        assert isinstance(out, EdgeProposal) and out.filed
+        assert _link_row(store, a, b, "specialises") is None
+        (prop,) = _door_proposals(store, a)
+        assert prop["action"] == "relink" and prop["detector"] == "link_door"
+        payload = prop["payload"]
+        assert (
+            payload["child"],
+            payload["parent"],
+            payload["relation"],
+        ) == (a, b, "specialises")
+        assert set(payload["shas"]) == {str(a), str(b)}
+
+    def test_the_receipt_names_the_pending_review_row(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        meta = _door_meta(store)
+        with _machine():
+            out = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+        (rev,) = [r for r in store.reviews_for("ref", a) if r.verdict == "proposed"]
+        assert isinstance(out, EdgeProposal)
+        assert out.review_id == int(rev.review_id)
+
+    def test_missing_evidence_contract_still_refuses(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        with _machine():
+            for meta in (
+                None,
+                _meta(evidence=[]),
+                _meta(why=" "),
+                _meta(evidence=["pc999999999"]),
+            ):
+                with pytest.raises(BadInput, match="machine-edge-structural"):
+                    store.add_link_or_propose(
+                        src_ref_id=a,
+                        dst_ref_id=b,
+                        relation="specialises",
+                        meta=meta,
+                    )
+        assert not _door_proposals(store, a)
+
+    def test_chunk_level_structural_call_still_refuses(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        store.chunks.insert_chunks(b, [ChunkInsert(ord=0, text="body text", meta={})])
+        with _machine(), pytest.raises(BadInput, match="machine-edge-structural"):
+            store.add_link_or_propose(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation="specialises",
+                dst_pos=0,
+                meta=_meta(),
+            )
+        assert not _door_proposals(store, a)
+
+    def test_dedup_returns_the_pending_receipt(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        meta = _door_meta(store)
+        with _machine():
+            first = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+            second = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+        assert isinstance(first, EdgeProposal) and isinstance(second, EdgeProposal)
+        assert first.filed and not second.filed
+        assert second.review_id == first.review_id
+        assert len(_door_proposals(store, a)) == 1
+
+    def test_a_rejected_key_stays_closed(self, store: Store) -> None:
+        """The judge's rejection on unchanged content blocks a re-file —
+        the door surfaces the decided verdict as the refusal, not a fresh
+        proposal."""
+        from precis.graph.garden.proposals import resolve_proposal
+
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        meta = _door_meta(store)
+        with _machine():
+            prop = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+        assert isinstance(prop, EdgeProposal)
+        resolve_proposal(
+            store,
+            prop.review_id,
+            actor="garden-consumer",
+            verdict="rejected",
+            extra={"reason": "wrong_target"},
+        )
+        with _machine(), pytest.raises(BadInput, match="machine-edge-structural"):
+            store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+
+    def test_an_existing_edge_answers_with_the_link(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        existing = store.add_link(src_ref_id=a, dst_ref_id=b, relation="specialises")
+        with _machine():
+            out = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=_meta()
+            )
+        assert isinstance(out, Link) and int(out.id) == int(existing.id)
+        assert not _door_proposals(store, a)
+
+    def test_the_passive_spelling_files_its_own_edge(self, store: Store) -> None:
+        """``has-instance`` is stored as-written (it is not a
+        canonical-flip spelling) — the proposal names the edge the apply
+        door will write, against its src ref."""
+        taxon = _ref(store, "taxon", "term", meta={"start": "true"})
+        mem = _ref(store, "memory", "setup note")
+        meta = _door_meta(store)
+        with _machine():
+            out = store.add_link_or_propose(
+                src_ref_id=taxon,
+                dst_ref_id=mem,
+                relation="has-instance",
+                meta=meta,
+            )
+        assert isinstance(out, EdgeProposal)
+        (prop,) = _door_proposals(store, taxon)
+        assert prop["payload"]["relation"] == "has-instance"
+        assert prop["payload"]["child"] == taxon
+        assert prop["payload"]["parent"] == mem
+
+    def test_plain_agent_call_still_writes_the_edge(self, store: Store) -> None:
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        out = store.add_link_or_propose(
+            src_ref_id=a, dst_ref_id=b, relation="specialises", meta=_meta()
+        )
+        assert isinstance(out, Link)
+        assert _link_row(store, a, b, "specialises") is not None
+
+    def test_a_door_proposal_applies_through_apply_relink(self, store: Store) -> None:
+        """The whole loop: door-filed proposal → ``apply_relink`` re-verifies
+        (pending row, sha pins, liveness, no dup, no cycle), resolves it
+        approved and writes the edge through the relink door's stamp."""
+        from precis.graph.garden.apply import apply_relink
+
+        a, b = (
+            _ref(store, "taxon", "a"),
+            _ref(store, "taxon", "b", meta={"start": "true"}),
+        )
+        meta = _door_meta(store)
+        with _machine():
+            prop = store.add_link_or_propose(
+                src_ref_id=a, dst_ref_id=b, relation="specialises", meta=meta
+            )
+        assert isinstance(prop, EdgeProposal)
+        rec = apply_relink(store, prop.review_id, actor="garden-consumer")
+        row = _link_row(store, a, b, "specialises")
+        assert row is not None and int(row[0]) == rec.link_id
+        stamp = row[3][GARDEN_RELINK_META]
+        assert stamp["proposal"] == prop.review_id
+        assert stamp["review"] == rec.review
+
+    def test_resubmission_after_source_edit_gets_a_new_receipt(
+        self, store: Store
+    ) -> None:
+        from precis.graph.garden.proposals import pending_proposals
+
+        source = _ref(store, "memory", "Original setup")
+        term = _ref(store, "taxon", "PBE+U")
+        meta = _door_meta(store)
+
+        def submit() -> EdgeProposal:
+            with _machine():
+                result = store.add_link_or_propose(
+                    src_ref_id=source,
+                    dst_ref_id=term,
+                    relation="instance-of",
+                    meta=meta,
+                )
+            assert isinstance(result, EdgeProposal)
+            return result
+
+        original = submit()
+        store.update_ref(source, title="Revised setup")
+        replacement = submit()
+        assert replacement.filed
+        assert replacement.review_id != original.review_id
+        assert submit().review_id == replacement.review_id
+        (pending,) = pending_proposals(store, action="relink")
+        assert pending.review_id == replacement.review_id and pending.current
+
+    def test_concurrent_submissions_share_one_review(self, store: Store) -> None:
+        source = _ref(store, "memory", "Setup")
+        term = _ref(store, "taxon", "PBE+U")
+        meta = _door_meta(store)
+        start = Barrier(2, timeout=5)
+
+        def submit() -> EdgeProposal:
+            with _machine():
+                start.wait()
+                result = store.add_link_or_propose(
+                    src_ref_id=source,
+                    dst_ref_id=term,
+                    relation="instance-of",
+                    meta=meta,
+                )
+            assert isinstance(result, EdgeProposal)
+            return result
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(submit)
+            second = pool.submit(submit)
+            a, b = first.result(), second.result()
+        assert a.review_id == b.review_id
+        assert a.filed != b.filed
+        assert len(_door_proposals(store, source)) == 1
