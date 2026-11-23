@@ -2201,8 +2201,13 @@ def build_tick_prompt(
     propose and nothing ever converges. The caller decides the body
     (never inferred here from other meta).
     """
+    from precis.quest.trap_check import FIXTURE_CONTEXT, SEED_KEY
+
     qid = quest.id
     stmt = quest.title or f"quest {qid}"
+    statement = stmt
+    if (getattr(quest, "meta", None) or {}).get("seed_key") == SEED_KEY:
+        statement = f"{stmt}\n\n{FIXTURE_CONTEXT}"
     # ``priority`` spells the same ladder name the reads render
     # (``3 (high)``, gr592664) — the model reads the name the agent wrote,
     # not a bare number it then has to map.
@@ -2238,7 +2243,7 @@ def build_tick_prompt(
     literature = _literature_section(store, qid)
 
     common = dict(
-        statement=stmt,
+        statement=statement,
         prio=prio,
         momentum=momentum.label,
         momentum_detail=(

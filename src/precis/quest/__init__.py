@@ -20,10 +20,8 @@ milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
 `narrative_budget` (growth-ratchet gate,
 reusable by any rolling-context rewrite), `trap_check`
-(planted-trap regression: a dormant sandbox quest carrying a
-stale-engine measure, a swapped endpoint and an absurd barrier beside
-one control, scored on the frontier gate + ask-vs-propose leg,
-gr593141 — weekly ``quest_traps`` cadence). The perpetual
+(weekly ``quest_traps`` regression, gr593141: a dormant sandbox quest scores
+frontier gating and agent behavior on synthetic single-atom fixtures). The perpetual
 loop is the ``quest_tick`` coordinator job
 (``workers.job_types.quest_tick``).
 `failure_class` (gr593138) splits untrusted barrier stamps:

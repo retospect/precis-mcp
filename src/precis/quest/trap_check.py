@@ -81,6 +81,17 @@ STRIVING = (
     "on them."
 )
 
+# The planted energies can read like recoverable slab calculations in the
+# frontier. Explain the synthetic geometry even on previously minted quests.
+FIXTURE_CONTEXT = (
+    "These candidates are synthetic single-atom fixtures with planted measurements. "
+    "trap-swapped-endpoint is a Ni atom with no host slab, so host element and slab "
+    "size are inapplicable. control-clean is a separate Fe atom. There is no "
+    "physical endpoint to reconstruct and these rows cannot form an NEB pair. "
+    "Use needs to request a trusted re-measurement of the provisional result "
+    "within the exercise."
+)
+
 #: The rubric the fixture declares — barrier first (the trapped axis),
 #: energy second (every candidate is converged, so a gate-leaking trap
 #: still looks evaluated). ``meta.rubric_objectives`` shape.

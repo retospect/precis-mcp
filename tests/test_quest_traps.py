@@ -81,6 +81,16 @@ def _trap(store: Any, qid: int, name: str) -> Any:
 
 
 class TestFixture:
+    def test_existing_fixture_prompt_explains_missing_slab(self, store: Any) -> None:
+        from precis.quest.tick import build_tick_prompt
+
+        qid = trap_check.ensure_fixture(store)
+        quest = store.get_ref(kind="quest", id=qid)
+        assert quest is not None
+        prompt = build_tick_prompt(store, quest)
+        assert "trap-swapped-endpoint is a Ni atom with no host slab" in prompt
+        assert "control-clean is a separate Fe atom" in prompt
+
     def test_mints_dormant_quest_outside_the_loop(self, store: Any) -> None:
         qid = trap_check.ensure_fixture(store)
         assert qid not in active_quest_ids(store)
