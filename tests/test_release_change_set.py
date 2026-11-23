@@ -292,6 +292,22 @@ def test_change_set_short_even_with_prod_members_still_holds(rig: Rig) -> None:
     assert "2 of 3" in refusal["line"]
 
 
+def test_prod_declared_count_outranks_a_smaller_count_on_main(rig: Rig) -> None:
+    """td768687 review: prod holds `Change-Set: x 3`; main adds one member
+    declaring only the default pair. Two members are not the declared
+    three, so the cut holds."""
+    d1 = _commit_trailer(rig, "src/d1.py", "d1", "Change-Set: x-1 3")
+    _push_main(rig)
+    _push_branch(rig, "prod", d1)
+    _commit_trailer(rig, "src/d2.py", "d2", "Change-Set: x-1")
+    _push_main(rig)
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 1
+    refusal = _hold(out)
+    assert refusal["class"] == REFUSAL_HOLDING
+    assert "2 of 3" in refusal["line"]
+
+
 def test_move_below_never_reaches_prod(rig: Rig) -> None:
     """The lone member is the oldest unshipped commit: cutting below it
     would pass prod, so nothing is shippable and the cut holds."""

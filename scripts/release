@@ -931,11 +931,14 @@ def _resolve_requires(raw: str) -> str | None:
     return rev(f"{token}^{{commit}}") or None
 
 
-def _shipped_members(prod: str, cids: list[str]) -> dict[str, int] | None:
-    """Change-Set id → how many commits origin/prod already holds that
-    carry it in their trailer block (members shipped before this range),
-    for the ``cids`` asked about; None when git cannot read prod's history
-    (the caller holds). No prod ref: nothing has shipped."""
+def _shipped_members(
+    prod: str, cids: list[str]
+) -> dict[str, tuple[int, int]] | None:
+    """Change-Set id → (how many commits origin/prod already holds that
+    carry it in their trailer block, the highest member count those
+    commits declared), for the ``cids`` asked about; None when git cannot
+    read prod's history (the caller holds). No prod ref: nothing has
+    shipped."""
     if not prod or not cids:
         return {}
     out = git("log", "-i", "--grep=^change-set:", "--format=%H%x1f%B%x1e", prod)
@@ -943,6 +946,7 @@ def _shipped_members(prod: str, cids: list[str]) -> dict[str, int] | None:
         return None
     want = set(cids)
     seen: dict[str, set[str]] = {}
+    wants: dict[str, int] = {}
     for rec in out.split("\x1e"):
         sha, sep, body = rec.strip("\n").partition("\x1f")
         if not (sep and sha):
@@ -951,7 +955,10 @@ def _shipped_members(prod: str, cids: list[str]) -> dict[str, int] | None:
             tokens = value.split()
             if key.lower() == _CHANGE_SET_KEY and tokens and tokens[0] in want:
                 seen.setdefault(tokens[0], set()).add(sha.strip())
-    return {cid: len(shas) for cid, shas in seen.items()}
+                n = tokens[1] if len(tokens) > 1 else ""
+                if n.isdigit() and int(n) >= 2:
+                    wants[tokens[0]] = max(wants.get(tokens[0], 2), int(n))
+    return {cid: (len(shas), wants.get(cid, 2)) for cid, shas in seen.items()}
 
 
 def _requires_targets(
@@ -999,12 +1006,9 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
             return s, None  # already shipped; the rollback guard still applies
         return s, f"{s[:9]} is outside the release history"
     sets = _change_sets(walk)
-    short = [
-        cid
-        for cid, ent in sets.items()
-        if len([m for m in ent["members"] if m in pos]) < ent["want"]
-    ]
-    shipped = _shipped_members(prod, short)
+    # Prod may declare a larger set size than main's members do, so every
+    # set is looked up, not only the ones main already sees as short.
+    shipped = _shipped_members(prod, list(sets))
     if shipped is None:
         return s, "origin/prod's history is unreadable — refusing to cut unchecked"
     requires = _requires(walk)
@@ -1033,11 +1037,13 @@ def _split_set_cut(s: str, main_at: str = "") -> tuple[str, str | None]:
             in_cut = [m for m in members if pos[m] >= cut]
             if not in_cut:
                 continue  # entirely above the cut: not this release's problem
-            have = len(members) + shipped.get(cid, 0)  # prod's count as shipped
-            if have < ent["want"]:
+            on_prod, prod_want = shipped.get(cid, (0, 2))
+            have = len(members) + on_prod  # prod's count as shipped
+            want = max(ent["want"], prod_want)  # highest count across both
+            if have < want:
                 drops.append(max(pos[m] for m in in_cut))
                 drop_why.append(
-                    f"Change-Set {cid} has {have} of {ent['want']} members on main"
+                    f"Change-Set {cid} has {have} of {want} members on main"
                 )
             elif any(pos[m] < cut for m in members):
                 holds.append(
