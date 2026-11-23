@@ -10,6 +10,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.python import PythonHandler
+from precis.python_index import RepoCache
 
 
 def _write(repo: Path, rel: str, content: str) -> None:
@@ -211,10 +212,14 @@ def test_pattern_single_token_miss_has_no_retry_note(
 @pytest.mark.nightly(
     reason="52 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
+@pytest.mark.timeout(900)  # CI worst >300s macos-latest (gr778320) x3
 def test_callers_on_own_repo_finds_resolved_edges() -> None:
     """Smoke on the real tree: a well-called helper has resolved callers."""
     root = Path(__file__).resolve().parent.parent
-    h = PythonHandler(hub=Hub(), roots={"precis": root})
+    # Process-local cache: the default snapshot_dir pickle+gzips every
+    # module's source (~50 MB) to ~/.cache — dead IO and a memory spike on
+    # an ephemeral CI runner that never reuses it.
+    h = PythonHandler(hub=Hub(), roots={"precis": root}, cache=RepoCache())
     body = h.get(
         id="precis::precis.python_index.indexer.index_repo", view="callers"
     ).body
