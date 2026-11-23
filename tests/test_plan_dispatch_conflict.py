@@ -169,6 +169,14 @@ def test_the_restated_keys_match_the_lander() -> None:
     assert pd.CONFLICT_KEY == land_slice.CONFLICT_KEY == "conflict"
 
 
+def test_the_restated_keys_match_run_slice() -> None:
+    """Pin the metadata key that marks an attempt-free failure and the
+    reason recorded for preflight outages. The dispatcher accepts any
+    nonempty reason under that key."""
+    assert pd.MCP_OUTAGE_KEY == run_slice.MCP_OUTAGE_KEY == "mcp-outage"
+    assert pd.ATTEMPT_FREE_KEY == run_slice.ATTEMPT_FREE_KEY
+
+
 # ── 1. the conflict-only attempt ────────────────────────────────────
 
 

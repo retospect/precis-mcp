@@ -81,7 +81,14 @@ that holds the lane's credentials with ``params.target_node``):
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
-  token. A
+  token. Before a write-MCP launch the grant is preflighted
+  (:func:`_preflight_mcp`, one ``initialize`` with the session's bearer):
+  an HTTP answer that is not 2xx — the 401 bearer rejection above all —
+  fails the attempt in seconds (jo546987, jo547598), while no transport
+  answer at all (a timeout, a refused connection) is the MCP being down,
+  which gives the lease back clean with ``meta.attempt_free =
+  "mcp-outage"`` so the tick re-queues and backs off instead of burning
+  the lane ladder (gr731751, closing gr707371). A
   ``devin_tree`` launch is gated by :func:`_devin_preflight` (the binary
   resolves, ``devin auth status`` reports a login, and the checkout's
   ``.claude/worktrees`` is seeded into Devin's trusted workspaces —
@@ -504,6 +511,18 @@ ATTEMPT_FREE_KEY = "attempt_free"
 #: clone could not be cut. No attempt is burned and no ladder rung spent:
 #: the task's pushed work is intact and a later launch continues from it.
 WORKSPACE_KEY = "workspace"
+
+#: ``meta.attempt_free`` of a launch whose precis MCP preflight got no
+#: transport answer — a timeout or a refused connection, the server or its
+#: local proxy being down (gr731751, closing gr707371; both symptoms live
+#: here). The MCP is infra the session needs, not the slice's diff, so the
+#: lease goes back clean and the tick re-queues, its free-failure run
+#: bounding and backing off the wait (gr662077) until the MCP answers —
+#: never the lane ladder burned on an outage. An HTTP answer — the 401
+#: bearer rejection above all (jo547598) — is the fast-fail path that
+#: still burns the attempt. Restated in ``plan_dispatch`` (the same
+#: one-way rule).
+MCP_OUTAGE_KEY = "mcp-outage"
 
 #: Job-meta key listing the :data:`precis.plans.lanes.HUMAN_ONLY_PATHS`
 #: globs the failed attempt's branch touched (td584381 S1a). A stamped
@@ -6454,7 +6473,14 @@ def _preflight_mcp(tree: Path, token: str | None) -> None:
     token the service account lacked, then a grant file the server could
     not read), and the 401 surfaced only in the handoff. No precis server
     in ``.mcp.json`` or no token: nothing to check (the session then runs
-    without the MCP, as before)."""
+    without the MCP, as before).
+
+    What raises what (gr731751, closing gr707371): an HTTP answer keeps
+    the fast-fail — the server is up and rejected the launch. No
+    transport answer (a timeout, a refused connection) is the MCP being
+    *down*, which raises :class:`_McpPreflightOutage`: submit gives the
+    lease back attempt-free and the tick retries, so an outage burns no
+    lane-ladder rung."""
     url = _mcp_url(tree)
     if url is None or not token:
         return
@@ -6486,7 +6512,7 @@ def _preflight_mcp(tree: Path, token: str | None) -> None:
     except urllib.error.HTTPError as e:
         status = e.code
     except OSError as e:
-        raise RuntimeError(
+        raise _McpPreflightOutage(
             f"precis MCP preflight: no answer from {url} ({e})"
         ) from None
     if not 200 <= status < 300:
@@ -6501,6 +6527,15 @@ def _preflight_mcp(tree: Path, token: str | None) -> None:
 
 class _ValidationMcpWait(RuntimeError):
     """The validation endpoint has not attested the deployed revision."""
+
+
+class _McpPreflightOutage(RuntimeError):
+    """The precis MCP preflight got no transport answer — the request
+    timed out or the connection was refused (gr707371, gr731751): the
+    server or its local proxy is down. Submit gives the lease back with
+    ``meta.attempt_free = "mcp-outage"`` — the tick re-queues and backs
+    off until the MCP answers — instead of burning the lane ladder on
+    infra the slice's diff did not break."""
 
 
 _COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
@@ -8344,19 +8379,25 @@ def submit(ctx: Any, spec: Any) -> Any:
         _raise_lane_refusal(ctx.store, lane.name, str(exc), until)
         ctx.record_failure(f"run_slice: {exc}")
         return None
-    except (_ReviewRefusal, _ValidationMcpWait) as exc:
-        # The review target or the validation endpoint is not ready.
-        # Give back the lease without charging the task. The dispatcher
-        # backs off repeated waits and escalates a sustained failure.
+    except (
+        _ReviewRefusal,
+        _ValidationMcpWait,
+        _McpPreflightOutage,
+    ) as exc:
+        # The review target, the validation endpoint or the precis MCP is
+        # not answering. Give back the lease without charging the task —
+        # the dispatcher backs off repeated waits (its free-failure
+        # machinery) and escalates a sustained failure.
         _drop_unlaunched(tree)
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
-        reason, stage = (
-            ("validation-mcp", "validation")
-            if isinstance(exc, _ValidationMcpWait)
-            else (REVIEW_WAIT_KEY, "review")
-        )
+        if isinstance(exc, _ValidationMcpWait):
+            reason, stage = ("validation-mcp", "validation")
+        elif isinstance(exc, _McpPreflightOutage):
+            reason, stage = (MCP_OUTAGE_KEY, "mcp")
+        else:
+            reason, stage = (REVIEW_WAIT_KEY, "review")
         ctx.set_meta(**{ATTEMPT_FREE_KEY: reason})
         ctx.record_failure(f"run_slice: td{todo_id} {stage} not launched: {exc}")
         return None

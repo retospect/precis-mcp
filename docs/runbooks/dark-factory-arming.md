@@ -934,8 +934,15 @@ The other settings a slice host reads:
   a 0600 grant owned by the worker account was unreadable to the server
   and every slice call answered 401 (jo547598). Before launching, the
   worker sends one `initialize` with the session's bearer to the
-  `.mcp.json` URL and fails the attempt in seconds on anything but a
-  2xx, so a broken grant never costs a session's wall clock.
+  `.mcp.json` URL. An HTTP answer that is not 2xx — the 401 bearer
+  rejection above all — fails the attempt in seconds, so a broken grant
+  never costs a session's wall clock. No transport answer at all (a
+  timeout, a refused connection) is the MCP being down, not the grant:
+  `run_slice._preflight_mcp` raises `_McpPreflightOutage`, `submit`
+  gives the lease back with `meta.attempt_free = "mcp-outage"` and the
+  tick re-queues with the free-failure backoff, capped by
+  `FREE_RUN_CAP`, which parks it behind a coordinator ask
+  (gr731751, closing gr707371).
 - `PRECIS_SLICE_READ_MCP`: unset is today's behaviour — Codex and Devin
   code slices launch with no precis MCP. Set to `triage` (the intended
   production value) or `reader` and a `code`-class slice on a `read_mcp`
