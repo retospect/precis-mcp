@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -480,12 +480,6 @@ def _stub_cancelled_fan_out(
 
     monkeypatch.setattr(rt.hub, "handler_for", handler_for)
     monkeypatch.setattr(type(rt), "_cross_kind_kinds", lambda self: list(handlers))
-    # One worker, todo ahead of memory: the stub that advances the frozen
-    # clock must run last, or todo starts with the budget already spent
-    # and reports a TimeoutError instead of its empty hit list.
-    _serial_fan_out(monkeypatch)
-    monkeypatch.setitem(search_mod._cross_kind_costs, "todo", 0.0)
-    monkeypatch.setitem(search_mod._cross_kind_costs, "memory", 1.0)
 
 
 @pytest.mark.parametrize(
@@ -493,7 +487,7 @@ def _stub_cancelled_fan_out(
     [
         (1.0, False, ["hybrid", "lexical"]),
         (1.0, True, ["hybrid", "lexical"]),
-        (0.7, False, ["hybrid"]),
+        (4.75, False, ["hybrid"]),
     ],
 )
 def test_cancelled_kind_retries_lexical(
@@ -504,20 +498,9 @@ def test_cancelled_kind_retries_lexical(
     expected_modes: list[str],
 ) -> None:
     rt = runtime_stateless
-    # The frozen clock cannot model "the budget is nearly gone" under
-    # tiering: the harvest reads the same clock the fake advances from a
-    # pool thread, and the interleaving is racy. Small-elapsed cases
-    # stay deterministic on the frozen clock (the clock stays inside
-    # the tier window however the threads interleave); the no-retry
-    # case burns REAL time — 0.7 s of a 1.0 s deadline leaves 0.3 s,
-    # under the 0.5 s retry floor.
-    frozen = elapsed >= 1.0
-    if frozen:
-        clock = _frozen_clock(monkeypatch)
-        monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 12.0)
-    else:
-        clock = None
-        monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 1.0)
+    clock = _frozen_clock(monkeypatch)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 5.0)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PRIORITY_S", 5.0)
     # A production embedder must be wired: with no embedder the fan-out
     # degrades the whole call to lexical up front (named in the header)
     # and the hybrid leg these parametrizations exercise never runs.
@@ -527,10 +510,7 @@ def test_cancelled_kind_retries_lexical(
     def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
         modes.append(mode)
         if mode == "hybrid":
-            if clock is not None:
-                clock["t"] += elapsed
-            else:
-                time.sleep(elapsed)
+            clock["t"] += elapsed
             raise QueryCanceled("hybrid leg canceled")
         if retry_fails:
             raise QueryCanceled("lexical leg canceled")
@@ -546,15 +526,22 @@ def test_cancelled_kind_retries_lexical(
         ]
 
     _stub_cancelled_fan_out(monkeypatch, rt, search_hits)
-    # One worker, memory seeded behind todo: the stub spends the frozen
-    # clock instantly inside memory's leg, and the parallel pool lets
-    # todo's dequeue read the clock either side of that spend — past it,
-    # todo reports TimeoutError next to memory's cancel and the dispatch
-    # raises Internal instead of the errored footer this asserts (r350
-    # gate-fast flake).
-    with _fresh_cost_memory(), ThreadPoolExecutor(max_workers=1) as pool:
-        search_mod._cross_kind_costs["memory"] = search_mod.CROSS_KIND_PER_KIND_S
-        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: pool)
+
+    # Finish todo before memory advances the clock, and finish both before
+    # harvest can wait on them. At 4.75 s the cancel leaves 0.25 s, below
+    # the 0.5 s lexical retry floor.
+    class InlineExecutor:
+        def submit(
+            self, fn: Callable[..., list[SearchHit] | Exception], *args: Any
+        ) -> Future[list[SearchHit] | Exception]:
+            future: Future[list[SearchHit] | Exception] = Future()
+            future.set_result(fn(*args))
+            return future
+
+    with _fresh_cost_memory():
+        search_mod._cross_kind_costs["memory"] = 1.0
+        executor = InlineExecutor()
+        monkeypatch.setattr(search_mod, "_cross_kind_priority_pool", executor)
         out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
 
     assert modes == expected_modes
