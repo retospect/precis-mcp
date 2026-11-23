@@ -22,9 +22,10 @@ markdown file.
 
 Five verbs, no new ones: `put` (create / add a chunk), `edit` (change text
 **or** structure), `get` (outline / verbatim), `delete` (soft-retire),
-`search` (lexical / semantic over prose). `tag`/`link` on `kind='draft'`
-raise `Unsupported` — a draft is not taggable/linkable as a whole;
-cross-references are markdown refs embedded in prose (how a handle routes:
+`search` (lexical / semantic over prose). `tag` on `kind='draft'` raises
+`Unsupported`; `link` takes only `rel='parent'`, `'serves'`, `'draft-of'`
+(whole draft) and `'derived-from'` (one chunk, below).
+Cross-references are markdown refs embedded in prose (how a handle routes:
 `precis-draft-cite-help`); the per-chunk autolinker adds a backlink —
 `cites` for a citable source (paper/patent/finding), `related-to`
 otherwise. The edge is grounded on both ends: the source `dc<id>` (which
@@ -35,9 +36,8 @@ hops to memory, concept or note nodes — are authoring aids and drop. A
 claim that lives only in such a node needs a finding minted or found
 before it can be cited.
 
-The web reader URL `/smartdraft/<id>` (or `/smartdraft/<slug>`) is this
-same draft: read it with `get(kind='draft', id='dr<id>')`, never
-`webfetch`.
+The web reader URL `/smartdraft/<id>` or `/smartdraft/<slug>` is this
+draft: read it with `get(kind='draft', id='dr<id>')`, not `webfetch`.
 
 ## Quick reference — verbs, views, edit params, grammar
 
@@ -203,7 +203,7 @@ in it. Blank title → `BadInput`. Without a root heading, only the ref changes.
 
 `edit(kind="draft", id=<slug>, args={"language": "en-GB"})` sets the draft
 language (`""` clears): the Word export writes it to `w:lang`/`dc:language`;
-unset exports en-US. Tags must be at most 255 characters.
+unset exports en-US.
 
 `ror` is the institution's [ROR](https://ror.org) id — authors sharing
 one collapse to a single numbered affiliation. Renders in the web reader
@@ -211,6 +211,12 @@ and both exports (PDF via `authblk`, .docx), org name linked to its ROR;
 no affiliations → a plain name list. Web reader has the same
 editor: an **authors ▾** dropdown, one author per line as `Name |
 Affiliation | ROR`, posting to `/drafts/<slug>/authors`.
+
+## Record a chunk's provenance
+
+`link(kind='draft', id='dc<N>', target='memory:me<N>', rel='derived-from')`
+starts the edge at that chunk; `mode='remove'` drops it. `id` must be a
+live chunk handle (a slug is refused).
 
 ## Add prose — one paragraph per put
 
@@ -372,12 +378,10 @@ chunk is shown. Plain list-container reads use the same whole-chunk limit
 and continuation. Recovery notices and other footers also count toward the
 budget; if a single chunk with its footer cannot fit, the read refuses.
 
-A chunk read shows the addressed chunk alone — when it has children, the
-footer counts them and names the `dc<N>-0..K` span that reads the whole
-subtree inline (children are contiguous in reading order).
+A chunk read shows that chunk alone; with children, the footer names the
+`dc<N>-0..K` span that reads the whole subtree inline.
 
-Reading order follows `pos`, not insertion time. Inspect placement with
-`get(id="dc<id>", view="fisheye")`. Read the outline before prose.
+Reading order follows `pos`, not insertion time. Read the outline before prose.
 For view rungs, reference rings and section eyes, see [[precis-fisheye-help]].
 
 The outline’s **Work in progress** block lists blocked/in-flight todos
