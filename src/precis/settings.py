@@ -350,22 +350,6 @@ REGISTRY: dict[str, SettingSpec] = {
             "DB-only — no env fallback.",
         ),
         SettingSpec(
-            key="release.mcp_served",
-            type="str",
-            env_var=None,
-            default=None,
-            doc="Legacy single record of what a session MCP serves, as "
-            "JSON {sha, served_from, started_at, at, instance, "
-            "pending_sha?}, written only by pre-gr762430 servers. Current "
-            "servers write one record per instance under "
-            "release.mcp_served.<host:pid> (precis.mcp_served_stamp) at "
-            "start, every 5 minutes, and when the checkout watchdog sees "
-            "the checkout move; release_confirm holds every live instance "
-            "to the release (gr685985, gr762430) and reads this key as one "
-            "more instance for one release (remove with the fallback, "
-            "gr762430). DB-only — no env fallback.",
-        ),
-        SettingSpec(
             key="release.unbounced_workers",
             type="str",
             env_var=None,

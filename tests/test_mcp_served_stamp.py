@@ -62,7 +62,6 @@ def test_each_instance_writes_its_own_key_and_never_the_legacy_one(
         "release.mcp_served.gw-mcp:7",
         "release.mcp_served.laptop-dev:31043",
     ]
-    assert mss.read_stamp(store) is None
 
 
 def test_at_is_the_store_clock_so_a_writer_far_behind_is_still_live(
@@ -284,11 +283,34 @@ def test_a_stamper_start_prunes_day_old_instance_records(store: Store) -> None:
     new = {"sha": SHA, "at": "2026-11-20T04:00:00Z", "instance": "live:2"}
     psettings.set_setting(mss.stamp_key("gone:1"), json.dumps(old), store=store)
     psettings.set_setting(mss.stamp_key("live:2"), json.dumps(new), store=store)
-    psettings.set_setting(mss.LEGACY_KEY, json.dumps(old), store=store)
     assert mss.prune_stamps(store, now=T0) == 1
     assert [r["instance"] for r in mss.read_stamps(store)] == ["live:2"]
-    psettings.invalidate()
-    assert mss.read_stamp(store) is not None  # the legacy key is never pruned
+
+
+def test_the_legacy_single_key_is_never_consulted(store: Store) -> None:
+    """gr764909: a leftover ``release.mcp_served`` row (the pre-gr762430
+    last-writer key) is invisible — readers consult only
+    ``release.mcp_served.<host:pid>`` records, so a stray instance's
+    legacy stamp can no longer mask or stand for a live server."""
+    fresh = datetime.now(UTC).strftime(mss._TS_FMT)
+    legacy = {"sha": SHA, "at": fresh, "instance": "laptop-dev:9"}
+    psettings.set_setting("release.mcp_served", json.dumps(legacy), store=store)
+    assert mss.read_stamps(store) == []
+    assert mss.live_stamps(store) == []
+    # Beside live per-instance records it is not merged in either, even
+    # under an instance name no per-instance record carries.
+    rec = {"sha": SHA, "at": fresh, "instance": "gw-mcp:7"}
+    psettings.set_setting(mss.stamp_key("gw-mcp:7"), json.dumps(rec), store=store)
+    assert [r["instance"] for r in mss.live_stamps(store)] == ["gw-mcp:7"]
+    # And the prune never touches it (migration 0363 deletes the row).
+    legacy["at"] = (T0 - mss.PRUNE_AFTER - timedelta(seconds=1)).strftime(mss._TS_FMT)
+    psettings.set_setting("release.mcp_served", json.dumps(legacy), store=store)
+    assert mss.prune_stamps(store, now=T0) == 0
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM app_settings WHERE key = 'release.mcp_served'"
+        ).fetchone()
+    assert row is not None and row[0] == 1
 
 
 def test_a_watched_checkout_server_writes_the_record(
@@ -367,10 +389,10 @@ def test_a_store_error_never_raises(
     t.join(5)
 
 
-def test_a_malformed_record_reads_as_none(store: Store) -> None:
+def test_a_malformed_record_is_skipped(store: Store) -> None:
     for raw in ("not json", "[]", json.dumps({"sha": SHA}), json.dumps({"at": "x"})):
-        psettings.set_setting(mss.LEGACY_KEY, raw, store=store)
-        assert mss.read_stamp(store) is None
+        psettings.set_setting(mss.stamp_key("bad:1"), raw, store=store)
+        assert mss.read_stamps(store) == []
 
 
 def test_note_pending_updates_the_stamp_and_is_a_noop_without_a_stamper(

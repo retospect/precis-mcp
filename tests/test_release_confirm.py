@@ -886,9 +886,11 @@ def _mcp_stamp(
     started_min: float | None = None,
     legacy: bool = False,
 ) -> dict[str, Any]:
-    """Write one instance's record as the server does, ``age_min`` old
-    (gr762430: ``release.mcp_served.<instance>``); ``legacy`` writes the
-    pre-gr762430 single key instead. Returns the record."""
+    """Write and return an instance stamp that is ``age_min`` minutes old.
+
+    Use ``legacy=True`` to simulate a leftover pre-gr762430 row under the
+    bare ``release.mcp_served`` key.
+    """
     now = datetime.now(UTC)
     at = now - timedelta(minutes=age_min)
     started = now - timedelta(minutes=age_min if started_min is None else started_min)
@@ -1368,22 +1370,6 @@ def test_mcp_a_killed_colour_ages_out_after_the_short_window(store: Store) -> No
     assert ev.ok and ev.mcp_stale == ()
 
 
-def test_the_legacy_record_of_an_instance_with_its_own_key_is_dropped(
-    store: Store,
-) -> None:
-    """Rollout fallback: the per-instance record wins over a legacy record
-    naming the same instance."""
-    R.record_prod_head(store, SHA, [])
-    _beat(store, "node-a", SHA)
-    # Started later than the per-instance record: without the dedupe the
-    # same-host rule would pick the legacy record.
-    _mcp_stamp(store, SHA2, instance=GW, legacy=True, started_min=0)
-    _mcp_stamp(store, SHA, instance=GW, started_min=5)
-    ev = rcf.gather_evidence(store, REL, now=_past_window())
-    assert ev.ok and ev.mcp_stale == ()
-    assert f"mcp: at {SHA[:12]}" in ev.text and "live instances" not in ev.text
-
-
 def test_the_mcp_ask_title_names_at_most_three_instances(store: Store) -> None:
     mint = _cut(store)
     R.record_prod_head(store, SHA, [])
@@ -1464,33 +1450,27 @@ def test_a_reopen_whose_comment_fails_changes_nothing(
     assert ref is not None and ref.meta.get("rearmed_by_ask") == asks[0]
 
 
-def test_the_legacy_single_key_counts_as_one_more_instance(store: Store) -> None:
-    """Rollout fallback (remove after gr762430's release): a server still on
-    the old code writes ``release.mcp_served``; it is held to the release
-    beside the per-instance records, by its own ``instance`` name."""
+def test_the_legacy_single_key_is_never_consulted(store: Store) -> None:
+    """gr764909: a leftover ``release.mcp_served`` row (what a pre-gr762430
+    server wrote) no longer counts — it can neither attest nor park the
+    probe, so a stray stack's stale legacy stamp cannot mask the live
+    servers or hold them to the release."""
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA)
-    _mcp_stamp(store, SHA, instance=GW)
-    old = _mcp_stamp(store, SHA2, instance=STRAY, legacy=True)
+    # Alone, a live legacy row attests nothing.
+    _mcp_stamp(store, SHA2, instance=STRAY, legacy=True)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
-    assert ev.mcp_only and [s.instance for s in ev.mcp_stale] == [STRAY]
-    assert f"{STRAY} (started {old['started_at']})" in ev.problems[0]
-    # Alone and at the release, the legacy record still attests.
-    psettings.clear_setting(f"release.mcp_served.{GW}", store=store)
-    _mcp_stamp(store, SHA, instance=STRAY, legacy=True)
+    assert ev.ok and ev.problems == []
+    assert "mcp: not attested (no live served-sha stamp)" in ev.text
+    # Beside a live per-instance record at the release it is not merged
+    # in — not even as a lagging instance.
+    _mcp_stamp(store, SHA, instance=GW)
     ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert ev.ok and f"mcp: at {SHA[:12]}" in ev.text
-    # The old server restarted onto the new code on the same host: its
-    # per-instance record supersedes the legacy one it left behind —
-    # the legacy record stopped being refreshed when the old process died.
-    _mcp_stamp(
-        store, SHA2, instance="laptop-dev:1", legacy=True, started_min=50, age_min=11
-    )
-    _mcp_stamp(store, SHA, instance="laptop-dev:2", started_min=5)
-    ev = rcf.gather_evidence(store, REL, now=_past_window())
-    assert ev.ok and ev.mcp_stale == ()
+    assert ev.mcp_stale == ()
 
 
-def test_mcp_served_setting_is_registered() -> None:
-    spec = psettings.REGISTRY["release.mcp_served"]
-    assert spec.env_var is None and spec.default is None
+def test_mcp_served_legacy_key_is_unregistered() -> None:
+    """gr764909: the bare key is out of the registry — the settings CLI
+    refuses unregistered keys, so no write path for it remains."""
+    assert "release.mcp_served" not in psettings.REGISTRY

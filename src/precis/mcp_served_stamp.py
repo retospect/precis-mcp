@@ -38,15 +38,13 @@ so two stamping servers sharing one hostname are both held to the
 release. The stamper prunes records a day old at start
 (:func:`prune_stamps`).
 
-**The legacy key, one release only** (gr762430 — remove after the release
-that ships it). A server still on the pre-gr762430 code writes the single
-``release.mcp_served`` key (:data:`LEGACY_KEY`). :func:`live_stamps` reads
-it as one more instance record, named by its own ``instance`` field: it
-joins the per-instance records unless one of them carries the same
-instance, then passes the same freshness and same-host rules. New code
-never writes it, so once every stamping server runs this code it ages
-out. Remove :func:`read_stamp`, :data:`LEGACY_KEY` and the merge in
-:func:`live_stamps` together.
+**The legacy key is gone** (gr764909). Pre-gr762430 servers wrote a
+single ``release.mcp_served`` key, which the rollout briefly still read
+as one more instance record — the shape that let a stray laptop stack
+mask the live servers. Once every stamping server ran the per-instance
+code the fallback was removed: readers consult only :data:`STAMP_PREFIX`
+rows, nothing writes the bare key, the setting is unregistered and the
+leftover row is deleted by migration.
 
 A pinned checkout does not restart the server at once: the checkout
 watchdog defers the exit while sessions are live, up to its cap (30
@@ -86,14 +84,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: The single last-writer key the pre-gr762430 servers write (a registered
-#: setting, the same arrangement as ``release.prod_head``). Read only, as
-#: the rollout fallback; remove with the fallback (module docstring).
-LEGACY_KEY = "release.mcp_served"
-
 #: ``app_settings`` key prefix of the per-instance records:
-#: ``release.mcp_served.<host>:<pid>`` (gr762430).
-STAMP_PREFIX = f"{LEGACY_KEY}."
+#: ``release.mcp_served.<host>:<pid>`` (gr762430). The pre-gr762430 single
+#: ``release.mcp_served`` key is not under the prefix — a leftover row
+#: there is never read (gr764909).
+STAMP_PREFIX = "release.mcp_served."
 
 #: A per-instance record whose ``at`` is this old is removed when a
 #: stamper starts (:func:`prune_stamps`) — far past any reader's window.
@@ -428,15 +423,6 @@ def read_stamps(store: Store) -> list[dict[str, Any]]:
     return out
 
 
-def read_stamp(store: Store) -> dict[str, Any] | None:
-    """The legacy single ``release.mcp_served`` record a pre-gr762430
-    server writes (:func:`_parse` shape), or ``None``. The rollout
-    fallback only — remove after the release that ships gr762430."""
-    from precis import settings
-
-    return _parse(settings.get_str(LEGACY_KEY, store=store))
-
-
 def _host(instance: str) -> str | None:
     """The host half of ``host:pid``, else ``None`` (no pid: never
     superseded)."""
@@ -450,12 +436,8 @@ def live_stamps(store: Store, *, fresh: timedelta = FRESH) -> list[dict[str, Any
     writer's or reader's skewed clock never moves the window. ``[]`` when
     the store is unreadable.
 
-    Every per-instance record (:func:`read_stamps`) plus — the rollout
-    fallback (gr762430, remove after its release) — the legacy single
-    record (:func:`read_stamp`) as one more instance, named by its own
-    ``instance`` field (``legacy`` when it has none) and dropped when a
-    per-instance record already carries that instance. Then a record whose
-    ``at`` is older than ``fresh`` is ignored (a stopped stack ages out),
+    Every per-instance record (:func:`read_stamps`): a record whose ``at``
+    is older than ``fresh`` is ignored (a stopped stack ages out),
     and of the live records sharing one host an older-started record is
     superseded by the newest-started one only once it has demonstrably
     stopped being refreshed (``at`` older than :data:`SUPERSEDE_AFTER`) —
@@ -467,11 +449,6 @@ def live_stamps(store: Store, *, fresh: timedelta = FRESH) -> list[dict[str, Any
         log.warning("mcp served stamp: store clock unreadable", exc_info=True)
         return []
     recs = read_stamps(store)
-    legacy = read_stamp(store)
-    if legacy is not None:
-        legacy["instance"] = str(legacy.get("instance") or "legacy")
-        if all(r["instance"] != legacy["instance"] for r in recs):
-            recs.append(legacy)
     live = [r for r in recs if now - r["at"] <= fresh]
     newest: dict[str, str] = {}
     for r in live:
@@ -514,7 +491,6 @@ def prune_stamps(store: Store, *, now: datetime | None = None) -> int:
 
 __all__ = [
     "FRESH",
-    "LEGACY_KEY",
     "PRUNE_AFTER",
     "REFRESH_S",
     "STAMP_PREFIX",
@@ -524,7 +500,6 @@ __all__ = [
     "live_stamps",
     "note_pending",
     "prune_stamps",
-    "read_stamp",
     "read_stamps",
     "stamp_key",
     "stamps_this_process",
