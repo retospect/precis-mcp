@@ -9,6 +9,7 @@ answers:
   - how do I close a tube of N arcs on N seams with inward ribs, pores and a site list?
   - how do I close a polygonal tube of flat wall strips on signed seams with outward fins and inward ribs?
   - how do I close a tube between two reservoir sheets (sheet | tube | sheet)?
+  - how do I build a hydrogen-free flanged doughnut with a closed k=3 seam?
   - what feature types does hexfold_scene take, and what are each one's params?
 applies-to: put/edit (kind='se', op='generate')
 status: active
@@ -237,6 +238,30 @@ residual of a radial graft on an unpuckered wall, not a relaxed
 structure. A cylinder with a half-plane is no surface of revolution, so
 stored `surface_deviation` is unavailable. Preview geometry only.
 
+
+## Flanged doughnut (closed k=3 seam)
+
+A closed ring: two washers and an inner tube wall, with a flange sheet
+meeting both at an outer k=3 seam. It uses generator `hexfold` with the
+`.hx` spec as `params.spec`, not a `hexfold_scene` feature. `terminate`
+`none` keeps it hydrogen-free.
+
+```json
+{"op":"generate","generator":"hexfold","name":"doughnut",
+ "params":{"terminate":"none","spec":"hexfold 0.2\nprov: lib=hexfold@0.2.0\norigin top\ntop: cap(24, 0) - hex(1)@(0,0,A):0\nbottom: cap(24, 0) - hex(1)@(0,0,A):0\nwall: tube(12, 0, len=2)\nflange: cap(36, 0) - hex(3)@(0,0,A):0\n\ntop.hole --fuse k=0--> wall.in\nwall.out --fuse k=0--> bottom.hole\nseam outer: top.in == bottom.in == flange.hole\n"}}
+```
+
+The two `cap(24, 0)` washers have `hex(1)` holes fused to opposite ends of
+the `tube(12, 0, len=2)` wall. Flange side: `flange.hole` meets the
+washers' outer rims (`top.in`, `bottom.in`), and the flange is the third
+sheet in the `seam outer:` line, so it extends radially outward from the
+outer equator. The 24 seam carbons (`outer/s<i>`) are trivalent, one
+bond into each sheet. The seam is sp² only: no sp³ variant of this
+closed ring is offered (the sp³ seams above are straight lines, not
+rings). For hydroxyl pendants on the seam use the shipped
+`flanged_doughnut_oh` example. The rigid washer seed carries a
+`seam.cycle` strain warning on hexfold 0.3.5 (gr462075; see
+[[precis-hexfold-help]]).
 
 ## See also
 
