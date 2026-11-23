@@ -18,7 +18,18 @@ from precis.store import Store
 
 
 def rolling_stats(store: Store, *, now: datetime | None = None) -> list[dict[str, int]]:
-    """Count each gripe once per cumulative UTC window, independent of filters."""
+    """Count each gripe once per cumulative UTC window, independent of filters.
+
+    The cohort is pre-narrowed to rows that can count in any window — a
+    live STATUS attachment or a retirement inside the widest window —
+    since the per-row ``verified``/``duplicate`` EXISTS probes are the
+    cost (gr762554). The bound is hardcoded to the widest ``windows``
+    entry below; widening that VALUES list past 24h without matching it
+    here under-counts. A meta->>'superseded_by' successor names a bare
+    or ``gr``-prefixed ref id; the ANY form probes
+    ``refs_gripe_ref_id_text_idx`` (0361) where ``= text`` and
+    ``= 'gr' || text`` could not.
+    """
     stamp = now or datetime.now(UTC)
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -43,8 +54,9 @@ def rolling_stats(store: Store, *, now: datetime | None = None) -> list[dict[str
                      ) OR EXISTS (
                        SELECT 1 FROM refs keeper
                        WHERE keeper.kind = 'gripe' AND keeper.ref_id <> r.ref_id
-                         AND (r.meta->>'superseded_by' = keeper.ref_id::text
-                           OR r.meta->>'superseded_by' = 'gr' || keeper.ref_id::text)
+                         AND keeper.ref_id::text = ANY (ARRAY[
+                               r.meta->>'superseded_by',
+                               regexp_replace(r.meta->>'superseded_by', '^gr', '')])
                      ) AS duplicate
               FROM refs r
               LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -52,6 +64,10 @@ def rolling_stats(store: Store, *, now: datetime | None = None) -> list[dict[str
                 AND (rt.expires_at IS NULL OR rt.expires_at > %s)
               LEFT JOIN tags t USING (tag_id)
               WHERE r.kind = 'gripe'
+                AND ((rt.created_at >= %s::timestamptz - interval '24 hours'
+                      AND rt.created_at <= %s)
+                     OR (r.retired_at >= %s::timestamptz - interval '24 hours'
+                         AND r.retired_at <= %s))
             )
             SELECT hours,
               count(DISTINCT ref_id) FILTER (WHERE retired_at IS NULL
@@ -71,7 +87,7 @@ def rolling_stats(store: Store, *, now: datetime | None = None) -> list[dict[str
             FROM (VALUES (1), (6), (12), (24)) AS windows(hours)
             LEFT JOIN cohort ON true GROUP BY hours ORDER BY hours
             """,
-            (stamp,) * 9,
+            (stamp,) * 13,
         ).fetchall()
     return [
         dict(
