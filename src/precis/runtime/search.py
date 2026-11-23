@@ -3640,6 +3640,13 @@ class SearchMixin(RuntimeShape):
         ``'literal'``) would have its match semantics silently changed
         by a lexical rewrite, so those keep the timeout too.
 
+        The same reserved retry budget serves a kind whose leg *failed*
+        mid-window: a server-side ``QueryCanceled`` or a built-in
+        ``TimeoutError`` triggers a lexical-only retry when at least
+        ``retry_s`` of the job deadline remains (gr664954, gr776663).
+        Psycopg pool checkout expiry raises ``PoolTimeout`` and follows
+        the ordinary error path.
+
         gr664988: jobs submit cheapest-first on the process-wide cost
         EMA (:func:`_cross_kind_job_key`), not alphabetically — an
         early-letter kind that habitually spends the whole per-kind
@@ -3750,8 +3757,10 @@ class SearchMixin(RuntimeShape):
             started = time.monotonic()
             try:
                 result = self._cross_kind_invoke_search_hits(handler, k, kw)
+                # Reuse the reserved window when the hybrid leg raises a
+                # built-in timeout, as the finding leg did in gr776663.
                 if (
-                    isinstance(result, QueryCanceled)
+                    isinstance(result, (QueryCanceled, TimeoutError))
                     and can_retry
                     and lexical_fallback is not None
                     and deadline_at - time.monotonic() >= retry_s
@@ -3842,10 +3851,12 @@ class SearchMixin(RuntimeShape):
         than introspect ahead of time, try the full kwargs set first and
         drop unknown kwargs on ``TypeError``, most-recent-addition first
         (``exclude``, then ``tags``). Any non-TypeError exception is
-        logged and returned as a value — the caller drops the kind from
-        the merge but records *that it errored*, so one broken kind
-        neither crashes the whole query nor hides inside a "0 matches"
-        count (the gr281493 false-quiet).
+        logged and returned as a value. The fan-out can recover from
+        ``QueryCanceled`` or built-in ``TimeoutError`` with a lexical retry
+        when the request and remaining budget allow it. Successful
+        recovery contributes lexical-only results. An unrecovered error
+        omits the kind and records the failure separately from a "0
+        matches" count (gr281493).
 
         ``exclude_ref_ids=`` is deliberately NOT in the drop list: every
         handler's ``search_hits`` today declares ``**_kw`` (silently

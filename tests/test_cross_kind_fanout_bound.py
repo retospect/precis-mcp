@@ -552,6 +552,74 @@ def test_cancelled_kind_retries_lexical(
 
 
 @pytest.mark.parametrize(
+    ("elapsed", "retry_fails", "expected_modes"),
+    [
+        (1.0, False, ["hybrid", "lexical"]),
+        (1.0, True, ["hybrid", "lexical"]),
+        (4.75, False, ["hybrid"]),
+    ],
+)
+def test_timed_out_kind_retries_lexical(
+    runtime_stateless: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    elapsed: float,
+    retry_fails: bool,
+    expected_modes: list[str],
+) -> None:
+    """gr776663: a built-in timeout uses the same reserved lexical retry
+    budget and reports the same degradation as a cancelled leg."""
+    rt = runtime_stateless
+    clock = _frozen_clock(monkeypatch)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 5.0)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PRIORITY_S", 5.0)
+    # A production embedder must be wired: with no embedder the fan-out
+    # degrades the whole call to lexical up front (named in the header)
+    # and the hybrid leg these parametrizations exercise never runs.
+    monkeypatch.setattr(rt.hub, "embedder", _ProductionStubEmbedder())
+    modes: list[str] = []
+
+    def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
+        modes.append(mode)
+        if mode == "hybrid":
+            clock["t"] += elapsed
+            raise TimeoutError("hybrid leg client wait expired")
+        if retry_fails:
+            raise TimeoutError("lexical leg client wait expired")
+        return [
+            SearchHit(
+                score=0.9,
+                kind="memory",
+                title="recovered xyzzy",
+                preview="p",
+                ref_id=None,
+                slug=None,
+            )
+        ]
+
+    _stub_cancelled_fan_out(monkeypatch, rt, search_hits)
+
+    class InlineExecutor:
+        def submit(
+            self, fn: Callable[..., list[SearchHit] | Exception], *args: Any
+        ) -> Future[list[SearchHit] | Exception]:
+            future: Future[list[SearchHit] | Exception] = Future()
+            future.set_result(fn(*args))
+            return future
+
+    with _fresh_cost_memory():
+        search_mod._cross_kind_costs["memory"] = 1.0
+        executor = InlineExecutor()
+        monkeypatch.setattr(search_mod, "_cross_kind_priority_pool", executor)
+        out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+
+    assert modes == expected_modes
+    recovered = "lexical" in expected_modes and not retry_fails
+    assert ("recovered xyzzy" in out.body) == recovered
+    assert ("semantic leg skipped for memory" in out.body) == recovered
+    assert ("memory (TimeoutError)" in out.body) != recovered
+
+
+@pytest.mark.parametrize(
     ("kind", "args"),
     [("memory,todo", {}), ("*", {"mode": "hybrid"})],
 )

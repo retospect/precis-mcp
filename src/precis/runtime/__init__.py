@@ -66,9 +66,10 @@ and paper so the slow cache-backed kinds cannot occupy those workers.
 Priority jobs have five seconds, and best-effort jobs have two. Both tiers
 run concurrently and report omissions in the result header. Fusion
 normalizes each kind's scores and applies kind priors on wildcard queries.
-Default searches can salvage a canceled kind with one lexical retry inside
-its deadline. Explicit kind lists and modes preserve the selected search
-semantics.
+Default wildcard searches can salvage a kind after a statement cancellation
+or a built-in timeout with one lexical retry inside its deadline. The
+reserved time lets lexical hits contribute when the hybrid attempt fails.
+Explicit kind lists and modes preserve the selected search semantics.
 
 Single-kind dispatch retries an explicit semantic search once as hybrid
 after a query embedding error so deduplication can still use lexical

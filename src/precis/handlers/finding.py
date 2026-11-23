@@ -1594,10 +1594,10 @@ class FindingHandler(AuditedRetirementHandler):
         ``hub_rows`` doesn't return for (rare — ``mint_hub`` is the sole
         ``STATUS:canonical`` writer) is dropped rather than rendered with
         a posture it can't have. ``strict=True`` (see :meth:`_postures`):
-        an unreadable posture must raise (surfacing as this kind
-        "errored, omitted from this merge" at the dispatch layer — see
-        ``runtime.search._cross_kind_invoke_search_hits``), not silently
-        degrade to "no hubs this page".
+        an unreadable posture raises so the fan-out can retry eligible
+        timeouts and cancellations in lexical mode. A successful retry
+        contributes lexical-only results. An unrecovered error surfaces
+        as "errored, omitted from this merge" instead of an empty page.
         """
         if not (q and q.strip()):
             return []
