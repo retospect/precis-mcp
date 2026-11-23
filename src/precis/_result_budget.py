@@ -321,6 +321,20 @@ def fit_result_body(
     if size <= cap:
         return body
 
+    close_suffix = ""
+    opening_bytes = 0
+    if read in ("single", "explicit", "extent"):
+        # Extent reads render one record frame too (Handler.eye /
+        # frame_eye_read), so a budget-fitted eye must re-close its frame
+        # like a single read (gr768673).
+        from precis.utils.record_frame import record_close_suffix
+
+        record = body.removesuffix(suffix)
+        close_suffix = record_close_suffix(record)
+        if close_suffix:
+            body = record.removesuffix(close_suffix)
+            opening_bytes = body_bytes(body.partition("\n")[0])
+
     # Compose the trailer first so the head budget accounts for it.
     outline_block = ""
     if read == "single":
@@ -376,52 +390,33 @@ def fit_result_body(
     else:
         tail_fmt = marker + "{outline}\nnext: {next_call}"
 
-    # Iterative fit: the marker reports the shown count, which itself
-    # has a byte width — converge twice; widths settle on pass one.
-    head = ""
-    dropped: list[str] = []
-    shown = 0
-    for _ in range(3):
-        tail = tail_fmt.format(
-            shown=shown,
-            total=size,
-            outline=outline_block,
-            next_call=_next_call(),
-            more=len([ln for ln in dropped if ln.strip()]),
-            dropped=_name_dropped(dropped)[0],
-            first=_name_dropped(dropped)[1],
-        )
-        head, dropped = _fit_head(body, max(0, cap - len(tail.encode("utf-8"))))
-        shown = len(head.encode("utf-8"))
-    if not shown:
-        raise ResultBudgetExceeded(
-            f"{verb}: result is {size} bytes and even a head will not fit "
-            f"under {cap_name}",
-            next=_next_call(),
-        )
-    names, first = _name_dropped(dropped)
-    tail = tail_fmt.format(
-        shown=shown,
-        total=size,
-        outline=outline_block,
-        next_call=_next_call(),
-        more=len([ln for ln in dropped if ln.strip()]),
-        dropped=names,
-        first=first,
-    )
-    if len((head + tail).encode("utf-8")) > cap:
-        # ``shown`` gained a digit after the head was cut — re-cut once
-        # against the final trailer width (can only shrink, so it settles).
-        head, dropped = _fit_head(body, max(0, cap - len(tail.encode("utf-8"))))
-        shown = len(head.encode("utf-8"))
-        if not shown:
-            raise ResultBudgetExceeded(
-                f"{verb}: result is {size} bytes and even a head will not fit "
-                f"under {cap_name}",
-                next=_next_call(),
+    # Treat the original closer as an indivisible part of the trailer.
+    tail_fmt += "{close}"
+
+    def _fit(close_suffix: str) -> str | None:
+        """Head + trailer under the cap; None when even a head carrying
+        the record's opening line will not fit."""
+        # Iterative fit: the marker reports the shown count, which itself
+        # has a byte width — converge twice; widths settle on pass one.
+        head = ""
+        dropped: list[str] = []
+        shown = 0
+        for _ in range(3):
+            tail = tail_fmt.format(
+                close=close_suffix,
+                shown=shown,
+                total=size,
+                outline=outline_block,
+                next_call=_next_call(),
+                more=len([ln for ln in dropped if ln.strip()]),
+                dropped=_name_dropped(dropped)[0],
+                first=_name_dropped(dropped)[1],
             )
+            head, dropped = _fit_head(body, max(0, cap - len(tail.encode("utf-8"))))
+            shown = len(head.encode("utf-8"))
         names, first = _name_dropped(dropped)
         tail = tail_fmt.format(
+            close=close_suffix,
             shown=shown,
             total=size,
             outline=outline_block,
@@ -430,7 +425,39 @@ def fit_result_body(
             dropped=names,
             first=first,
         )
-    return head + tail
+        if len((head + tail).encode("utf-8")) > cap:
+            # ``shown`` gained a digit after the head was cut — re-cut once
+            # against the final trailer width (can only shrink, so it settles).
+            head, dropped = _fit_head(body, max(0, cap - len(tail.encode("utf-8"))))
+            shown = len(head.encode("utf-8"))
+            names, first = _name_dropped(dropped)
+            tail = tail_fmt.format(
+                close=close_suffix,
+                shown=shown,
+                total=size,
+                outline=outline_block,
+                next_call=_next_call(),
+                more=len([ln for ln in dropped if ln.strip()]),
+                dropped=names,
+                first=first,
+            )
+        if shown < max(1, opening_bytes):
+            return None
+        return head + tail
+
+    fitted = _fit(close_suffix)
+    if fitted is None and close_suffix:
+        # The trailing handler footer (dispatch keeps the trust line after
+        # the close tag) won't fit under this cap: degrade to the bare
+        # close tag so the frame still balances (gr768673) before refusing.
+        fitted = _fit("\n" + close_suffix.split("\n")[1])
+    if fitted is None:
+        raise ResultBudgetExceeded(
+            f"{verb}: result is {size} bytes and even a head will not fit "
+            f"under {cap_name}",
+            next=_next_call(),
+        )
+    return fitted
 
 
 def _name_dropped(dropped: list[str]) -> tuple[str, str]:

@@ -45,7 +45,9 @@ smaller-batch recovery instead of passing through the prose truncation fitter.
 
 Structured ``Response.budget_fit`` callbacks preserve indivisible units
 such as slides: the final fitter reserves runtime hint/cost bytes before
-asking the handler to fit content. Runtime alone applies the optional
+asking the handler to fit content. The prose fitter reserves the matching
+record closer after the continuation footer so a cut still has a boundary.
+Runtime alone applies the optional
 context cap, respecting ``fold=False`` and explicit part reads.
 
 Read-scope handle redirects recheck the resolved kind against the sandbox

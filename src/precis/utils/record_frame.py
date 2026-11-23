@@ -78,9 +78,9 @@ _NONCE: ContextVar[str | None] = ContextVar("precis_record_nonce", default=None)
 #: purpose — it is the sanctioned write-side tag bodies may keep.
 _FAKE_MARKER_RE = re.compile(r"</?(record|body|run)\b")
 
-#: The :func:`open_tag` line, capturing handle and nonce (for :func:`unframe`).
+#: The :func:`open_tag` line, capturing the mirrored close attributes.
 _OPEN_TAG_RE = re.compile(
-    r"^<record (\S+) kind=\S+ status=\S+(?: closed=\S+)? b=([^\s>]+)>$"
+    r"^<record (\S+) kind=\S+ status=(\S+)(?: closed=\S+)? b=([^\s>]+)>$"
 )
 
 #: Terminal ``STATUS:`` values per kind — the union of each kind's
@@ -144,7 +144,7 @@ def unframe(text: str, *, fences: bool = False) -> str:
     if m is None:
         return text
     close_head = f"</record {m.group(1)} status="
-    close_tail = f" b={m.group(2)}>"
+    close_tail = f" b={m.group(3)}>"
     out = lines[1:]
     for i in range(len(out) - 1, -1, -1):
         if out[i].startswith(close_head) and out[i].endswith(close_tail):
@@ -153,6 +153,30 @@ def unframe(text: str, *, fences: bool = False) -> str:
     if fences:
         out = [ln for ln in out if ln not in ("<body>", "</body>")]
     return "\n".join(out)
+
+
+def record_close_suffix(text: str) -> str:
+    """Return the final newline, close tag and any footer after it.
+
+    Dispatch appends the trust/grounding footer *after* the frame's close
+    tag (the trust line stays last so the web can lift it off the end), so
+    a framed read's suffix is the close tag plus that trailing footer, and
+    the fitter must re-append the whole tail, not just the close tag
+    (gr768673). A body whose first record is followed by another framed
+    record is not one frame: no suffix.
+    """
+    opening = _OPEN_TAG_RE.fullmatch(text.partition("\n")[0])
+    if opening is None:
+        return ""
+    handle, status, nonce = opening.groups()
+    close_line = close_tag(handle, status, nonce=nonce)
+    lines = text.split("\n")
+    for i in range(len(lines) - 1, 0, -1):
+        if lines[i] == close_line:
+            if any(ln.startswith("<record ") for ln in lines[i + 1 :]):
+                return ""
+            return "\n" + "\n".join(lines[i:])
+    return ""
 
 
 def fence_body(text: str) -> str:

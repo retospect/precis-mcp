@@ -184,6 +184,30 @@ def test_unframe_lifts_only_the_matching_pair() -> None:
     assert record_frame.unframe("# todo 1\nplain") == "# todo 1\nplain"
 
 
+def test_record_close_suffix_units() -> None:
+    """The fitter's closer: bare frame, frame with a trailing dispatch
+    footer, and multi-record bodies (no suffix — not one frame)."""
+    inner = "# memory 1\n<body>\nbody\n</body>"
+    framed = record_frame.frame_lines("me1", "memory", "live", inner, nonce="TEST")
+    bare = record_frame.record_close_suffix(framed)
+    assert bare == "\n</record me1 status=live b=TEST>"
+    # Dispatch appends the grounding/trust footer after the close tag;
+    # the whole tail is the frame's suffix (gr768673).
+    with_footer = framed + "\n\ngrounding: not audited\n\ntrust: unknown"
+    assert record_frame.record_close_suffix(with_footer) == (
+        "\n</record me1 status=live b=TEST>\n\ngrounding: not audited\n\ntrust: unknown"
+    )
+    # A second framed record trailing the first is not one frame.
+    two = (
+        framed
+        + "\n"
+        + record_frame.frame_lines("me2", "memory", "live", "# memory 2", nonce="TEST")
+    )
+    assert record_frame.record_close_suffix(two) == ""
+    assert record_frame.record_close_suffix("# memory 1\nplain") == ""
+    assert record_frame.record_close_suffix(inner) == ""
+
+
 def test_frame_run_unit() -> None:
     out = record_frame.frame_run("# pc1 ~0\nchunk text", label="pa9", nonce="TEST")
     assert out.startswith("<run pa9 b=TEST>\n")

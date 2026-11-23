@@ -255,6 +255,13 @@ def test_big_memory_get_truncates_with_working_section_read(
     assert f"me{ref.id}~background" in body
     assert f"me{ref.id}~details" in body
     assert unframe(body).startswith("# memory")
+    assert len(body.encode("utf-8")) <= 4096
+    lines = body.splitlines()
+    nonce = lines[0].rsplit(" b=", 1)[1]
+    close = f"</record me{ref.id} status=live b={nonce}"
+    cut = max(i for i, ln in enumerate(lines) if ln.startswith("next: "))
+    assert lines.index(close) > cut  # re-closed after the cut footer
+    assert lines[-1].startswith("trust: ")  # dispatch footer stays last
 
     # The advertised section read returns that part in full (explicit).
     sec, sec_err = runtime_with_store.dispatch_with_status(
@@ -263,6 +270,31 @@ def test_big_memory_get_truncates_with_working_section_read(
     assert sec_err is False
     assert "## Details" in sec
     assert "… truncated" not in sec
+
+
+def test_extent_eye_read_truncation_recloses_record_frame(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr768673: a budget-fitted eye read (``extent='fisheye'``) renders one
+    ``<record>``-framed body, so the fitter must re-close the frame after
+    the dropped-rows footer — not leave the open tag unbalanced."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "1500")
+    ref = store.insert_ref(kind="memory", slug=None, title="big eye node")
+    text = "## Background\n\n" + "word " * 900
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=text, meta={"chunk_kind": "memory_body"})],
+    )
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": ref.id, "extent": "fisheye"}, fold=True
+    )
+    assert is_error is False
+    assert "… truncated: showing" in body
+    assert len(body.encode("utf-8")) <= 1500
+    opener, *_, footer, closer = body.splitlines()
+    nonce = opener.rsplit(" b=", 1)[1]
+    assert footer.startswith("dropped ")
+    assert closer == f"</record me{ref.id} status=live b={nonce}"
 
 
 def test_memory_section_selector_direct(runtime_with_store, store) -> None:

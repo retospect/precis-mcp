@@ -243,6 +243,10 @@ def test_stamped_memory_first_read_fits_without_hint_at_400_bytes(
     assert not failed, result
     assert len(result.encode("utf-8")) <= 400
     assert "truncated" in result
+    opener, *_, footer, closer = result.splitlines()
+    nonce = opener.rsplit(" b=", 1)[1]
+    assert footer.startswith("next: ")
+    assert closer == f"</record me{ref.id} status=live b={nonce}"
     assert denonce(result).encode("utf-8") == denonce(expected).encode("utf-8")
     assert MEMORY_GRIPE_HINT not in result
     assert record.call_args.args[2] == result
