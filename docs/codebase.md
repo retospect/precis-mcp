@@ -426,6 +426,10 @@ session start).
 
 ## Seams — where changes concentrate
 
+Bulk paper puts accept up to 50 DOIs and queue `paper_ingest` jobs.
+Workers verify those DOIs before pinning stubs for `fetch_oa`, so resolver
+backoff stays off the MCP request path.
+
 When `PRECIS_ROOT` and `PRECIS_MD_ROOTS` are unset, boot uses the
 registered `python` checkout paths and aliases for read-only `md`
 navigation. Both indexes read those checkouts directly.

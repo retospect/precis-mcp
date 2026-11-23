@@ -382,6 +382,11 @@ _BATCH_ID_CAP = 50
 #: split-batch hint.
 _BATCH_DOI_QUEUE_CAP = 5
 
+#: Cap on a ``put(kind='paper', doi=[...])`` bulk request (gr772778):
+#: every element mints a ``paper_ingest`` job row, and a runaway paste
+#: is a caller error, not a backlog. Aligned with ``_BATCH_ID_CAP``.
+_BATCH_DOI_PUT_CAP = 50
+
 _SUPPORTED_VIEWS = (
     "lookup",
     "bibtex",
@@ -1212,7 +1217,7 @@ class PaperHandler(Handler):
         self,
         *,
         identifier: str | None = None,
-        doi: str | None = None,
+        doi: str | list[str] | None = None,
         arxiv: str | None = None,
         title: str | None = None,
         year: int | None = None,
@@ -1266,6 +1271,7 @@ class PaperHandler(Handler):
         an OA PDF. Shapes:
 
             put(kind='paper', doi='10.1038/nature10352')
+            put(kind='paper', doi=['10.1038/nature10352', '10.1126/…'])
             put(kind='paper', arxiv='2401.00001', title='…')
             put(kind='paper', title='…')   # title-only backlog stub
             put(kind='paper', citation='Phys. Rev. B 47, 558 (1993)')
@@ -1290,12 +1296,20 @@ class PaperHandler(Handler):
         ``identifier=`` form and reuses the same S2-enrich →
         ``upsert_stub_paper`` → tag/link path (idempotent: a hit on an
         already-held or already-wanted paper is a no-op).
+
+        ``doi=[...]`` is the bulk door (gr772778): one ``paper_ingest``
+        job per DOI — the S2/registry verify runs in the job's
+        dispatch, off this call — so a many-DOI request answers at once
+        instead of sitting in S2 auto-backoff on the serial server. It
+        takes no other field; see :meth:`_queue_doi_ingest_batch`.
         """
         # ``args=`` is the declared extras channel for this handler, so
         # the acquire knobs a caller nests there (the slim-schema spelling)
         # fill any parameter they didn't also set top-level.
         extras = args or {}
-        doi = doi or extras.get("doi")
+        # ``is not None`` (not truthiness): an explicit ``doi=[]`` must
+        # reach the batch door's own refusal, not fold away silently.
+        doi = doi if doi is not None else extras.get("doi")
         arxiv = arxiv or extras.get("arxiv")
         identifier = identifier or extras.get("identifier")
         title = title or extras.get("title")
@@ -1317,6 +1331,62 @@ class PaperHandler(Handler):
             # ``args=`` values can arrive JSON-stringified from non-slim
             # profiles; "false"/"0"/"no" must not read truthy.
             verify = verify.strip().lower() not in ("false", "0", "no")
+        if isinstance(doi, list):
+            # ``doi=[...]`` is the bulk door (gr772778): one
+            # ``paper_ingest`` job per DOI — the S2/registry verify
+            # runs in the job dispatch, off this call. It takes no
+            # other field; a combined call is a caller error (same
+            # refusal shape as the restore/note doors).
+            combined = [
+                name
+                for name, val in (
+                    ("id", id),
+                    ("arxiv", arxiv),
+                    ("identifier", identifier),
+                    ("title", title),
+                    ("year", year),
+                    ("authors", authors),
+                    ("reason", reason),
+                    ("context_ref_id", context_ref_id),
+                    ("citation", citation),
+                    ("record_type", record_type),
+                    ("tags", tags),
+                    ("mode", mode),
+                    ("text", text),
+                    ("dry_run", dry_run),
+                    ("supporters", _kw.get("supporters")),
+                    ("pdf_url", _kw.get("pdf_url")),
+                    ("verify", verify if verify is not True else None),
+                )
+                if val is not None and (not isinstance(val, str) or val.strip())
+            ]
+            extra_keys = sorted(
+                k
+                for k in extras
+                if k
+                not in (
+                    "doi",
+                    "arxiv",
+                    "identifier",
+                    "title",
+                    "year",
+                    "authors",
+                    "reason",
+                    "context_ref_id",
+                    "citation",
+                    "verify",
+                    "record_type",
+                )
+            )
+            if extra_keys:
+                combined.append(f"args keys: {', '.join(extra_keys)}")
+            if combined:
+                raise BadInput(
+                    "a doi=[...] list queues one ingest job per DOI; it "
+                    f"does not combine with: {', '.join(combined)}",
+                    next="put(kind='paper', doi=['10.<registrant>/<suffix>', ...])",
+                )
+            return self._queue_doi_ingest_batch(doi)
         pdf_url = extras.get("pdf_url", _kw.get("pdf_url"))
         pdf_upload_link = extras.get("pdf_upload_link")
         if isinstance(pdf_upload_link, str):
@@ -1583,7 +1653,7 @@ class PaperHandler(Handler):
             hit = _cc.pick_unambiguous(cands)
             if hit is None:
                 return Response(body=_render_citation_candidates(citation, cands))
-            doi = hit["doi"]
+            doi = str(hit["doi"])
         if ident is None:
             if doi and doi.strip():
                 ident = f"doi:{doi.strip()}"
@@ -1605,6 +1675,129 @@ class PaperHandler(Handler):
             context_ref_id=context_ref_id,
             verify=verify,
             tags=tags,
+        )
+
+    def _queue_doi_ingest_batch(self, raw_dois: list[Any]) -> Response:
+        """``put(kind='paper', doi=[...])`` — the bulk-request door (gr772778).
+
+        One ``paper_ingest`` job per DOI: the S2 + registry verify runs
+        in the job's dispatch, off this call — the inline resolve is
+        what made a burst of single ``doi=`` puts sit in S2
+        auto-backoff for minutes on the serial server. No network here:
+        normalize the list, look up held/tombstoned DOIs in bounded
+        queries, mint the job rows. ``origin='put'`` rides the
+        unbounded deliberate lane — the rolling-24h cap counts
+        ``discovered_via='get'`` mints only.
+        """
+        from precis.workers.job_types import paper_ingest
+
+        if not raw_dois:
+            raise BadInput(
+                "doi=[] is empty",
+                next="put(kind='paper', doi=['10.<registrant>/<suffix>', ...])",
+            )
+        if len(raw_dois) > _BATCH_DOI_PUT_CAP:
+            raise BadInput(
+                f"doi=[...] takes at most {_BATCH_DOI_PUT_CAP} DOIs, "
+                f"got {len(raw_dois)} — split the list",
+                next="put(kind='paper', doi=['10.<registrant>/<suffix>', ...])",
+            )
+        # Validate every element before minting anything — a bad member
+        # leaves no half-queued batch behind (the tag-validation rule).
+        dois: list[str] = []
+        seen: set[str] = set()
+        for i, raw in enumerate(raw_dois):
+            doi = _queueable_doi(raw.strip()) if isinstance(raw, str) else None
+            if doi is None:
+                raise BadInput(
+                    f"doi=[...] element {i} is not a DOI (got {raw!r}) — "
+                    "every element must resolve to a DOI; arxiv=, "
+                    "identifier= and title= take single puts",
+                    next="put(kind='paper', doi=['10.<registrant>/<suffix>', ...])",
+                )
+            if doi not in seen:
+                seen.add(doi)
+                dois.append(doi)
+        held = self.store.find_paper_refs_by_identifiers_bulk(dois)
+        # Match _maybe_resolve_doi: prefer an arXiv alias for a DataCite
+        # DOI, then check the explicit DOI alias for DOI-only records.
+        doi_fallbacks = {
+            f"doi:{doi}": doi
+            for doi in dois
+            if doi not in held and detect_identifier_scheme(doi) == "arxiv"
+        }
+        for (
+            identifier,
+            fallback_ref_id,
+        ) in self.store.find_paper_refs_by_identifiers_bulk(doi_fallbacks).items():
+            held[doi_fallbacks[identifier]] = fallback_ref_id
+        lines: list[str] = []
+        job_ids: list[int] = []
+        n_fresh = n_held = n_skipped = 0
+        for doi in dois:
+            ref_id = held.get(doi)
+            if ref_id is not None:
+                n_held += 1
+                lines.append(f"  {doi}  already held — pa{ref_id}")
+                continue
+            tomb = _retired_paper_id_for_doi(self.store, doi)
+            if tomb is not None:
+                n_skipped += 1
+                lines.append(
+                    f"  {doi}  resolves only to a deleted paper "
+                    f"(pa{tomb}) — not queueing"
+                )
+                continue
+            outcome = paper_ingest.ensure_queued(self.store, doi, origin="put")
+            if outcome.state in ("queued", "reused"):
+                assert outcome.job_id is not None
+                job_ids.append(outcome.job_id)
+                n_fresh += outcome.state == "queued"
+                verb = (
+                    "queued"
+                    if outcome.state == "queued"
+                    else "ingest job already queued/running —"
+                )
+                lines.append(f"  {doi}  {verb} jo{outcome.job_id}")
+            elif outcome.state == "blocked":
+                n_skipped += 1
+                detail = f" ({outcome.error})" if outcome.error else ""
+                lines.append(
+                    f"  {doi}  last attempt ended STATUS:{outcome.status} at "
+                    f"{outcome.finished_at}{detail} (jo{outcome.job_id}) — "
+                    f"not requeueing inside the "
+                    f"{paper_ingest.REQUEUE_WINDOW_HOURS}h window"
+                )
+            else:
+                # 'capped' is unreachable on the put lane (the daily cap
+                # counts get-origin mints only) but stay honest if the
+                # contract ever widens.
+                n_skipped += 1
+                lines.append(f"  {doi}  not queued ({outcome.state})")
+        head = f"{len(dois)} DOI(s): {n_fresh} queued"
+        if len(job_ids) > n_fresh:
+            head += f", {len(job_ids) - n_fresh} already queued"
+        if n_held:
+            head += f", {n_held} already held"
+        if n_skipped:
+            head += f", {n_skipped} skipped"
+        return Response(
+            body=(
+                head
+                + "\n"
+                + "\n".join(lines)
+                + render_next_section(
+                    [
+                        (
+                            f"get(kind='job', id={job_ids})",
+                            "poll the ingest jobs",
+                        )
+                    ]
+                    if job_ids
+                    else []
+                )
+            ),
+            ref_id=job_ids[0] if job_ids else None,
         )
 
     def _queue_pdf_pull(self, id: str | int | None, pdf_url: Any) -> Response:

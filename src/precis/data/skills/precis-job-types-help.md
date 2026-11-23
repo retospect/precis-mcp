@@ -78,7 +78,7 @@ including repeated coordinator resumes only once per tick.
 | `structure_propose` | `claude_inproc` | Turn an instruction into proposed structure ops (tool-less claude, propose-only — a human applies them) |
 | `reading_brief`     | `claude_inproc` | Compose the morning reading-brief cast as a dated draft (see `precis-audio-help`) |
 | `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
-| `paper_ingest`      | `job_inproc`    | Verifies a DOI (Semantic Scholar, then DOI registries), mints the stub and pins it to `fetch_oa`. Single and batch paper gets can mint for unheld DOIs only without a view. Any explicit view disables minting, including `meta`, `text`, `body`, and `full`. Idem key `paper_ingest:<doi>`. A repeat reuses the live job, and a terminal job inside 24h blocks a re-mint |
+| `paper_ingest`      | `job_inproc`    | Verifies a DOI (Semantic Scholar, then DOI registries), mints the stub and pins it to `fetch_oa`. Single and batch paper gets can mint for unheld DOIs only without a view. Any explicit view disables minting, including `meta`, `text`, `body`, and `full`. Bulk paper puts with `doi=[...]` queue per DOI and bypass the daily get cap. Idem key `paper_ingest:<doi>`. A repeat reuses the live job, and a terminal job inside 24h blocks a re-mint |
 
 ## Skill review lane — skill_garden
 

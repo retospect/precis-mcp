@@ -887,6 +887,7 @@ put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
 put(kind="paper", doi="10.1038/nature10352", tags=["reading-list"])  # tags= applied to the stub
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 put(kind="paper", title="A Book", year=2024, tags=["is-book"], args={"authors": ["Doe, Jane"]})
+put(kind="paper", doi=["10.1038/nature10352", "10.1126/…"])  # bulk: one ingest job per DOI
 ```
 
 `authors=` (also accepted inside `args=`) stores the fresh stub's byline
@@ -903,11 +904,13 @@ anyway is tagged `acquire:unverified`, and the tag clears itself once
 S2 enrichment or the fetch confirms the paper (`meta.acquire_verified_by`).
 Full contract + backlog view in `precis-stubs-help`.
 
-**A slow put is backoff, not a wedge.** Minting a stub resolves the
-identifier against Semantic Scholar, and S2 rate-limits burst traffic —
-after several rapid puts, the next one can sit in auto-backoff for
-minutes (and the serial server makes later calls wait too). Don't
-re-issue the put; space out bulk stub minting and let it finish.
+**A slow put is expected.** Let it finish without re-issuing it.
+
+Submit up to 50 DOIs in one `doi=[...]` call. The server queues a
+`paper_ingest` job per eligible DOI and handles resolver backoff in the
+worker. The receipt names jobs to poll with `get(kind='job', id=…)` and
+reports DOIs already held, already queued, or failed within 24 hours.
+Use single puts for `tags=`, `arxiv=`, or `verify=False`.
 
 ## Find the paper to request — walk a citation graph
 ## What does this paper cite? Who cites it?

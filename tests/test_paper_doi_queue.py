@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
@@ -15,6 +17,7 @@ from precis.handlers.paper import PaperHandler
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
+from precis.tools import core as tools_core
 from precis.workers._mint import mint_background_job
 from precis.workers.executors.job_inproc import run_job_inproc_pass
 from precis.workers.job_types import get_job_type, paper_ingest
@@ -944,3 +947,204 @@ class TestExplicitResubmitThroughDispatch:
         )
         assert "[error:BadInput]" in out, out
         assert "not accepted by skill find-in-ref" in out, out
+
+
+class TestPutDoiBatch:
+    """``put(kind='paper', doi=[...])`` — the bulk-request door (gr772778).
+
+    One ``paper_ingest`` job per DOI, minted with no resolver call on
+    the request path, riding the unbounded ``discovered_via='put'``
+    lane — the mechanical fix so agents hand the whole DOI list over
+    at once instead of pacing single puts themselves."""
+
+    def test_full_schema_mcp_put_accepts_doi_array(
+        self,
+        store: Store,
+        runtime_with_store: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+        mcp = FastMCP()
+        mcp.add_tool(tools_core.put, structured_output=False)
+
+        result = asyncio.run(mcp.call_tool("put", {"kind": "paper", "doi": [DOI]}))
+
+        assert isinstance(result, list)
+        assert any(
+            "1 DOI(s): 1 queued" in getattr(block, "text", "") for block in result
+        )
+        assert [job["meta"]["params"]["doi"] for job in _jobs(store)] == [DOI]
+
+    def test_queues_one_job_per_doi(self, store: Store, handler: PaperHandler) -> None:
+        dois = ["10.1021/batchput0", "10.1021/batchput1"]
+        resp = handler.put(doi=dois)
+        jobs = _jobs(store)
+        assert len(jobs) == 2
+        assert {j["meta"]["params"]["doi"] for j in jobs} == set(dois)
+        assert all(j["meta"].get("discovered_via") == "put" for j in jobs)
+        assert all(j["meta"]["job_type"] == "paper_ingest" for j in jobs)
+        assert "2 DOI(s): 2 queued" in resp.body
+        for j in jobs:
+            assert f"jo{j['id']}" in resp.body
+        assert f"get(kind='job', id={[j['id'] for j in jobs]})" in resp.body
+
+    def test_args_doi_list_is_the_same_door(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        resp = handler.put(args={"doi": ["10.1021/argsbatch0"]})
+        assert len(_jobs(store)) == 1
+        assert "1 DOI(s): 1 queued" in resp.body
+
+    def test_spellings_dedupe_to_one_job(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        resp = handler.put(
+            doi=[DOI, f"doi:{DOI}", f"https://doi.org/{DOI}", DOI.upper()]
+        )
+        assert len(_jobs(store)) == 1
+        assert "1 DOI(s): 1 queued" in resp.body
+
+    def test_held_doi_reports_without_minting(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, doi=DOI)
+        resp = handler.put(doi=[DOI, "10.1021/batchheld0"])
+        jobs = _jobs(store)
+        assert len(jobs) == 1
+        assert jobs[0]["meta"]["params"]["doi"] == "10.1021/batchheld0"
+        assert f"{DOI}  already held — pa{ref_id}" in resp.body
+        assert "1 already held" in resp.body
+
+    def test_repeat_call_reuses_the_job(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        handler.put(doi=[DOI])
+        resp = handler.put(doi=[DOI])
+        jobs = _jobs(store)
+        assert len(jobs) == 1
+        assert "already queued/running" in resp.body
+        assert f"jo{jobs[0]['id']}" in resp.body
+
+    def test_held_arxiv_doi_with_only_doi_alias(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, doi=ARXIV_DOI)
+        resp = handler.put(doi=[ARXIV_DOI])
+
+        assert f"{ARXIV_DOI.lower()}  already held — pa{ref_id}" in resp.body
+        assert _jobs(store) == []
+
+    def test_recent_failure_reports_inline(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        job_id = _mint_terminal_job(
+            store,
+            DOI,
+            finished=datetime.now(UTC) - timedelta(hours=1),
+            error="did not resolve via Semantic Scholar or the DOI registries",
+        )
+        resp = handler.put(doi=[DOI])
+        assert len(_jobs(store)) == 1
+        assert "not requeueing" in resp.body
+        assert f"jo{job_id}" in resp.body
+        assert "did not resolve" in resp.body
+
+    def test_bad_element_refuses_before_any_mint(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="element 1 is not a DOI"):
+            handler.put(doi=[DOI, "not-a-doi"])
+        assert _jobs(store) == []
+
+    def test_empty_list_refuses(self, store: Store, handler: PaperHandler) -> None:
+        with pytest.raises(BadInput, match=r"doi=\[\] is empty"):
+            handler.put(doi=[])
+        assert _jobs(store) == []
+
+    def test_over_cap_refuses(self, store: Store, handler: PaperHandler) -> None:
+        with pytest.raises(BadInput, match="at most 50 DOIs"):
+            handler.put(doi=[f"10.1021/overcap{i}" for i in range(51)])
+        assert _jobs(store) == []
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"tags": ["reading-list"]},
+            {"title": "Some Title"},
+            {"arxiv": "2401.00001"},
+            {"identifier": "s2:abc"},
+            {"mode": "fetch-si"},
+            {"args": {"verify": False}},
+            {"args": {"tags": ["reading-list"]}},
+        ],
+    )
+    def test_refuses_other_fields(
+        self, store: Store, handler: PaperHandler, kw: dict[str, Any]
+    ) -> None:
+        """The batch door takes ``doi=[...]`` alone — a combined call
+        would silently drop the other field's intent."""
+        with pytest.raises(BadInput, match="does not combine"):
+            handler.put(doi=[DOI], **kw)
+        assert _jobs(store) == []
+
+    def test_does_no_network(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The resolvers are the job dispatch's affair — the put path
+        must never call them inline (the ack only mints the rows)."""
+        monkeypatch.setattr(
+            paper_ingest,
+            "_s2_lookup",
+            lambda doi: pytest.fail("put ran the S2 resolver inline"),
+        )
+        monkeypatch.setattr(
+            paper_ingest,
+            "_registry_lookup",
+            lambda doi: pytest.fail("put ran the DOI registries inline"),
+        )
+        resp = handler.put(doi=[DOI])
+        assert "1 queued" in resp.body
+
+    def test_put_lane_ignores_the_get_daily_cap(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A put batch is the deliberate lane — it mints past a spent
+        ``discovered_via='get'`` cap and never counts toward it."""
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        handler.get(id="10.1021/putcap0", args={"queue": "bounded"})
+        resp = handler.put(doi=[DOI, "10.1021/putcap1"])
+        assert "2 DOI(s): 2 queued" in resp.body
+        jobs = _jobs(store)
+        assert len(jobs) == 3
+        assert sum(j["meta"].get("discovered_via") == "get" for j in jobs) == 1
+
+    def test_put_origin_dispatch_tags_stub_put(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stub a put-batch job mints stamps ``discovered-via:put``
+        — the tag names the lane the request arrived on."""
+        monkeypatch.setattr(
+            paper_ingest,
+            "_s2_lookup",
+            lambda doi: {"title": "T", "year": 2020, "doi": DOI},
+        )
+        out: list = []
+        ctx = fake_ctx(
+            store,
+            {
+                "job_type": "paper_ingest",
+                "params": {"doi": DOI},
+                "discovered_via": "put",
+            },
+            out,
+        )
+        _dispatch(ctx)
+        stub = _stub_for_doi(store, DOI)
+        assert stub is not None
+        with store.pool.connection() as conn:
+            tags = conn.execute(
+                "SELECT t.value FROM ref_tags rt JOIN tags t "
+                "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s",
+                (stub["id"],),
+            ).fetchall()
+        assert "discovered-via:put" in {t[0] for t in tags}

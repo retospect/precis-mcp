@@ -131,6 +131,7 @@ put(kind="paper", identifier="s2:<id>")  # or a Semantic Scholar id
 put(kind="paper", identifier="pubmed:<pmid>")  # or a PubMed id
 put(kind="paper", identifier="pmcid:PMC11089570")  # or a PMC id
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
+put(kind="paper", doi=["10.1038/nature10352", "10.1126/…"])  # bulk: one ingest job per DOI
 ```
 
 `put(kind='paper', …)` mints a **stub only** — it requests the paper
@@ -158,7 +159,9 @@ a DOI — is rejected up front (pass
 `verify=False` to force a known-real preprint S2 hasn't indexed). A **title-only** stub
 just parks in the backlog until someone supplies an identifier — no
 auto-fetch. Optional: `year=` (disambiguates the cite key) and
-`reason=` (why it's wanted).
+`reason=` (why it's wanted). A `doi=[...]` list instead queues one
+`paper_ingest` job per DOI — the resolver verify runs in the job, not
+on the call (`precis-paper-help`).
 
 ## Don't know the identifier? Find it first
 

@@ -1,4 +1,4 @@
-"""``paper_ingest`` job_type — the deferred acquire for a get-asked DOI.
+"""``paper_ingest`` job type for deferred DOI acquisition.
 
 ``get(kind='paper', id='<DOI>')`` on a well-formed DOI no live paper
 carries used to answer a bare NotFound — gr551840: one probing client
@@ -9,15 +9,17 @@ rides the same ingest path ``put(kind='paper', doi=…)`` uses
 (``Store.upsert_stub_paper`` + ``Store.pin_stub_for_fetch`` → the
 ``fetch_oa`` worker), and the ack names the job instead of apologising.
 
-Only single or batch paper gets without a view can mint this job.
+Single and batch paper gets can mint this job without a view.
 An explicit view requests stored data, including default-renderer
 aliases such as ``meta``, ``text``, ``body``, and ``full`` (gr715493).
 
-The get does no network work and no fetch: minting the row is the whole
-call — idem key ``paper_ingest:<canonical doi>`` makes repeat gets
-dedupe onto the same row, and a terminal job inside
+Bulk paper puts (``doi=[...]``) queue one job per eligible unheld DOI, up to 50
+DOIs per request. Puts bypass the rolling daily cap on automatic get
+mints. Both paths defer verification and fetch work. The idem key
+``paper_ingest:<canonical doi>`` makes both paths reuse the same live job,
+and a terminal job inside
 :data:`REQUEUE_WINDOW_HOURS` gates the re-mint (the "failed recently"
-half of the ruling — the get ack reports that attempt instead of
+half of the ruling — the receipt reports that attempt instead of
 re-spending the cascade).
 
 Spend bounds (gr551840 review): the fetch cascade a minted stub joins
@@ -80,7 +82,7 @@ REQUIRES: frozenset[str] = frozenset()
 DESCRIPTION = (
     "Acquire one DOI-requested paper: verify it against Semantic Scholar "
     "and the DOI registries, mint/find its stub, pin it to the fetch_oa "
-    "queue (the get-on-unheld-DOI deferred half, gr551840)."
+    "queue. Paper gets and bulk DOI puts can queue this job."
 )
 
 #: Re-mint window on a terminal job (gr551840 ruling, "failed recently"):
@@ -173,7 +175,9 @@ def _within_window(finished_at: str | None, *, now: datetime) -> bool:
     return now < finished + timedelta(hours=REQUEUE_WINDOW_HOURS)
 
 
-def ensure_queued(store: Store, doi: str, *, explicit: bool = False) -> QueueOutcome:
+def ensure_queued(
+    store: Store, doi: str, *, explicit: bool = False, origin: str | None = None
+) -> QueueOutcome:
     """Mint (or reuse) the ``paper_ingest`` job for ``doi``.
 
     One advisory-locked tx: the idem lock lands BEFORE any read
@@ -195,7 +199,13 @@ def ensure_queued(store: Store, doi: str, *, explicit: bool = False) -> QueueOut
     for ``put``: it skips the daily-cap count/check and stamps
     :data:`GET_EXPLICIT_ORIGIN_VALUE` so the mint never counts toward
     the cap either. The reuse and recent-failure doors are unchanged —
-    explicit only lifts the spend bound, not the per-DOI gates."""
+    explicit only lifts the spend bound, not the per-DOI gates.
+
+    ``origin=`` names a deliberate non-get lane outright —
+    ``put(kind='paper', doi=[...])`` passes ``origin='put'`` (gr772778):
+    like ``explicit`` it skips the daily cap (which counts
+    ``discovered_via='get'`` mints only) and stamps the mint with the
+    given value instead. ``origin`` wins over ``explicit``."""
     from precis.workers._mint import (
         active_job_id,
         idem_lock_key,
@@ -204,6 +214,11 @@ def ensure_queued(store: Store, doi: str, *, explicit: bool = False) -> QueueOut
         mint_job_once,
     )
 
+    origin_value = (
+        origin
+        if origin is not None
+        else (GET_EXPLICIT_ORIGIN_VALUE if explicit else GET_ORIGIN_VALUE)
+    )
     idem = idem_key(doi)
     with store.tx() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (idem_lock_key(idem),))
@@ -223,7 +238,7 @@ def ensure_queued(store: Store, doi: str, *, explicit: bool = False) -> QueueOut
                     finished_at=finished_at,
                     error=error,
                 )
-        if not explicit:
+        if origin_value == GET_ORIGIN_VALUE:
             conn.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
                 (idem_lock_key(_CAP_LOCK_IDEM),),
@@ -244,11 +259,7 @@ def ensure_queued(store: Store, doi: str, *, explicit: bool = False) -> QueueOut
             title=f"ingest DOI {doi}",
             params={"doi": doi},
             idem_key=idem,
-            meta_extra={
-                "discovered_via": (
-                    GET_EXPLICIT_ORIGIN_VALUE if explicit else GET_ORIGIN_VALUE
-                )
-            },
+            meta_extra={"discovered_via": origin_value},
         )
         return QueueOutcome("queued", job_id)
 
@@ -435,9 +446,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 conn=conn,
             )
             if created:
+                # The stub tag keeps the get family under one value:
+                # ``discovered_via='get-explicit'`` mints stamp ``get``
+                # like the bounded lane they bypassed; a put-batch job
+                # (gr772778) stamps ``put``.
+                origin = str(ctx.meta.get("discovered_via") or GET_ORIGIN_VALUE)
                 ctx.store.add_tag(
                     ref_id,
-                    Tag.open("discovered-via:get"),
+                    Tag.open(
+                        "discovered-via:"
+                        + (
+                            origin
+                            if origin != GET_EXPLICIT_ORIGIN_VALUE
+                            else GET_ORIGIN_VALUE
+                        )
+                    ),
                     set_by="system",
                     conn=conn,
                 )

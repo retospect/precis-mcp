@@ -2208,7 +2208,7 @@ def put(
     # paper put requests a paper into the "papers we need" backlog —
     # put(kind='paper', doi='10…' | arxiv='2401.00001' | title='…').
     # Paper bodies stay import-only; put only ever mints a stub.
-    doi: str | None = None,
+    doi: str | list[str] | None = None,
     arxiv: str | None = None,
     identifier: str | None = None,
     year: int | None = None,

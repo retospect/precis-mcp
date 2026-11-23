@@ -41,8 +41,9 @@ closes on schedule without a metadata write.
 An unheld DOI lookup offers acquisition without minting. A viewless get
 can opt into the capped queue with ``queue='bounded'`` or bypass the daily
 cap with ``queue='explicit'``. Batch passage searches keep their mint limit.
-arXiv DataCite DOIs can use stored arXiv aliases. On an alias miss,
-paper reads check the DOI itself before considering acquisition.
+Bulk DOI puts queue resolver work so upstream backoff leaves the server
+available for other calls. Paper reads and bulk DOI puts check the DOI
+alias when an arXiv DataCite DOI misses its stored arXiv alias.
 An acquire that lands on a tracked paper registers the identifiers it
 resolved there: a stub known only by its S2 id needs the arXiv id on its
 row before ``fetch_oa`` can try arXiv. One preprint, two spellings —
