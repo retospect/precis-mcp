@@ -3742,6 +3742,8 @@ def report_repo(tmp_path: Path) -> dict[str, Any]:
       wt-gone      dir deleted after add        -> missing dir (prunable)
       wt-lock-live locked ``pid 1``             -> locked (holder live)
       wt-lock-dead locked ``pid <dead>``        -> locked (holder dead)
+      wt-lock-dirty dead lock + tracked edit     -> dirty
+      wt-lock-untracked dead lock + untracked    -> dirty
       wt-dirty     tracked edit on README       -> dirty
       wt-runbook   edits only the shared runbook -> dirty (runbook only)
       wt-untracked untracked file only          -> dirty
@@ -3886,6 +3888,12 @@ def report_repo(tmp_path: Path) -> dict[str, Any]:
         "--reason",
         f"pid {dead_pid}",
     )
+    wt_lock_dirty = wt_add("wt-lock-dirty")
+    (wt_lock_dirty / "README.md").write_text("dirty\n", encoding="utf-8")
+    wt_lock_untracked = wt_add("wt-lock-untracked")
+    (wt_lock_untracked / "notes.txt").write_text("loose\n", encoding="utf-8")
+    for tree in (wt_lock_dirty, wt_lock_untracked):
+        _git(primary, "worktree", "lock", str(tree), "--reason", f"pid {dead_pid}")
 
     wt_gone = wt_add("wt-gone")
     shutil.rmtree(wt_gone)
@@ -3936,11 +3944,15 @@ def test_reap_worktrees_report_buckets_and_removes_nothing(
         if m:
             counts[m.group(2).strip()] = int(m.group(1))
 
-    assert re.search(r"^worktrees \(excl\. primary\): 10$", out, re.M), out
+    assert re.search(r"^worktrees \(excl\. primary\): 12$", out, re.M), out
     assert counts["missing dir (prunable)"] == 1, out
     assert counts["locked (holder live)"] == 1, out
     assert counts["locked (holder dead)"] == 1, out
-    assert counts["dirty"] == 2, out
+    assert counts["dirty"] == 4, out
+    dirty_line = next(line for line in out.splitlines() if "  dirty:" in line)
+    assert {"wt-lock-dirty", "wt-lock-untracked"} <= set(
+        dirty_line.split(": ", 1)[1].split(", ")
+    ), out
     assert counts["dirty (docs/runbooks/memory-sibling-repos.md only)"] == 1, out
     assert counts["clean+merged"] == 3, out
     assert counts["of which landed (tree == origin/main)"] == 1, out
@@ -3984,7 +3996,7 @@ def test_reap_worktrees_report_buckets_and_removes_nothing(
     assert "m8" in full.stdout and "merged-br" in full.stdout, full.stdout
 
     # Nothing removed, unlocked, pruned or deleted: identical worktree and
-    # branch inventories, both locks intact, every checkout still on disk.
+    # branch inventories, locks intact, every checkout still on disk.
     assert _git(primary, "worktree", "list", "--porcelain").stdout == wt_before
     assert (
         _git(primary, "for-each-ref", "refs/heads", "--format=%(refname)").stdout
