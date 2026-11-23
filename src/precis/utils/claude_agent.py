@@ -786,7 +786,7 @@ def _resolve_agent_args(
 
     active_env = envelope if envelope is not None else _envelope.active_envelope()
 
-    # End-of-run tool-friction reflection (default-OFF, PRECIS_FRICTION_REFLECT;
+    # End-of-run tool-friction reflection (sampled for write-capable runs;
     # always-on for a ``write:none`` run). Rides ``--append-system-prompt`` on
     # eligible runs — MCP present (so the agent can ``put`` a gripe) with turn
     # headroom. One-shot JSON judges use claude_p, not this path, so they are

@@ -377,3 +377,39 @@ def test_probe_detected_ro_gets_the_text_only_channel(
     assert m is not None
     assert hub.store is not None
     assert "source:agent_ro" in _tag_strings(hub.store, int(m.group(1)))
+
+
+def test_write_friction_hourly_cap(hub: Hub, store: Store) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis.errors import Denied
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=hub)
+    _call(store, "read-only friction has its own allowance", source="rw-cap-ro")
+    for i in range(19):
+        handler.put(
+            text=f"write-capable friction report {i}", tags=["friction"], new=True
+        )
+
+    def file_one(i: int) -> bool:
+        try:
+            handler.put(text=f"racing friction report {i}", tags=["friction"], new=True)
+        except Denied as exc:
+            assert "hourly cap" in str(exc)
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(file_one, range(2))) == [False, True]
+
+    assert store.count_refs(kind="gripe", tags=["friction"]) == 21
+    handler.put(text="ordinary gripe still files", new=True)
+    _call(store, "read-only still files", source="rw-cap-ro")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '61 minutes' "
+            "WHERE ref_id = (SELECT min(ref_id) FROM refs "
+            "WHERE kind = 'gripe' AND meta->>'write_friction' = 'true')"
+        )
+    assert file_one(2)

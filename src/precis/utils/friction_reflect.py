@@ -15,15 +15,11 @@ gripe itself is filed *by the running agent* via MCP ``put`` — there is
 no programmatic raise path for gripes (unlike alerts), so the agent
 that felt the friction is the surrogate raiser.
 
-**Default-OFF for write-capable runs.** Once on, the footer rides
-*every* agentic run (reviewers, planner ticks, dream, the web follow-up
-path), so it is gated behind ``PRECIS_FRICTION_REFLECT`` and enabled
-deliberately — mirroring the classifier pass's default-OFF discipline.
-Eligibility is further narrowed to runs that (a) have MCP tools (so the
-agent *can* ``put`` a gripe) and (b) carry enough turn headroom that the
-reflection won't crowd out the task. The one-shot JSON judges never
-reach here — they use :mod:`precis.utils.claude_p`, a schema-locked
-shape — so they are structurally excluded.
+**Sampled for write-capable runs.** ``PRECIS_FRICTION_REFLECT_SAMPLE_RATE``
+sets the probability (default 0.2). Runs need MCP tools and at least eight
+available turns. The gripe handler caps write-capable friction filings at
+20 per rolling hour across workers. The one-shot JSON judges use
+:mod:`precis.utils.claude_p` and never enter this path.
 
 **Always-ON for read-only runs.** A ``write:none`` envelope (the
 ``agent_ro`` DB role) gets the nudge on every run from the first release
@@ -40,7 +36,9 @@ envelope's tier-1 tool deny still blocks ``mcp__precis__put`` under
 
 from __future__ import annotations
 
-from precis.utils.env import env_flag
+from random import random
+
+from precis.utils.env import env_float
 
 # Below this ``--max-turns`` we skip the footer: a tight run should
 # spend its budget on the task, not on meta-reflection. The prompt also
@@ -72,6 +70,8 @@ it; no gripe. If it genuinely does not, file exactly ONE gripe:
         text='<the ideal call you wanted, and the calls you actually '
              'had to make instead>',
         tags=['friction', 'friction-model:<your model>'])
+
+If the hourly filing cap refuses the gripe, finish without retrying.
 
 Describe the *tool* interaction, not your task content. Do not run more
 tools to investigate — reflect only from what you already did. Never do
@@ -126,13 +126,6 @@ this at the expense of finishing your actual task.
 """
 
 
-def friction_enabled() -> bool:
-    """Whether the end-of-run friction reflection is switched on for
-    write-capable runs (``PRECIS_FRICTION_REFLECT``). Default-OFF —
-    read-only runs don't need it (see :func:`friction_eligible`)."""
-    return env_flag("PRECIS_FRICTION_REFLECT")
-
-
 def friction_eligible(
     *, has_mcp: bool, max_turns: int, read_only: bool = False
 ) -> bool:
@@ -140,13 +133,14 @@ def friction_eligible(
 
     Requires MCP tools present (so the agent can actually ``put`` a
     gripe) and enough turn headroom that the reflection won't crowd out
-    the task. The global switch gates *write-capable* runs; a read-only
-    run (``write:none`` envelope → the ``agent_ro`` DB role) is always
-    eligible — its friction is otherwise lost entirely (gr516603).
+    the task. Write-capable runs are sampled. Read-only runs
+    (``write:none`` envelope) skip sampling (gr516603).
     """
     if not has_mcp or max_turns < FRICTION_MIN_TURNS:
         return False
-    return read_only or friction_enabled()
+    return read_only or random() < env_float(
+        "PRECIS_FRICTION_REFLECT_SAMPLE_RATE", 0.2, lo=0.0, hi=1.0
+    )
 
 
 def append_friction_footer(
@@ -179,5 +173,4 @@ __all__ = [
     "FRICTION_REFLECTION_RO",
     "append_friction_footer",
     "friction_eligible",
-    "friction_enabled",
 ]

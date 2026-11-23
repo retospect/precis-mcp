@@ -2323,6 +2323,41 @@ class GripeHandler(NumericRefHandler):
             created.readings,
         )
 
+    @staticmethod
+    def _check_write_friction_cap(conn: Any) -> None:
+        """Serialize the rolling-hour count and insert across workers."""
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('gripe_write_friction'))")
+        row = conn.execute(
+            """SELECT count(*)
+                 FROM refs r
+                WHERE r.kind = 'gripe'
+                  AND r.created_at > statement_timestamp() - interval '1 hour'
+                  AND (
+                      r.meta->>'write_friction' = 'true'
+                      OR (
+                          EXISTS (
+                              SELECT 1 FROM ref_tags rt
+                              JOIN tags t ON t.tag_id = rt.tag_id
+                              WHERE rt.ref_id = r.ref_id
+                                AND t.namespace = 'OPEN' AND t.value = 'friction'
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM ref_tags rt
+                              JOIN tags t ON t.tag_id = rt.tag_id
+                              WHERE rt.ref_id = r.ref_id
+                                AND t.namespace = 'OPEN'
+                                AND t.value = 'source:agent_ro'
+                          )
+                      )
+                  )"""
+        ).fetchone()
+        assert row is not None
+        if row[0] >= 20:
+            raise Denied(
+                "write-capable friction gripe hourly cap reached (20 per hour)",
+                next="finish your run without retrying the friction report",
+            )
+
     def _insert_gripe(
         self,
         *,
@@ -2436,10 +2471,16 @@ class GripeHandler(NumericRefHandler):
                 "parked_at": datetime.now(UTC).isoformat(),
             }
 
+        write_friction = not ro and any(
+            tag == Tag.open("friction") for tag in parsed_extra_tags
+        )
+
         def _write() -> tuple[int, str | None]:
             # One fresh transaction per attempt — the retry_locked contract
             # (an aborted transaction can never be continued).
             with self.store.tx() as conn:
+                if write_friction:
+                    self._check_write_friction_cap(conn)
                 try:
                     if idem is not None:
                         # 0319's three-arg overload: stamps the key at
@@ -2467,11 +2508,15 @@ class GripeHandler(NumericRefHandler):
                     from precis.filing_origin import current_filed_by
 
                     origin = current_filed_by(self.store.pool, conn=conn)
-                    if origin:
+                    filing_meta: dict[str, Any] = {"filed_by": origin} if origin else {}
+                    # Keep counting the filing after triage changes its tags.
+                    if write_friction:
+                        filing_meta["write_friction"] = True
+                    if filing_meta:
                         conn.execute(
                             "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
                             "|| %s::jsonb WHERE ref_id = %s",
-                            (Jsonb({"filed_by": origin}), ref_id),
+                            (Jsonb(filing_meta), ref_id),
                         )
                 short = self._shorten_title(conn, ref_id, text)
                 if not ro and prio_from_tag is not None:

@@ -136,8 +136,7 @@ disagrees with the alert.
    confirmed-live cause that nothing covers. Fix the cheap ones in-session:
    error wording, a skill's vocabulary, a stale doc.
 6. **Stamp.** `scripts/surface-review --stamp "<window, corpus size, headline
-   numbers, what shipped, what was filed; whether PRECIS_FRICTION_REFLECT
-   stays off>"`.
+   numbers, what shipped, what was filed>"`.
 
 Miner caveats, to discount before trusting a card:
 
@@ -201,18 +200,15 @@ Miner caveats, to discount before trusting a card:
 - **Argument names** — `vocab_near_miss` on `input_keys`. Feeds
   me694027.
 
-## The strongest lever we are not pulling
+## Continuous friction reports
 
-`src/precis/utils/friction_reflect.py` already implements end-of-run
-self-reporting for exactly the soft friction that dominates here — "no verb
-for what I wanted, N calls where one should have worked, a result shape that
-forced a re-query". It is **default-OFF** behind `PRECIS_FRICTION_REFLECT`,
-blocked on a grouping/dedup lane so raw wishes do not pile up untriaged
-(gr690545).
-
-Turning it on converts this retrospective into a continuous feed. Until then
-this pass is the only thing looking. Re-read that item each pass and say in
-the stamp note whether it is still the right call to leave it off.
+Write-capable agent runs with MCP tools and at least eight turns receive
+the end-of-run friction prompt with probability
+`PRECIS_FRICTION_REFLECT_SAMPLE_RATE` (default 0.2). Write-capable
+filings are capped at 20 per rolling hour across workers. Review the
+first one to two weeks of filings for volume, the share triage folded
+into existing clusters, and the share that failed to describe actionable
+tool friction (gr572705).
 
 ## Log
 

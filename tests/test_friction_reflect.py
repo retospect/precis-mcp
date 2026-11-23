@@ -8,24 +8,35 @@ from precis.utils import friction_reflect as fr
 
 
 @pytest.fixture(autouse=True)
-def _clear_flag(monkeypatch):
-    monkeypatch.delenv("PRECIS_FRICTION_REFLECT", raising=False)
+def _clear_sample_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_FRICTION_REFLECT_SAMPLE_RATE", raising=False)
 
 
-def _on(monkeypatch):
-    monkeypatch.setenv("PRECIS_FRICTION_REFLECT", "1")
+def _on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_FRICTION_REFLECT_SAMPLE_RATE", "1")
 
 
-def test_default_off(monkeypatch):
-    # No flag → not enabled, nothing appended even with MCP + turns.
-    assert fr.friction_enabled() is False
-    assert fr.friction_eligible(has_mcp=True, max_turns=20) is False
-    assert fr.append_friction_footer("sys", has_mcp=True, max_turns=20) == "sys"
+@pytest.mark.parametrize(("draw", "sampled"), [(0.199, True), (0.2, False)])
+def test_default_sample_rate(
+    monkeypatch: pytest.MonkeyPatch, draw: float, sampled: bool
+) -> None:
+    monkeypatch.setattr(fr, "random", lambda: draw)
+    assert fr.friction_eligible(has_mcp=True, max_turns=20) is sampled
 
 
-def test_eligible_requires_mcp_and_turns(monkeypatch):
+@pytest.mark.parametrize(
+    ("rate", "sampled"), [("0", False), ("1", True), ("0.8", True), ("invalid", False)]
+)
+def test_configured_sample_rate(
+    monkeypatch: pytest.MonkeyPatch, rate: str, sampled: bool
+) -> None:
+    monkeypatch.setenv("PRECIS_FRICTION_REFLECT_SAMPLE_RATE", rate)
+    monkeypatch.setattr(fr, "random", lambda: 0.5)
+    assert fr.friction_eligible(has_mcp=True, max_turns=20) is sampled
+
+
+def test_eligible_requires_mcp_and_turns(monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    assert fr.friction_enabled() is True
     assert fr.friction_eligible(has_mcp=True, max_turns=fr.FRICTION_MIN_TURNS)
     # No MCP → the agent can't put() a gripe → ineligible.
     assert fr.friction_eligible(has_mcp=False, max_turns=20) is False
@@ -35,7 +46,7 @@ def test_eligible_requires_mcp_and_turns(monkeypatch):
     )
 
 
-def test_footer_appended_when_eligible(monkeypatch):
+def test_footer_appended_when_eligible(monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     out = fr.append_friction_footer("SOUL", has_mcp=True, max_turns=20)
     assert out is not None
@@ -45,13 +56,13 @@ def test_footer_appended_when_eligible(monkeypatch):
     assert "kind='gripe'" in out
 
 
-def test_footer_is_whole_prompt_when_no_prior(monkeypatch):
+def test_footer_is_whole_prompt_when_no_prior(monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     out = fr.append_friction_footer(None, has_mcp=True, max_turns=20)
     assert out == fr.FRICTION_REFLECTION
 
 
-def test_ineligible_passthrough_preserves_none(monkeypatch):
+def test_ineligible_passthrough_preserves_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     # No MCP → passthrough, and None stays None.
     assert fr.append_friction_footer(None, has_mcp=False, max_turns=20) is None
@@ -61,15 +72,13 @@ def test_ineligible_passthrough_preserves_none(monkeypatch):
 # ── gr516603: the read-only (write:none / agent_ro) variant ────────
 
 
-def test_ro_run_eligible_without_flag(monkeypatch):
-    """Reto 2026-10-25: the nudge is ON for every read-only run from the
-    first release — no flag, no staged rollout. A write-capable run at
-    the same settings stays off."""
+def test_ro_run_skips_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_FRICTION_REFLECT_SAMPLE_RATE", "0")
     assert fr.friction_eligible(has_mcp=True, max_turns=20) is False
     assert fr.friction_eligible(has_mcp=True, max_turns=20, read_only=True) is True
 
 
-def test_ro_run_still_needs_mcp_and_turns(monkeypatch):
+def test_ro_run_still_needs_mcp_and_turns() -> None:
     """Always-on doesn't lift the structural guards: no MCP → nowhere to
     ``put``; under the turn floor → the task keeps its budget."""
     assert fr.friction_eligible(has_mcp=False, max_turns=20, read_only=True) is False
@@ -81,7 +90,7 @@ def test_ro_run_still_needs_mcp_and_turns(monkeypatch):
     )
 
 
-def test_ro_footer_is_create_only_with_friction_fallback(monkeypatch):
+def test_ro_footer_is_create_only_with_friction_fallback() -> None:
     out = fr.append_friction_footer("SOUL", has_mcp=True, max_turns=20, read_only=True)
     assert out is not None
     assert out.startswith("SOUL")
@@ -101,14 +110,12 @@ def test_ro_footer_is_create_only_with_friction_fallback(monkeypatch):
     assert "END" in out
 
 
-def test_ro_footer_is_whole_prompt_when_no_prior(monkeypatch):
+def test_ro_footer_is_whole_prompt_when_no_prior() -> None:
     out = fr.append_friction_footer(None, has_mcp=True, max_turns=20, read_only=True)
     assert out == fr.FRICTION_REFLECTION_RO
 
 
-def test_rw_footer_still_flag_gated_and_tag_teaching(monkeypatch):
-    """The rw variant is unchanged: flag-gated, and still teaches the
-    friction + friction-model tags an rw filer must pass itself."""
+def test_sampled_rw_footer_teaches_tags(monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     out = fr.append_friction_footer(None, has_mcp=True, max_turns=20)
     assert out == fr.FRICTION_REFLECTION
