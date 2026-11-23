@@ -32,6 +32,10 @@ which any caller in :mod:`precis.store.store` can splice into its
 WHERE clause unconditionally — passing ``None`` or ``[]`` returns
 ``("", [])`` so the splice is a no-op.
 
+Paper access filters derive their markers at read time from OpenAlex
+status and arXiv identity. This covers old records and keeps the search
+cohort current when metadata changes.
+
 Why this is a perf win, not a regression:
 
 * Without it, an agent doing
@@ -46,6 +50,27 @@ Why this is a perf win, not a regression:
 from __future__ import annotations
 
 from typing import Any
+
+from precis.store._stub_predicate import arxiv_fallback_sql
+
+PAPER_ACCESS_FILTERS = frozenset({"ACCESS:open", "ACCESS:arxiv"})
+
+
+def _paper_access_predicate(tag: str, alias: str) -> str:
+    arxiv = (
+        "EXISTS (SELECT 1 FROM ref_identifiers ai "
+        f"WHERE ai.ref_id = {alias}.ref_id AND (ai.id_kind = 'arxiv' "
+        "OR (ai.id_kind = 'doi' AND starts_with(ai.id_value, '10.48550/arxiv.')))) "
+        f"OR ({arxiv_fallback_sql(alias)}) IS NOT NULL"
+    )
+    evidence = arxiv
+    if tag == "ACCESS:open":
+        evidence += (
+            f" OR COALESCE({alias}.meta #>> '{{openalex,oa_status}}', '') "
+            "IN ('gold', 'green', 'hybrid', 'diamond', 'bronze')"
+        )
+    return f"({alias}.kind = 'paper' AND ({evidence}))"
+
 
 # Only the seven ref-level facets documented in precis-paper-tag-axes alias.
 # Other lowercase prefixes keep their literal meaning, including junk:x.
@@ -199,6 +224,8 @@ def build_tag_filter(
         negated leg: namespace, value, ...).
 
     Semantics:
+        Paper access markers use ref metadata and identifiers when
+        filtering refs. They compose with stored tags in either polarity.
         AND across all tags — a ref must carry **every** positive tag
         in ``tags`` to pass, and **no** negated (``!``-prefixed) tag.
         The ``HAVING COUNT(DISTINCT want.slot) = N`` clause enforces
@@ -211,10 +238,18 @@ def build_tag_filter(
     if not tags:
         return "", []
 
-    positive, negated = split_tag_polarity(tags)
-
     parts: list[str] = []
     params: list[Any] = []
+    stored_tags: list[str] = []
+    for raw in tags:
+        tag = raw.removeprefix("!")
+        if not block_level and tag in PAPER_ACCESS_FILTERS:
+            predicate = _paper_access_predicate(tag, ref_alias)
+            parts.append(f"NOT {predicate}" if raw.startswith("!") else predicate)
+        else:
+            stored_tags.append(raw)
+
+    positive, negated = split_tag_polarity(stored_tags)
 
     if positive:
         # Each input tag expands to one or more (namespace, value) rows —

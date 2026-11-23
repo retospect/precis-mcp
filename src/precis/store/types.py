@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from precis.errors import BadInput
 from precis.store._axes_vocab import DECLARED_AXES, load_categorizer_axes
+from precis.store._tag_filter import PAPER_ACCESS_FILTERS
 
 # ---------------------------------------------------------------------------
 # Type aliases — closed vocabularies mirrored from the schema
@@ -1147,6 +1148,9 @@ class Tag:
         registered list. Writes stay strict — ``axis_in_use`` is a
         filter-only escape, never applied by ``parse_strict`` itself.
 
+        Paper access markers also pass through on reads. The store
+        evaluates them against metadata and identifiers.
+
         Returns ``None`` for ``None`` or empty input so callers can
         forward to the store's ``tags=`` kwarg unchanged — the
         downstream :func:`build_tag_filter` treats ``None``/``[]`` as
@@ -1187,6 +1191,9 @@ class Tag:
             # entries keep the historical ``s`` probe.
             probe = body.strip() if negated else s
             prefix, _, value = probe.partition(":")
+            if probe in PAPER_ACCESS_FILTERS:
+                out.append(f"!{probe}" if negated else probe)
+                continue
             if (
                 prefix
                 and prefix.isupper()

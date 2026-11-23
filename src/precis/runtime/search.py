@@ -80,7 +80,7 @@ from precis.store._chunks_ops import (
     ANN_STATEMENT_TIMEOUT_MS,
 )
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
-from precis.store._tag_filter import _parse_tag_string
+from precis.store._tag_filter import PAPER_ACCESS_FILTERS, _parse_tag_string
 from precis.store._tags_ops import _tag_to_namespace_value
 from precis.store.types import Tag
 from precis.utils import handle_registry, search_trace
@@ -3911,6 +3911,9 @@ class SearchMixin(RuntimeShape):
         """
         if self.hub.store is None or not required_tag_strings:
             return hits
+        has_access_filter = any(
+            t.removeprefix("!") in PAPER_ACCESS_FILTERS for t in required_tag_strings
+        )
         # ``'!<tag>'`` entries (gr568354) exclude rather than require —
         # same split the SQL path applies in ``build_tag_filter``.
         required = {t for t in required_tag_strings if not t.startswith("!")}
@@ -3927,6 +3930,12 @@ class SearchMixin(RuntimeShape):
                 # Producer provided neither ref_id nor slug — can't
                 # check tags. Drop rather than leak an unfiltered
                 # hit.
+                continue
+            if has_access_filter:
+                if self.hub.store.list_refs(
+                    include_ref_ids=[ref_id], tags=required_tag_strings, limit=1
+                ):
+                    kept.append(hit)
                 continue
             tags_have = self.hub.store.tags_for(ref_id)
             # ``_tag_to_namespace_value`` is the canonical Tag → stored

@@ -503,6 +503,22 @@ the hits to stamped papers. `edit(kind='paper', id=…,
 args={'clear_stamp': '<key>'})` (precis-paper-ref-help) removes the
 stamp to re-open the pass.
 
+## Find open-access papers or papers with an arXiv ID
+
+```python
+search(kind="paper", q="photocatalysis", tags=["ACCESS:open"])
+search(kind="paper", tags=["ACCESS:arxiv"])
+search(kind="paper", view="count", tags=["ACCESS:open", "!ACCESS:arxiv"])
+```
+
+`ACCESS:arxiv` matches stored arXiv identifiers, including arXiv DOI and
+paper-ID aliases and legacy arXiv metadata. `ACCESS:open` includes those
+papers and papers whose `meta.openalex.oa_status` is gold, green, hybrid,
+diamond or bronze. These read-only markers reflect the current metadata.
+They describe public availability. Check the specific version's licence
+before redistributing text or chunks. Add `args={"has_fulltext": True}`
+to require a locally indexed body.
+
 ## List unread papers / papers ingested since a date
 ## Which papers did a read-paper pass never close?
 ## Sweep newly landed papers / walk the unread backlog

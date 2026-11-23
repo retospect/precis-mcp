@@ -461,6 +461,58 @@ class TestSearchBlocksTagFilter:
 
 
 class TestPaperHandlerSearchTags:
+    def test_access_markers_filter_ranked_search_and_count(self, store: Store) -> None:
+        arxiv, closed = _seed_two_papers_with_blocks(store)
+        store.insert_ref_identifiers(arxiv, [("arxiv", "2410.01234", "test")])
+        oa = store.insert_ref(
+            kind="paper",
+            slug="open-alex-paper",
+            title="An OA study",
+            meta={"openalex": {"oa_status": "gold"}},
+        )
+        store.chunks.insert_chunks(oa.id, [ChunkInsert(ord=0, text="photocatalysis")])
+        handler = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+
+        result = handler.search(q="photocatalysis", tags=["ACCESS:open"])
+        assert chunk_handle(store, "paper-a") in result.body
+        assert chunk_handle(store, "open-alex-paper") in result.body
+        assert chunk_handle(store, "paper-b") not in result.body
+        assert store.count_refs(kind="paper", tags=["ACCESS:open"]) == 2
+        assert (
+            store.count_refs(kind="paper", tags=["ACCESS:open", "!ACCESS:arxiv"]) == 1
+        )
+        assert {
+            ref.id for ref in store.list_refs(kind="paper", tags=["!ACCESS:open"])
+        } == {closed}
+        assert (
+            store.count_refs(kind="paper", tags=["ACCESS:arxiv", "topic-co2-capture"])
+            == 1
+        )
+        store.stamp_ref_meta(oa.id, {"openalex": {"oa_status": "closed"}})
+        assert store.count_refs(kind="paper", tags=["ACCESS:open"]) == 1
+
+    def test_access_marker_uses_existing_arxiv_aliases(self, store: Store) -> None:
+        legacy = store.insert_ref(
+            kind="paper",
+            slug="legacy-arxiv",
+            title="Legacy arXiv paper",
+            meta={"arxiv_id": "2501.12345v2"},
+        )
+        doi = store.insert_ref(kind="paper", slug="arxiv-doi", title="arXiv DOI")
+        store.insert_ref_identifiers(
+            doi.id, [("doi", "10.48550/arxiv.2501.01234", "test")]
+        )
+        assert {
+            ref.id for ref in store.list_refs(kind="paper", tags=["ACCESS:arxiv"])
+        } == {legacy.id, doi.id}
+
+    def test_access_marker_is_read_only(self) -> None:
+        assert Tag.normalize_filter(["!ACCESS:arxiv"], kind="paper") == [
+            "!ACCESS:arxiv"
+        ]
+        with pytest.raises(BadInput):
+            Tag.parse_strict("ACCESS:open", kind="paper")
+
     def test_valid_tag_passes_through(self, store: Store) -> None:
         a, _ = _seed_two_papers_with_blocks(store)
         h = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
