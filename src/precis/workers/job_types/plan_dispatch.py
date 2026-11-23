@@ -645,6 +645,7 @@ from precis.workers.job_types import (
     _slice_park,
     get_job_type,
 )
+from precis.workers.job_types._slice_adapters import devin_retryable_agent_error
 
 log = logging.getLogger(__name__)
 
@@ -8273,11 +8274,6 @@ def _claim_score(plan: _Plan, n: _Node, job_type: str | None = None) -> float:
     return score
 
 
-_DEVIN_EMPTY_RESPONSE = re.compile(
-    r'^Error: Agent error: [^\n]*\{\s*"cognition\.ai/errorKind"\s*:\s*'
-    r'"empty_response"\s*,\s*"cognition\.ai/retryable"\s*:\s*true\s*\}',
-    re.MULTILINE,
-)
 _DEVIN_EMPTY_RESPONSE_KEY = "Devin agent error: retryable empty_response"
 
 
@@ -8371,8 +8367,10 @@ def _review_lane(
         previous = next(
             (ln for ln in lane_table if ln.name == last.meta.get("lane")), None
         )
-        if previous is not None and _DEVIN_EMPTY_RESPONSE.search(
-            _job_event_text(w.store, last.id)
+        if (
+            previous is not None
+            and devin_retryable_agent_error(_job_event_text(w.store, last.id))
+            == "empty_response"
         ):
             excluded = frozenset((*vendors, previous.vendor))
             alternatives = tuple(
@@ -11507,7 +11505,7 @@ def _rescue_node(
     if (
         cls == "review"
         and last.status == "failed"
-        and _DEVIN_EMPTY_RESPONSE.search(text)
+        and devin_retryable_agent_error(text) == "empty_response"
     ):
         error_line = _DEVIN_EMPTY_RESPONSE_KEY
     rungs_tried = " → ".join(

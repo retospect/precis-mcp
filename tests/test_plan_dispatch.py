@@ -11004,9 +11004,12 @@ def test_review_cap_is_the_picked_lanes_rungs(
     assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
-@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize(
+    ("pinned", "quoted", "expected_lane"),
+    [(False, False, "codex"), (True, False, "devin"), (False, True, "devin")],
+)
 def test_devin_empty_review_response_prefers_another_vendor(
-    store: Store, pinned: bool
+    store: Store, pinned: bool, quoted: bool, expected_lane: str
 ) -> None:
     mint = _reviewed(store, "")
     review = mint.ids["review"]
@@ -11023,6 +11026,11 @@ def test_devin_empty_review_response_prefers_another_vendor(
     )
 
     def empty_response(job: int, progress: str) -> None:
+        if quoted:
+            payload = '{"cognition.ai/errorKind": "empty_response", "cognition.ai/retryable": true}'
+            tail = f"{payload}\n```\nActual failure follows."
+        else:
+            tail = '{\n  "cognition.ai/retryable": true,\n  "cognition.ai/errorKind": "empty_response"\n}'
         store.chunks.insert_chunks(
             job,
             [
@@ -11032,8 +11040,7 @@ def test_devin_empty_review_response_prefers_another_vendor(
                         "run_slice: session failed (exit 1)\n--- log tail ---\n"
                         f"{progress}\n"
                         "Error: Agent error: The model ended its turn without a response. "
-                        'Send a message to continue.: {\n  "cognition.ai/errorKind": '
-                        '"empty_response",\n  "cognition.ai/retryable": true\n}'
+                        f"Send a message to continue.: {tail}"
                     ),
                     meta={"chunk_kind": "job_event"},
                 ),
@@ -11044,7 +11051,7 @@ def test_devin_empty_review_response_prefers_another_vendor(
     res = pd.run_pass(store)
     assert (res.dispatched, res.rescued) == (1, 0)
     _, (retry, meta) = _jobs_under(store, review)
-    assert meta["params"]["lane"] == ("devin" if pinned else "codex")
+    assert meta["params"]["lane"] == expected_lane
     if not pinned:
         return
 

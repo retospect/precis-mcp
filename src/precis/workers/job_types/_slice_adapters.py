@@ -53,6 +53,38 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+#: The Devin CLI's own terminal report of a retryable agent error
+#: (gr751832): a line ``Error: Agent error: <what>: {`` then a JSON
+#: object carrying ``"cognition.ai/errorKind"`` and
+#: ``"cognition.ai/retryable": true``. The object must end the log.
+_DEVIN_AGENT_ERROR_TAIL_CHARS = 4000
+_DEVIN_AGENT_ERROR_HEADER = re.compile(
+    r"^Error: Agent error:[^\r\n]*?:[ \t]*(?=\{)", re.MULTILINE
+)
+
+
+def devin_retryable_agent_error(log_text: str) -> str | None:
+    """The ``errorKind`` a Devin agent error on the log tail declared
+    retryable, else ``None`` — ``retryable: false`` and a bare
+    ``errorKind`` with no retryable marker never qualify."""
+    start = max(0, len(log_text) - _DEVIN_AGENT_ERROR_TAIL_CHARS)
+    header = _DEVIN_AGENT_ERROR_HEADER.search(log_text, start)
+    if header is None:
+        return None
+    # The final header owns the terminal object. Decode the entire suffix
+    # so a quote's closing fence or a later log line invalidates the match.
+    for later in _DEVIN_AGENT_ERROR_HEADER.finditer(log_text, header.end()):
+        header = later
+    try:
+        error = json.loads(log_text[header.end() :])
+    except ValueError:
+        return None
+    if not isinstance(error, dict) or error.get("cognition.ai/retryable") is not True:
+        return None
+    kind = error.get("cognition.ai/errorKind")
+    return kind if isinstance(kind, str) and re.fullmatch(r"[A-Za-z_]+", kind) else None
+
+
 PERMISSION_MODE = "bypassPermissions"
 _DENY_TOOLS: tuple[str, ...] = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 

@@ -161,10 +161,9 @@ human policy.
 ``(job_ref_id, launch)``. The writer never blocks launch. These rows
 support predicting small-rung gate outcomes against recipe-only routing.
 
-Devin's terminal CLI error object can declare an attempt-free retry
-(gr751832). The job releases its lease and retries the execution lane
-after 15 minutes, preserving lane health and review routing. Errors
-beyond ``OUTAGE_PARK_CAP`` count as failed attempts.
+Retryable Devin errors park attempt-free for 15 minutes on the same lane
+until ``OUTAGE_PARK_CAP`` (gr751832). Review routing and rescue share the
+terminal JSON parser to classify errors independently of transcript prose.
 
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
 to keep later releases from repeating the same fix. Legacy notes inherit

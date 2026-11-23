@@ -451,6 +451,7 @@ from precis.workers.job_types._slice_adapters import (
     devin_auth_status,
     devin_bin,
     devin_model_rate,
+    devin_retryable_agent_error,
     devin_status_logged_in,
     get_adapter,
     kimi_bin,
@@ -10210,37 +10211,6 @@ _CLI_MISSING_LOG_LINES = 3
 #: CLI's own notice; a long answer quoting auth wording is session text.
 _AUTH_TEXT_CAP = 240
 
-#: The Devin CLI's own terminal report of a retryable agent error
-#: (gr751832): a line ``Error: Agent error: <what>: {`` then a JSON
-#: object carrying ``"cognition.ai/errorKind"`` and
-#: ``"cognition.ai/retryable": true``. The object must end the log.
-_DEVIN_AGENT_ERROR_TAIL_CHARS = 4000
-_DEVIN_AGENT_ERROR_HEADER = re.compile(
-    r"^Error: Agent error:[^\r\n]*?:[ \t]*(?=\{)", re.MULTILINE
-)
-
-
-def _devin_retryable_agent_error(log_text: str) -> str | None:
-    """The ``errorKind`` a Devin agent error on the log tail declared
-    retryable, else ``None`` — ``retryable: false`` and a bare
-    ``errorKind`` with no retryable marker never qualify."""
-    start = max(0, len(log_text) - _DEVIN_AGENT_ERROR_TAIL_CHARS)
-    header = _DEVIN_AGENT_ERROR_HEADER.search(log_text, start)
-    if header is None:
-        return None
-    # The final header owns the terminal object. Decode the entire suffix
-    # so a quote's closing fence or a later log line invalidates the match.
-    for later in _DEVIN_AGENT_ERROR_HEADER.finditer(log_text, header.end()):
-        header = later
-    try:
-        error = json.loads(log_text[header.end() :])
-    except ValueError:
-        return None
-    if not isinstance(error, dict) or error.get("cognition.ai/retryable") is not True:
-        return None
-    kind = error.get("cognition.ai/errorKind")
-    return kind if isinstance(kind, str) and re.fullmatch(r"[A-Za-z_]+", kind) else None
-
 
 def _cli_missing_on_tail(
     adapter: str, tail: str, exit_code: int | None, lines: int
@@ -10272,7 +10242,7 @@ def _lane_outage(
 
     For ``devin_tree``, the vendor's terminal ``Error: Agent error:`` block
     declaring ``"cognition.ai/retryable": true`` takes precedence over the
-    transcript's wording (:func:`_devin_retryable_agent_error`, gr751832).
+    transcript's wording (:func:`devin_retryable_agent_error`, gr751832).
     Class ``vendor`` retries on the same lane without counting an attempt
     while the park budget lasts.
 
@@ -10300,7 +10270,7 @@ def _lane_outage(
     from precis.utils.llm.failure import classify_text, lane_auth_key
 
     if adapter == "devin_tree":
-        kind = _devin_retryable_agent_error(log_text)
+        kind = devin_retryable_agent_error(log_text)
         if kind is not None:
             return VENDOR_FAILURE_CLASS, None, f"devin-{kind.replace('_', '-')}"
 
