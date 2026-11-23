@@ -205,6 +205,11 @@ Any UPPERCASE prefix outside that table, the categorizer table below,
 or the declared bookkeeping set is rejected — coin concepts
 as lowercase tags (`density:dense`, `confidence:strong`) instead.
 
+One read-only exception: `search(kind='paper', tags=['ACCESS:open'])` and
+`tags=['ACCESS:arxiv']` (either may be negated with `!`) filter papers by
+current metadata. They are never stored, so `tag(add=['ACCESS:open'])`
+is still refused (`precis-paper-help`).
+
 ## What are the machine categorizer axes?
 ## Where do MATERIAL, DOMAIN, SCALE come from?
 
