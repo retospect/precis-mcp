@@ -87,6 +87,35 @@ def _entries(path: Path) -> list[str]:
     return [e.get("ansible.builtin.import_playbook") or e["name"] for e in _load(path)]
 
 
+def test_redeploy_retires_data_worker_before_removing_its_venv() -> None:
+    play = next(
+        play
+        for play in _load(REDEPLOY)
+        if play.get("name") == "Remove vestigial precis venvs off non-owning hosts"
+    )
+    tasks = play["tasks"]
+    retirement = next(task for task in tasks if "gr690328" in task["name"])
+    venv_removal = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.file", {}).get("path") == "/opt/precis/venv"
+    )
+    assert tasks.index(retirement) < tasks.index(venv_removal)
+    assert retirement["when"] == [venv_removal["when"], 'os_family == "darwin"']
+
+    commands = [task["ansible.builtin.command"] for task in retirement["block"][:-1]]
+    assert commands == [
+        "launchctl print-disabled system",
+        "launchctl disable system/com.precis.worker",
+        "launchctl print system/com.precis.worker",
+        "launchctl bootout system/com.precis.worker",
+    ]
+    assert retirement["block"][-1]["ansible.builtin.file"] == {
+        "path": "/Library/LaunchDaemons/com.precis.worker.plist",
+        "state": "absent",
+    }
+
+
 def _expand(path: Path, label: str | None) -> list[tuple[str, dict[str, Any]]]:
     out: list[tuple[str, dict[str, Any]]] = []
     for entry in _load(path):

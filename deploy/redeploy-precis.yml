@@ -1417,6 +1417,36 @@
       ansible.builtin.file:
         path: /opt/mcps/venv
         state: absent
+    - name: Retire the vestigial worker LaunchDaemon on the DB node (gr690328)
+      when:
+        - inventory_hostname in groups['data']
+        - os_family == "darwin"
+      block:
+        - name: Read disabled system LaunchDaemons
+          ansible.builtin.command: launchctl print-disabled system
+          register: _data_worker_disabled
+          changed_when: false
+          check_mode: false
+        - name: Disable the retired worker
+          ansible.builtin.command: launchctl disable system/com.precis.worker
+          when: >-
+            not (_data_worker_disabled.stdout is
+            search('(?m)^\s*"com\.precis\.worker"\s*=>\s*(disabled|true)\s*$'))
+        - name: Check whether the retired worker is loaded
+          ansible.builtin.command: launchctl print system/com.precis.worker
+          register: _data_worker_job
+          changed_when: false
+          check_mode: false
+          failed_when: >-
+            _data_worker_job.rc != 0 and
+            'Could not find service "com.precis.worker"' not in _data_worker_job.stderr
+        - name: Boot out the retired worker before removing its venv
+          ansible.builtin.command: launchctl bootout system/com.precis.worker
+          when: _data_worker_job.rc == 0
+        - name: Remove the retired worker plist
+          ansible.builtin.file:
+            path: /Library/LaunchDaemons/com.precis.worker.plist
+            state: absent
     - name: Absent /opt/precis/venv on the DB node (worker taken off it 2026-08-11; relic on a stale sha)
       ansible.builtin.file:
         path: /opt/precis/venv
