@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -446,9 +447,24 @@ def gate_preflight_off() -> bool:
     )
 
 
+#: ``docker inspect``'s image-not-found diagnostic, matched on a whole
+#: stderr line: ``Error: No such image: <ref>`` /
+#: ``Error response from daemon: No such image: <ref>`` (``object`` for
+#: older daemons). Any other failure — daemon down, wrong ``DOCKER_HOST``,
+#: a context this env cannot see — is "could not ask", not "absent".
+#: Anchoring keeps a connect error that echoes a socket path like
+#: ``unix:///tmp/no such image/docker.sock`` from reading as absent
+#: (gr770035, td771780).
+_IMAGE_ABSENT_RE = re.compile(
+    r"^(?:error(?: response from daemon)?\s*:\s*)?no such (?:image|object)\s*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def _image_present(image: str) -> bool | None:
     """``True``/``False`` whether the local daemon holds ``image``;
-    ``None`` when the daemon could not be asked (timeout, spawn error)."""
+    ``None`` when the daemon could not be asked (timeout, spawn error, or
+    a connection failure that is not "no such image")."""
     # ``docker`` itself: the gate is ``docker compose`` (scripts/ship), and a
     # podman-only host cannot run it.
     if shutil.which("docker") is None:
@@ -462,7 +478,10 @@ def _image_present(image: str) -> bool | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return done.returncode == 0
+    if done.returncode == 0:
+        return True
+    stderr = done.stderr.decode("utf-8", "replace")
+    return False if _IMAGE_ABSENT_RE.search(stderr) else None
 
 
 def _probe_gate_image() -> int | None:

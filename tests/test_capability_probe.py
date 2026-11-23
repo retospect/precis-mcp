@@ -987,6 +987,61 @@ def test_gate_image_probe_retracts_without_images(
     assert cap._probe_gate_image() is None
 
 
+def test_image_present_tells_absent_from_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr770035: only "no such image" is absent; a daemon that cannot be
+    reached (down, wrong DOCKER_HOST) is unknown and must not retract."""
+    monkeypatch.setattr(cap.shutil, "which", lambda name: "/usr/bin/docker")
+
+    def run_with(returncode: int, stderr: bytes) -> None:
+        def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(args, returncode, b"", stderr)
+
+        monkeypatch.setattr(cap.subprocess, "run", fake_run)
+
+    run_with(0, b"")
+    assert cap._image_present("precis-dev") is True
+    run_with(1, b"Error: No such image: precis-dev\n")
+    assert cap._image_present("precis-dev") is False
+    run_with(1, b"Error response from daemon: No such object: precis-dev\n")
+    assert cap._image_present("precis-dev") is False
+    run_with(
+        1,
+        b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+        b"Is the docker daemon running?\n",
+    )
+    assert cap._image_present("precis-dev") is None
+    run_with(1, b"error during connect: context not found: nope\n")
+    assert cap._image_present("precis-dev") is None
+    # td771780: a connect error that echoes a socket path holding the words
+    # "no such image" is still unknown, never absent.
+    run_with(
+        1,
+        b"Cannot connect to the Docker daemon at "
+        b"unix:///tmp/no such image/docker.sock. "
+        b"Is the docker daemon running?\n",
+    )
+    assert cap._image_present("precis-dev") is None
+    run_with(
+        1,
+        b'error during connect: Get "http://docker/v1.51/info": '
+        b"dial unix /tmp/no such object/docker.sock: "
+        b"connect: no such file or directory\n",
+    )
+    assert cap._image_present("precis-dev") is None
+
+    def timed_out(args: list[str], **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(args, 20)
+
+    monkeypatch.setattr(cap.subprocess, "run", timed_out)
+    assert cap._image_present("precis-dev") is None
+    # a daemon that cannot be reached retracts nothing in the land preflight
+    monkeypatch.delenv(cap.GATE_PREFLIGHT_ENV, raising=False)
+    monkeypatch.setattr(cap, "_image_present", lambda image: None)
+    assert cap._probe_gate_image() is None
+
+
 def test_gate_host_lack_names_what_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
