@@ -80,21 +80,29 @@ def test_frustum_lid(lid: str, p: str, hole_r: int, outer: int, inner: int) -> N
 
 # ---------- graded feet ----------
 
+# sheet(12,12)/sheet(14,14), len=1 tubes (was 30x30, len=6): the asserted
+# story — seam census, euler residual, k-ranking — lives at the hole and
+# the fused rims; the sheet's dead field and the tube's dead periods only
+# added atoms to ~20 rebuilds in the options sweeps below (gr778231: an
+# xdist worker died on this suite's sustained CPU+deepcopy churn on the
+# macOS nightly).  The hole's (5,5)/(6,6) A-site centre keeps the sheet's
+# phase relative to the frustum identical — bigger squares with an
+# off-parity centre mint extra 5-7 pairs on the b+s seam.
 FOOT_33 = """hexfold 0.2
 origin s
-s: sheet(30,30) - hex(2)@(14,14,A):0
+s: sheet(12,12) - hex(2)@(5,5,A):0
 b: cap(36,0) + 3@(-1,0,A):2 - hex(3)@(-1,0,A):0
-t: tube(12,0, len=6)
+t: tube(12,0, len=1)
 s.hole --fuse k=0--> b.in
 b.hole --fuse k=0--> t.in
 """
 
 FOOT_222 = """hexfold 0.2
 origin s
-s: sheet(30,30) - hex(3)@(14,14,A):0
+s: sheet(14,14) - hex(3)@(6,6,A):0
 b: cap(36,0) + square@(-1,0,A):2 - hex(3)@(-1,0,A):0
 c: cap(48,0) + 2@(-1,0,A):2 - hex(5)@(-1,0,A):0
-t: tube(12,0, len=6)
+t: tube(12,0, len=1)
 s.hole --fuse k=0--> b.in
 b.hole --fuse k=0--> c.in
 c.hole --fuse k=0--> t.in
@@ -130,17 +138,19 @@ def test_foot_2_plus_2_plus_2() -> None:
 # rim (+3) onto the tube (0) the other 3.  Only k = 3 mod 4 on the washer
 # seam lines the frustum's 3 corners up with 3 of the washer's 6; every
 # other phase adds three 5-7 pairs.
-# Short tubes (len=2): the seam topology the census and k-ranking assert
+# Short tubes (len=1): the seam topology the census and k-ranking assert
 # lives at the rims, so the lengths only add dead atoms — and options()
 # rebuilds this net per phase (~26 builds), which is what made this test
 # the shard's heaviest (gr701507: an xdist worker died on it under CI
-# memory pressure).
+# memory pressure; the len=2 -> 1 leg of the same shrink is gr778231).
+# The rest is pinned by the rims: washer rim 24 -> frustum hole 24 ->
+# cap(60,0), so only the tube periods had slack.
 CORNER_33 = """hexfold 0.2
 origin n
-n: tube(12,0, len=2)
+n: tube(12,0, len=1)
 w: cap(24,0) - hex(1)@(0,0,A):0
 f: cap(60,0) + 3@(-1,0,A):2 - hex(7)@(-1,0,A):0
-t: tube(30,0, len=2)
+t: tube(30,0, len=1)
 n.out --fuse k=0--> w.hole
 w.in --fuse k={k}--> f.hole
 f.in --fuse k=0--> t.in

@@ -467,7 +467,13 @@ def _hex_flake_sites(lat: Lattice, r: int) -> list[Site]:
     flat-lid patch and a ``- hex(r)@...`` hole are the identical cell
     complex, just centred on the nearest ring instead of an authored site.
     """
-    big = Patch(lat, _hexagon_sites(2 * r + 3))
+    # The BFS arena needs only the rings the r-step ring-adjacency walk can
+    # reach complete: the flake's own atoms reach hex-norm r+2 of the
+    # origin in the far direction, so r+2 keeps the whole r-cluster
+    # interior.  2r+3 over-provisioned ~4x the face walk (the dominant
+    # per-build cost for cap/hex specs -- gr778231's xdist worker died on
+    # that sustained churn); the site lists are identical for r <= 20.
+    big = Patch(lat, _hexagon_sites(r + 2))
     rings, _rims = big.rings_and_rims()
     hexrings = [rr for rr in rings if len(rr) == 6]
     centre = min(
