@@ -558,6 +558,34 @@ it like a relax. The frontier summary reports `mechanism evidence:
 present|absent` per candidate — present only when a run computed ≥1
 descriptor on the *current* geometry.
 
+## Cheap-tier Tc — `mode='tc'` (gr709908)
+
+Superconductivity quests rank candidates on a mechanism/Tc rubric that
+total energy cannot answer. `put(mode='tc')` is the approved cheap tier:
+**Hopfield–McMillan λ + Allen–Dynes T_c**, computed synchronously (no
+job) from caller-supplied inputs and stamped as `meta.last_tc` — the
+frontier row then carries `lambda_ep`/`tc_k`/`omega_log_k` measures,
+`mechanism evidence: present`, and a `· tc: <verdict>` trailer.
+
+```python
+put(kind="structure", id="nbn_slab", mode="tc",
+    args={"n_ef": 1.0,        # DOS at E_F, states/eV/atom (both spins),
+                              # from the DFT run — required
+          "theta_d": 275,     # Debye temperature, K — elastic constants
+                              # via Anderson average-velocity, or Γ-point
+                              # phonons; required unless omega_log is given
+          "note": "n_ef from electronic run r45"})   # optional provenance
+```
+
+`args.omega_log` (K) overrides the ω_log ≈ 0.75·θ_D shortcut;
+`args.i2={'Nb': [lo, hi]}` overrides a per-element ⟨I²⟩ table entry
+(eV/Å²). The receipt is one row: λ, ω_log, T_c at μ* = 0.10 and 0.13,
+the ⟨I²⟩-table lo→hi band (≈ factor 2), and the verdict —
+`phonon-mediated plausible | weak | absent`. Like `last_electronic`,
+the stamp is versioned: an edit retires it with the geometry. It is a
+hypothesis-generator, not a DFPT measurement — real λ is the deferred
+tier-2 lane (QE ph.x/EPW on top candidates).
+
 ## Search, don't guess — `struct_search`
 
 A `struct_search` job runs an AGOX/GOFEE surrogate search — in-process

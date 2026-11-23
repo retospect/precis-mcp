@@ -30,7 +30,7 @@ lists them. `mode=` picks the creation door: file kinds
 `'anchor'` (cite a 2–3 line range, see `precis-python-help`); the paid-import kinds
 (`websearch`, `perplexity-reasoning`, `perplexity-research`) take
 `'import'`. Other kinds gate their own doors: paper `'fetch-si'`,
-structure `'rerun'` / `'neb'` / `'md'` / `'analyze'` / `'trust'`,
+structure `'rerun'` / `'neb'` / `'md'` / `'analyze'` / `'trust'` / `'tc'`,
 machine `'sync'`. Numeric-ref kinds mostly omit `mode=`. Exceptions:
 gripe accepts `create` / `comment` as confirmation of what `id=` selects;
 job accepts `retry` / `retarget` / `setting` / `wake` / `extend` /
@@ -51,7 +51,7 @@ The template catalog and a spec-linked plain-todo recipe are in
 | perplexity-reasoning | `import` |
 | perplexity-research | `import` |
 | paper | `fetch-si` |
-| structure | `rerun`, `neb`, `md`, `analyze`, `trust` |
+| structure | `rerun`, `neb`, `md`, `analyze`, `trust`, `tc` |
 | machine | `sync` |
 | gripe | `create`, `comment` |
 | job | `retry`, `retarget`, `setting`, `wake`, `extend`, `garden-reject` |

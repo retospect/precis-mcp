@@ -1063,6 +1063,15 @@ class StructureHandler(Handler):
                 # the audited harvest trust-stamp correction door (null
                 # performs an audited unset).
                 "stamp",
+                # mode='tc' (gr709908): the cheap-tier Tc estimator's
+                # inputs — DOS at E_F per atom per eV, the Debye
+                # temperature (or an explicit omega_log), optional
+                # per-element ⟨I²⟩ overrides and a provenance note.
+                "n_ef",
+                "theta_d",
+                "omega_log",
+                "i2",
+                "note",
             }
         ),
         "edit": ArgsSpec({"ops"}),
@@ -1191,7 +1200,11 @@ class StructureHandler(Handler):
         # mode='trust' corrects one harvested trust stamp on the design's
         # meta, audited on the structure + the serving quest's logbook
         # (gr592893) — _put_trust.
-        modes=("rerun", "neb", "md", "analyze", "trust"),
+        # mode='tc' is the cheap-tier phonon-mediated-Tc estimator
+        # (gr709908): Hopfield–McMillan λ + Allen–Dynes T_c from caller-
+        # supplied n_ef/θ_D — synchronous, stamps meta['last_tc'] so the
+        # frontier row carries λ/Tc measures + mechanism evidence.
+        modes=("rerun", "neb", "md", "analyze", "trust", "tc"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -1236,6 +1249,10 @@ class StructureHandler(Handler):
         touches geometry, bumps the version or writes a revision; see
         :meth:`_put_trust`.
 
+        ``mode='tc'`` stamps the cheap-tier Hopfield–McMillan/Allen–Dynes
+        Tc estimate as ``meta['last_tc']`` — the mechanism evidence the
+        frontier's flag and λ/Tc measures read; see :meth:`_put_tc`.
+
         ``args={'derive_from': '<parent>', 'ops': [...]}`` branches a NEW
         design (``id=``) off ``<parent>`` with the ops applied and the
         parent's atom labels kept — the label-matched-endpoint door
@@ -1250,6 +1267,8 @@ class StructureHandler(Handler):
             return self._put_analyze(id=id, args=args)
         if mode == "trust":
             return self._put_trust(id=id, args=args)
+        if mode == "tc":
+            return self._put_tc(id=id, args=args)
         a = args or {}
         if a.get("derive_from") is not None:
             return self._put_derive(id=id, title=title, args=a)
@@ -1601,6 +1620,225 @@ class StructureHandler(Handler):
                 f"reverse: put(kind='structure', id={handle!r}, mode='trust', "
                 f"args={{'stamp': {{{key!r}: None, 'reason': 'why'}}}}) — "
                 "unsets the key"
+            )
+        return Response(body="\n".join(lines))
+
+    # ── mode='tc' ────────────────────────────────────────────────────
+
+    _TC_ARGS = frozenset({"n_ef", "theta_d", "omega_log", "i2", "note"})
+    _TC_NOTE_MAX = 500
+
+    def _put_tc(self, *, id: str | int | None, args: dict[str, Any] | None) -> Response:
+        """``put(id=<slug-or-handle>, mode='tc', args={'n_ef': <f>,
+        'theta_d': <K>})`` — the cheap-tier phonon-mediated-Tc estimate
+        (gr709908), stamped as mechanism evidence onto the design.
+
+        Synchronous, no job: :func:`precis.structure.tc.tc_estimate`
+        computes Hopfield–McMillan λ from the caller-supplied ``n_ef``
+        (DOS at E_F per atom per eV, both spins — read off the DFT run)
+        and ``theta_d`` (a Debye temperature in K from elastic constants
+        via the Anderson average-velocity formula, or Γ-point phonons;
+        ``omega_log`` overrides the ω_log ≈ 0.75·θ_D shortcut when a
+        better phonon moment exists), then Allen–Dynes T_c at μ* = 0.10
+        and 0.13 with an explicit lo→hi band (the per-element ⟨I²⟩ table
+        *is* the uncertainty model, ≈ factor 2). ``i2={'Nb': [lo, hi]}``
+        or ``{'Nb': v}`` overrides a table entry; ``note`` is a
+        provenance string (e.g. ``'n_ef from electronic run r45'``).
+
+        The stamp is the same versioned contract as ``last_electronic``:
+        ``meta['last_tc']`` describes only the version it was computed
+        against, so an edit bumps the version and the frontier's
+        ``mechanism_evidence`` flag / tc measures stop claiming it. The
+        receipt is the one row — λ, ω_log, T_c, band, verdict — the
+        quest's mechanism rubric leg reads.
+        """
+        call = (
+            "put(kind='structure', id='<slug>', mode='tc', "
+            "args={'n_ef': <states/eV/atom>, 'theta_d': <K>})"
+        )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure', mode='tc') requires id= (the "
+                "design slug or st<N> handle)",
+                next=call,
+            )
+        a = args or {}
+        unknown = sorted(set(a) - self._TC_ARGS)
+        if unknown:
+            raise BadInput(
+                f"mode='tc' args: unknown key(s) {unknown}",
+                next=f"the estimator knobs are {sorted(self._TC_ARGS)}",
+            )
+
+        def _num(key: str, *, exclusive_floor: bool) -> float | None:
+            raw = a.get(key)
+            if raw is None:
+                return None
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise BadInput(
+                    f"mode='tc' args.{key} must be a number, got {raw!r}",
+                    next=call,
+                )
+            v = float(raw)
+            if not math.isfinite(v) or (v <= 0.0 if exclusive_floor else v < 0.0):
+                op = ">" if exclusive_floor else ">="
+                raise BadInput(
+                    f"mode='tc' args.{key} must be {op} 0, got {v}",
+                    next=call,
+                )
+            return v
+
+        n_ef = _num("n_ef", exclusive_floor=False)
+        if n_ef is None:
+            raise BadInput(
+                "mode='tc' needs args.n_ef — the DOS at the Fermi level, "
+                "per atom per eV (both spins), from the DFT run",
+                next=call,
+            )
+        theta_d = _num("theta_d", exclusive_floor=True)
+        omega_log = _num("omega_log", exclusive_floor=True)
+        if theta_d is None and omega_log is None:
+            raise BadInput(
+                "mode='tc' needs args.theta_d (Debye temperature, K — "
+                "Anderson average-velocity from elastic constants, or "
+                "Γ-point phonons) or args.omega_log directly",
+                next=call,
+            )
+        i2 = a.get("i2")
+        if i2 is not None and not isinstance(i2, dict):
+            raise BadInput(
+                "mode='tc' args.i2 must be an object mapping element "
+                "symbols to ⟨I²⟩ in eV/Å² — a number or a [lo, hi] pair",
+                next=call,
+            )
+        note_raw = a.get("note")
+        note = str(note_raw).strip() if note_raw is not None else ""
+        if len(note) > self._TC_NOTE_MAX:
+            raise BadInput(
+                f"note runs {len(note)} chars (max {self._TC_NOTE_MAX})",
+                next="name the run/source the inputs came from, e.g. "
+                "'n_ef from electronic run r45'",
+            )
+
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        scene, _ = self.store.structure_load(ref.id)
+        if not scene.atoms:
+            raise BadInput(
+                "mode='tc': the design has no atoms — nothing to "
+                "estimate a coupling on",
+                next="author atoms first, then estimate",
+            )
+        version = int((ref.meta or {}).get("version", 0))
+        composition = Counter(atom.element for atom in scene.atoms.values())
+
+        from precis.structure.tc import tc_estimate
+
+        try:
+            est = tc_estimate(
+                n_ef=n_ef,
+                theta_d_k=theta_d,
+                omega_log_k=omega_log,
+                composition=dict(composition),
+                i2=i2,
+            )
+        except (ValueError, TypeError) as exc:
+            raise BadInput(f"mode='tc' rejected its inputs: {exc}", next=call) from exc
+        at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        stamp = {
+            "on_version": version,
+            "lambda_ep": round(est.lambda_ep, 4),
+            "lambda_band": [round(v, 4) for v in est.lambda_band],
+            "omega_log_k": round(est.omega_log_k, 2),
+            "tc_k": round(est.tc_k, 4),
+            "tc_k_mu013": round(est.tc_k_mu013, 4),
+            "tc_band_k": [round(v, 4) for v in est.tc_band_k],
+            "verdict": est.verdict,
+            "n_ef": n_ef,
+            "theta_d_k": theta_d,
+            **({"note": note} if note else {}),
+            **({"i2_fallback": list(est.i2_fallback)} if est.i2_fallback else {}),
+            "at": at,
+        }
+        stamped = self.store.structure_stamp_tc(
+            ref.id, on_version=version, summary=stamp
+        )
+        if stamped == 0:
+            raise Internal(
+                "mode='tc': the design's version moved under the call — "
+                "the stamp refused superseded geometry; rerun mode='tc'",
+                next=call,
+            )
+
+        handle = handle_registry.try_format("structure", ref.id, chunk=False) or str(
+            ref.slug
+        )
+        name = (ref.title or "").splitlines()[0] if ref.title else handle
+        logbook_inputs = (
+            f"θ_D={theta_d:g} K" if theta_d is not None else f"ω_log={omega_log:g} K"
+        )
+        logbook_line = (
+            f"tc estimate on [{handle}] ({name}): "
+            f"lambda_ep={est.lambda_ep:.3f} [{est.lambda_band[0]:.3f}–"
+            f"{est.lambda_band[1]:.3f}], omega_log={est.omega_log_k:.0f} K, "
+            f"Tc(μ*0.10)={est.tc_k:.2f} K [{est.tc_band_k[0]:.2f}–"
+            f"{est.tc_band_k[1]:.2f}] — {est.verdict} "
+            f"(n_ef={n_ef:g}, {logbook_inputs}; cheap-tier estimate, "
+            "hypothesis-generating)"
+        )
+        logged: list[str] = []
+        failed: list[str] = []
+        from precis.quest.logbook import append_entry
+
+        for link in self.store.links_for(ref.id, direction="out", relation="serves"):
+            quest_id = int(link.dst_ref_id)
+            try:
+                entry_no = append_entry(
+                    self.store,
+                    quest_id,
+                    text=logbook_line,
+                    entry_type="result",
+                    by="agent",
+                )
+                logged.append(f"qu{quest_id}~{entry_no - 1}")
+            except Exception:
+                log.exception(
+                    "mode='tc': quest %s logbook append failed for st%s",
+                    quest_id,
+                    ref.id,
+                )
+                failed.append(f"qu{quest_id}")
+
+        fb = (
+            f"; ⟨I²⟩ fallback table entry for {', '.join(est.i2_fallback)}"
+            if est.i2_fallback
+            else ""
+        )
+        lines = [
+            f"tc estimate: {handle} {name} (cheap tier — Hopfield–McMillan "
+            "λ + Allen–Dynes; hypothesis-generating, not a DFPT measurement)",
+            f"  lambda_ep = {est.lambda_ep:.3f} "
+            f"[{est.lambda_band[0]:.3f}–{est.lambda_band[1]:.3f}]",
+            f"  omega_log = {est.omega_log_k:.1f} K"
+            + (f" (0.75·θ_D={theta_d:g} K)" if theta_d is not None else ""),
+            f"  Tc = {est.tc_k:.2f} K at μ*=0.10 "
+            f"[{est.tc_band_k[0]:.2f}–{est.tc_band_k[1]:.2f} K]; "
+            f"{est.tc_k_mu013:.2f} K at μ*=0.13",
+            f"  verdict: {est.verdict}",
+            f"inputs: n_ef={n_ef:g} states/eV/atom"
+            + (f", θ_D={theta_d:g} K" if theta_d is not None else "")
+            + (f", ω_log={omega_log:g} K" if omega_log is not None else "")
+            + fb
+            + (f"; note: {note}" if note else ""),
+            f"stamped meta.last_tc on version {version} — the frontier row "
+            "now carries lambda_ep/tc_k measures and 'mechanism evidence: "
+            "present'; an edit retires it with the geometry",
+        ]
+        if logged:
+            lines.append(f"quest logbook: {', '.join(logged)} (result)")
+        if failed:
+            lines.append(
+                f"quest logbook: append FAILED for {', '.join(failed)} (see "
+                "server log) — the meta.last_tc stamp carries the record"
             )
         return Response(body="\n".join(lines))
 

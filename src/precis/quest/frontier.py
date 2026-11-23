@@ -2105,6 +2105,28 @@ def _candidate_from_structure(
         )
         else "absent"
     )
+    # gr709908: a cheap-tier Hopfield–McMillan Tc estimate (structure
+    # put mode='tc' → meta['last_tc']) is mechanism evidence too — it is
+    # what turns an energy-only row into a λ/Tc one for the quest's
+    # mechanism-rubric leg. Same versioned-stamp contract as
+    # last_electronic: a stamp describing superseded geometry claims
+    # nothing. The λ/ω_log/Tc numbers DO ride as measures — ranking on
+    # them is the point (they are not in _META_NON_MEASURE: they live
+    # inside the last_tc dict, and are copied out here only while
+    # current). The verdict rides as the tc_verdict flag for the tick's
+    # '· tc: <verdict>' trailer — a flag, never a rank measure.
+    _last_tc = meta.get("last_tc")
+    if (
+        isinstance(_last_tc, dict)
+        and int(_last_tc.get("on_version") or -1) == _el_version
+        and _last_tc.get("lambda_ep") is not None
+    ):
+        flags["mechanism_evidence"] = "present"
+        flags["tc_verdict"] = _last_tc.get("verdict")
+        for _mk in ("lambda_ep", "omega_log_k", "tc_k"):
+            _mv = _numeric(_last_tc.get(_mk))
+            if _mv is not None:
+                measures.setdefault(_mk, _mv)
     if "barrier_trusted" in meta:
         flags["barrier_trusted"] = bool(meta.get("barrier_trusted"))
     for key in (

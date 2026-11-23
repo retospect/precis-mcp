@@ -1481,6 +1481,14 @@ def _primary_objective_key(
     return _key
 
 
+def _tc_tail(c: Any) -> str:
+    """The ``· tc: <verdict>`` trailer for a frontier row — present once a
+    cheap-tier Tc estimate (structure put mode='tc', gr709908) stamped a
+    current-version verdict; absent otherwise."""
+    verdict = c.flags.get("tc_verdict")
+    return f" · tc: {verdict}" if verdict else ""
+
+
 def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> str:
     """A compact rendering of the Pareto frontier for a review prompt.
 
@@ -1514,6 +1522,7 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         lines.append(
             f"- FRONTIER {c.handle} {c.name} — {ms} "
             f"· mechanism evidence: {c.flags.get('mechanism_evidence', 'absent')}"
+            f"{_tc_tail(c)}"
         )
     # Beaten rows: best-first by the primary objective (the leaderboard
     # convention), NOT raw candidate order — qu509651's energy-rubric quest
@@ -1530,6 +1539,7 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         lines.append(
             f"- beaten   {c.handle} {c.name} — {ms} "
             f"· mechanism evidence: {c.flags.get('mechanism_evidence', 'absent')}"
+            f"{_tc_tail(c)}"
         )
     if len(beaten) > _BEATEN_SHOWN:
         omitted = beaten[_BEATEN_SHOWN:]
@@ -1566,6 +1576,7 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
         lines.append(
             f"- provisional {c.handle} {c.name} — {ms}{star}{why} "
             f"· mechanism evidence: {c.flags.get('mechanism_evidence', 'absent')}"
+            f"{_tc_tail(c)}"
         )
     if len(provisional) > 10:
         lines.append(f"  (+{len(provisional) - 10} more provisional)")

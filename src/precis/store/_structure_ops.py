@@ -1191,6 +1191,30 @@ class StructureMixin:
                 (Jsonb(summary), ref_id, on_version),
             )
 
+    def structure_stamp_tc(
+        self,
+        ref_id: int,
+        *,
+        on_version: int,
+        summary: dict[str, Any],
+        conn: Connection | None = None,
+    ) -> int:
+        """``meta['last_tc']`` — the same versioned-stamp contract as
+        :meth:`structure_stamp_electronic`, for the cheap-tier
+        Hopfield–McMillan/Allen–Dynes estimate (gr709908): {on_version,
+        lambda_ep, lambda_band, omega_log_k, tc_k, tc_k_mu013, tc_band_k,
+        verdict, n_ef, theta_d_k, note, i2_fallback, at}. Returns the
+        rowcount — 0 means the version raced a concurrent edit and the
+        stamp was refused rather than written onto superseded geometry."""
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
+            cur = conn.execute(
+                "UPDATE refs SET meta = meta || "
+                "jsonb_build_object('last_tc', %s::jsonb) "
+                "WHERE ref_id = %s AND (meta->>'version')::int = %s",
+                (Jsonb(summary), ref_id, on_version),
+            )
+            return int(cur.rowcount)
+
     def structure_record_run(
         self,
         ref_id: int,
