@@ -749,7 +749,7 @@ def _lexical_chunk_source(kind: str | None) -> str:
     return "chunks c JOIN refs r ON r.ref_id = c.ref_id"
 
 
-def _or_retry(q: str, scope_ref_id: int | None) -> bool:
+def _or_retry(q: str, scope_ref_id: int | None, *, kind: str | None = None) -> bool:
     """Whether an empty strict lexical leg retries with its terms OR-ed.
 
     The AND leg's precision contract stands whenever it returns rows:
@@ -757,7 +757,10 @@ def _or_retry(q: str, scope_ref_id: int | None) -> bool:
     Scoped retries any multi-word query (gr510534); unscoped needs
     :data:`_OR_RETRY_MIN_WORDS` words (gr614169). An operator query
     (``-term``, ``"phrase"``) never retries (see :data:`_TSQUERY_OP_RE`).
+    Cross-memory chunk search keeps strict lexical eligibility (gr779000).
     """
+    if kind == "memory" and scope_ref_id is None:
+        return False
     if _TSQUERY_OP_RE.search(q) is not None:
         return False
     min_words = 2 if scope_ref_id is not None else _OR_RETRY_MIN_WORDS
@@ -1122,8 +1125,9 @@ class ChunkStore:
         to :meth:`search_chunks_lexical` for the "N of K" header — same
         WHERE clause (noise-floor guard, ``card_kinds`` opt-in) so the
         header matches the search's exact universe. ``lexical_info_out``
-        receives ``or_fallback`` even when the retry also finds zero rows;
-        callers that omit it retain the integer-only count API.
+        receives ``or_fallback`` even when the retry also finds zero rows.
+        ``or_skipped`` marks a strict miss where kind policy skipped the retry.
+        Callers that omit it retain the integer-only count API.
 
         ``distinct_refs=True`` counts distinct *refs* with a match
         (``COUNT(DISTINCT c.ref_id)``) instead of matching chunks — the
@@ -1192,12 +1196,21 @@ class ChunkStore:
         )
         from precis.store.pool import apply_checkout_budget
 
+        retry = _or_retry(q, scope_ref_id, kind=kind if kinds is None else None)
         if lexical_info_out is not None:
             lexical_info_out["or_fallback"] = False
+            lexical_info_out["or_skipped"] = False
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
-            if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+            if (
+                int(row[0]) == 0
+                and not retry
+                and lexical_info_out is not None
+                and _or_retry(q, scope_ref_id)
+            ):
+                lexical_info_out["or_skipped"] = True
+            if int(row[0]) == 0 and retry:
                 if lexical_info_out is not None:
                     lexical_info_out["or_fallback"] = True
                 # Mirror the OR retry in search_chunks_lexical —
@@ -1571,7 +1584,9 @@ class ChunkStore:
             rows = conn.execute(
                 _sql("websearch_to_tsquery('english', %s)"), params
             ).fetchall()
-            if not rows and _or_retry(q, scope_ref_id):
+            if not rows and _or_retry(
+                q, scope_ref_id, kind=kind if kinds is None else None
+            ):
                 # Recall fallback (gr510534 scoped, gr614169 unscoped):
                 # the AND tsquery missed — retry every term OR-ed. The
                 # trigger is strict-universe emptiness, not page
@@ -2162,7 +2177,7 @@ class ChunkStore:
         # OR-matched chunk in the corpus on every multi-word query, hit
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
-        or_leg = _or_retry(q, scope_ref_id)
+        or_leg = _or_retry(q, scope_ref_id, kind=kind)
         lexical_source = _lexical_chunk_source(kind)
         from precis.store.pool import apply_checkout_budget
 

@@ -54,11 +54,10 @@ OpenAlex IDs, and matching position keeps same-name coauthors distinct.
 
 Lexical chunk ranks use logarithmic document-length normalization in both
 standalone and fused search. This discounts large chunks with scattered
-matches while retaining strict-AND eligibility and the existing RRF weights;
+matches, retaining strict-AND eligibility and the existing RRF weights;
 multi-query search inherits the same ranking through its lexical legs.
 Unscoped paper OR retries promote papers matching the rarest lexemes.
-Taxon lexical legs fetch chunks by ref first so an OR retry over common
-terms only tests taxon chunks.
+Taxon lexical legs fetch chunks by ref first, so an OR retry only tests taxon chunks. Unscoped memory search skips the OR retry.
 
 Figure indexes use the printed table label to exclude table captions
 because legacy ingest shares the standalone caption kind across figures

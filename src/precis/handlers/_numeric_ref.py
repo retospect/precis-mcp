@@ -3941,6 +3941,13 @@ class NumericRefHandler(Handler):
             self.store.chunks.bump_salience(
                 self.store.chunks.card_chunk_ids([ref.id for _, ref, _ in hits])
             )
+        refinement = (
+            "No lexical match contains all query words. Try 1–2 distinctive "
+            "words or quote a shorter phrase."
+            if lexical_info.get("or_skipped")
+            and (mode or "hybrid").strip().lower() in {"hybrid", "lexical"}
+            else ""
+        )
         if not hits:
             if page > 1 and total > 0:
                 # Past the last page — not a "no matches" (total is still
@@ -3954,6 +3961,8 @@ class NumericRefHandler(Handler):
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
             if status_note:
                 body += f"\n{status_note}"
+            if refinement:
+                body += f"\n{refinement}"
             # Under an explicit ``scope=`` the caller *excluded* the
             # title surface — pointing at a title match would name the
             # exact thing that was scoped out (test_memory's
@@ -4025,6 +4034,8 @@ class NumericRefHandler(Handler):
         ]
         if status_note:
             lines.append(status_note)
+        if refinement:
+            lines.append(refinement)
         # ``total`` here is the distinct-ref count matching q AND tags —
         # the q-filtered subset. Flag when the *tagged* population is
         # larger, so a generic q= (e.g. 'open' on STATUS:open) can't

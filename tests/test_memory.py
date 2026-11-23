@@ -565,6 +565,25 @@ def test_search_no_match(handler: MemoryHandler) -> None:
     assert "no memory entries match" in r.body
 
 
+@pytest.mark.parametrize("mode", [None, "lexical"])
+def test_search_all_words_miss_suggests_refinement(
+    handler: MemoryHandler, mode: str | None
+) -> None:
+    handler.put(text="Graphene nanoribbon fabrication")
+    handler.put(text="Transistor channel length measurements")
+    q = "graphene nanoribbon transistor channel length on-off ratio"
+
+    miss = handler.search(q=q, mode=mode, page_size=15)
+    assert miss.result_count == 0
+    assert "No lexical match contains all query words" in miss.body
+    assert "Try 1–2 distinctive words" in miss.body
+
+    handler.put(text=q)
+    hit = handler.search(q=q, mode=mode, page_size=15)
+    assert hit.result_count == 1
+    assert "No lexical match" not in hit.body
+
+
 def test_search_verbatim_finds_exact_sentence(handler: MemoryHandler) -> None:
     """gr662452: verbatim search is the dedup gate the remember and
     search-first recipes trust. A full sentence that sits in a live
