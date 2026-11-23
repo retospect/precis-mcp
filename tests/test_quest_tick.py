@@ -4364,6 +4364,55 @@ class TestReadField:
         assert "Ir (1): aPd2" in prompt
         assert "Pd (2): aPd1 aPd3" in prompt
 
+    def test_read_structure_carries_geometry(self, store: Any) -> None:
+        # gr776647: the st read must answer interatomic-distance questions —
+        # cell, fractional coordinates and MIC bond lengths (shortest first,
+        # periodic image annotated), not just atom labels, so a tick can
+        # check an abnormally short bond behind an energy anomaly.
+        from precis.structure.cell import Cell
+        from precis.structure.ops import apply_ops
+        from precis.structure.scene import Scene
+
+        qid = _mk_quest(store, "A quest checking a bond-length anomaly")
+        scene = Scene(cell=Cell(np.eye(3) * 10.0))
+        apply_ops(
+            scene,
+            [
+                {"op": "add_atom", "element": "Pd", "cart": [5.0, 5.0, 5.0]},
+                {"op": "add_atom", "element": "O", "cart": [6.5, 5.0, 5.0]},
+                # a wall-crossing contact: N at 0.25 Å and Pd at 9.75 Å are
+                # 0.5 Å apart across the x boundary (MIC image -1,0,0)
+                {"op": "add_atom", "element": "N", "cart": [0.25, 5.0, 5.0]},
+                {"op": "add_atom", "element": "Pd", "cart": [9.75, 5.0, 5.0]},
+                {"op": "add_bond", "i": "aPd1", "j": "aO1"},
+                {"op": "add_bond", "i": "aN1", "j": "aPd2", "image": [-1, 0, 0]},
+            ],
+        )
+        ref, _created = store.structure_save(
+            slug="short-bond-check",
+            title="A Pd-O pair and a wall-crossing contact",
+            scene=scene,
+            version=1,
+            card_text="test card",
+        )
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"st{ref.id}", "why": "the Pd-O bond length"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "cell Å:" in prompt
+        assert "a 10.000" in prompt
+        assert "frac coordinates:" in prompt
+        assert "aPd1(0.500,0.500,0.500)" in prompt
+        assert "aN1(0.025,0.500,0.500)" in prompt
+        # bond table: shortest first, the wall-crossing image annotated
+        assert "bonds (2, MIC Å, shortest first):" in prompt
+        assert "aN1–aPd2 0.500" in prompt
+        assert "img -1,0,0" in prompt
+        assert "aPd1–aO1 1.500" in prompt
+
     def test_read_structure_without_atoms_says_so(self, store: Any) -> None:
         from precis.structure.cell import Cell
         from precis.structure.scene import Scene

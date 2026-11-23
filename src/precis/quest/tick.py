@@ -860,6 +860,10 @@ _READ_SECTION_NAMES_MAX = 12
 #: host-element tail is repetition, not information; the count always says
 #: how many were elided.
 _READ_LABELS_PER_ELEMENT = 64
+#: Bond rows listed on a ``st<id>`` structure read — shortest first, so an
+#: abnormally short bond (a relaxation artifact's tell, gr776647) is never
+#: the elided tail; the count always says how many were elided.
+_READ_BONDS_MAX = 96
 
 
 def _read_body_chunks(store: Store, ref_id: int) -> list[Any]:
@@ -1237,10 +1241,10 @@ def _label_sort_key(label: str) -> tuple[str, int, str]:
 
 
 def _structure_read_text(store: Store, ref_id: int) -> str:
-    """The composition + atom-label read-back a ``read`` on an ``st<id>``
-    pulls into the next tick's context (gr584118) — the read-channel form
-    of ``view='atoms'``, which a tick cannot reach (no live ``get``
-    mid-generation).
+    """The composition + geometry read-back a ``read`` on an ``st<id>``
+    pulls into the next tick's context (gr584118, gr776647) — the
+    read-channel form of ``view='atoms'`` plus bond lengths, which a tick
+    cannot reach (no live ``get`` mid-generation).
 
     The live scene is the truth: ``composition`` counts the element each
     atom NOW carries, so a ``set_element`` transmutation shows as the new
@@ -1249,6 +1253,13 @@ def _structure_read_text(store: Store, ref_id: int) -> str:
     wear an ``aPd…`` label and only this grouping reveals it. A stamped
     ``atom_cost`` rides the head line so the composition can be reconciled
     against the priced measure the frontier table shows.
+
+    Geometry rides the same read (gr776647 — labels alone could not check
+    an interatomic-distance hypothesis): the cell, per-atom fractional
+    coordinates under the same per-element grouping/elision, and the
+    bond-length table (MIC Å, shortest first, periodic image annotated) —
+    an abnormally short Pd–O / Pd–N bond behind an energy anomaly is
+    directly visible here.
     """
     try:
         ref = store.get_ref(kind="structure", id=ref_id)
@@ -1290,6 +1301,68 @@ def _structure_read_text(store: Store, ref_id: int) -> str:
             else ""
         )
         lines.append(f"  {el} ({len(labels)}): {' '.join(shown)}{more}")
+    # gr776647 — geometry, not just labels: the cell, per-atom fractional
+    # coordinates under the same grouping/elision, and the bond-length
+    # table. Without these a read cannot test an interatomic-distance
+    # hypothesis, and this read is the tick's only structure channel.
+    lat = scene.cell.lattice
+    va, vb, vc = (np.asarray(lat[i], dtype=float) for i in range(3))
+
+    def _ang(x: np.ndarray, y: np.ndarray) -> float:
+        cos = float(x @ y) / (float(np.linalg.norm(x)) * float(np.linalg.norm(y)))
+        return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
+
+    lines.append(
+        "cell Å: "
+        + " · ".join(
+            [
+                f"a {float(np.linalg.norm(va)):.3f}",
+                f"b {float(np.linalg.norm(vb)):.3f}",
+                f"c {float(np.linalg.norm(vc)):.3f}",
+                f"α {_ang(vb, vc):.2f}",
+                f"β {_ang(va, vc):.2f}",
+                f"γ {_ang(va, vb):.2f}",
+                "pbc " + "".join("T" if p else "F" for p in scene.cell.pbc),
+            ]
+        )
+    )
+    lines.append("frac coordinates:")
+    for el in sorted(by_el):
+        labels = sorted(by_el[el], key=_label_sort_key)
+        shown = labels[:_READ_LABELS_PER_ELEMENT]
+        more = (
+            f" …+{len(labels) - _READ_LABELS_PER_ELEMENT} more"
+            if len(labels) > _READ_LABELS_PER_ELEMENT
+            else ""
+        )
+        coords = " ".join(
+            f"{la}({','.join(f'{x:.3f}' for x in scene.atoms[la].frac)})"
+            for la in shown
+        )
+        lines.append(f"  {el} ({len(labels)}): {coords}{more}")
+    bond_rows: list[tuple[str, str, float, float, tuple[int, int, int]]] = []
+    for bd in scene.bonds:
+        if bd.i not in scene.atoms or bd.j not in scene.atoms:
+            continue
+        pi = scene.cell.frac_to_cart(scene.atoms[bd.i].frac)
+        pj = scene.cell.frac_to_cart(
+            np.asarray(scene.atoms[bd.j].frac, dtype=float)
+            + np.asarray(bd.image, dtype=float)
+        )
+        bond_rows.append(
+            (bd.i, bd.j, float(np.linalg.norm(pj - pi)), bd.order, bd.image)
+        )
+    if bond_rows:
+        bond_rows.sort(key=lambda r: (r[2], r[0], r[1]))
+        shown_bonds = bond_rows[:_READ_BONDS_MAX]
+        lines.append(f"bonds ({len(bond_rows)}, MIC Å, shortest first):")
+        for i, j, length, order, image in shown_bonds:
+            img = f" img {image[0]},{image[1]},{image[2]}" if image != (0, 0, 0) else ""
+            lines.append(f"  {i}–{j} {length:.3f} o{order:g}{img}")
+        if len(bond_rows) > len(shown_bonds):
+            lines.append(
+                f"  …+{len(bond_rows) - len(shown_bonds)} more (longest elided)"
+            )
     return "\n".join(lines)
 
 
@@ -1304,7 +1377,8 @@ def _read_ref_text(
     address reads a benchmark run's raw results log
     (:func:`_read_bench_text`, gr618517); a ``st<id>`` structure
     read takes the inspector branch (:func:`_structure_read_text`) instead
-    of body chunks — composition plus the label→element truth.
+    of body chunks — composition, the label→element truth and the cell /
+    coordinate / bond-length geometry (gr776647).
 
     Selectors (gr505186/gr507189): ``section`` restricts to body chunks
     whose ``section_path`` mentions the name (case-insensitive substring);
@@ -2649,7 +2723,10 @@ handle with a selector reads its owning paper; a `td` read returns the \
 todo's body and comment timeline; a `st` read returns the structure's \
 live composition and atom labels grouped by element — the \
 post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
-atom can wear an `aPd…` label). A `bench:<stem>` read (the stem is the \
+atom can wear an `aPd…` label) — plus the geometry: cell parameters, \
+per-atom fractional coordinates and every bond's minimum-image length \
+(Å, shortest first, periodic image annotated) — enough to check an \
+interatomic-distance hypothesis (an abnormally short Pd–O bond) directly. A `bench:<stem>` read (the stem is the \
 results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
 per-arm rows with their per-call token logs — on it `"section"` names an \
 arm, a task id, or `calls` for the run's raw `tool_calls` log records \
@@ -2924,7 +3001,10 @@ handle with a selector reads its owning paper; a `td` read returns the \
 todo's body and comment timeline; a `st` read returns the structure's \
 live composition and atom labels grouped by element — the \
 post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
-atom can wear an `aPd…` label). A `bench:<stem>` read (the stem is the \
+atom can wear an `aPd…` label) — plus the geometry: cell parameters, \
+per-atom fractional coordinates and every bond's minimum-image length \
+(Å, shortest first, periodic image annotated) — enough to check an \
+interatomic-distance hypothesis (an abnormally short Pd–O bond) directly. A `bench:<stem>` read (the stem is the \
 results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
 per-arm rows with their per-call token logs — on it `"section"` names an \
 arm, a task id, or `calls` for the run's raw `tool_calls` log records \
