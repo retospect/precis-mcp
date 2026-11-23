@@ -44,7 +44,10 @@ concepts to that card — read it before minting a near-duplicate.
 
 A term the human keeps asking about can also arrive tagged
 `twin:asked` — the card-forge pass mints asked concepts first
-([[precis-anki-help]]).
+([[precis-anki-help]]). The daily `walk_cards` pass queues the same way
+for existing concepts a login focused or met one hop out on `/eye`
+(`source="walk"`): it never mints a concept, and skips mastered or
+already-carded ones.
 
 ## Read and search
 
