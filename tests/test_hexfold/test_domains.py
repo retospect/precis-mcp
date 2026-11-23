@@ -199,30 +199,38 @@ def test_bare_fit_enumerates_and_ranks_the_catalogue_survivors() -> None:
     assert da["alternatives"][0]["cost"][0] == 7.0
 
 
-@pytest.mark.nightly(
-    reason="46 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
-)
 def test_domain_fit_composes_with_len_fit() -> None:
-    """Domains resolve outside ``len=fit``: each surviving roll-up is a
-    full spec whose own footprint solve runs inside; the winner carries
-    both ``fit.alternatives`` families."""
+    """Domains resolve outside ``len=fit``: the pinned end prunes the
+    domain first (fast), the surviving roll-up is a full spec whose own
+    footprint solve runs inside (the hexagon hole clips the rim below
+    len 6), and the winner carries both ``fit.alternatives`` families.
+    The pre-2026-11 fixture kept a second N=20 roll-up that the hole
+    vetoed at every len, whose inner len scan burned ~46 s (and the
+    pytest worker) on 64 ever-larger builds; the prune covers the same
+    composition at a fraction of the cost."""
     net = build(
         """hexfold 0.2
-a: tube(20,0, len=3)
-t: tube(fit in {(10,10),(20,0)}, len=fit) - hexagon@(7,0,A):0
+a: tube(14,0, len=2)
+t: tube(fit in {(7,7),(6,6)}, len=fit) - hexagon@(5,0,A):0
 a.in --fuse k=0--> t.out
 """
     )
     assert net.report.ok
     codes = _codes(net)
-    assert dict(codes["fit.propagated"][0].data)["after"] == [[10, 10], [20, 0]]
+    prop = dict(codes["fit.propagated"][0].data)
+    assert prop["after"] == [[7, 7]]
+    assert prop["pruned_by"] == ["fuse a.in -> t.out"]
     t = net.spec.instance("t")
     assert t is not None
-    p = dict(t.params)
-    assert (p["0"], p["1"]) in (("10", "10"), ("20", "0"))
-    assert p["len"].isdigit() and int(p["len"]) >= 1
-    params = {dict(f.data)["param"] for f in codes["fit.alternatives"]}
-    assert params == {"domain", "len"}
+    assert dict(t.params) == {"0": "7", "1": "7", "len": "6"}
+    families = {dict(f.data)["param"]: dict(f.data) for f in codes["fit.alternatives"]}
+    assert set(families) == {"domain", "len"}
+    domain = families["domain"]
+    assert domain["applied"] == {"t": [7, 7]}
+    assert domain["alternatives"] == []  # (6,6) was pruned, not ranked
+    lenf = families["len"]
+    assert lenf["applied"] == 6
+    assert [a["value"] for a in lenf["alternatives"]] == [7, 8, 9, 10, 11, 12, 13]
 
 
 def test_check_accepts_a_domain_spec_and_reports_the_propagation() -> None:
