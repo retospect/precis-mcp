@@ -413,10 +413,15 @@ def test_worker_argv_names_only_the_wanted_passes(tmp_path: Path) -> None:
         w, {"PRECIS_DATABASE_URL": GOOD_DSN}, passes=("heartbeat", "job_ssh_node")
     )
     argv = worker.argv()
-    assert argv[1:4] == ["-m", "precis", "worker"]
-    only = [argv[i + 1] for i, a in enumerate(argv) if a == "--only"]
+    # The run tag leads through ``env`` (gr773025): an orphan's command
+    # line holds the run directory even when its interpreter was not the
+    # run's own.
+    assert argv[:2] == ["env", f"PRECIS_REHEARSAL_RUN={w.run_dir}"]
+    rest = argv[2:]
+    assert rest[1:4] == ["-m", "precis", "worker"]
+    only = [rest[i + 1] for i, a in enumerate(rest) if a == "--only"]
     assert only == ["heartbeat", "job_ssh_node"]
-    assert argv[argv.index("--database-url") + 1] == GOOD_DSN
+    assert rest[rest.index("--database-url") + 1] == GOOD_DSN
 
 
 # ── registry ───────────────────────────────────────────────────────
@@ -1375,6 +1380,73 @@ def test_end_run_processes_spares_the_excluded_group(tmp_path: Path) -> None:
                 p.wait(timeout=20)
 
 
+def test_clean_match_finds_orphans_and_watchers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr773025: ``--clean`` must find leftovers whose run directory is
+    already gone — a worker carrying only the run tag or the scratch DSN —
+    and watcher loops whose own command line matches their pgrep pattern."""
+    scratch = tmp_path / "co-a" / "scratch" / "rehearsal"
+    monkeypatch.setattr(runner, "SCRATCH", scratch)
+    match = runner._clean_match(foreign_ports={44444})
+    # The run tag an ``env``-launched worker keeps on its command line.
+    assert match(
+        f"env PRECIS_REHEARSAL_RUN={scratch}/run-1 "
+        f"{scratch}/run-1/host/.venv/bin/python -m precis worker"
+    )
+    # A deleted run directory's path, still on the command line.
+    assert match(f"{scratch}/run-2/host/.venv/bin/python -m precis worker")
+    # A worker started without the run's interpreter holds only the DSN.
+    assert match(
+        "python -m precis worker --database-url "
+        "postgresql://postgres@127.0.0.1:55555/precis_rehearsal --embedder mock"
+    )
+    # A watcher loop that self-matches its own pgrep pattern.
+    assert match(
+        "zsh -c 'while pgrep -f \"factory-rehearsal -s host-lost\" ; do sleep 10; done'"
+    )
+    # A worker of another checkout's live rehearsal is spared (its port).
+    assert not match(
+        "python -m precis worker --database-url "
+        "postgresql://postgres@127.0.0.1:44444/precis_rehearsal --embedder mock"
+    )
+    # A production-looking worker, another checkout's run dir, a bare
+    # pgrep probe (no loop) and an unrelated DSN mention are all spared.
+    assert not match(
+        "python -m precis worker --database-url postgresql://u@db.prod.example/precis"
+    )
+    assert not match(
+        f"{tmp_path}/co-b/scratch/rehearsal/run-9/host/.venv/bin/python -m precis worker"
+    )
+    assert not match("pgrep -f precis_rehearsal")
+    assert not match("grep precis_rehearsal notes.txt")
+
+
+def test_end_matching_processes_ends_tagged_orphans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rehearsal import procguard
+
+    monkeypatch.setattr(runner, "SCRATCH", tmp_path)
+    orphan = _sleeper(f"env PRECIS_REHEARSAL_RUN={tmp_path}/run-9")
+    watcher = _sleeper('zsh -c "while pgrep -f factory-rehearsal ; do sleep 10; done"')
+    stranger = _sleeper(str(tmp_path / "unrelated"))
+    try:
+        time.sleep(0.5)
+        signalled = procguard.end_matching_processes(
+            runner._clean_match(set()), grace=0.5
+        )
+        assert {orphan.pid, watcher.pid} <= set(signalled)
+        orphan.wait(timeout=20)
+        watcher.wait(timeout=20)
+        assert stranger.poll() is None, "the unmatched process was signalled"
+    finally:
+        for p in (orphan, watcher, stranger):
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=20)
+
+
 def test_credential_free_scripts_only() -> None:
     """The scenario scripts the shim runs are JSON the driver writes at run
     time; nothing credential-shaped is checked in anywhere under scripts/rehearsal."""
@@ -1419,7 +1491,7 @@ def test_worker_kill_and_restart_do_not_need_a_shutdown(
     monkeypatch.setattr(rworker.launch, "popen", fake_popen)
     pid = worker.restart()
     try:
-        assert started and started[0][1:4] == ["-m", "precis", "worker"]
+        assert started and started[0][3:6] == ["-m", "precis", "worker"]
         assert (w.run_dir / "worker.pid").read_text(encoding="utf-8") == str(pid)
     finally:
         worker.kill()
@@ -2047,6 +2119,7 @@ def test_the_worker_env_has_the_second_fences(tmp_path: Path) -> None:
     assert env["GIT_CONFIG_NOSYSTEM"] == "1"
     assert env["PRECIS_LAND_NOTIFY_CLI"] == env["PRECIS_GRIPE_NOTE_CLI"]
     assert env["PRECIS_LAND_NOTIFY_CLI"] == str(w.bin / "notify-stub")
+    assert env[rworker.RUN_TAG] == str(w.run_dir)
 
 
 def test_notify_stub_records_calls_and_posts_nothing(tmp_path: Path) -> None:

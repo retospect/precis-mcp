@@ -55,6 +55,12 @@ DEFAULT_PASSES = ("heartbeat", "job_ssh_node", "job_inproc")
 FAKE_CLAUDE_TOKEN = "rehearsal-stand-in-not-a-credential"
 FAKE_KIMI_KEY = "rehearsal-stand-in-not-a-credential"
 
+#: The marker every rehearsal worker carries. :meth:`Worker.argv` launches
+#: through ``env`` so it lands on the command line too: ``--clean`` then
+#: finds the worker even after its run directory — the only rehearsal token
+#: an orphan's command line used to hold — is gone (gr773025).
+RUN_TAG = "PRECIS_REHEARSAL_RUN"
+
 
 def _path(world: World) -> str:
     """The world's ``bin`` first, then the caller's PATH minus every entry
@@ -114,6 +120,7 @@ def build_env(
         "PRECIS_LAND_NOTIFY_CLI": str(world.bin / "notify-stub"),
         "PRECIS_GRIPE_NOTE_CLI": str(world.bin / "notify-stub"),
         "PRECIS_EMBEDDER": "mock",
+        RUN_TAG: str(world.run_dir),
         "PRECIS_HEARTBEAT_INTERVAL_SECONDS": "3",
         "PRECIS_LOG_LEVEL": "INFO",
         # ``scripts/ship --quick`` runs its lint through this host command
@@ -144,7 +151,17 @@ class Worker:
         return self.world.logs / "worker.log"
 
     def argv(self) -> list[str]:
-        argv = [str(self.world.python), "-m", "precis", "worker"]
+        # ``env`` puts the run tag on the command line (gr773025): an
+        # orphan's ps line holds it even when argv[0] is not the run's
+        # interpreter path.
+        argv = [
+            "env",
+            f"{RUN_TAG}={self.env.get(RUN_TAG) or self.world.run_dir}",
+            str(self.world.python),
+            "-m",
+            "precis",
+            "worker",
+        ]
         for name in self.passes:
             argv += ["--only", name]
         argv += [

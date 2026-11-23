@@ -111,6 +111,24 @@ def other_projects(prefix: str = f"{PROJECT_PREFIX}-") -> list[str]:
     )
 
 
+def published_port(project: str) -> int | None:
+    """The loopback port Docker published for ``project``'s database, or
+    ``None`` when it has none (down, removed, unreadable). ``--clean`` reads
+    the live projects of *other* checkouts through this so a worker still
+    talking to one is never mistaken for an orphan of this checkout."""
+    out = _compose(project, "port", "db", "5432", timeout=60)
+    if out.returncode != 0:
+        return None
+    lines = (out.stdout or "").strip().splitlines()
+    if not lines:
+        return None
+    _host, _sep, port = lines[0].rpartition(":")
+    try:
+        return int(port)
+    except ValueError:
+        return None
+
+
 def remove_project(project: str) -> str:
     """``compose down -v`` for one rehearsal project; a note, never raises."""
     try:

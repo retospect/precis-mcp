@@ -15,11 +15,13 @@ so.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import signal
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
 
@@ -155,16 +157,67 @@ def _terminate(signum: int, frame: FrameType | None) -> None:
     raise KeyboardInterrupt(f"signal {signum}")
 
 
+def _foreign_db_ports() -> set[int]:
+    """Published ports of *other* checkouts' live rehearsal databases, so a
+    worker still talking to one is not mistaken for this checkout's orphan
+    (the DSN is the same shape for every checkout). Unreadable — docker
+    down, no engine — is an empty set, matching ``clean_all``'s compose
+    treatment."""
+    try:
+        ours = dbmod.project_prefix(REPO_ROOT)
+        foreign = [
+            p
+            for p in dbmod.other_projects(f"{dbmod.PROJECT_PREFIX}-")
+            if not p.startswith(ours)
+        ]
+    except Refused:
+        return set()
+    return {
+        port
+        for project in foreign
+        if (port := dbmod.published_port(project)) is not None
+    }
+
+
+def _clean_match(foreign_ports: set[int]) -> Callable[[str], bool]:
+    """The command-line test ``--clean`` uses to find what a rehearsal left
+    behind. Three shapes:
+
+    * a path under this checkout's ``scratch/rehearsal/run-*``: the string
+      stays on the command line after the directory is removed, and the
+      worker's ``PRECIS_REHEARSAL_RUN`` marker carries it even when the
+      orphan's interpreter was not the run's own;
+    * a DSN naming the scratch database — a worker started without the
+      run's interpreter holds only that — unless its port is a live
+      project of another checkout;
+    * a watcher loop (``while`` or ``until`` … ``pgrep`` … ``rehearsal``)
+      that never exits because its own command line matches the pattern
+      it polls for.
+    """
+    run_dir = re.compile(re.escape(str(SCRATCH)) + r"/run-")
+    dsn = re.compile(r"(?:/|dbname=)" + re.escape(dbmod.DB_NAME) + r"\b")
+    watcher = re.compile(r"(?:while|until).*pgrep.*rehearsal")
+
+    def match(cmd: str) -> bool:
+        if run_dir.search(cmd) or watcher.search(cmd):
+            return True
+        if dsn.search(cmd):
+            return not any(f":{port}/{dbmod.DB_NAME}" in cmd for port in foreign_ports)
+        return False
+
+    return match
+
+
 def clean_all() -> int:
     """Remove this checkout's rehearsal processes, databases and run
-    directories. Processes are found by their command lines (under a run
-    directory), never from a recorded pid alone."""
+    directories. Processes are found by their command lines
+    (:func:`_clean_match`), never from a recorded pid alone, so leftovers
+    outliving their run directory are found too."""
     gone = 0
-    runs = sorted(SCRATCH.glob("run-*")) if SCRATCH.is_dir() else []
-    for run in runs:
-        groups = procguard.end_run_processes(run)
-        if groups:
-            note(f"ended process group(s) {groups} of {run.name}")
+    ended = procguard.end_matching_processes(_clean_match(_foreign_db_ports()))
+    if ended:
+        note(f"ended process group(s) {ended}")
+        gone += len(ended)
     try:
         projects = dbmod.other_projects(dbmod.project_prefix(REPO_ROOT))
     except Refused as exc:
@@ -173,6 +226,7 @@ def clean_all() -> int:
     for project in projects:
         note(dbmod.remove_project(project))
         gone += 1
+    runs = sorted(SCRATCH.glob("run-*")) if SCRATCH.is_dir() else []
     for run in runs:
         shutil.rmtree(run, ignore_errors=True)
         gone += 1
