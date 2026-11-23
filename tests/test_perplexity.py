@@ -780,20 +780,8 @@ def test_format_response_no_think_tag_is_no_op() -> None:
 
 
 def test_ttl_per_tier() -> None:
-    """websearch=7d, perplexity-reasoning=pinned, perplexity-research=pinned.
-
-    Reasoning + deep-research both default to pinned-forever: citation-grade
-    questions don't decay, and the pollution failure mode (wrong cached
-    answer) is bounded — citations come from the chase/finding pipeline,
-    not from perplexity, so a bad cached row can be link-tagged as wrong
-    or deleted. Agents can opt into a shorter TTL per-call via
-    ``ttl_days=`` on get; default forever beats default-stale-in-30d.
-    Websearch stays at 7d because the fast-tier is mostly current-events.
-    """
-    # ttl_seconds/cost_per_call_usd are properties proxying to TIER (config-
-    # dataclass parameterization, see handlers/perplexity.py::_SonarTier) —
-    # read the TIER ClassVar directly rather than the instance property.
-    assert WebsearchHandler.TIER.ttl_seconds == 7 * 24 * 60 * 60
+    """All Sonar tiers are pinned unless the caller supplies a TTL."""
+    assert WebsearchHandler.TIER.ttl_seconds is None
     assert ThinkHandler.TIER.ttl_seconds is None
     assert ResearchHandler.TIER.ttl_seconds is None
 
@@ -963,22 +951,22 @@ def test_import_records_source_imported_metadata(
     assert cache.fresh_until is None
 
 
-def test_import_is_idempotent_on_repeat(
+def test_reimport_reads_the_current_version(
     research_with_embedder: ResearchHandler,
 ) -> None:
-    """Re-importing the same query replaces, doesn't duplicate refs."""
+    """Re-importing advances the query key to the new body."""
     h = research_with_embedder
     h.put(id="same query", text="# v1\n\nfirst body", mode="import")
     h.put(id="same query", text="# v2\n\nsecond body", mode="import")
 
-    # Only one cache row should exist for this (provider, hash).
+    # The request hash resolves the current cache row.
     request_hash = h._hash(h._canonical_key("same query"))
     cached = h.store.get_cache_entry(provider="perplexity", request_hash=request_hash)
     assert cached is not None
     ref, _cache = cached
     blocks = h.store.chunks.list_chunks_for_ref(ref.id)
     full = "\n".join(b.text for b in blocks)
-    # The second import wins; the first is gone.
+    # The second import is now current.
     assert "second body" in full
     assert "first body" not in full
 
@@ -1640,57 +1628,36 @@ def test_legacy_slug_resolves_unchanged(
     assert _StubClient.call_count == 0
 
 
-def test_reimport_of_legacy_slugged_query_refreshes_in_place(
-    research_with_embedder: ResearchHandler,
+@pytest.mark.parametrize("legacy_slug", [True, False])
+def test_reimport_keeps_the_cited_slug_and_publishes_a_new_version(
+    research_with_embedder: ResearchHandler, legacy_slug: bool
 ) -> None:
-    """Re-importing a query cached under a legacy slug must not mint a
-    second row — the UNIQUE (provider, request_hash) constraint would
-    500 on a fresh insert. The row refreshes in place, keeping the
-    legacy slug and ref id."""
     h = research_with_embedder
-    legacy = _plant(
-        h,
-        slug=_legacy_slug(_QUERY_A),
-        request_hash=h._hash(h._canonical_key(_QUERY_A)),
-        query=_QUERY_A,
-    )
-    before = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=legacy)
+    key = h._canonical_key(_QUERY_A)
+    request_hash = h._hash(key)
+    if legacy_slug:
+        slug = _plant(
+            h, slug=_legacy_slug(_QUERY_A), request_hash=request_hash, query=_QUERY_A
+        )
+    else:
+        slug = _import_a(h)
+    before = h.store.get_cache_entry_by_slug(kind=h.spec.kind, slug=slug)
     assert before is not None
-    ref_id = before[0].id
+    old_body = h.get(id=slug, no_fetch=True).body
 
     resp = h.put(id=_QUERY_A, text="# A\n\nre-imported body", mode="import")
 
     assert "re-imported" in resp.body
-    after = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=legacy)
+    after = h.store.get_cache_entry(provider=h.provider, request_hash=request_hash)
     assert after is not None
-    assert after[0].id == ref_id
-    assert "re-imported body" in h.get(id=legacy, no_fetch=True).body
-    # No second row under the new hash-suffixed slug.
-    new_slug = h._slug_for(h._canonical_key(_QUERY_A))
-    assert new_slug != legacy
-    assert (
-        h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=new_slug)
-        is None
-    )
-
-
-def test_reimport_under_new_slug_also_refreshes_in_place(
-    research_with_embedder: ResearchHandler,
-) -> None:
-    """Same-query re-import under the hash-suffixed scheme refreshes the
-    row — ref id and any annotations survive (no delete+insert)."""
-    h = research_with_embedder
-    slug = _import_a(h)
-    entry = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
-    assert entry is not None
-    ref_id = entry[0].id
-
-    h.put(id=_QUERY_A, text="# A\n\nre-imported body", mode="import")
-
-    after = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
-    assert after is not None
-    assert after[0].id == ref_id
-    assert "re-imported body" in h.get(id=slug, no_fetch=True).body
+    assert after[0].id != before[0].id
+    assert after[0].slug != slug
+    # The cited slug still renders its own snapshot; versioning adds a
+    # derived "Links:" footer (the supersedes edge) on top of the body.
+    reread = h.get(id=slug, no_fetch=True)
+    assert reread.body.startswith(old_body)
+    assert "re-imported" not in reread.body
+    assert "re-imported body" in h.get(q=_QUERY_A).body
 
 
 def test_same_slug_different_query_still_refused(
@@ -1751,7 +1718,7 @@ def test_slug_match_without_stored_query_keeps_legacy_refresh(
     research_with_embedder: ResearchHandler,
 ) -> None:
     """A row written before ``query`` was tracked in meta cannot be
-    compared; the pre-guard in-place refresh stays."""
+    compared and can still be refreshed."""
     h = research_with_embedder
     key = h._canonical_key(_QUERY_B)
     slug = _plant(
@@ -1765,8 +1732,10 @@ def test_slug_match_without_stored_query_keeps_legacy_refresh(
 
     assert _StubClient.call_count == 1
     assert "Dario Amodei" in resp.body
-    after = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
-    assert after is not None
+    before = h.store.get_cache_entry_by_slug(kind="perplexity-research", slug=slug)
+    assert before is not None
+    after = h.store.get_cache_entry(provider=h.provider, request_hash=h._hash(key))
+    assert after is not None and before[0].id != after[0].id
     assert (after[1].meta or {}).get("query") == _QUERY_B
 
 

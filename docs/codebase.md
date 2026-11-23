@@ -57,6 +57,10 @@ Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
   embeds title+abstract into `ref_embeddings`, keyed on `refs`, to rank
   the acquisition queue via `refs.prio` — 1=hottest.)
 
+Web, Wikipedia, YouTube and all Sonar tiers use versioned cache refs.
+Query lookups resolve the current result. Each snapshot keeps its own ref,
+slug and chunk addresses so repeat fetches preserve existing citations.
+
 Schema evolves **forward-only** (dual-track baseline; see `store/migrate.py`): new
 `migrations/NNNN_<slug>.sql`, never edit a sealed file; a fresh DB loads the
 `migrations/baseline/schema.sql` snapshot then applies the tail.

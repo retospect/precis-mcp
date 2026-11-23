@@ -32,7 +32,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers.youtube import YouTubeHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, Ref
 
 VID = "vidCHUNKED01"[:11]
 
@@ -235,25 +235,44 @@ def test_toc_never_fetches(handler: YouTubeHandler, store: Store) -> None:
 # ── legacy one-blob transcripts ──────────────────────────────────────
 
 
+def _current_transcript(store: Store, ref_id: int) -> Ref:
+    entry = store.get_current_cache_version(ref_id)
+    assert entry is not None
+    return entry[0]
+
+
 def test_legacy_blob_rechunked_on_read(handler: YouTubeHandler, store: Store) -> None:
     ref, _cache = _legacy_blob(store, _blob_text(50000))
     handler.get(id="vidLEGACY001"[:11], no_fetch=True)
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    current = _current_transcript(store, ref.id)
+    blocks = store.chunks.list_chunks_for_ref(current.id)
     assert len(blocks) > 10
     assert all(len(b.text.encode("utf-8")) <= 2100 for b in blocks)
     assert all(b.meta.get("legacy_rechunk") for b in blocks)
 
 
-def test_legacy_blob_rechunked_on_selector(
+def test_legacy_blob_selector_keeps_its_cited_chunk(
     handler: YouTubeHandler, store: Store
 ) -> None:
-    ref, _cache = _legacy_blob(store, _blob_text(20000), slug="vidLEGACY02"[:11])
-    resp = handler.get(id="vidLEGACY02~0")
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
-    assert len(blocks) > 1
-    # The base's range render strips chunk-edge whitespace.
-    assert blocks[0].text.strip() in resp.body
-    assert len(resp.body.encode("utf-8")) < DEFAULT_CONTEXT_BODY_BYTES
+    slug = "vidLEGACY02"
+    ref, _cache = _legacy_blob(store, _blob_text(20000), slug=slug)
+    (blob,) = store.chunks.list_chunks_for_ref(ref.id)
+    note = store.insert_ref(kind="memory", slug=None, title="Transcript citation")
+    link = store.add_link(
+        src_ref_id=note.id, dst_ref_id=ref.id, dst_pos=0, relation="cites"
+    )
+
+    handler.get(id=slug, view="toc")
+
+    assert store.chunks.list_chunks_for_ref(ref.id)[0].id == blob.id
+    (saved_link,) = store.links_for(note.id)
+    assert (saved_link.id, saved_link.dst_chunk_id) == (link.id, blob.id)
+    assert blob.text.strip() in handler.get(id=f"{slug}~0").body
+    current = _current_transcript(store, ref.id)
+    assert current.slug is not None
+    windows = store.chunks.list_chunks_for_ref(current.id)
+    assert len(windows) > 1
+    assert windows[0].text.strip() in handler.get(id=f"{current.slug}~0").body
 
 
 def test_legacy_small_blob_left_alone(handler: YouTubeHandler, store: Store) -> None:
@@ -266,7 +285,8 @@ def test_rechunked_toc_and_ranges(handler: YouTubeHandler, store: Store) -> None
     ref, _cache = _legacy_blob(store, _blob_text(50000), slug="vidLEGACY03"[:11])
     resp = handler.get(id="vidLEGACY03", view="toc")
     assert len(resp.body.encode("utf-8")) < DEFAULT_CONTEXT_BODY_BYTES
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    current = _current_transcript(store, ref.id)
+    blocks = store.chunks.list_chunks_for_ref(current.id)
     assert f"{len(blocks)} chunks" in resp.body
     # A range read on the re-chunked ref works and fits.
     r = handler.get(id="vidLEGACY03~0..1")
@@ -317,7 +337,8 @@ def test_dispatch_toc_of_legacy_blob_fits_and_rechunks(
     )
     assert not is_error, body
     assert len(body.encode("utf-8")) <= 4096
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    current = _current_transcript(store, ref.id)
+    blocks = store.chunks.list_chunks_for_ref(current.id)
     assert len(blocks) > 10
     assert f"{len(blocks)} chunks" in body
 
@@ -335,10 +356,11 @@ def test_dispatch_range_read_names_rest(
         "get", {"kind": "youtube", "id": f"{slug}~0..999"}, fold=True
     )
     assert not is_error, body
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    current = _current_transcript(store, ref.id)
+    blocks = store.chunks.list_chunks_for_ref(current.id)
     assert len(blocks) > 10
     rest = next(ln for ln in body.split("\n") if ln.startswith("rest:"))
-    m = re.search(rf"id='{slug}~(\d+)\.\.999'", rest)
+    m = re.search(rf"id='{current.slug}~(\d+)\.\.999'", rest)
     assert m, rest
     cut = int(m.group(1))
     # Everything before the named chunk is shown whole.
@@ -368,11 +390,12 @@ def test_dispatch_chunk_handle_rewrite_and_nc_guard(
         "get", {"id": f"{slug}~1"}, fold=True
     )
     assert not is_error, body
-    blocks = store.chunks.list_chunks_for_ref(ref.id)
+    current = _current_transcript(store, ref.id)
+    blocks = store.chunks.list_chunks_for_ref(current.id)
     assert len(blocks) > 1
     assert blocks[1].text.strip() in body
     assert blocks[0].text.strip() not in body
-    assert f"_chunks ~1 of `{slug}`" in body
+    assert f"_chunks ~1 of `{current.slug}`" in body
     # The news chunk code never resolves a youtube chunk — kind guard.
     out, is_error = runtime_with_store.dispatch_with_status(
         "get", {"id": f"nc{blocks[0].id}"}
@@ -385,42 +408,28 @@ def test_dispatch_chunk_handle_rewrite_and_nc_guard(
 def test_dispatch_sequential_rechunk_attempts_stay_consistent(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
-    """The concurrent lazy re-chunk race, simulated sequentially: two
-    readers both see the legacy blob; the first dispatch read re-windows,
-    and a second attempt on the same legacy state — the lock loser's
-    path — hits the in-transaction re-check and is a no-op. The raw
-    replace path itself (DELETE+INSERT) tolerates a repeated call."""
-    from precis.handlers.youtube import _split_blob_window
-
+    """Retrying the original blob reuses the committed derived version."""
     slug = "vidDSPLEG04"[:11]
-    text = _blob_text(20000)
-    ref, _cache = _legacy_blob(store, text, slug=slug)
+    ref, _cache = _legacy_blob(store, _blob_text(20000), slug=slug)
     body, is_error = runtime_with_store.dispatch_with_status(
         "get", {"kind": "youtube", "id": slug, "no_fetch": True}, fold=True
     )
     assert not is_error, body
-    first = store.chunks.list_chunks_for_ref(ref.id)
-    assert len(first) > 1
-    assert all(b.meta.get("legacy_rechunk") for b in first)
+    current = _current_transcript(store, ref.id)
+    windows = store.chunks.list_chunks_for_ref(current.id)
+    assert len(windows) > 1
+    assert all(b.meta.get("legacy_rechunk") for b in windows)
 
-    # Reader 2's check-and-replace on the same legacy state: the atomic
-    # re-check under the refs lock sees the committed re-window and does
-    # nothing.
-    YouTubeHandler(hub=runtime_with_store.hub)._maybe_rechunk(ref)
-    second = store.chunks.list_chunks_for_ref(ref.id)
-    assert [b.text for b in second] == [b.text for b in first]
+    handler = YouTubeHandler(hub=runtime_with_store.hub)
+    assert handler._maybe_rechunk(ref).id == current.id
+    assert _current_transcript(store, ref.id).id == current.id
+    assert store.chunks.count_chunks(ref.id) == 1
 
-    # The replace path itself is idempotent on the same input.
-    store.chunks.insert_chunks(ref.id, _split_blob_window(text), replace=True)
-    third = store.chunks.list_chunks_for_ref(ref.id)
-    assert [b.text for b in third] == [b.text for b in first]
-
-    # A follow-up read is still clean and consistent.
-    body2, is_error2 = runtime_with_store.dispatch_with_status(
+    body, is_error = runtime_with_store.dispatch_with_status(
         "get", {"kind": "youtube", "id": slug, "view": "toc"}, fold=True
     )
-    assert not is_error2, body2
-    assert store.chunks.count_chunks(ref.id) == len(third)
+    assert not is_error, body
+    assert f"{len(windows)} chunks" in body
 
 
 @_NEEDS_PAPER_EXTRA
@@ -448,3 +457,4 @@ def test_dispatch_rechunk_never_raises_on_store_fault(
     # The legacy blob is still there, untouched — and still served.
     assert store.chunks.count_chunks(ref.id) == 1
     assert "lazy dog" in body
+    assert _current_transcript(store, ref.id).id == ref.id

@@ -46,6 +46,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
+from precis.store._cache_ops import VERSIONED_CACHE_KINDS
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 from precis.utils.chunk_ingest import to_chunk_inserts
@@ -206,8 +207,8 @@ class FetchResult:
 
     content_sha256: str | None = None
     """sha256 (hex) of the fetched content, for a provider whose page is a
-    citable source (web). Lands in `cache_state.content_sha256`; every
-    fetch/refresh overwrites it. None = this provider records none."""
+    citable source (web). Stored on the snapshot in
+    `cache_state.content_sha256`. None = this provider records none."""
 
     cacheable: bool = True
     """False = serve this answer but do not keep it: the row is written
@@ -582,8 +583,7 @@ class CacheBackedHandler(Handler):
 
         # ``mode=`` validation. Today only ``refresh`` is honoured —
         # bypass the freshness check, force ``_fetch``, write the
-        # new body in-place via ``update_cache_entry`` so tags/links
-        # survive. (gripe:3681 phase 4.) ``refresh=True`` is a cleaner
+        # new body via ``update_cache_entry`` so citations survive. (gripe:3681 phase 4.) ``refresh=True`` is a cleaner
         # spelling of the same intent and wins if both are set.
         force_refresh = bool(refresh)
         if mode is not None:
@@ -593,7 +593,7 @@ class CacheBackedHandler(Handler):
                     options=["refresh"],
                     next=(
                         "drop mode= or pass mode='refresh' / refresh=True "
-                        "to bypass cache freshness and re-fetch in place"
+                        "to bypass cache freshness and re-fetch"
                     ),
                 )
             force_refresh = True
@@ -635,14 +635,23 @@ class CacheBackedHandler(Handler):
         # A handle-routed kind reads a bare ref id (what ``wp<id>`` routes
         # to) as that stored ref first; only a miss is a query (gr702974).
         if (
-            self.handle_routes_by_ref_id
+            (self.handle_routes_by_ref_id or self.spec.kind in VERSIONED_CACHE_KINDS)
             and not literal
             and not (isinstance(q, str) and q.strip())
         ):
-            by_ref_id = self._entry_by_ref_id(id)
-            if by_ref_id is not None:
+            entry = self._entry_by_ref_id(id)
+            if (
+                entry is None
+                and no_fetch
+                and isinstance(id, str)
+                and self.spec.kind in VERSIONED_CACHE_KINDS
+            ):
+                entry = self.store.get_cache_entry_by_slug(
+                    kind=self.spec.kind, slug=id.strip()
+                )
+            if entry is not None:
                 return self._serve_stored(
-                    *by_ref_id,
+                    *entry,
                     view=view,
                     no_fetch=no_fetch,
                     force_refresh=force_refresh,
@@ -652,17 +661,8 @@ class CacheBackedHandler(Handler):
                     ttl_override_active=ttl_override_active,
                 )
 
-        # Slug round-trip: ``/recent`` listings advertise slugs and
-        # ``tag`` / ``link`` accept them; without this fallback,
-        # ``get`` shoves the slug through ``_canonical_key`` and
-        # rejects it on kinds whose canonical key needs structure
-        # the slug doesn't carry (most painfully ``web`` where
-        # slugs aren't URLs). The fallback fires *only* when
-        # ``_canonical_key`` raises BadInput — kinds that accept
-        # any string (perplexity, youtube) keep their existing
-        # request-hash flow, preserving cache-key parameters like
-        # model and language preference. (MCP critic MAJOR-C
-        # 2026-05-02.)
+        # Keep stored slugs readable on kinds whose canonical key requires
+        # a URL or another query shape that the slug cannot express.
         try:
             query = self._coerce_query(id, q)
             key = self._canonical_key(query, literal=literal)
@@ -703,6 +703,28 @@ class CacheBackedHandler(Handler):
         cached = self.store.get_cache_entry(
             provider=self.provider, request_hash=request_hash
         )
+        if (
+            cached is None
+            and isinstance(id, str)
+            and not q
+            and not literal
+            and self.spec.kind in VERSIONED_CACHE_KINDS
+            and self.spec.kind != "youtube"
+        ):
+            entry = self.store.get_cache_entry_by_slug(
+                kind=self.spec.kind, slug=id.strip()
+            )
+            if entry is not None:
+                return self._serve_stored(
+                    *entry,
+                    view=view,
+                    no_fetch=no_fetch,
+                    force_refresh=force_refresh,
+                    tags=tags,
+                    untags=untags,
+                    ttl_seconds_override=ttl_seconds_override,
+                    ttl_override_active=ttl_override_active,
+                )
         if cached is not None and self._is_fresh(cached[1]) and not force_refresh:
             ref, cache = cached
             self._apply_tag_ops_if_any(ref.id, tags, untags)
@@ -756,11 +778,8 @@ class CacheBackedHandler(Handler):
                 ),
             )
 
-        # Miss, stale, or refresh — call upstream. If a cached row
-        # exists for this slug or hash, refresh it in place so any
-        # tags/links the agent attached survive. Without this guard
-        # ``put_cache_entry`` would DELETE the existing ref (and its
-        # annotations) before re-inserting. (gripe:3681 phase 4.)
+        # Refresh the existing lineage when the hash or canonical slug
+        # already has a stored result.
         existing_ref = cached[0] if cached is not None else None
         if existing_ref is None:
             # Look up by slug as well — covers the case where the
@@ -774,7 +793,7 @@ class CacheBackedHandler(Handler):
                 existing_ref = slug_lookup[0]
 
         if existing_ref is not None:
-            return self._refetch_in_place(
+            return self._refetch(
                 ref=existing_ref,
                 key=key,
                 request_hash=request_hash,
@@ -846,7 +865,7 @@ class CacheBackedHandler(Handler):
                         f"q=<original query>, mode='refresh')"
                     ),
                 )
-            return self._refetch_in_place(
+            return self._refetch(
                 ref=ref,
                 key=recovered,
                 tags=tags,
@@ -920,7 +939,7 @@ class CacheBackedHandler(Handler):
 
     # ── refresh / tag helpers ─────────────────────────────────────────
 
-    def _refetch_in_place(
+    def _refetch(
         self,
         *,
         ref: Ref,
@@ -931,18 +950,20 @@ class CacheBackedHandler(Handler):
         ttl_seconds_override: int | None = None,
         ttl_override_active: bool = False,
     ) -> Response:
-        """Re-fetch the upstream body and update the cache row in-place.
-
-        Preserves the ref id, slug, and every annotation (tags / links)
-        the agent has attached. The previous flow (``DELETE FROM refs``
-        in :meth:`Store.put_cache_entry`) destroyed those annotations on
-        every TTL-expired re-fetch, silently invalidating bookmark
-        workflows. (gripe:3681 phase 4.)
+        """Re-fetch the upstream body and advance the cache lineage.
 
         When the caller passes ``ttl_days=`` on ``get``, the resolved
         seconds ride in via ``ttl_seconds_override`` (``ttl_override_active``
         distinguishes "asked for forever" from "didn't ask").
         """
+        if (
+            self.spec.kind in VERSIONED_CACHE_KINDS
+            and self.store.get_current_cache_version(ref.id) is None
+        ):
+            raise NotFound(
+                "current cache version is unavailable",
+                next="list visible cached entries before requesting a refresh",
+            )
         result = self._stamp_inject_scan(self._fetch_guarded(key))
         ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
         if not result.cacheable:
@@ -1045,8 +1066,9 @@ class CacheBackedHandler(Handler):
             return self._entry_by_ref_id(prefix)
         return entry
 
-    def _prepare_chunk_read(self, ref: Ref) -> None:
-        """Allow a provider to prepare chunks on the resolved row."""
+    def _prepare_chunk_read(self, ref: Ref, hi: int) -> Ref:
+        """Allow a provider to serve a derived chunk window."""
+        return ref
 
     def _render_chunk_selector(
         self,
@@ -1080,8 +1102,9 @@ class CacheBackedHandler(Handler):
         withhold, notice = cache_body_notice(cache.meta)
         if withhold:
             return self._render(ref, cache, hit=True)
-        self._prepare_chunk_read(ref)
-        address = slug
+        prepared = self._prepare_chunk_read(ref, hi)
+        address = (prepared.slug or slug) if prepared.id != ref.id else slug
+        ref = prepared
         slug = ref.slug or slug
         blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         total = self.store.chunks.count_chunks(ref.id)
@@ -1260,11 +1283,9 @@ class CacheBackedHandler(Handler):
 
     def _guard_slug_collision(self, key: str, ref: Ref, cache: CacheEntry) -> None:
         """Hook: ``get`` missed the request hash but found a live row under
-        the slug ``key`` derives to, and is about to refresh that row in
-        place. Subclasses whose slug is lossy (``perplexity`` cuts the
-        query at 60 chars) raise ``BadInput`` here when the row belongs to
-        a different input, so an unrelated report is never overwritten.
-        The base allows the refresh.
+        the slug ``key`` derives to, and is about to refresh its result.
+        Subclasses can raise ``BadInput`` when the row belongs to a
+        different input. The base allows the refresh.
         """
 
     @staticmethod

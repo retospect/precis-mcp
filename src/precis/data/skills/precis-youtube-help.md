@@ -20,7 +20,8 @@ status: active
 # precis-youtube-help — fetch YouTube transcripts
 
 `youtube` returns the transcript text of a YouTube video. Free, no
-API key. Cached for 30 days.
+API key. A transcript stays fresh for 30 days. A refresh with changed
+content publishes a new snapshot and preserves the previous citation.
 
 **Safe rate:** YouTube rate-limits bursts. Serialise fetches — one
 `get` at a time, never a parallel fan-out. A `RateLimited` refusal
@@ -63,8 +64,8 @@ get(kind="youtube", id="https://www.youtube.com/shorts/dQw4w9WgXcQ")
 get(kind="youtube", id="https://www.youtube.com/embed/dQw4w9WgXcQ")
 ```
 
-All forms collapse to the same cache row keyed on the video ID. A
-cached video also answers to its `yt<N>` record handle (printed on the
+All forms look up the current snapshot for the video ID and requested
+languages. A cached video also answers to its `yt<N>` record handle (printed on the
 `cite as` line of any read) — the handle routes by ref id, so
 `view='toc'` and `view='languages'` accept it too, and
 `view='links'`/`extent=` show the ref's inbound mentions.
@@ -108,6 +109,11 @@ Each page fits the result budget; the render header says how many
 chunks the video holds (`4 of 70 chunks`) and the `Next:` trailer
 names the following range, so you can walk the body end to end.
 
+Browsing a legacy transcript stored as one large chunk can publish a
+windowed successor without fetching from YouTube. The original blob
+and its chunk links stay on the cited snapshot. Use the versioned slug
+shown in the TOC or continuation for subsequent ranges.
+
 ## Fetch many transcripts — the bulk path
 ## I have a list of YouTube videos to fetch
 
@@ -139,7 +145,7 @@ get(kind="youtube", id="/recent")                    # page 1
 get(kind="youtube", id="/recent", args={"page": 2})  # next page
 ```
 
-One row per cached video: video id, title, channel, duration and
+One row per current cached result with its slug, title, channel, duration and
 cache state, newest first. A bare `get(kind="youtube")` shows the
 same listing. Read one without triggering a fetch:
 

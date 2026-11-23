@@ -320,7 +320,7 @@ def test_fetch_stores_the_sha256_of_the_raw_response_bytes(
     assert cache.meta["url"] == url
 
 
-def test_refresh_overwrites_the_content_sha256(handler: WebHandler) -> None:
+def test_refresh_preserves_the_old_content_sha256(handler: WebHandler) -> None:
     import hashlib
 
     url = "https://example.com/article"
@@ -332,7 +332,9 @@ def test_refresh_overwrites_the_content_sha256(handler: WebHandler) -> None:
     handler.get(id=url, mode="refresh")
 
     ref2, second = _cache_row(handler, url)
-    assert ref2.id == ref.id  # refreshed in place
+    assert ref2.id != ref.id
+    assert "first real paragraph" in handler.get(id=ref.id).body
+    assert "REVISED paragraph" in handler.get(id=url).body
     assert second.content_sha256 == hashlib.sha256(changed.encode("utf-8")).hexdigest()
     assert second.content_sha256 != first.content_sha256
 

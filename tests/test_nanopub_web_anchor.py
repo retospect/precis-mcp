@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from psycopg.types.json import Jsonb
 from rdflib import RDFS, URIRef
 
@@ -174,15 +175,15 @@ def test_a_web_source_is_accepted_for_a_report_under_arm_kind_web(
     assert gates.check_report_sources(store, passages) == []
 
 
-# ── unchanged refresh keeps its chunks; changed refresh replaces them ────
+# ── unchanged refresh keeps its chunks; changed refresh keeps the previous version ────
 
 
-def _refresh(store: Any, ref_id: int, *, sha: str | None, text: str) -> None:
+def _refresh(store: Any, ref_id: int, *, sha: str | None, text: str) -> int:
     """What a web refresh does to the store: ``update_cache_entry`` with the
     freshly fetched body and the new content sha."""
     from precis.store.types import ChunkInsert
 
-    store.update_cache_entry(
+    ref, _ = store.update_cache_entry(
         ref_id=ref_id,
         title="Annual report",
         body_blocks=[ChunkInsert(ord=0, text=text)],
@@ -190,6 +191,7 @@ def _refresh(store: Any, ref_id: int, *, sha: str | None, text: str) -> None:
         cache_meta={"url": _URL},
         content_sha256=sha,
     )
+    return ref.id
 
 
 def _chunk_ids(store: Any, ref_id: int) -> list[int]:
@@ -223,21 +225,20 @@ def test_unchanged_refresh_keeps_the_chunk_ids(store: Any) -> None:
     assert _fetched_at(store, web_ref) > stamp
 
 
-def test_changed_or_unknown_sha_refresh_replaces_the_chunks(store: Any) -> None:
-    changed_ref, _c = _seed_non_paper_source(store, "web", slug="changed")
-    _give_cache_state(store, changed_ref, sha=_SHA)
-    before = _chunk_ids(store, changed_ref)
-    _refresh(store, changed_ref, sha=_SHA_2, text="revised page text")
-    after = _chunk_ids(store, changed_ref)
-    assert after and not set(after) & set(before)
+@pytest.mark.parametrize("old_sha", [_SHA, None])
+def test_changed_or_unknown_sha_refresh_preserves_the_previous_version(
+    store: Any, old_sha: str | None
+) -> None:
+    old, chunk = _seed_non_paper_source(store, "web", slug="page")
+    _give_cache_state(store, old, sha=old_sha)
 
-    legacy_ref, _c2 = _seed_non_paper_source(store, "web", slug="legacy-null")
-    _give_cache_state(store, legacy_ref, sha=None)
-    before = _chunk_ids(store, legacy_ref)
-    _refresh(store, legacy_ref, sha=_SHA, text="first sha ever")
-    after = _chunk_ids(store, legacy_ref)
-    assert after and not set(after) & set(before)
-    assert evidence.web_content_sha(store, legacy_ref)[0] == _SHA
+    new = _refresh(store, old, sha=_SHA_2, text="revised page text")
+
+    assert new != old
+    assert _chunk_ids(store, old) == [chunk]
+    assert _chunk_ids(store, new) and chunk not in _chunk_ids(store, new)
+    assert evidence.web_content_sha(store, old)[0] == old_sha
+    assert evidence.web_content_sha(store, new)[0] == _SHA_2
 
 
 # ── post-approve: a drifted web source never voids the approval ──────────
@@ -247,7 +248,7 @@ def _changed_page(store: Any, web_ref: int) -> None:
     _refresh(store, web_ref, sha=_SHA_2, text="Entirely rewritten page.")
 
 
-def test_sign_succeeds_after_the_page_changed_and_its_chunks_were_replaced(
+def test_sign_succeeds_after_the_page_has_a_new_version(
     store: Any, monkeypatch: Any
 ) -> None:
     from precis.nanopub.keys import generate_keypair
@@ -257,7 +258,7 @@ def test_sign_succeeds_after_the_page_changed_and_its_chunks_were_replaced(
     hub, web_ref, chunk = _web_hub(store)
     row = mint.approve(store, hub, payload=_anchorless_payload(chunk), interactive=True)
     _changed_page(store, web_ref)
-    assert chunk not in _chunk_ids(store, web_ref)  # the approved chunk is gone
+    assert chunk in _chunk_ids(store, web_ref)
 
     signed = mint.sign(store, hub)
     assert signed.state == "signed" and signed.trusty_uri
@@ -272,7 +273,7 @@ def test_sign_succeeds_after_the_page_changed_and_its_chunks_were_replaced(
     assert [d["ref_id"] for d in drift] == [web_ref]
 
 
-def test_frozen_gates_tolerate_a_vanished_web_chunk_but_not_a_paper_one(
+def test_gates_accept_the_cited_web_version_after_refresh(
     store: Any,
 ) -> None:
     hub, web_ref, chunk = _web_hub(store)
@@ -280,8 +281,7 @@ def test_frozen_gates_tolerate_a_vanished_web_chunk_but_not_a_paper_one(
     _changed_page(store, web_ref)
     bundle = evidence.load_bundle(store, hub)
 
-    # Pre-approve semantics (the default) still refuse the missing chunk.
-    assert gates.run_mint_gates(store, bundle, row.grounding)
+    assert gates.run_mint_gates(store, bundle, row.grounding) == []
     assert gates.run_mint_gates(store, bundle, row.grounding, frozen=True) == []
 
     # A tampered frozen sha/uri pair is not tolerated.

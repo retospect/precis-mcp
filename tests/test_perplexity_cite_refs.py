@@ -263,7 +263,7 @@ def test_stub_is_born_stale_and_resolves_by_ref_id(
     assert _StubClient.call_count == 1
 
 
-def test_stub_fetch_on_access_preserves_ref_id(
+def test_stub_fetch_on_access_preserves_stub_as_a_cited_version(
     research: ResearchHandler,
     web: WebHandler,
     store: Store,
@@ -283,12 +283,13 @@ def test_stub_fetch_on_access_preserves_ref_id(
         )
 
     monkeypatch.setattr(WebHandler, "_fetch", fake_fetch)
-    # A different spelling of the same URL lands on the stub row.
+    # A different spelling of the same URL advances the stub lineage.
     resp = web.get(id="https://alpha.example/report?utm_source=x")
     assert "the real alpha page" in resp.body
     after = _web_entry(store, "https://alpha.example/report")
     assert after is not None
-    assert after[0].id == stub_ref.id
+    assert after[0].id != stub_ref.id
+    assert "citation registered" in web.get(id=stub_ref.id).body
     assert (after[1].meta or {}).get("stub") is None
 
 

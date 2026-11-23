@@ -354,11 +354,7 @@ def datasheet_sha(store: Store, ref_id: int) -> str | None:
 
 
 def web_content_sha(store: Store, ref_id: int) -> tuple[str | None, str | None]:
-    """``(content_sha256, url)`` of a ``web`` ref's cached page, from its
-    ``cache_state`` row: the sha256 of the raw response bytes of the LAST
-    fetch (every fetch/refresh overwrites it) and the URL it came from
-    (``cache_state.meta.url``). Either is ``None`` when absent — a page
-    cached before migration 0202 has no sha until its next refresh."""
+    """Raw response hash and URL of the specific cited web snapshot."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT content_sha256, meta->>'url' FROM cache_state WHERE ref_id = %s",
@@ -377,10 +373,8 @@ def web_source_drift(
     source whose live ``cache_state.content_sha256`` differs from the one
     :func:`precis.nanopub.mint.approve` froze onto the passage
     (``content_sha256``). Display signal only — nothing reads this to block
-    or un-approve. Looked up by the frozen ``source_ref_id``, not the
-    passage's ``chunk_id`` (a refresh replaces the page's chunks, so the id
-    goes stale while the ref survives). A source with no live sha on record
-    is skipped (nothing to compare)."""
+    or un-approve. The frozen ``source_ref_id`` resolves to the lineage's
+    current snapshot. A current snapshot without a hash is skipped."""
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
     for p in passages:
@@ -391,7 +385,12 @@ def web_source_drift(
         if raw_ref in seen:
             continue
         seen.add(raw_ref)
-        live, url = web_content_sha(store, raw_ref)
+        current = store.get_current_cache_version(raw_ref)
+        if current is None:
+            continue
+        _, cache = current
+        live = cache.content_sha256
+        url = (cache.meta or {}).get("url")
         if live is not None and live != frozen:
             out.append(
                 {

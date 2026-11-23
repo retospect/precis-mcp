@@ -252,18 +252,15 @@ failures an extraction agent can avoid up front:
   node is its archive URL, with a `precis:secAccession` literal; no
   `pdf_sha256` needed); a `datasheet` by `urn:sha256:` of its PDF, with
   its fetch URL as `rdfs:seeAlso` when known; a `web` page by
-  `urn:sha256:` of the raw bytes of its last fetch (not of the extracted
-  text), with the URL as `rdfs:seeAlso`. The page's sha is frozen onto
+  `urn:sha256:` of the cited snapshot's raw bytes, with the URL as
+  `rdfs:seeAlso`. The page's sha is frozen onto
   the passage at approve; it is never read from the payload, and a web
   page with no sha on record (cached before the sha was recorded) is
-  refused until you re-fetch it with `get(kind='web', id='<url>',
-  mode='refresh')`. If the page is later re-fetched and its content has
-  changed, the claim page shows "source changed since approval" — a
-  display notice only: nothing is blocked or un-approved, and sign still
-  proceeds on the frozen quote and sha. A refresh whose bytes are
-  identical keeps the page's chunks; one whose bytes differ replaces
-  them, so judge whether the quote still holds. A source with no ruled
-  identifier — textbook/ISBN, patent — keeps its evidence *edge* (visible
+  refused. Refresh the URL and cite a passage from the new snapshot.
+  Drift checks compare the cited snapshot's frozen sha with the current
+  version. If it differs, the claim page shows "source changed since
+  approval". Signing still proceeds on the frozen quote and sha.
+  A source with no ruled identifier — textbook/ISBN, patent — keeps its evidence *edge* (visible
   internally) but its passage stays OUT of the payload until its
   grounding lands.
 - **The sha pin is the ref's `pdf_sha256`** (the held file). TWO
@@ -428,8 +425,8 @@ per class — do not mutate the hub, its edges, or its sources:
   a human, not a payload fix.
 - `[grounding] web page has no content_sha256 on record` → the page was
   cached before the sha was recorded; `get(kind='web', id='<url>',
-  mode='refresh')` re-fetches it (stamping the sha), then re-approve.
-  Re-fetch replaces the page's chunks, so re-pick the passage's chunk_id.
+  mode='refresh')` fetches a snapshot with the sha. Pick the passage's
+  chunk_id from the new snapshot before re-approving.
 - `[grounding] edgar source has no parseable SEC accession` → the ref's
   slug is not a dashed accession; a re-ingest/slug-repair item for a
   human, not a hub fix.

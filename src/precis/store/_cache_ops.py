@@ -6,40 +6,9 @@ live in the ``refs`` + ``chunks`` tables like every other ref, with
 a parallel ``cache_state`` row carrying the freshness + cost
 metadata that drives cache-freshness sweeps.
 
-v2 schema notes:
-
-- ``cache_state`` table was added to ``migrations/0001_initial.sql``
-  alongside the Phase 4 rewrite (the puml omitted it but the
-  handlers, the CLI maintenance command, and the v1 ``put_cache_entry``
-  flow all required it).
-- Slug-addressed cache reads (``get_cache_entry_by_slug``) route
-  through ``ref_identifiers`` (``id_kind='cite_key'``) — refs no
-  longer carry a ``slug`` column.
-- Body replacement uses ``DELETE FROM chunks WHERE ref_id = %s``
-  instead of v1's ``DELETE FROM blocks``; the FK ON DELETE CASCADE
-  takes care of ``chunk_embeddings`` / ``chunk_summaries`` /
-  ``chunk_tags`` automatically.
-
-Three lookup paths + one upsert:
-
-- :meth:`get_cache_entry` — by ``(provider, request_hash)``
-- :meth:`get_cache_entry_by_slug` — by ``(kind, slug)`` via
-  ``ref_identifiers`` JOIN
-- :meth:`update_cache_entry` — in-place body + freshness refresh
-  for an existing cached ref (preserves ref.id / tags / links)
-- :meth:`put_cache_entry` — atomic create-or-replace; DELETEs any
-  prior ref with the same ``(kind, slug)`` (cascading to chunks +
-  cache_state) and INSERTs fresh
-
-Mixin assumes the concrete Store provides:
-
-* ``self.pool``
-* ``self.tx()``                 — context-manager transaction
-* ``self.insert_ref(...)``      — RefsMixin method (writes refs +
-                                  ref_identifiers row for the slug)
-* ``self.chunks.insert_chunks(...)`` — ChunkStore method used for the
-                                  body-on-replace path (v2: writes
-                                  to ``chunks``)
+Request hashes address the current result. Its earlier versions remain
+readable by their own ref ids and slugs, with their original chunks and
+links. See the store package docstring for the versioning contract.
 """
 
 from __future__ import annotations
@@ -48,6 +17,7 @@ import logging
 import re
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -80,6 +50,17 @@ _TITLE_PLAIN_SQL = title_plain_sql("refs.title")
 #: ``meta_fields`` — handler constants only; anything else is refused
 #: before it can be quoted into SQL.
 _META_FIELD_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+VERSIONED_CACHE_KINDS = frozenset(
+    {
+        "web",
+        "youtube",
+        "wikipedia",
+        "websearch",
+        "perplexity-research",
+        "perplexity-reasoning",
+    }
+)
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +118,7 @@ class CacheMixin:
             title: str,
             provider: str | None = None,
             meta: dict[str, Any] | None = None,
+            owner_login: str | None = None,
             conn: Connection | None = None,
         ) -> Ref: ...
 
@@ -165,6 +147,7 @@ class CacheMixin:
             JOIN refs ON refs.ref_id = cs.ref_id
             WHERE cs.provider = %s
               AND cs.request_hash = %s
+              AND cs.is_current
               AND refs.retired_at IS NULL
               AND {secret_fence("refs", path="cache")}
             LIMIT 1
@@ -194,7 +177,7 @@ class CacheMixin:
         sql = f"""
             SELECT {_REFS_COLS_FOR_CACHE},
                    cs.ref_id, cs.provider, cs.request_hash, cs.model,
-                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta, cs.content_sha256
             FROM cache_state cs
             JOIN refs ON refs.ref_id = cs.ref_id
             WHERE refs.kind = %s
@@ -257,6 +240,133 @@ class CacheMixin:
         )
         return (ref, cache)
 
+    def get_current_cache_version(self, ref_id: int) -> tuple[Ref, CacheEntry] | None:
+        """Resolve a visible snapshot's lineage to its current live result."""
+        sql = f"""
+            SELECT {_REFS_COLS_FOR_CACHE},
+                   cs.ref_id, cs.provider, cs.request_hash, cs.model,
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta,
+                   cs.content_sha256
+            FROM cache_state original
+            JOIN cache_state cs
+              ON COALESCE(cs.version_root, cs.ref_id) =
+                 COALESCE(original.version_root, original.ref_id) AND cs.is_current
+            JOIN refs ON refs.ref_id = cs.ref_id
+            WHERE original.ref_id = %s
+              AND refs.retired_at IS NULL
+              AND {secret_fence("refs", path="cache")}
+        """
+        with self.pool.connection() as conn:
+            if not ref_visible(self, ref_id, conn=conn):
+                return None
+            row = conn.execute(sql, (ref_id,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_ref(row[:_REFS_COLS_LEN]), _row_to_cache_entry(
+            row[_REFS_COLS_LEN:]
+        )
+
+    def _lock_current_cache_version(
+        self, conn: Connection, ref_id: int
+    ) -> tuple[int, int, bool]:
+        """Serialize writes across the lineage, including writes via older ids."""
+        row = conn.execute(
+            "SELECT COALESCE(version_root, ref_id) FROM cache_state WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        if row is None or not ref_visible(self, ref_id, conn=conn):
+            raise _cache_unavailable()
+        root = int(row[0])
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"cache-version:{root}",),
+        )
+        row = conn.execute(
+            "SELECT r.ref_id, r.kind FROM cache_state cs JOIN refs r USING (ref_id) "
+            "WHERE COALESCE(cs.version_root, cs.ref_id) = %s AND cs.is_current "
+            "AND r.retired_at IS NULL FOR UPDATE OF r, cs",
+            (root,),
+        ).fetchone()
+        if row is None or not ref_visible(self, int(row[0]), conn=conn):
+            raise _cache_unavailable()
+        return int(row[0]), root, row[1] in VERSIONED_CACHE_KINDS
+
+    def _version_cache_body(
+        self,
+        conn: Connection,
+        *,
+        ref_id: int,
+        root: int,
+        title: str,
+        body_blocks: list[ChunkInsert],
+        ref_meta: dict[str, Any] | None = None,
+    ) -> Ref:
+        parent = conn.execute(
+            "SELECT kind, provider, meta, owner_login FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        assert parent is not None, "locked cache ref disappeared during versioning"
+        kind, provider, meta, owner_login = parent
+        ref = self.insert_ref(
+            kind=kind,
+            slug=f"{kind}-version-{uuid4().hex}",
+            title=title,
+            provider=provider,
+            meta={**(meta or {}), **(ref_meta or {})},
+            owner_login=owner_login,
+            conn=conn,
+        )
+        conn.execute(
+            "UPDATE cache_state SET is_current = false WHERE ref_id = %s", (ref_id,)
+        )
+        conn.execute(
+            "INSERT INTO cache_state (ref_id, provider, request_hash, model, fetched_at, "
+            "fresh_until, meta, content_sha256, version_root) "
+            "SELECT %s, provider, request_hash, model, fetched_at, fresh_until, meta, "
+            "content_sha256, %s FROM cache_state WHERE ref_id = %s",
+            (ref.id, root, ref_id),
+        )
+        if body_blocks:
+            self.chunks.insert_chunks(ref.id, body_blocks, conn=conn)
+        copied = conn.execute(
+            "INSERT INTO ref_tags (ref_id, tag_id, set_by, created_at, expires_at, principal) "
+            "SELECT %s, tag_id, set_by, created_at, expires_at, principal "
+            "FROM ref_tags WHERE ref_id = %s",
+            (ref.id, ref_id),
+        )
+        if copied.rowcount:
+            from precis.store._tags_ops import _bust_tag_caches
+
+            _bust_tag_caches(conn)
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
+            "VALUES (%s, %s, 'supersedes', 'system')",
+            (ref.id, ref_id),
+        )
+        return ref
+
+    def version_youtube_windows(
+        self, ref: Ref, expected_chunk_id: int, body_blocks: list[ChunkInsert]
+    ) -> Ref | None:
+        """Install a derived transcript window set while keeping the original blob."""
+        with self.tx() as conn:
+            conn.execute("SET LOCAL lock_timeout = '2s'")
+            current, root, _ = self._lock_current_cache_version(conn, ref.id)
+            if current != ref.id:
+                return None
+            blocks = self.chunks.list_chunks_for_ref(ref.id, conn=conn)
+            if len(blocks) != 1 or blocks[0].id != expected_chunk_id:
+                return None
+            successor = self._version_cache_body(
+                conn, ref_id=ref.id, root=root, title=ref.title, body_blocks=body_blocks
+            )
+            conn.execute(
+                "UPDATE cache_state SET meta = meta || jsonb_build_object('windowed_from', %s::bigint) "
+                "WHERE ref_id = %s",
+                (ref.id, successor.id),
+            )
+            return successor
+
     def check_cache_fill(
         self, *, kind: str, slug: str, provider: str, request_hash: str
     ) -> None:
@@ -269,7 +379,7 @@ class CacheMixin:
                 "    WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
                 "      AND ri.id_value = %s)) "
                 "  OR EXISTS (SELECT 1 FROM cache_state cs WHERE cs.ref_id = r.ref_id "
-                "    AND cs.provider = %s AND cs.request_hash = %s)) LIMIT 1",
+                "    AND cs.is_current AND cs.provider = %s AND cs.request_hash = %s)) LIMIT 1",
                 (kind, slug, provider, request_hash),
             ).fetchone()
         if hidden is not None:
@@ -287,70 +397,25 @@ class CacheMixin:
         cost_usd: float | None = None,
         cache_meta: dict[str, Any] | None = None,
         content_sha256: str | None = None,
+        ref_meta: dict[str, Any] | None = None,
     ) -> tuple[Ref, CacheEntry]:
-        """Refresh body + cache_state for an existing cached ref, **in-place**.
+        """Refresh a cache lineage, retaining the cited body on supported kinds.
 
-        Distinct from :meth:`put_cache_entry`:
-
-        * preserves ``ref.id``, ref_identifiers, ``ref.created_at`` and
-          every tag / link attached to the ref (no DELETE on the row),
-        * replaces chunks (``DELETE FROM chunks WHERE ref_id``) with
-          the freshly-fetched body — FK CASCADE cleans the per-chunk
-          embeddings / summaries / tags — EXCEPT when ``content_sha256``
-          equals the stored one (byte-identical page): then the chunks
-          stay, so their ids and embeddings remain valid,
-        * UPDATEs ``cache_state`` for the ref so freshness, cost,
-          model, and meta reflect the new fetch.
-
-        Use this for ``mode='refresh'`` and for routine stale-cache
-        re-fetches, so a ``bookmark`` / ``WATCH:daily`` tag set
-        survives upstream re-fetches.
-
-        ``request_hash=None`` keeps the existing hash on the
-        cache_state row — useful for "the canonical key didn't
-        change, just the body". Pass an explicit hash if the canonical
-        key shifted (e.g. canonicalisation rules updated).
+        An identical web response refreshes only metadata. Changed bodies on
+        versioned kinds get a new ref, slug and chunks. Request hashes keep
+        their existing value unless the caller supplies a new canonical hash.
         """
         fresh_until_sql = (
             "now() + (%s || ' seconds')::interval"
             if ttl_seconds is not None
             else "NULL"
         )
-        cache_meta_json = Jsonb(cache_meta or {})
 
         with self.tx() as conn:
-            locked = conn.execute(
-                "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
-                (ref_id,),
-            ).fetchone()
-            if locked is None:
-                raise ValueError(
-                    f"update_cache_entry: ref_id={ref_id} not found or deleted"
-                )
-            if not ref_visible(self, ref_id, conn=conn):
-                raise _cache_unavailable()
-            # Update the ref title (rare but possible — page titles
-            # change). Touch updated_at so /recent listings reflect
-            # the refresh.
-            row = conn.execute(
-                f"UPDATE refs SET title = %s, updated_at = now() "
-                "WHERE ref_id = %s AND retired_at IS NULL "
-                f"RETURNING {_REFS_COLS}",
-                (title, ref_id),
-            ).fetchone()
-            assert row is not None, "locked cache ref disappeared during refresh"
-            ref = _row_to_ref(row)
+            ref_id, root, versioned = self._lock_current_cache_version(conn, ref_id)
 
-            # An unchanged refresh keeps its chunks: when the new content
-            # sha equals the stored one the body is byte-identical, so
-            # DELETE+INSERT would only strand the chunk ids a nanopub
-            # passage froze (and force a re-embed). Body chunks are never
-            # UPDATEd in place — the only choices are keep or replace.
-            # A NULL stored sha (page cached before migration 0202), a
-            # differing sha, or a page with no live body chunk replaces.
             prior = conn.execute(
-                "SELECT content_sha256 FROM cache_state WHERE ref_id = %s FOR UPDATE",
-                (ref_id,),
+                "SELECT content_sha256 FROM cache_state WHERE ref_id = %s", (ref_id,)
             ).fetchone()
             unchanged = (
                 content_sha256 is not None
@@ -363,72 +428,52 @@ class CacheMixin:
                 ).fetchone()
                 is not None
             )
-            if not unchanged:
-                # Replace chunks (cascades to chunk_embeddings /
-                # chunk_summaries / chunk_tags via FK ON DELETE).
-                # Ref-level tags/links/identifiers are untouched.
-                conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
-                from precis.store._tags_ops import _bust_tag_caches
-
-                _bust_tag_caches(conn)  # chunk_tags rows just cascaded away
-                if body_blocks:
-                    self.chunks.insert_chunks(ref_id, body_blocks, conn=conn)
-
-            # Update cache_state. Keep existing request_hash unless
-            # caller passed a new one.
-            if request_hash is None:
-                cache_sql = (
-                    "UPDATE cache_state SET "
-                    "  model = %s, fetched_at = now(), "
-                    f"  fresh_until = {fresh_until_sql}, "
-                    "  cost_usd = %s, meta = %s, content_sha256 = %s "
-                    "WHERE ref_id = %s "
-                    "RETURNING ref_id, provider, request_hash, model, "
-                    "          fetched_at, fresh_until, cost_usd, meta, content_sha256"
+            if versioned and not unchanged:
+                ref = self._version_cache_body(
+                    conn,
+                    ref_id=ref_id,
+                    root=root,
+                    title=title,
+                    body_blocks=body_blocks,
+                    ref_meta=ref_meta,
                 )
-                params: tuple[Any, ...] = (model,)
-                if ttl_seconds is not None:
-                    params = params + (
-                        str(ttl_seconds),
-                        cost_usd,
-                        cache_meta_json,
-                        content_sha256,
-                        ref_id,
-                    )
-                else:
-                    params = params + (
-                        cost_usd,
-                        cache_meta_json,
-                        content_sha256,
-                        ref_id,
-                    )
+                ref_id = ref.id
             else:
-                cache_sql = (
-                    "UPDATE cache_state SET "
-                    "  request_hash = %s, model = %s, fetched_at = now(), "
-                    f"  fresh_until = {fresh_until_sql}, "
-                    "  cost_usd = %s, meta = %s, content_sha256 = %s "
+                row = conn.execute(
+                    f"UPDATE refs SET title = %s, updated_at = now(), meta = meta || %s "
                     "WHERE ref_id = %s "
-                    "RETURNING ref_id, provider, request_hash, model, "
-                    "          fetched_at, fresh_until, cost_usd, meta, content_sha256"
-                )
-                params = (request_hash, model)
-                if ttl_seconds is not None:
-                    params = params + (
-                        str(ttl_seconds),
-                        cost_usd,
-                        cache_meta_json,
-                        content_sha256,
-                        ref_id,
-                    )
-                else:
-                    params = params + (
-                        cost_usd,
-                        cache_meta_json,
-                        content_sha256,
-                        ref_id,
-                    )
+                    f"RETURNING {_REFS_COLS}",
+                    (title, Jsonb(ref_meta or {}), ref_id),
+                ).fetchone()
+                assert row is not None, "locked cache ref disappeared during refresh"
+                ref = _row_to_ref(row)
+                if not unchanged:
+                    conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
+                    from precis.store._tags_ops import _bust_tag_caches
 
+                    _bust_tag_caches(conn)
+                    if body_blocks:
+                        self.chunks.insert_chunks(ref_id, body_blocks, conn=conn)
+
+            cache_sql = (
+                "UPDATE cache_state SET request_hash = COALESCE(%s, request_hash), "
+                "  model = %s, fetched_at = now(), "
+                f"  fresh_until = {fresh_until_sql}, "
+                "  cost_usd = %s, meta = %s, content_sha256 = %s "
+                "WHERE ref_id = %s "
+                "RETURNING ref_id, provider, request_hash, model, "
+                "          fetched_at, fresh_until, cost_usd, meta, content_sha256"
+            )
+            ttl_params = (str(ttl_seconds),) if ttl_seconds is not None else ()
+            params = (
+                request_hash,
+                model,
+                *ttl_params,
+                cost_usd,
+                Jsonb(cache_meta or {}),
+                content_sha256,
+                ref_id,
+            )
             cache_row = conn.execute(cache_sql, params).fetchone()
             if cache_row is None:
                 raise ValueError(
@@ -461,12 +506,9 @@ class CacheMixin:
     ) -> tuple[Ref, CacheEntry]:
         """Atomically create-or-replace a cached ref + its cache_state row.
 
-        On replace (existing live ref with the same ``(kind, slug)``),
-        the prior ref is DELETEd outright (cascading to chunks /
-        chunk_embeddings / chunk_summaries / chunk_tags / ref_tags /
-        cache_state / ref_identifiers) and re-created.  ``insert_ref``
-        writes the new refs row + a fresh ``ref_identifiers`` entry
-        with ``id_kind='cite_key'`` for the slug.
+        Versioned kinds reserve their existing slugs. A refresh must use
+        :meth:`update_cache_entry` so the snapshot remains addressable.
+        Other kinds retain their create-or-replace behavior.
 
         ``ttl_seconds=None`` pins the entry (never expires).
         ``ttl_seconds=0`` is allowed but means the entry is born
@@ -480,6 +522,11 @@ class CacheMixin:
         cache_meta_json = Jsonb(cache_meta or {})
 
         with self.tx() as conn:
+            if kind in VERSIONED_CACHE_KINDS:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"cache-fill:{slug}",),
+                )
             # If a live ref with this (kind, slug) exists, DELETE it
             # outright so the FK cascades clean every dependent row.
             # Use ref_identifiers for the slug lookup since v2 dropped
@@ -499,6 +546,11 @@ class CacheMixin:
             if existing is not None:
                 if not ref_visible(self, int(existing[0]), conn=conn):
                     raise _cache_unavailable()
+                if kind in VERSIONED_CACHE_KINDS:
+                    raise BadInput(
+                        f"cached ref already exists at {kind}:{slug}",
+                        next="re-read the result or use mode='refresh' on its query",
+                    )
                 # Measures are append-only and their subject / measurand FKs
                 # RESTRICT: a cached ref that holds measures is not replaced
                 # (skipping the delete would leave the slug taken and the insert
@@ -590,6 +642,7 @@ class CacheMixin:
             "refs.retired_at IS NULL",
             secret_fence("refs", path="cache"),
             "refs.kind = %s",
+            "cs.is_current",
         ]
         params: list[Any] = [kind]
         if provider is not None:
@@ -625,6 +678,7 @@ class CacheMixin:
             "refs.retired_at IS NULL",
             secret_fence("refs", path="cache"),
             "refs.kind = %s",
+            "cs.is_current",
         ]
         params: list[Any] = [kind]
         if provider is not None:

@@ -7,9 +7,9 @@ ref:
 
 - The ref is minted as a **born-stale stub** (``ttl_seconds=0``) whose
   one-line body names the citing ref — no network at mint time.
-- A later ``get(kind='web', id=URL)`` sees the stale row and re-fetches
-  in place through ``polite_safe_get`` (the SSRF guard), preserving the
-  ref id, slug, and any tags/links — that is the fetch-on-access.
+- A later ``get(kind='web', id=URL)`` sees the stale row and fetches
+  through ``polite_safe_get``. The fetched snapshot becomes current for
+  the URL. The stub retains its ref ID, slug, tags and links.
 - The rendered perplexity body rewrites each ``[N]`` marker to
   ``[web:<ref_id>]`` — the ``kind:id`` form ``linkify_refs`` turns into
   a ``/r/web/<id>`` anchor and ``mentions.resolve_handle_ref`` resolves
@@ -119,9 +119,9 @@ def materialize_web_refs(
     """Find-or-mint a ``web`` ref per cited URL; return ``{marker: ref_id}``.
 
     Dedup is the ``(provider='web', request_hash=sha256(canonical url))``
-    cache key — the same hash ``get(kind='web', id=URL)`` derives, so a
-    later fetch refreshes the stub row in place instead of minting a
-    second ref. ``create=False`` resolves existing rows only (backfill
+    cache key. A later ``get(kind='web', id=URL)`` advances that key
+    from the stub to the fetched snapshot.
+    ``create=False`` resolves existing rows only (backfill
     dry-run). No network anywhere: minted rows are born-stale stubs.
     """
     mapping: dict[int, int] = {}
@@ -170,12 +170,8 @@ def canonical_web_key(raw_url: str) -> str | None:
 def _mint_stub(store: Store, *, key: str, request_hash: str, origin: str) -> int | None:
     """Insert the born-stale ``web`` cache row for ``key``; return ref id.
 
-    ``put_cache_entry`` DELETES a live ref under the same ``(kind, slug)``
-    — a different URL that truncated to the same slug must not be
-    clobbered, so a taken slug gets the ``-<sha8>`` disambiguator the
-    perplexity slugs use. ``None`` when the slug space can't be taken
-    cleanly (collision on the disambiguated form, or a measures-holding
-    row — ``put_cache_entry`` refuses those with ``BadInput``).
+    A taken slug gets the ``-<sha8>`` disambiguator. Return ``None``
+    when the disambiguated slug also belongs to a different result.
     """
     slug = slug_from_url(key) or "web-fetch"
     # ``-q-<sha256(query)[:8]>`` — the query-tail form
@@ -200,7 +196,7 @@ def _mint_stub(store: Store, *, key: str, request_hash: str, origin: str) -> int
         ord=0,
         text=(
             f"(citation registered from {origin} — page not fetched yet; "
-            f"get(kind='web', id={key!r}) fetches and caches it here)"
+            f"get(kind='web', id={key!r}) fetches and caches the page)"
         ),
     )
     try:
@@ -211,7 +207,7 @@ def _mint_stub(store: Store, *, key: str, request_hash: str, origin: str) -> int
             body_blocks=[stub],
             provider="web",
             request_hash=request_hash,
-            ttl_seconds=0,  # born-stale: next get re-fetches in place
+            ttl_seconds=0,  # born-stale: the URL fetch creates the first full result
             cache_meta={
                 "url": key,
                 "host": host_of(key),

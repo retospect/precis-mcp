@@ -221,7 +221,7 @@ class YouTubeHandler(CacheBackedHandler):
     chunk_target_chars: ClassVar[int] = 0
     # Transcripts very rarely change after upload — 30-day TTL is a
     # generous balance between freshness and cost (which is zero
-    # anyway). The agent can force a refresh by deleting the ref.
+    # anyway). Use refresh=True to force a fetch.
     ttl_seconds: ClassVar[int | None] = 30 * 24 * 60 * 60  # 30 days
     attribution: ClassVar[str] = _YT_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
@@ -257,9 +257,17 @@ class YouTubeHandler(CacheBackedHandler):
             # A ``yt<N>`` handle routes id= as the ref id — resolve the
             # stored row's slug, which IS the video id, before the
             # extractor refuses bare digits (review td707055).
-            video_id = _extract_video_id(
-                self._stored_ref_video_id(video_input) or video_input
+            entry = self._entry_by_ref_id(video_input)
+            if entry is None:
+                entry = self.store.get_cache_entry_by_slug(
+                    kind=self.spec.kind, slug=video_input
+                )
+            source = (
+                (entry[1].meta or {}).get("video_id") or entry[0].slug
+                if entry
+                else None
             )
+            video_id = _extract_video_id(source or video_input)
             return _list_languages(video_id)
 
         if view is not None and view not in ("body", "toc", "links"):
@@ -496,9 +504,8 @@ class YouTubeHandler(CacheBackedHandler):
     ) -> Response:
         """Paginated cached-video listing (gr498108).
 
-        One row per video: the video-id slug (its pastable id on
-        this kind — the universal handle is ``yt<ref_id>``), title,
-        channel, duration and cache state, newest fetch first.
+        Each row shows the current snapshot's slug, title, channel,
+        duration and cache state, newest fetch first.
         ``page=``/``page_size=`` ride ``args=`` on the MCP surface.
         """
         try:
@@ -889,12 +896,10 @@ class YouTubeHandler(CacheBackedHandler):
         return f"{video_id}:{lang_part}"
 
     def _slug_for(self, key: str) -> str:
-        """Use the bare video id (sans language suffix) as the slug.
+        """Use the bare video id as the initial slug for the video.
 
-        Different language fetches share a slug; the cache key still
-        differs because it includes the language. Last-fetched body
-        wins for ref content (acceptable: transcript text is the same
-        snippet stream just translated).
+        The request hash includes the language preference. Fetching a
+        different language through the same slug adds a version.
         """
         # key is "<video_id>:<lang_part>"; take just the video id for the slug
         return key.split(":", 1)[0]
@@ -1016,7 +1021,7 @@ class YouTubeHandler(CacheBackedHandler):
     # ── render: append per-video deep-link below attribution ──────────
 
     def _render(self, ref, cache, *, hit):
-        self._maybe_rechunk(ref)
+        ref = self._maybe_rechunk(ref)
         resp = super()._render(ref, cache, hit=hit)
         meta = cache.meta or {}
         video_id = meta.get("video_id") or ref.slug
@@ -1083,8 +1088,10 @@ class YouTubeHandler(CacheBackedHandler):
             return None
         return entry[0].slug
 
-    def _prepare_chunk_read(self, ref: Ref) -> None:
-        self._maybe_rechunk(ref)
+    def _prepare_chunk_read(self, ref: Ref, hi: int) -> Ref:
+        # Ordinal zero already named the original blob. Higher ordinals
+        # previously had no target and can use the derived windows.
+        return self._maybe_rechunk(ref) if hi > 0 else ref
 
     def _chunk_label(self, slug: str, block: Any) -> str | None:
         """``slug~n`` plus the chunk's video time window, printed before
@@ -1097,74 +1104,47 @@ class YouTubeHandler(CacheBackedHandler):
             label += f"–{_fmt_ts(meta['end_s'])}"
         return label
 
-    def _maybe_rechunk(self, ref: Ref) -> None:
-        """Re-window a legacy one-blob transcript on first read.
+    def _maybe_rechunk(self, ref: Ref) -> Ref:
+        """Create a windowed version of a legacy transcript for browsing.
 
-        Transcripts cached before chunk selectors exist sit as a single
-        unaddressable chunk; split it once so ``~`` selectors, the toc
-        and the context cap all work. ``insert_chunks(replace=True)``
-        is the sanctioned DELETE+INSERT replace — chunk rows are never
-        UPDATEd. Timestamps can't be recovered from the stored text, so
-        re-windowed chunks carry no ``start_s``.
-
-        The replace is destructive to per-chunk identity: the legacy
-        blob's ``chunks`` row — and with it the chunk id any
-        ``<code><id>`` handle was minted from, plus its chunk tags and
-        summaries — goes away (ON DELETE CASCADE); ``<video>~0`` then
-        names the first re-windowed chunk, not the blob. Embeddings are
-        refilled by the worker, which picks the fresh chunks up like any
-        new ingest.
-
-        Race discipline: two concurrent readers can both see the legacy
-        blob, so check-and-replace runs in ONE transaction that locks
-        the ``refs`` row (FOR UPDATE, ~2s ``lock_timeout``) and re-verifies
-        the still-legacy predicate before replacing. A loser of that
-        wait — or a unique violation that slips through anyway — serves
-        whatever chunks are stored; this lazy path never raises to the
-        caller. The leading ``count_chunks`` probe keeps already-chunked
-        transcripts off this code entirely (one indexed count, not a
-        full body load, per render).
+        Older one-blob transcripts have no timing metadata. Their original
+        chunk and its ordinal remain available to citations.
         """
         if self.store.chunks.count_chunks(ref.id) != 1:
-            return
+            return ref
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not blocks:
-            return
+            return ref
         blob = blocks[0]
-        if blob.chunk_kind != "paragraph":
-            return
-        if (blob.meta or {}).get("start_s") is not None:
-            return
-        if len(blob.text.encode("utf-8")) <= _LEGACY_BLOB_MIN:
-            return
+        meta = blob.meta or {}
+        if (
+            blob.chunk_kind != "paragraph"
+            or meta.get("start_s") is not None
+            or meta.get("legacy_rechunk")
+            or len(blob.text.encode("utf-8")) <= _LEGACY_BLOB_MIN
+        ):
+            return ref
         try:
-            with self.store.tx() as conn:
-                conn.execute("SET LOCAL lock_timeout = '2s'")
-                conn.execute(
-                    "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref.id,)
+            current = self.store.get_current_cache_version(ref.id)
+            if current is not None and current[0].id == ref.id:
+                successor = self.store.version_youtube_windows(
+                    ref, blob.id, _split_blob_window(blob.text)
                 )
-                # Re-check under the lock: a sibling reader may have
-                # committed its own re-window while we waited.
-                still = conn.execute(
-                    "SELECT count(*) FROM chunks "
-                    "WHERE ref_id = %s AND ord >= 0 "
-                    "AND chunk_kind = 'paragraph' "
-                    "AND meta->>'start_s' IS NULL "
-                    "AND NOT (meta ? 'legacy_rechunk')",
-                    (ref.id,),
-                ).fetchone()
-                if still is None or int(still[0]) != 1:
-                    return
-                self.store.chunks.insert_chunks(
-                    ref.id, _split_blob_window(blob.text), replace=True, conn=conn
-                )
-        except psycopg.Error:
+                if successor is not None:
+                    return successor
+                current = self.store.get_current_cache_version(ref.id)
+            if (
+                current is not None
+                and (current[1].meta or {}).get("windowed_from") == ref.id
+            ):
+                return current[0]
+        except (psycopg.Error, NotFound):
             log.warning(
-                "youtube: lazy re-chunk of ref %d abandoned "
-                "(lock wait or concurrent replace); serving stored chunks",
+                "youtube: lazy re-chunk of ref %d abandoned; serving stored chunks",
                 ref.id,
                 exc_info=True,
             )
+        return ref
 
     def _render_toc(self, *, id: str | int | None, q: str | None) -> Response:
         """Chunk map of a cached transcript — selector, time window and
@@ -1176,7 +1156,14 @@ class YouTubeHandler(CacheBackedHandler):
         slug = self._stored_ref_video_id(video_input) or self._selector_slug(
             video_input
         )
-        cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
+        cached = None
+        if q:
+            key = self._canonical_key(q)
+            cached = self.store.get_cache_entry(
+                provider=self.provider, request_hash=self._hash(key)
+            )
+        if cached is None:
+            cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
         if cached is None:
             raise NotFound(
                 f"youtube {slug!r} is not cached yet — nothing to outline",
@@ -1185,7 +1172,8 @@ class YouTubeHandler(CacheBackedHandler):
                 ),
             )
         ref, _cache = cached
-        self._maybe_rechunk(ref)
+        ref = self._maybe_rechunk(ref)
+        slug = ref.slug or slug
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if not blocks:
             raise NotFound(

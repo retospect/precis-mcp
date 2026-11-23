@@ -1427,6 +1427,20 @@ def _check_passage(
                     "record a sha, then re-submit",
                 )
             )
+        sha256_pin = passage.get("content_sha256")
+        if (
+            isinstance(sha256_pin, str)
+            and sha256_pin
+            and passage.get("source_uri") is not None
+            and passage.get("source_uri") != f"urn:sha256:{sha256_pin}"
+        ):
+            out.append(
+                GateViolation(
+                    "grounding",
+                    f"{label}: web passage's source_uri does not match its "
+                    "content_sha256",
+                )
+            )
     elif kind == "edgar":
         if ev.source_anchor(kind, ref.slug if ref else None, None).source_uri is None:
             out.append(

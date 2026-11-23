@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from precis.store import ChunkInsert, Store
-from precis.store.types import CacheEntry, Ref
+from precis.store.types import CacheEntry, Ref, Tag
 
 
 def test_put_and_get_cache_entry_roundtrip(store: Store) -> None:
@@ -206,3 +206,66 @@ def test_cost_usd_optional(store: Store) -> None:
         cost_usd=None,
     )
     assert cache.cost_usd is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "provider"),
+    [
+        ("web", "web"),
+        ("youtube", "youtube"),
+        ("wikipedia", "wikipedia"),
+        ("websearch", "perplexity"),
+        ("perplexity-research", "perplexity"),
+        ("perplexity-reasoning", "perplexity"),
+    ],
+)
+def test_refresh_preserves_chunk_links_and_advances_query(
+    store: Store, kind: str, provider: str
+) -> None:
+    slug, key = f"{kind}-reported", "request-key"
+    original, _ = store.put_cache_entry(
+        kind=kind,
+        slug=slug,
+        provider=provider,
+        request_hash=key,
+        title="First result",
+        body_blocks=[ChunkInsert(ord=0, text="Cited text")],
+        ttl_seconds=0,
+    )
+    bookmark = Tag.open("bookmark")
+    store.add_tag(original.id, bookmark)
+    note = store.insert_ref(kind="memory", slug=None, title="Citation")
+    link = store.add_link(
+        src_ref_id=note.id, dst_ref_id=original.id, dst_pos=0, relation="cites"
+    )
+
+    second, _ = store.update_cache_entry(
+        ref_id=original.id,
+        title="Second result",
+        body_blocks=[ChunkInsert(ord=0, text="Updated text")],
+        ttl_seconds=None,
+    )
+    third, _ = store.update_cache_entry(
+        ref_id=original.id,
+        title="Third result",
+        body_blocks=[ChunkInsert(ord=0, text="Latest text")],
+        ttl_seconds=None,
+    )
+
+    assert len({original.id, second.id, third.id}) == 3
+    cited = store.get_cache_entry_by_slug(kind=kind, slug=slug)
+    assert cited is not None and cited[0].id == original.id
+    old_chunk = store.chunks.list_chunks_for_ref(original.id)[0]
+    assert old_chunk.text == "Cited text"
+    (saved,) = store.links_for(note.id)
+    assert (saved.id, saved.dst_chunk_id) == (link.id, old_chunk.id)
+    latest = store.get_cache_entry(provider=provider, request_hash=key)
+    assert latest is not None and latest[0].id == third.id
+    assert [row[0].id for row in store.list_cache_entries(kind=kind)] == [third.id]
+    assert store.count_cache_entries(kind=kind) == 1
+    assert bookmark in store.tags_for(original.id)
+    assert bookmark in store.tags_for(third.id)
+    assert any(
+        edge.dst_ref_id == second.id and edge.relation == "supersedes"
+        for edge in store.links_for(third.id)
+    )

@@ -3,8 +3,8 @@
 Each subclass picks a different Sonar model + timeout + TTL:
 
     kind                    model                      timeout   TTL       cost
-    websearch               sonar                      30s       7 days    ~$0.001/call
-    perplexity-reasoning    sonar-reasoning-pro        120s      30 days   ~$0.005/call
+    websearch               sonar                      30s       pinned    ~$0.001/call
+    perplexity-reasoning    sonar-reasoning-pro        120s      pinned    ~$0.005/call
     perplexity-research     sonar-deep-research        600s      pinned    ~$0.50/call
 
 Cache key is ``<model>:<query>`` so the same query under different
@@ -19,10 +19,9 @@ New refs mint ``<slug>-<sha8>`` slugs: the query slugified at 60
 chars plus an 8-hex sha256 tail of the canonical ``<model>:<query>``
 key, so templated queries sharing a lead-in no longer collide
 (gr517283 — the design-tree pilot hit refusals on shared 60-char
-prefixes). Slugs minted before the suffix stay valid: reads resolve a
-stored slug verbatim (or by ``request_hash``), and re-importing a
-query cached under a legacy slug refreshes that row in place — its
-old slug survives. A slug lookup that lands on a live row whose
+prefixes). Reads by stored slug still resolve the original snapshot,
+including legacy slugs. Refreshing or re-importing changed content
+advances the request hash to a new snapshot. A slug lookup whose
 stored ``query`` differs is still refused
 (``_guard_slug_collision``) on the ``get`` miss path and
 ``put(mode='import')``; with the hash tail that refusal now means a
@@ -408,19 +407,18 @@ class _PerplexityBase(CacheBackedHandler):
         return f"{prefix}-{digest}"
 
     def _guard_slug_collision(self, key, ref, cache):
-        """Refuse to overwrite a row whose stored query is a different query.
+        """Keep a slug collision from advancing an unrelated query.
 
         New slugs carry an 8-hex sha256 tail of the canonical key
         (``_slug_for``), so a slug match on a different query is a
         genuine collision — a legacy row whose pre-suffix slug happens
         to equal the new form, or a hash-tail match — not the routine
         60-char prefix collision the bare slug produced (gr517283). The
-        hash misses and base ``get`` would still refresh the existing
-        row in place with the new query's body (a ~$0.50 report was
-        lost this way, 2026-09-13). Compare the stored full query,
+        request hash misses and base ``get`` would refresh the existing
+        lineage with the new query's body. Compare the stored full query,
         whitespace-collapsed, and refuse when it differs. Rows written
         before ``query`` was tracked in meta cannot be compared and
-        keep the in-place refresh.
+        can still be refreshed.
         """
         stored = (cache.meta or {}).get("query")
         if not stored:
@@ -1037,24 +1035,25 @@ class _PerplexityBase(CacheBackedHandler):
         slug = self._slug_for(key)
         body_blocks = self._blocks_from_report(body)
 
-        # The same canonical query may already be cached under a legacy
-        # un-suffixed slug (pre-hash-tail rows, gr517283): the slug lookup
-        # below can't see it, and the UNIQUE(provider, request_hash)
-        # constraint would turn a second insert into an IntegrityError.
-        # Refresh that row in place instead — its old slug keeps
-        # resolving and any tags/links survive (delete+insert would
-        # destroy them).
+        # Find the current answer by hash, including entries with a legacy slug.
         same_query = self.store.get_cache_entry(
             provider=self.provider, request_hash=request_hash
         )
+        if same_query is None:
+            same_query = self.store.get_cache_entry_by_slug(
+                kind=self.spec.kind, slug=slug
+            )
+            if same_query is not None:
+                self._guard_slug_collision(key, *same_query)
         if same_query is not None:
             ref, _cache = same_query
-            self.store.stamp_ref_meta(ref.id, {"source": "imported"})
             ref, _cache = self.store.update_cache_entry(
                 ref_id=ref.id,
                 title=_title_for_query(query),
                 body_blocks=body_blocks,
+                request_hash=request_hash,
                 ttl_seconds=None,  # imports are pinned — never expire
+                ref_meta={"source": "imported"},
                 model=self.TIER.model,
                 cost_usd=0.0,
                 cache_meta={
@@ -1069,19 +1068,11 @@ class _PerplexityBase(CacheBackedHandler):
             return Response(
                 body=(
                     f"re-imported {self.spec.kind} ref {ref.slug!r} "
-                    f"({n} block{plural}) — refreshed the existing row in "
-                    f"place; its slug still resolves. future "
+                    f"({n} block{plural}) — stored as the current version. Future "
                     f"{_readback_hint(self.spec.kind, query, ref.slug or slug)} "
                     f"will return the imported body for $0."
                 )
             )
-
-        # ``put_cache_entry`` replaces the live row under this slug; refuse
-        # when that row holds a different query's report (same guard as
-        # the ``get`` miss path).
-        existing = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
-        if existing is not None:
-            self._guard_slug_collision(key, *existing)
 
         ref, _cache = self.store.put_cache_entry(
             kind=self.spec.kind,
@@ -1159,7 +1150,7 @@ class WebsearchHandler(_PerplexityBase):
         model="sonar",
         timeout=30,
         cost_per_call_usd=0.001,
-        ttl_seconds=7 * 24 * 60 * 60,  # 7 days
+        ttl_seconds=None,  # pinned; refresh explicitly for a new result
         attribution=_PERPLEXITY_ATTRIBUTION_TEMPLATE.format(model="sonar"),
     )
 

@@ -31,18 +31,14 @@ hits the cache and skips the upstream cost.
 | `youtube`   | 30 days | youtube-transcript-api | free         |
 | `chem`      | 30 days | PubChem                | free         |
 | `news`      | pinned  | direct fetch           | free         |
-| `websearch` | 7 days  | Perplexity Sonar       | ~$0.001      |
+| `websearch` | pinned  | Perplexity Sonar       | ~$0.001      |
 | `perplexity-reasoning` | pinned  | Sonar Reasoning Pro | ~$0.005   |
 | `perplexity-research`  | pinned  | Sonar Deep Research | ~$0.50    |
 
-`pinned` means never expires automatically. `perplexity-reasoning`
-is pinned by default (a wrong cached answer is bounded — citations
-trace to real papers via the chase/finding pipeline, not to
-Perplexity — so the cost of staying wrong is low next to the cost
-of re-running a $0.005 call); override per call with
-`args={'ttl_days': N}` if you want that one row to decay. TTLs are
-stamped on the row at write time — changing a handler constant only
-affects rows written after.
+`pinned` means the result stays fresh indefinitely. Use
+`args={'ttl_days': N}` on a fetch or refresh to set a finite TTL.
+Freshness is stamped at write time. The migration pins existing
+`websearch` rows with a 7-day TTL and preserves other TTLs.
 
 ## How is a cache key composed?
 ## What makes two queries hit the same cache row?
@@ -76,7 +72,7 @@ The `CACHE:` axis is system-applied, closed-vocab — a rendered state
 of the row's `fresh_until`, not a flag you write:
 
 - `CACHE:fresh` — `fresh_until` still in the future.
-- `CACHE:stale` — past `fresh_until` (the next `get` re-fetches).
+- `CACHE:stale` — past `fresh_until`. A request lookup can re-fetch.
 - `CACHE:pinned` — `fresh_until` NULL: the row was written without a
   TTL (a pinned kind, `mode='import'`, or `args={'ttl_days': 0}`).
 
@@ -93,15 +89,14 @@ The response footer also reports it inline:
 ```text
 (perplexity-research cache · age 12d · pinned)
 (perplexity-reasoning cache · age 22d · pinned)
-(websearch cache · age 9d · stale)
+(websearch cache · age 9d · pinned)
 ```
 
 ## How do I force a refetch?
 ## Bypass the cache for one query
 ## Re-run a stale answer
 
-Re-fetch in place: `refresh=True` on the `get` forces the paid call and
-overwrites the row — no delete step (cache kinds don't take `delete`):
+Pass `refresh=True` on the `get` to force an upstream call:
 
 ```python
 get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
@@ -109,6 +104,13 @@ get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
 
 Works on every cache kind. For `web` and `youtube`, pass the canonical
 URL / video ID in `id=` instead of `q=`.
+
+For `web`, `wikipedia`, `youtube` and all three Sonar tiers, a refresh
+publishes a new ref and slug. When the fetch supplies a
+`content_sha256` that matches the current snapshot's hash, the refresh
+reuses that ref. Lookups by request hash resolve the current snapshot.
+Read a cited snapshot by its stored ref ID or slug with `no_fetch=True`.
+Each snapshot retains its chunks and their links.
 
 ## Pin a row so it never expires
 ## Keep a cached answer indefinitely
@@ -120,7 +122,7 @@ NULL and it reports `CACHE:pinned` forever:
 
 ```python
 get(kind="perplexity-reasoning", q="<query>", args={"ttl_days": 0})
-# same on a refresh — pins the stored row in place:
+# Pin the result of a refresh.
 get(kind="perplexity-reasoning", q="<query>", args={"mode": "refresh", "ttl_days": 0})
 ```
 
@@ -128,19 +130,19 @@ The bare `pinned` flag is *not* the mechanism — on a cache kind it is
 refused outright (it collides with the closed `CACHE:pinned` value),
 and a `CACHE:pinned` tag row is inert: freshness reads the cache
 row's `fresh_until`, never the tag. Rows on a TTL-less kind (`math`,
-`perplexity-*`) are pinned from the start, and `put(mode='import')`
-writes `ttl_seconds=None` — pinned — explicitly.
+`news`, `websearch`, `perplexity-*`) are pinned from the start.
+`put(mode='import')` also writes a pinned entry.
 
 <!--
 Fact-checked (archdocs3): bare `pinned` refused on cache kinds —
 store/types.py Tag.parse_strict kind-scoped collision (cache kinds
 allow the CACHE axis, or like math are unlisted); pinned-from-start —
-handlers/math.py ttl_seconds=None, perplexity.py ThinkHandler /
-ResearchHandler TIER ttl_seconds=None (websearch is 7d);
+handlers/math.py ttl_seconds=None, handlers/perplexity.py WebsearchHandler /
+ThinkHandler / ResearchHandler TIER ttl_seconds=None;
 import-mode put — perplexity.py put writes ttl_seconds=None;
 args ttl_days ≤0 → handlers/_cache_base.py CacheBackedHandler.get
 leaves ttl_seconds_override None with ttl_override_active →
-put_cache_entry/_refetch_in_place write fresh_until NULL.
+put_cache_entry/update_cache_entry write fresh_until NULL.
 -->
 
 ## See also

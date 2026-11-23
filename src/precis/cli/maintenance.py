@@ -328,7 +328,7 @@ def _refresh_due_watches(
                 )
                 continue
 
-            cached = store.get_cache_entry_by_slug(kind=ref.kind, slug=ref.slug)
+            cached = store.get_current_cache_version(ref.id)
             if cached is None:
                 # Tagged but no cache row — likely a ref that was
                 # tagged before being ingested, or a stale tag from
@@ -341,7 +341,9 @@ def _refresh_due_watches(
                 )
                 continue
 
-            _ref, cache = cached
+            current, cache = cached
+            if current.id != ref.id:
+                continue
             if cache.fetched_at is None:
                 age_seconds = float("inf")
             else:

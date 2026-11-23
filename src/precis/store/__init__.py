@@ -104,6 +104,14 @@ existing writers. Cache locks never span model calls or GET; bounded conflicts
 roll back without rebasing. Conn-aware ref/chunk reads avoid a second pooled
 connection under these locks. Conversation appends share stored ordinal allocation.
 
+Web, Wikipedia, YouTube and the Perplexity cache kinds keep a live ref per
+result version. The current row owns the request key. Earlier rows keep their
+slugs, chunks, and citation links so ordinal selectors still name the original
+text. A refresh advances the head with a supersedes edge and copies ref tags
+for discovery and watch scheduling. Identical web response hashes reuse the
+head. YouTube's lazy legacy windowing also publishes a version and keeps the
+original blob at its original address.
+
 Nanopub supersession uses an explicit version relationship, separate from
 approval's replaceable grounding envelope. A discarded candidate detaches the
 successor; its predecessor obligation survives and reattaches atomically on

@@ -50,9 +50,10 @@ get(kind="perplexity-research", q="landscape of post-quantum signature schemes")
 not a lookup key** — see the next section before you paste a number in.
 The response body carries the answer with inline `[N]` citations and a
 trailing `Sources:` block. Each cited URL gets a stub `web` ref on
-first render, so markers print as `[web:<id>]` — follow one with
-`get(kind='web', id=<id>)` (the stub fetches the page on access) or
-`get(kind='web', id=<url>)`. Cache hits return the same body for free.
+first render if the URL is uncached. Markers print as `[web:<id>]`.
+Read the cited ref with `get(kind='web', id=<id>)`. If it is a stub,
+look up its URL with `get(kind='web', id=<url>)` to fetch the page.
+Cache hits return the same body for free.
 Every answer also prints a `cite as [wx<id>]` (or `rr`/`rz`) pointer —
 paste it into a note/memory to auto-link this exact cached answer.
 
@@ -177,8 +178,9 @@ match — a different query already holds that exact slug:
 
 Read the existing row with `get(kind=…, id="<slug>", args={"no_fetch":
 True})`, or rephrase (or import under a distinct explicit `id=`).
-Same-query refetches and re-imports still replace in place; only a
-*different* stored query is protected.
+Same-query refetches and re-imports publish a new version.
+Query reads return the current answer. Earlier slugs
+and ref IDs still resolve to their original snapshots.
 
 ## Pick the right kind
 ## Which model do I want — websearch, perplexity-reasoning, or perplexity-research?
@@ -232,9 +234,9 @@ put(
 schemes')` then hits the cache for $0.
 
 The `id=` you import under must match the query you later `get` —
-trim only; comparison is otherwise verbatim. Re-importing the same
-`id=` replaces the previous body atomically. Imported entries are
-pinned and carry `meta.source = 'imported'`; the cost trailer
+trim only; comparison is otherwise verbatim. Re-importing changed text
+under the same `id=` advances the query to the new snapshot. Imported
+entries are pinned and carry `meta.source = 'imported'`. The cost trailer
 reads `— imported` so you can tell them apart from API-fetched rows.
 
 The pasted Markdown is split per heading / paragraph / list /
@@ -262,8 +264,8 @@ without `PERPLEXITY_API_KEY`.
 get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
 ```
 
-`perplexity-research` and `perplexity-reasoning` are pinned by default;
-`websearch` has 7 days. See `precis-cache` for the full
+`perplexity-research`, `perplexity-reasoning` and `websearch` are
+pinned by default. See `precis-cache` for the full
 TTL table and the `CACHE:fresh` / `CACHE:stale` / `CACHE:pinned` axis.
 
 ## Bulk-import a directory of reports

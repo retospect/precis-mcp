@@ -153,7 +153,7 @@ class WikipediaHandler(CacheBackedHandler):
     def _apply_tag_ops_if_any(self, ref_id, tags, untags):
         """Always stamp ``ORIGIN:wikipedia`` (plus any caller tags).
 
-        Every cache write — fresh create *and* in-place refresh — routes
+        Each initial fetch and refresh routes
         through this hook in the base ``get`` flow, so stamping here
         guarantees the provenance fence-tag rides on the ref without
         the caller having to remember it. Idempotent: the tag layer
