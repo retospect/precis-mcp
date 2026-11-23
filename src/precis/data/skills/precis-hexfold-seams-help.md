@@ -260,7 +260,7 @@ bond into each sheet. The seam is sp² only: no sp³ variant of this
 closed ring is offered (the sp³ seams above are straight lines, not
 rings). For hydroxyl pendants on the seam use the shipped
 `flanged_doughnut_oh` example. The rigid washer seed carries a
-`seam.cycle` strain warning on hexfold 0.3.5 (gr462075; see
+`seam.cycle` strain warning on hexfold 0.3.6 (gr462075; see
 [[precis-hexfold-help]]).
 
 ## See also
