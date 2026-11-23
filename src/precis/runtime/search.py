@@ -232,12 +232,8 @@ _STUBS_VIEW_CONSUMED: frozenset[str] = _STUBS_CONSUMED | {
 #: on these paths too (search returns a bounded top-N set, not pages).
 _PAGE_TOLERATED: dict[str, tuple[Any, ...]] = {"page": (1,)}
 
-#: Cross-kind fan-out bounds (gr495190, gr513663). Workers stay under the DB
-#: pool (default 10) so a wildcard search can't starve other requests. 2
-#: workers could not drain ~34 kinds inside the deadline — any per-kind
-#: latency over ~1.7 s left most of the queue to TimeoutError (gr513663,
-#: the 2026-10-24 fan-out collapse). Raised to 4 now that the server-side
-#: cancel (ANN_STATEMENT_TIMEOUT_MS) has a shipped regression test.
+#: Best-effort capacity is bounded process-wide, independently of the
+#: reserved workers. Slow cache requests cannot occupy a priority worker.
 CROSS_KIND_MAX_WORKERS = 4
 #: A kind dequeued with less budget than this (or <10% of the whole
 #: deadline, whichever is smaller) cannot finish the full hybrid legs —
@@ -295,7 +291,39 @@ CROSS_KIND_PROBE_REAP_S = 1.0
 #: errored footer by name, and the worker moves on. Sized well above any
 #: healthy kind's latency (a ready partial-index kind answers in <1 s)
 #: and well below the whole-fan-out deadline.
-CROSS_KIND_PER_KIND_S = 4.0
+CROSS_KIND_PER_KIND_S = 2.0
+CROSS_KIND_PRIORITY_S = 5.0
+_CROSS_KIND_PRIORITY = frozenset(
+    {"finding", "memory", "todo", "gripe", "quest", "paper"}
+)
+_CROSS_KIND_DOMAIN_PRIORS = {
+    "cad": r"cad",
+    "se": r"se|structural engineering",
+    "pcb": r"pcbs?|printed circuit boards?",
+    "patent": r"patents?",
+}
+_cross_kind_priority_pool = ThreadPoolExecutor(
+    max_workers=len(_CROSS_KIND_PRIORITY), thread_name_prefix="cross-kind-priority"
+)
+
+
+class KindSearchDeadlineMissed(TimeoutError):
+    """A fan-out kind did not answer inside its tier's deadline.
+
+    Subclasses :class:`TimeoutError` (a deadline miss *is* a timeout)
+    but is rendered in the result header as "dropped at deadline", not
+    as an error — best-effort tiers are designed to miss under load,
+    and even a priority kind missing its reserved budget is an
+    omission to name, not a failure to diagnose.
+    """
+
+
+#: Kinds whose ``search_hits`` never runs a semantic leg at all
+#: (``conv`` and ``pres`` hard-code ``query_vec=None`` — phase-5 lexical
+#: only for state kinds; ``machine`` is a slug-refs title lexical leg),
+#: so a fan-out-wide degrade must not name them as if a semantic leg had
+#: been skipped for them.
+_CROSS_KIND_LEXICAL_ONLY_KINDS: frozenset[str] = frozenset({"conv", "machine", "pres"})
 
 _cross_kind_pool: ThreadPoolExecutor | None = None
 _cross_kind_pool_lock = threading.Lock()
@@ -327,6 +355,10 @@ _CROSS_KIND_COST_ALPHA = 0.5
 #: the global-fallback route: a post-filter over the paper-dominated
 #: global index that keeps almost none of their rows, the documented
 #: 10-30 s worst case that cannot fit the per-kind cap under load.
+#: draft and quest were priored here too after gr575086 dropped their
+#: indexes; gr698809 revived them — their zero scans were this skip,
+#: not a useless leg, and they are tier-1 kinds now, rebuilt by the
+#: recorded backfill post-step (see ``_ANN_DROPPED_PARTIAL_KINDS``).
 #: ``_ANN_GLOBAL_KINDS`` is the opposite routing category — those
 #: kinds dominate the global index, so the post-filter keeps nearly
 #: every candidate and answers in ~0.3 s; seeding paper slow just hid
@@ -338,6 +370,13 @@ _CROSS_KIND_COST_ALPHA = 0.5
 _CROSS_KIND_COST_PRIOR_S: dict[str, float] = {
     k: CROSS_KIND_PER_KIND_S for k in _ANN_DROPPED_PARTIAL_KINDS
 }
+
+
+def _cross_kind_prior(kind: str, query: str) -> float:
+    domain = _CROSS_KIND_DOMAIN_PRIORS.get(kind)
+    if domain is not None:
+        return 1.0 if re.search(rf"\b(?:{domain})\b", query, re.I) else 0.15
+    return 1.0 if kind in _CROSS_KIND_PRIORITY else 0.8
 
 
 def _record_cross_kind_cost(kind: str, elapsed_s: float) -> None:
@@ -2825,6 +2864,9 @@ class SearchMixin(RuntimeShape):
             query_embedder = None
         else:
             query_embedder = embedder
+        if query_embedder is None and _hybridish and not mock_leg_skipped:
+            semantic_degraded = True
+            base_kwargs["mode"] = "lexical"
         if query_embedder is not None:
             try:
                 base_kwargs["query_vec"] = query_embedder.embed_one(q)
@@ -2857,12 +2899,13 @@ class SearchMixin(RuntimeShape):
                     exc.cause,
                 )
                 semantic_degraded = True
+                if _hybridish:
+                    base_kwargs["mode"] = "lexical"
             except Exception:
-                # An embed failure here shouldn't kill the whole
-                # cross-kind search — fall back to per-kind embed
-                # (or lex-only when the kind's embedder is also
-                # unavailable).
-                log.exception("cross-kind: query embed failed; falling back per-kind")
+                log.exception("cross-kind: shared query embedding failed")
+                if _hybridish:
+                    semantic_degraded = True
+                    base_kwargs["mode"] = "lexical"
         if tags:
             base_kwargs["tags"] = tags
         if exclude:
@@ -2926,12 +2969,13 @@ class SearchMixin(RuntimeShape):
             kind_overrides,
             deadline_at=deadline_at,
             lexical_fallback=lexical_fallback,
+            tiered=True,
         )
         for k in kinds:
-            if k not in fanned:
+            hits_or_exc = fanned.get(k)
+            if hits_or_exc is None:
                 per_kind_counts.append((k, 0))
                 continue
-            hits_or_exc = fanned[k]
             if isinstance(hits_or_exc, Exception):
                 errored[k] = hits_or_exc
                 per_kind_counts.append((k, 0))
@@ -3054,6 +3098,11 @@ class SearchMixin(RuntimeShape):
             empty_body=empty_body,
             output_shape=output_shape,
             link_summary=link_summary,
+            kind_priors=(
+                {k: _cross_kind_prior(k, q) for k in kinds}
+                if default_expansion
+                else {k: 1.0 for k in kinds}
+            ),
         )
 
         # Round-2 picky F-8: prepend a per-kind hit-count line under the
@@ -3077,20 +3126,37 @@ class SearchMixin(RuntimeShape):
         # Partial failure is not silence either: a kind that errored is
         # indistinguishable from a kind with zero matches in the per-kind
         # counts, so name it — the caller may be missing exactly the hits
-        # they wanted. (Total failure raised above.)
+        # they wanted. (Total failure raised above.) A deadline miss is
+        # an omission, not a fault: best-effort kinds are designed to be
+        # dropped at their deadline under load, so those get their own
+        # "dropped at deadline" line instead of reading as errors.
         if errored:
-            tip = (
-                "_(⚠ errored, omitted from this merge: "
-                + ", ".join(
-                    f"{k} ({type(e).__name__})" for k, e in sorted(errored.items())
+            missed = {
+                k for k, e in errored.items() if isinstance(e, KindSearchDeadlineMissed)
+            }
+            failed = {k: e for k, e in errored.items() if k not in missed}
+            tips = []
+            if failed:
+                tips.append(
+                    "_(⚠ errored, omitted from this merge: "
+                    + ", ".join(
+                        f"{k} ({type(e).__name__})" for k, e in sorted(failed.items())
+                    )
+                    + " — results may be incomplete; see server log)_"
                 )
-                + " — results may be incomplete; see server log)_"
-            )
+            if missed:
+                tips.append(
+                    "_(dropped at deadline, omitted from this merge: "
+                    + ", ".join(sorted(missed))
+                    + " — retry, or search each kind explicitly "
+                    "for those kinds)_"
+                )
             lines = response.body.splitlines()
             if lines:
-                lines.insert(1, tip)
+                for tip in reversed(tips):
+                    lines.insert(1, tip)
             else:
-                lines.append(tip)
+                lines.extend(tips)
             response = Response(
                 body="\n".join(lines),
                 cost=response.cost,
@@ -3102,15 +3168,26 @@ class SearchMixin(RuntimeShape):
         # ANN route falls back to the global index — a scan that cannot
         # fit the per-kind budget) keep their lexical hits but must not
         # read as fully searched — name them, with the door back to the
-        # full hybrid leg.
+        # full hybrid leg. A fan-out-wide degrade (the query embedder
+        # unavailable, or a non-production embedder whose semantic leg
+        # is hash noise) names every kind that *has* a semantic leg —
+        # never the lexical-only kinds (``_CROSS_KIND_LEXICAL_ONLY_KINDS``),
+        # for which no leg was skipped.
+        if mock_leg_skipped or (semantic_degraded and _hybridish):
+            route_skipped = [
+                k for k in kinds if k not in _CROSS_KIND_LEXICAL_ONLY_KINDS
+            ]
         if route_skipped:
+            reason = (
+                "the query embedder was unavailable for semantic search"
+                if mock_leg_skipped or semantic_degraded
+                else "partial ANN index missing or not ready"
+            )
             tip = (
                 "_(semantic leg skipped for "
                 + ", ".join(sorted(route_skipped))
-                + " — their ANN leg falls back to the global index "
-                "(partial index missing or not ready), a scan that "
-                "cannot fit the fan-out's per-kind budget; search each "
-                "kind explicitly for the full hybrid leg)_"
+                + f" — {reason}; retry or search each kind explicitly "
+                "for the full hybrid leg)_"
             )
             lines = response.body.splitlines()
             if lines:
@@ -3479,6 +3556,9 @@ class SearchMixin(RuntimeShape):
                         for k in kinds:
                             if time.monotonic() >= probe_deadline:
                                 raise TimeoutError("cross-kind probe deadline spent")
+                            # SkillHandler uses a separate in-process section index.
+                            if k == "skill":
+                                continue
                             plan = ann_route_plan(conn, k, None)
                             if (
                                 plan["route"] == "global"
@@ -3508,23 +3588,29 @@ class SearchMixin(RuntimeShape):
         *,
         deadline_at: float | None = None,
         lexical_fallback: set[str] | None = None,
+        tiered: bool = False,
     ) -> dict[str, list[SearchHit] | Exception]:
         """Run every kind's ``search_hits`` on at most
-        :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
-        after :data:`CROSS_KIND_DEADLINE_S` seconds in total.
+        :data:`CROSS_KIND_MAX_WORKERS` best-effort threads. Wildcard
+        searches reserve separate workers for the priority kinds and harvest
+        each tier at its own deadline. Explicit kind lists preserve their
+        requested match semantics.
 
         gr495190: the fan-out used to be a serial loop, and one kind's
         filtered HNSW scan alone takes 10-30 s on prod (the global index
         is almost all papers), so 34 kinds ran past 120 s. A kind that
-        misses the deadline comes back as a ``TimeoutError`` value, so the
-        caller names it in the "errored, omitted" footer instead of
-        reading it as zero matches. Kinds without a handler are absent
-        from the result. Threads cannot be killed: a straggler finishes in
-        the background, but the process-wide executor caps how many can
-        exist across all searches — and each job pins its pool checkouts
-        to ``deadline_at`` (``POOL_CHECKOUT_DEADLINE``), so a straggler
-        can't hold a shared worker queueing for connections after its
-        results were discarded (gr664970).
+        misses the deadline comes back as a
+        :class:`KindSearchDeadlineMissed` value (a ``TimeoutError``
+        subclass), so the caller names it in a "dropped at deadline"
+        footer — an omission to surface, not an error to diagnose —
+        instead of reading it as zero matches. Kinds without a handler
+        are absent from the result. Threads cannot be killed: a
+        straggler finishes in the background, but the process-wide
+        executor caps how many can exist across all searches — and each
+        job pins its pool checkouts to ``deadline_at``
+        (``POOL_CHECKOUT_DEADLINE``), so a straggler can't hold a
+        shared worker queueing for connections after its results were
+        discarded (gr664970).
 
         ``kind_overrides`` maps a kind to ``search_hits`` kwargs merged
         over ``base_kwargs`` — the wildcard fan-out uses it to run a
@@ -3572,14 +3658,21 @@ class SearchMixin(RuntimeShape):
         )
 
         jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
-        jobs.sort(key=lambda j: _cross_kind_job_key(j[0]))
+        jobs.sort(
+            key=lambda job: (
+                tiered and job[0] not in _CROSS_KIND_PRIORITY,
+                _cross_kind_job_key(job[0]),
+            )
+        )
         out: dict[str, list[SearchHit] | Exception] = {}
         if not jobs:
             return out
         if deadline_at is None:
             deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
 
-        def run(handler: Handler, k: str) -> list[SearchHit] | Exception:
+        def run(
+            handler: Handler, k: str, deadline_at: float, cap: float
+        ) -> list[SearchHit] | Exception:
             # A worker must not share a pinned (atomic-scope) connection.
             _PINNED.set(None)
             # … and its pool checkouts may not outwait the call deadline:
@@ -3588,7 +3681,10 @@ class SearchMixin(RuntimeShape):
             # were discarded, starving the next call's fan-out (gr664970).
             POOL_CHECKOUT_DEADLINE.set(deadline_at)
             remaining_ms = int((deadline_at - time.monotonic()) * 1000)
-            min_start = min(CROSS_KIND_MIN_START_MS, int(CROSS_KIND_DEADLINE_S * 100))
+            min_start = min(
+                CROSS_KIND_MIN_START_MS,
+                int((cap if tiered else CROSS_KIND_DEADLINE_S) * 100),
+            )
             kw = (
                 {**base_kwargs, **kind_overrides[k]}
                 if kind_overrides is not None and k in kind_overrides
@@ -3598,7 +3694,7 @@ class SearchMixin(RuntimeShape):
             if remaining_ms < min_start:
                 lexical_floor = min(
                     CROSS_KIND_LEXICAL_MIN_START_MS,
-                    int(CROSS_KIND_DEADLINE_S * 100),
+                    int((cap if tiered else CROSS_KIND_DEADLINE_S) * 100),
                 )
                 if (
                     lexical_fallback is not None
@@ -3620,33 +3716,64 @@ class SearchMixin(RuntimeShape):
                     )
                 # An already-lexical kind needs no degrade — the smaller
                 # floor still fits its legs.
+            can_retry = (
+                lexical_fallback is not None
+                and "mode" not in base_kwargs
+                and mode in ("", "hybrid")
+            )
+            attempt_deadline = deadline_at
+            retry_s = CROSS_KIND_LEXICAL_MIN_START_MS / 1000
+            if tiered and can_retry:
+                attempt_deadline = max(
+                    time.monotonic() + 0.001, deadline_at - 1.25 * retry_s
+                )
+                POOL_CHECKOUT_DEADLINE.set(attempt_deadline)
+                remaining_ms = max(1, int((attempt_deadline - time.monotonic()) * 1000))
             # Postgres cancels the ANN scan at the deadline; the client-side
             # wait alone would leave it running. The per-kind cap (gr519679)
             # stops a single runaway query from holding its worker for the
             # whole deadline while the rest of the queue starves.
-            ANN_STATEMENT_TIMEOUT_MS.set(
-                min(remaining_ms, int(CROSS_KIND_PER_KIND_S * 1000))
-            )
+            ANN_STATEMENT_TIMEOUT_MS.set(min(remaining_ms, int(cap * 1000)))
             # gr664954: the same bound on every pool checkout this kind
             # makes — a saturated pool or an uncapped non-ANN statement
             # can no longer hold a worker past the call deadline.
-            CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
+            CHECKOUT_BUDGET.set((attempt_deadline, cap * 1000))
             started = time.monotonic()
             try:
                 result = self._cross_kind_invoke_search_hits(handler, k, kw)
                 if (
                     isinstance(result, QueryCanceled)
+                    and can_retry
                     and lexical_fallback is not None
-                    and "mode" not in base_kwargs
-                    and mode in ("", "hybrid")
-                    and deadline_at - time.monotonic()
-                    >= CROSS_KIND_LEXICAL_MIN_START_MS / 1000
+                    and deadline_at - time.monotonic() >= retry_s
                 ):
+                    POOL_CHECKOUT_DEADLINE.set(deadline_at)
+                    CHECKOUT_BUDGET.set((deadline_at, cap * 1000))
+                    ANN_STATEMENT_TIMEOUT_MS.set(
+                        max(
+                            1,
+                            min(
+                                int(cap * 1000),
+                                int((deadline_at - time.monotonic()) * 1000),
+                            ),
+                        )
+                    )
                     result = self._cross_kind_invoke_search_hits(
                         handler, k, {**kw, "mode": "lexical"}
                     )
                     if not isinstance(result, Exception):
                         lexical_fallback.add(k)
+                if (
+                    tiered
+                    and not isinstance(result, Exception)
+                    and time.monotonic() > deadline_at
+                ):
+                    # Late hits are an omission — the merge already
+                    # harvested this kind's window, so the result counts
+                    # as dropped at deadline. A late *error* stays that
+                    # error: the footer names the failure, not just the
+                    # lateness.
+                    return KindSearchDeadlineMissed("kind search exceeded its deadline")
                 return result
             finally:
                 # Whatever the kind actually cost — hits, a caught
@@ -3655,28 +3782,37 @@ class SearchMixin(RuntimeShape):
                 _record_cross_kind_cost(k, time.monotonic() - started)
 
         pool = _cross_kind_executor()
-        futures = {
-            k: pool.submit(contextvars.copy_context().run, run, h, k) for k, h in jobs
-        }
-        wait(futures.values(), timeout=max(0.0, deadline_at - time.monotonic()))
-        for k, fut in futures.items():
-            if fut.done():
-                try:
-                    out[k] = fut.result()
-                except Exception as exc:
-                    log.exception("cross-kind search_hits crashed for %s", k)
-                    out[k] = exc
-            else:
-                # Queued work is dropped; a running straggler finishes in the
-                # background but holds one of the shared workers, so stragglers
-                # across all searches stay at CROSS_KIND_MAX_WORKERS.
-                fut.cancel()
-                log.error(
-                    "cross-kind search_hits for %s exceeded %.0fs; omitted",
-                    k,
-                    CROSS_KIND_DEADLINE_S,
-                )
-                out[k] = TimeoutError(f"no answer within {CROSS_KIND_DEADLINE_S:.0f}s")
+        submitted_at = time.monotonic()
+        futures = {}
+        deadlines = {}
+        for k, handler in jobs:
+            priority = tiered and k in _CROSS_KIND_PRIORITY
+            cap = CROSS_KIND_PRIORITY_S if priority else CROSS_KIND_PER_KIND_S
+            end = min(deadline_at, submitted_at + cap) if tiered else deadline_at
+            executor = _cross_kind_priority_pool if priority else pool
+            futures[k] = executor.submit(
+                contextvars.copy_context().run, run, handler, k, end, cap
+            )
+            deadlines[k] = end
+
+        # Harvest the short-budget jobs as soon as their window closes, even
+        # while the priority tier continues. Late results cannot enter the merge.
+        for end in sorted(set(deadlines.values())):
+            group = {k: futures[k] for k in futures if deadlines[k] == end}
+            done, _ = wait(group.values(), timeout=max(0.0, end - time.monotonic()))
+            for k, future in group.items():
+                if future in done:
+                    try:
+                        out[k] = future.result()
+                    except Exception as exc:
+                        log.exception("cross-kind search_hits crashed for %s", k)
+                        out[k] = exc
+                else:
+                    future.cancel()
+                    log.info("cross-kind search_hits for %s missed its deadline", k)
+                    out[k] = KindSearchDeadlineMissed(
+                        "kind search exceeded its deadline"
+                    )
         return out
 
     def _cross_kind_invoke_search_hits(

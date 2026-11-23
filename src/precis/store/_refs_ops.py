@@ -5244,6 +5244,9 @@ class RefsMixin:
         limit: int = 20,
         offset: int = 0,
         include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        prioritize: bool = False,
+        retry_disjunction: bool = False,
         exclude_tags: list[str] | None = None,
         timeout_ms: int | None = None,
         fence: bool = False,
@@ -5295,6 +5298,9 @@ class RefsMixin:
         if include_ref_ids is not None:
             clauses.append("r.ref_id = ANY(%s)")
             params.append(include_ref_ids)
+        if exclude_ref_ids:
+            clauses.append("r.ref_id <> ALL(%s)")
+            params.append(exclude_ref_ids)
         if fence:
             # Lazy import: RefsMixin can't see ``self.chunks`` (a Store
             # property), and a module-level import would cycle.
@@ -5315,15 +5321,17 @@ class RefsMixin:
             clauses.append(f"NOT ({ex_frag})")
             params.extend(ex_params)
         params.extend((limit, offset))
-        sql = (
-            f"SELECT {_REFS_COLS_ALIASED}, "
-            "       ts_rank_cd(to_tsvector('english', "
-            + _TITLE_PLAIN_SQL
-            + "), qq.qq) AS rank "
-            "FROM refs r, websearch_to_tsquery('english', %s) qq(qq) "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rank DESC, r.ref_id DESC LIMIT %s OFFSET %s"
-        )
+        priority_order = "COALESCE(r.prio, 5) ASC, " if prioritize else ""
+
+        def search_sql(tsquery: str) -> str:
+            return (
+                f"SELECT {_REFS_COLS_ALIASED}, "
+                f"ts_rank_cd(to_tsvector('english', {_TITLE_PLAIN_SQL}), qq.qq) AS rank "
+                f"FROM refs r, {tsquery} qq(qq) "
+                f"WHERE {' AND '.join(clauses)} "
+                f"ORDER BY {priority_order}rank DESC, r.ref_id DESC LIMIT %s OFFSET %s"
+            )
+
         with self.pool.connection() as conn:
             if timeout_ms is not None:
                 # SET LOCAL (is_local=true): lasts for this implicit
@@ -5332,7 +5340,18 @@ class RefsMixin:
                     "SELECT set_config('statement_timeout', %s, true)",
                     (str(max(int(timeout_ms), 1)),),
                 )
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(
+                search_sql("websearch_to_tsquery('english', %s)"), params
+            ).fetchall()
+            if retry_disjunction and not rows and offset == 0:
+                from precis.store._chunks_ops import _OR_TSQUERY, _or_retry
+                from precis.store.pool import apply_checkout_budget
+
+                if _or_retry(q, None):
+                    apply_checkout_budget(conn)
+                    rows = conn.execute(
+                        search_sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
+                    ).fetchall()
         # rows are tuples in column order; rank is the trailing column
         # added after the ref projection. Use the named constant so this
         # tracks ``_REFS_COLS_LEN`` automatically as ref columns evolve.

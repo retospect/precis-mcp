@@ -55,6 +55,14 @@ from precis.utils.text import clip
 # implicitly already pay for.
 _RRF_K: int = 60
 
+# Floor for the min-max score normalization ``kind_priors`` opts into.
+# A bare ``(score - lowest) / spread`` maps each stream's lowest hit to
+# exactly 0, zeroing its whole RRF contribution: it ties at 0 with every
+# other stream's last hit and a 2-hit stream keeps only one live hit.
+# The floor keeps the bottom hit weak but ranked, so its rank position
+# still orders it against other streams' bottom hits.
+_RRF_SCORE_FLOOR: float = 0.05
+
 # A document whose title contains the whole query as a phrase has its fused
 # total multiplied by this. Adjacent ranks differ by ~1% of a total, so any
 # factor above ~1.1 lifts such a hit over its stream-mates; 1.5 also lets
@@ -361,6 +369,7 @@ def merge_and_render(
     empty_body: str | None = None,
     output_shape: _OutputShape = "markdown",
     link_summary: dict[int, dict[tuple[str, str], int]] | None = None,
+    kind_priors: dict[str, float] | None = None,
 ) -> Response:
     """Merge ranked ``SearchHit`` streams into a single rendered Response.
 
@@ -387,6 +396,12 @@ def merge_and_render(
               across streams sum.  Hits without a ``dedupe_key``
               are treated as singletons.  Result sorted by total
               RRF score desc, ties broken by best raw ``score``.
+        kind_priors: Opt in to min-max normalization within each stream and
+            weight each RRF contribution by its normalized score and kind
+            prior. Normalized scores are floored at
+            :data:`_RRF_SCORE_FLOOR` so a stream's lowest hit keeps a
+            live, rank-ordered contribution. Constant streams receive a
+            normalized score of 1.
         show_label: Whether to emit the ``[reach-or-kind]`` label
             after the citation handle.  ``False`` for single-kind
             single-source merges that don't need the marker.
@@ -408,7 +423,7 @@ def merge_and_render(
     if mode == "priority":
         merged = _merge_priority(streams)
     elif mode == "rrf":
-        merged = _merge_rrf(streams)
+        merged = _merge_rrf(streams, kind_priors=kind_priors)
     else:  # pragma: no cover — Literal type guards this
         raise ValueError(f"unknown merge mode: {mode!r}")
 
@@ -495,12 +510,22 @@ def _merge_priority(streams: list[list[SearchHit]]) -> list[SearchHit]:
     return out
 
 
-def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
+def _merge_rrf(
+    streams: list[list[SearchHit]], *, kind_priors: dict[str, float] | None = None
+) -> list[SearchHit]:
     """Reciprocal-rank fusion across streams.
 
     Each hit contributes ``1/(60+rank)`` to its document's total.
     Documents are identified by ``dedupe_key`` when set, else by
     object identity (every such hit is its own document).
+
+    With ``kind_priors``, each contribution is additionally weighted by
+    the hit's score min-max-normalized within its own stream (floored at
+    :data:`_RRF_SCORE_FLOOR` — a stream's lowest hit stays weak but
+    rank-ordered instead of zeroing out) and by its kind's prior, so a
+    kind whose raw scores use a different scale cannot drown smaller
+    kinds, and down-weighted domains only lead when the query names
+    them.
 
     Returns hits sorted by total RRF score desc, ties broken by
     raw ``score`` desc — which is only a *correct* bigger-is-better
@@ -536,11 +561,22 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
     insertion_order: list[str] = []
 
     for stream_idx, stream in enumerate(streams):
+        if not stream:
+            continue
+        lowest = min(hit.score for hit in stream)
+        spread = max(hit.score for hit in stream) - lowest
         for rank, hit in enumerate(stream, 1):
             key = hit.dedupe_key or f"_:{stream_idx}:{rank}"
             contribution = 1.0 / (_RRF_K + rank)
+            score = hit.score
+            if kind_priors is not None:
+                # Min-max scale into [floor, 1]: the floor keeps the
+                # lowest hit's rank live (see ``_RRF_SCORE_FLOOR``).
+                norm = (score - lowest) / spread if spread else 1.0
+                score = _RRF_SCORE_FLOOR + (1.0 - _RRF_SCORE_FLOOR) * norm
+                contribution *= score * kind_priors.get(hit.kind, 1.0)
             totals[key] = totals.get(key, 0.0) + contribution
-            raw_max[key] = max(raw_max.get(key, -math.inf), hit.score)
+            raw_max[key] = max(raw_max.get(key, -math.inf), score)
             if key not in representatives:
                 representatives[key] = hit
                 insertion_order.append(key)

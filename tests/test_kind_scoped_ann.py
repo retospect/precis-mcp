@@ -460,8 +460,10 @@ def test_route_per_kind(store: Store, kind_indexes: dict[str, bool]) -> None:
         # The validated CHECK routes every indexed kind partial, markers or not.
         assert _ann_route(conn, "memory", None) == ("partial", "memory")
         assert _ann_route(conn, None, ["memory"]) == ("partial", "memory")
-        # A gr575086-dropped kind has no index built — global fallback.
-        assert _ann_route(conn, "draft", None) == ("global", "draft")
+        for kind in ("draft", "quest"):
+            assert _ann_route(conn, kind, None) == ("partial", kind)
+        # Tex remains outside the build set.
+        assert _ann_route(conn, "tex", None) == ("global", "tex")
         assert _ann_route(conn, "finding", None) == ("exact", "finding")
         assert _ann_route(conn, "paper", None) == ("global", "paper")
         assert _ann_route(conn, None, ["memory", "finding"]) == ("global", None)

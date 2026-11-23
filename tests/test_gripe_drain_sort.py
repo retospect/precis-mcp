@@ -20,7 +20,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
-from precis.store import Store, Tag
+from precis.store import ChunkInsert, Store, Tag
 from precis_web.routes.gripes import _rows
 from tests._refs import insert_gripe
 
@@ -363,7 +363,36 @@ def test_unknown_sort_refused_on_both_surfaces(
         assert "drain" in resp.text and "source" in resp.text
 
     handler = GripeHandler(hub=hub)
-    with pytest.raises(BadInput, match="sort= is supported"):
+    with pytest.raises(BadInput, match="accepts sort='prio'"):
         handler.search(sort="bogus")
-    with pytest.raises(BadInput, match="sort= is supported"):
+    with pytest.raises(BadInput, match="accepts sort='prio'"):
         handler.search(q="ranked", sort="drain")  # browse sort + q= refuses
+
+
+@pytest.mark.parametrize("kind", ["todo", "gripe"])
+def test_query_priority_filters_then_orders_before_paging(
+    store: Store, runtime_with_store: Any, kind: str
+) -> None:
+    def _insert(title: str, **kw: Any) -> Any:
+        # gripe refs must carry exactly one STATUS tag (gripe_status_check).
+        if kind == "gripe":
+            return insert_gripe(store, title, **kw)
+        return store.insert_ref(kind=kind, slug=None, title=title, **kw)
+
+    low = _insert("zircon zircon zircon", prio=8)
+    high = _insert("zircon high", prio=2)
+    high_best = _insert("zircon zircon", prio=2)
+    body_match = _insert("Body match", prio=4)
+    store.chunks.insert_chunks(
+        body_match.id, [ChunkInsert(ord=0, text="Zircon in the body")]
+    )
+    _insert("unrelated", prio=1)
+    query = {"kind": kind, "q": "zircon", "sort": "prio", "page_size": 2}
+    first = runtime_with_store.dispatch("search", query)
+    second = runtime_with_store.dispatch("search", {**query, "page": 2})
+    assert _positions(first, [high_best.title, high.title]) == sorted(
+        _positions(first, [high_best.title, high.title])
+    )
+    assert "more matches on the next page" in first
+    assert second.index(body_match.title) < second.index(low.title)
+    assert high.title not in second and "unrelated" not in second

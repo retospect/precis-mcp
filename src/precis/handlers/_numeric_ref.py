@@ -1665,11 +1665,16 @@ class NumericRefHandler(Handler):
             browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
             if (
                 self.kind not in _BROWSE_SORT_KINDS
-                or (q and q.strip())
+                or (
+                    q
+                    and q.strip()
+                    and not (sort == "prio" and self.kind in {"todo", "gripe"})
+                )
                 or sort not in browse_sorts
             ):
                 raise BadInput(
-                    "sort= is supported here only for queryless gripe/todo/quest browse",
+                    "ranked gripe/todo search accepts sort='prio'; other "
+                    "workflow sorts apply to queryless browse",
                     next=f"use one of {sorted(browse_sorts)} without q=",
                 )
         # A named browse sort also permits an unfiltered enumeration.
@@ -1691,7 +1696,9 @@ class NumericRefHandler(Handler):
         # the implicit default only fires when the caller neither passed
         # status= nor already pinned a STATUS: tag; status='*' opts out.
         browse = (
-            not (q and q.strip()) and self.kind in _BROWSE_TERMINALS and link is None
+            (not (q and q.strip()) or sort == "prio")
+            and self.kind in _BROWSE_TERMINALS
+            and link is None
         )
         explicit_state = (
             status is not None
@@ -1970,6 +1977,25 @@ class NumericRefHandler(Handler):
                 include_ref_ids, id_lo=id_lo, id_hi=id_hi
             )
 
+        if sort == "prio":
+            if mode is not None and mode.strip().lower() != "lexical":
+                raise BadInput(
+                    "priority text filtering uses lexical search",
+                    next="pass mode='lexical', or drop sort= for relevance ranking",
+                )
+            return self._search_by_priority(
+                q=q,
+                tags=normalized_tags,
+                exclude_tags=excluded or None,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                row_tag_prefixes=row_tag_prefixes,
+                compact=compact,
+                limit=page_size,
+                offset=offset,
+                status_note=status_note,
+            )
+
         # Kinds whose prose lives in chunks (memory, gripe) search the
         # body/comment chunks grouped by ref rather than ``ref.title``.
         if self.search_body_chunks:
@@ -2122,6 +2148,69 @@ class NumericRefHandler(Handler):
             body="\n".join(parts),
             result_count=len(hit_refs),
             result_ids=[int(r.id) for r in hit_refs],
+        )
+
+    def _search_by_priority(
+        self,
+        *,
+        q: str,
+        tags: list[str] | None,
+        exclude_tags: list[str] | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        row_tag_prefixes: tuple[str, ...] | None,
+        compact: str | None,
+        limit: int,
+        offset: int,
+        status_note: str,
+    ) -> Response:
+        # Take one extra match per leg so the merged window can indicate
+        # another page without an exact count across title and body.
+        filters: dict[str, Any] = dict(
+            q=q,
+            kind=self.kind,
+            tags=tags,
+            exclude_tags=exclude_tags,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            limit=offset + limit + 1,
+        )
+        titles = self.store.search_refs_lexical(**filters, prioritize=True, fence=True)
+        chunks = self.store.chunks.search_chunks_lexical(
+            **filters, prioritize_refs=True, card_kinds=self.search_card_kinds
+        )
+        matches = {ref.id: (ref, score) for ref, score in titles}
+        for _, ref, score in chunks:
+            if ref.id not in matches or score > matches[ref.id][1]:
+                matches[ref.id] = (ref, score)
+        ordered = sorted(
+            matches.values(),
+            key=lambda pair: (
+                pair[0].prio if pair[0].prio is not None else 5,
+                -pair[1],
+                -pair[0].id,
+            ),
+        )
+        refs = [ref for ref, _ in ordered[offset : offset + limit]]
+        search_trace.page([search_trace.ref_handle(ref) for ref in refs], rendered=True)
+        header = f"# {len(refs)} {self._sense()} matches for {q!r} (by prio)"
+        if len(ordered) > offset + limit:
+            header += " — more matches on the next page"
+        lines = [header]
+        if status_note:
+            lines.append(status_note)
+        if refs:
+            lines.append(
+                self._id_lines(
+                    refs, titles=compact == "list", row_tag_prefixes=row_tag_prefixes
+                )
+                if compact
+                else self._render_hits_table(refs, row_tag_prefixes=row_tag_prefixes)
+            )
+        return Response(
+            body="\n".join(lines),
+            result_count=len(refs),
+            result_ids=[int(ref.id) for ref in refs],
         )
 
     def _bare_listing(
@@ -3594,6 +3683,8 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             card_kinds=self.search_card_kinds,
             query_vec=query_vec,
+            # Sparse todo and quest bodies cannot rescue a title-AND miss.
+            retry_title_disjunction=self.kind in {"todo", "quest"},
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.chunks.bump_salience(

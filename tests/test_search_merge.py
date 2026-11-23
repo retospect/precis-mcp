@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.store.types import Tag
+from precis.utils import search_merge
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -69,6 +70,7 @@ def _hit(
     dedupe_key: str | None = None,
     title: str = "T",
     preview: str = "P",
+    ref_id: int | None = None,
 ) -> SearchHit:
     return SearchHit(
         score=score,
@@ -79,6 +81,7 @@ def _hit(
         pos=pos,
         reach=reach,
         dedupe_key=dedupe_key,
+        ref_id=ref_id,
     )
 
 
@@ -134,6 +137,43 @@ def test_rrf_fuses_streams_by_rank() -> None:
     x_idx = body.find("paper:x")  # via dedupe_key only used internally;
     # use the citation handle markers instead.
     assert "1. x" in body  # rank 1 line in the rendered output
+
+
+def test_rrf_kind_priors_floor_keeps_the_lowest_hits_rank_live() -> None:
+    """Min-max normalization must not zero a stream's lowest hit: its
+    RRF rank is still information. With a bare ``(score-lowest)/spread``
+    the three bottom hits below tie at total 0 and insertion order
+    decides; the floor keeps them ordered by rank x prior."""
+    floor = search_merge._RRF_SCORE_FLOOR
+    cad = [
+        _hit(kind="cad", slug="c1", ref_id=1, dedupe_key="cad:c1", score=10.0),
+        _hit(kind="cad", slug="c2", ref_id=2, dedupe_key="cad:c2", score=1.0),
+    ]
+    web = [
+        _hit(kind="web", slug="w1", ref_id=3, dedupe_key="web:w1", score=0.9),
+        _hit(kind="web", slug="w2", ref_id=4, dedupe_key="web:w2", score=0.8),
+        _hit(kind="web", slug="w3", ref_id=5, dedupe_key="web:w3", score=0.7),
+    ]
+    todo = [
+        _hit(kind="todo", slug="t1", ref_id=6, dedupe_key="todo:t1", score=0.5),
+        _hit(kind="todo", slug="t2", ref_id=7, dedupe_key="todo:t2", score=0.4),
+    ]
+    priors = {"cad": 0.15, "web": 1.0, "todo": 1.0}
+    out = merge_and_render(
+        [cad, web, todo], page_size=10, mode="rrf", kind_priors=priors
+    )
+
+    # Bottom-of-stream contributions: todo t2 (rank 2, prior 1.0) beats
+    # web w3 (rank 3, prior 1.0) beats cad c2 (rank 2, prior 0.15) —
+    # assert against the formula, not magic numbers.
+    def _bottom_total(rank: int, prior: float) -> float:
+        return prior * floor / (60 + rank)
+
+    assert _bottom_total(2, 1.0) > _bottom_total(3, 1.0) > _bottom_total(2, 0.15)
+    ids = out.result_ids
+    assert ids is not None
+    pos = {rid: ids.index(rid) for rid in (7, 5, 2)}
+    assert pos[7] < pos[5] < pos[2]
 
 
 def test_rrf_pinned_hit_outranks_fused_totals() -> None:

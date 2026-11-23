@@ -344,6 +344,18 @@ The quest writer's `view='synthesis'` reads the graph and attaches live
 Pareto, slab and pathway renders as MCP images in caption order
 (`src/precis/quest/synthesis.py::render_synthesis`).
 
+Cross-kind search reserves worker capacity for finding, memory, todo, gripe,
+quest and paper. The priority kinds have five seconds to answer and the
+best-effort kinds have two. The result header identifies missed deadlines,
+errors and skipped semantic legs. The release database post-check tracks the
+draft and quest partial HNSW indexes — revived from the gr575086 drop
+(gr698809: their zero-scan window was the fan-out skipping their ANN legs,
+not dead weight) — until the embedding-kind backfill rebuilds them
+concurrently; the check warns by name and never gates a deploy. Skill search
+stays on its dedicated in-process file index: no skill rows exist in
+`chunk_embeddings`, so no partial index is built or expected for it
+(`src/precis/store/_chunks_ops.py::_ANN_PARTIAL_KINDS`).
+
 ## Package map
 
 Subsystem architecture lives in each package's `__init__.py` module

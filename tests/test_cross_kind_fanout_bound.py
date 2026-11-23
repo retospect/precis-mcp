@@ -13,10 +13,20 @@ from typing import Any
 import pytest
 from psycopg.errors import QueryCanceled
 
+from precis.embedder import MockEmbedder
 from precis.runtime import search as search_mod
 from precis.runtime.core import PrecisRuntime
 from precis.utils.search_merge import SearchHit
 from tests._timing import budget
+
+
+class _ProductionStubEmbedder(MockEmbedder):
+    """Deterministic vectors flagged production — a real backend
+    stand-in without the network/torch dependency."""
+
+    @property
+    def is_production(self) -> bool:
+        return True
 
 
 def _patch_invoke(monkeypatch: pytest.MonkeyPatch, rt: PrecisRuntime, fn) -> None:
@@ -364,41 +374,38 @@ def test_starved_kind_runs_lexical_instead_of_timing_out(
     assert isinstance(out[kinds[2]], TimeoutError)
 
 
-def test_dispatch_merges_and_names_lexical_fallback_kinds(
+def test_dispatch_merges_and_names_dropped_kinds(
     runtime_with_store: PrecisRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """gr664954 end-to-end: a wildcard search whose tail kinds only
-    reach a worker inside the deadline's last slice still merges their
-    lexical hits and names the degrade in a footer — the old behaviour
-    dropped them to TimeoutError."""
-    from precis.embedder import MockEmbedder
-
+    """Wildcard end-to-end under tiering (gr698809): a best-effort kind
+    that cannot fit its tier budget is dropped at deadline and named in
+    the header — never read as zero matches — while the kinds that
+    answered inside their budget keep their hits in the merge. (The
+    gr664954 lexical-salvage floor survives for non-tiered fan-outs:
+    ``test_starved_kind_runs_lexical_instead_of_timing_out``; under
+    per-kind caps a kind either starts with enough budget for its full
+    legs or is dropped — the floor window between the two bounds is
+    empty by construction.)"""
     rt = runtime_with_store
     store = rt.hub.store
     assert store is not None
-    kinds = rt._cross_kind_kinds()
-    assert len(kinds) >= 3
-
-    class _ProductionStubEmbedder(MockEmbedder):
-        @property
-        def is_production(self) -> bool:
-            return True
 
     monkeypatch.setattr(
         rt.hub, "embedder", _ProductionStubEmbedder(dim=store.embedding_dim())
     )
-    # No up-front leg skips — every kind keeps its hybrid legs, so the
-    # floor-window degrade is what the second kind exercises.
+    # No up-front leg skips — the deadline drop is what "web" exercises.
     monkeypatch.setattr(
         type(rt), "_cross_kind_slow_semantic_kinds", lambda self, ks, d: []
     )
-    clock = _frozen_clock(monkeypatch)
-    _serial_fan_out(monkeypatch)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PER_KIND_S", 0.2)
+    released = threading.Event()
 
     def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
-        clock["t"] += 11.0
-        if kind == kinds[0]:
+        if kind == "web":
+            released.wait(2)  # blows the 0.2 s best-effort budget
+            return []
+        if kind == "agentlog":
             return [
                 SearchHit(
                     score=0.9,
@@ -409,25 +416,18 @@ def test_dispatch_merges_and_names_lexical_fallback_kinds(
                     slug=None,
                 )
             ]
-        if kind == kinds[1]:
-            return [
-                SearchHit(
-                    score=0.8,
-                    kind=kind,
-                    title="beta xyzzy",
-                    preview="p",
-                    ref_id=None,
-                    slug=None,
-                )
-            ]
         return []
 
     monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
-    out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+    try:
+        out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+    finally:
+        released.set()
 
-    assert "beta xyzzy" in out.body  # the salvaged kind's hits merge
-    assert f"semantic leg skipped for {kinds[1]}" in out.body
-    assert "ran lexical-only this turn" in out.body
+    assert "alpha xyzzy" in out.body  # the on-time kind's hits merge
+    dropped = [line for line in out.body.splitlines() if "dropped at deadline" in line]
+    assert dropped and "web" in dropped[0]
+    assert "errored, omitted" not in out.body  # a miss is not an error
 
 
 def _stub_cancelled_fan_out(
@@ -459,7 +459,7 @@ def _stub_cancelled_fan_out(
     [
         (1.0, False, ["hybrid", "lexical"]),
         (1.0, True, ["hybrid", "lexical"]),
-        (11.75, False, ["hybrid"]),
+        (0.7, False, ["hybrid"]),
     ],
 )
 def test_cancelled_kind_retries_lexical(
@@ -470,14 +470,33 @@ def test_cancelled_kind_retries_lexical(
     expected_modes: list[str],
 ) -> None:
     rt = runtime_stateless
-    clock = _frozen_clock(monkeypatch)
-    monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 12.0)
+    # The frozen clock cannot model "the budget is nearly gone" under
+    # tiering: the harvest reads the same clock the fake advances from a
+    # pool thread, and the interleaving is racy. Small-elapsed cases
+    # stay deterministic on the frozen clock (the clock stays inside
+    # the tier window however the threads interleave); the no-retry
+    # case burns REAL time — 0.7 s of a 1.0 s deadline leaves 0.3 s,
+    # under the 0.5 s retry floor.
+    frozen = elapsed >= 1.0
+    if frozen:
+        clock = _frozen_clock(monkeypatch)
+        monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 12.0)
+    else:
+        clock = None
+        monkeypatch.setattr(search_mod, "CROSS_KIND_DEADLINE_S", 1.0)
+    # A production embedder must be wired: with no embedder the fan-out
+    # degrades the whole call to lexical up front (named in the header)
+    # and the hybrid leg these parametrizations exercise never runs.
+    monkeypatch.setattr(rt.hub, "embedder", _ProductionStubEmbedder())
     modes: list[str] = []
 
     def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
         modes.append(mode)
         if mode == "hybrid":
-            clock["t"] += elapsed
+            if clock is not None:
+                clock["t"] += elapsed
+            else:
+                time.sleep(elapsed)
             raise QueryCanceled("hybrid leg canceled")
         if retry_fails:
             raise QueryCanceled("lexical leg canceled")
@@ -522,6 +541,10 @@ def test_cancelled_explicit_list_keeps_error(
     args: dict[str, str],
 ) -> None:
     rt = runtime_stateless
+    # Wire a production embedder: with none, the fan-out degrades the
+    # call to lexical up front and the hybrid cancel these cases pin
+    # never happens (see test_cancelled_kind_retries_lexical).
+    monkeypatch.setattr(rt.hub, "embedder", _ProductionStubEmbedder())
     modes: list[str] = []
 
     def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
@@ -1059,3 +1082,31 @@ def test_dropped_partial_kinds_start_behind_unmeasured_ones() -> None:
             assert prior > search_mod._cross_kind_job_key("memory")[0]
         for k in _ANN_GLOBAL_KINDS:
             assert search_mod._cross_kind_job_key(k)[0] == 0.0
+
+
+def test_priority_tier_survives_best_effort_deadline(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = runtime_with_store
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PER_KIND_S", 0.1)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PRIORITY_S", 1.0)
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake(kind: str) -> list:
+        if kind == "web":
+            started.set()
+            release.wait(2)
+        else:
+            assert started.wait(1)
+            # Finish after the best-effort deadline.
+            time.sleep(0.2)
+        return []
+
+    _patch_invoke(monkeypatch, rt, fake)
+    try:
+        out = rt._cross_kind_fan_out(["web", "todo"], {"q": "blocker"}, tiered=True)
+        assert out["todo"] == []
+        assert isinstance(out["web"], TimeoutError)
+    finally:
+        release.set()

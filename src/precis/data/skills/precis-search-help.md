@@ -315,6 +315,15 @@ refuted hub sinks in the ranking, a verified-unopposed one rises
 modestly — the chase-tree finding underneath a hub never appears on
 its own, only the hub itself.
 
+The fan-out runs in two tiers: `finding`, `memory`, `todo`, `gripe`,
+`quest` and `paper` are priority kinds — each holds a 5 s budget the
+merge waits on; every other kind is best-effort at 2 s. Omissions are
+never silent — the result header names each one: `dropped at deadline,
+omitted from this merge:` a kind that missed its budget, `⚠ errored,
+omitted from this merge:` a kind that failed, `semantic leg skipped for
+…` a kind that answered lexical-only. Search the named kind explicitly
+for the set its line says you missed.
+
 `kind='source'` is a fixed two-kind fan-out — `paper` plus live claim
 hubs, nothing else — the same merge and the same posture prefix as the
 unscoped wildcard above, just narrowed to "is there a settled claim
@@ -481,8 +490,12 @@ open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 On todo, gripe and quest, a `PRIO:<value>` write sets the `prio` column.
 A positive `PRIO:<value>` tag filter matches nothing. A negated priority
 tag filter excludes nothing by priority. Use
-`args={'sort': 'prio'}` on a queryless workflow browse to put the hottest
-items first (lower values are hotter), as in the example above.
+`args={'sort': 'prio'}` to put the hottest items first (lower values are
+hotter) — queryless on all three, or filtered by `q=` on todo and gripe
+(matches must lexically match `q`, then order by prio with score breaking
+ties). The `q=` form is lexical-only: any `mode=` but `'lexical'` is
+refused — pass `mode='lexical'` (omitting it also works), or drop
+`sort=` for relevance ranking. `quest`'s `sort=` stays queryless.
 
 Prefix an entry with `!` to **exclude** refs carrying that tag —
 `tags=['!card:experiment']` drops every ref tagged `card:experiment`.
@@ -830,7 +843,9 @@ dispatch score first, then size s<m<l<unsized, then oldest), `prio` (the human
 rungs first — unset reads as normal — then size, then oldest), `oldest`, `newest`,
 `size`, `source` (human / agent / watchdog) and `status` — the same names `?sort=`
 takes on the /gripes web view.
-Status/tag filters and `page_size=` compose with either sort.
+Status/tag filters and `page_size=` compose with either sort. On todo and
+gripe `sort='prio'` also composes with `q=` — the lexical filter, then prio
+order — covered under "Combine search with a tag axis" above.
 
 ```python
 search(kind='gripe', status='open', page_size=20, args={'sort': 'drain'})

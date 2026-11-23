@@ -90,3 +90,29 @@ def test_page_size_reaches_every_handler_as_page_size(
     seen.clear()
     rt._dispatch_cross_kind("*", {"q": "dogfood", "top_k": 12, "mode": "lexical"})
     assert all(kw["page_size"] == 12 for kw in seen)
+
+
+def test_wildcard_normalizes_scores_and_respects_named_domain(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = runtime_with_store
+    fanned = {
+        "patent": [
+            _hit("patent", "Lab disclosures", 1, 300),
+            _hit("patent", "Secondary", 2, 100),
+        ],
+        "finding": [
+            _hit("finding", "Ammonia activity", 3, 0.2),
+            _hit("finding", "Other result", 4, 0.1),
+        ],
+    }
+    monkeypatch.setattr(
+        type(rt), "_resolve_cross_kind_request", lambda self, kind: list(fanned)
+    )
+    monkeypatch.setattr(
+        type(rt), "_cross_kind_fan_out", lambda self, *args, **kwargs: fanned
+    )
+    unnamed = rt._dispatch_cross_kind("*", {"q": "ammonia", "mode": "lexical"})
+    named = rt._dispatch_cross_kind("*", {"q": "ammonia patents", "mode": "lexical"})
+    assert unnamed.result_ids and unnamed.result_ids[0] == 3
+    assert named.result_ids and named.result_ids[0] == 1

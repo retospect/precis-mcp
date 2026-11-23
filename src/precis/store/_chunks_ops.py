@@ -250,6 +250,11 @@ _ANN_GLOBAL_KINDS: frozenset[str] = frozenset({"paper"})
 #: 0226 CHECK once validated for every kind at once) the kind stays on the
 #: global index. Adding a kind here and re-running the command is the
 #: whole change.
+#:
+#: ``skill`` is deliberately absent: SkillHandler searches a file-backed
+#: in-process corpus index (``precis/skill_index``) and no skill rows
+#: exist in ``chunk_embeddings`` — a partial there would index zero rows
+#: and ``precis post-migration-check`` would demand it forever.
 _ANN_PARTIAL_KINDS: tuple[str, ...] = (
     "job",
     "anki",
@@ -267,14 +272,25 @@ _ANN_PARTIAL_KINDS: tuple[str, ...] = (
     "conv",
 )
 
-#: Per-kind partial HNSW indexes dropped as dead weight (gr575086,
-#: migration 0312): idx_scan=0 for weeks while their siblings served —
-#: these kinds' semantic legs already take the global fallback. They
-#: stay in ``_ANN_PARTIAL_KINDS``: the router treats a missing partial
-#: exactly like an unready one (global + post-filter), and a rebuilt
-#: index serves again with no code change. The set only narrows what
-#: the index pipeline builds and expects.
-_ANN_DROPPED_PARTIAL_KINDS: frozenset[str] = frozenset({"draft", "quest", "tex"})
+#: Per-kind partial HNSW indexes dropped as dead weight and never
+#: rebuilt. gr575086 (migration 0312) dropped ``draft`` and ``quest``
+#: alongside ``tex`` at idx_scan=0 — but that zero-scan window was a
+#: consequence, not a verdict: with the indexes gone, the cross-kind
+#: fan-out's route probe skipped those kinds' ANN legs up front (a
+#: missing partial routes over the paper-dominated global index, a scan
+#: that cannot fit the per-kind budget), so nothing ever scanned the
+#: indexes or the fallback. gr698809 revives ``draft`` and ``quest``:
+#: both are now tier-1 cross-kind kinds whose semantic leg the merge
+#: waits for, and their indexes are the missing piece. The rebuild is
+#: the recorded 0226 post-step — ``precis backfill-embedding-kinds
+#: --apply`` runs two CONCURRENTLY HNSW builds (441 + 98 MB on prod at
+#: drop time) — and ``precis post-migration-check`` names the missing
+#: indexes (warning only, never a deploy gate) until it runs. ``tex``
+#: stays dropped. Kinds in this set stay in ``_ANN_PARTIAL_KINDS``: the
+#: router treats a missing partial exactly like an unready one (global
+#: + post-filter), and a rebuilt index serves again with no code change.
+#: The set only narrows what the index pipeline builds and expects.
+_ANN_DROPPED_PARTIAL_KINDS: frozenset[str] = frozenset({"tex"})
 
 #: The per-kind partials that should exist: ``precis
 #: backfill-embedding-kinds`` builds one per kind here, and
@@ -1387,6 +1403,7 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
         lexical_info_out: dict[str, bool] | None = None,
+        prioritize_refs: bool = False,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -1464,18 +1481,27 @@ class ChunkStore:
         source = _lexical_chunk_source(kind if kinds is None else None)
 
         def _sql(tsquery_expr: str) -> str:
+            rank = f"ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION})"
+            source_sql = (
+                f"FROM {source}, {tsquery_expr} qq(qq) WHERE {' AND '.join(clauses)}"
+            )
+            if prioritize_refs:
+                # Select the best matching chunk per ref before paging,
+                # so a long comment thread cannot crowd out other refs.
+                return (
+                    "SELECT * FROM ("
+                    f"SELECT DISTINCT ON (r.ref_id) {proj}, {_REFS_COLS_ALIASED}, "
+                    f"{rank} AS rank, COALESCE(r.prio, 5) AS search_priority, "
+                    f"r.ref_id AS search_ref_id {source_sql} "
+                    "ORDER BY r.ref_id, rank DESC, c.chunk_id ASC"
+                    ") AS best "
+                    "ORDER BY search_priority ASC, rank DESC, search_ref_id DESC "
+                    "LIMIT %s OFFSET %s"
+                )
+            # Stable chunk tie-break keeps fused pages repeatable.
             return (
-                f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
-                f"       ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) AS rank "
-                f"FROM {source}, "
-                f"{tsquery_expr} qq(qq) "
-                f"WHERE {' AND '.join(clauses)} "
-                # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
-                # common (short queries over boilerplate-ish chunks) and an
-                # unqualified ORDER BY lets ties shuffle between executions —
-                # under multi-leg RRF fusion that flipped fused scores and
-                # per_paper winners between page 1 and page 2.
-                "ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
+                f"SELECT {proj}, {_REFS_COLS_ALIASED}, {rank} AS rank "
+                f"{source_sql} ORDER BY rank DESC, c.chunk_id ASC LIMIT %s OFFSET %s"
             )
 
         from precis.store.pool import apply_checkout_budget

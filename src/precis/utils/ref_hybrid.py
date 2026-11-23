@@ -160,6 +160,7 @@ def fused_ref_hits(
     card_kinds: tuple[str, ...] | None = None,
     query_vec: list[float] | None = None,
     lexical_info_out: dict[str, bool] | None = None,
+    retry_title_disjunction: bool = False,
 ) -> list[Ref]:
     """Hybrid ref-level search: title lexical + block hybrid + notation leg.
 
@@ -235,6 +236,16 @@ def fused_ref_hits(
                         tags=tags,
                         limit=limit,
                         exclude_tags=exclude_tags,
+                        **(
+                            {
+                                "retry_disjunction": True,
+                                "include_ref_ids": include_ref_ids,
+                                "exclude_ref_ids": exclude_ref_ids,
+                                "fence": True,
+                            }
+                            if retry_title_disjunction
+                            else {}
+                        ),
                     )
                 ]
             )

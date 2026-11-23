@@ -11,6 +11,8 @@ running unbounded before the fan-out's clock starts."""
 
 from __future__ import annotations
 
+import re
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -217,6 +219,7 @@ def test_probe_and_fan_out_share_one_call_deadline(
         *,
         deadline_at: float | None = None,
         lexical_fallback: set[str] | None = None,
+        tiered: bool = False,
     ) -> dict[str, Any]:
         seen_deadlines["fanout"] = deadline_at if deadline_at is not None else -1.0
         return {}
@@ -564,3 +567,66 @@ def test_fired_watchdog_is_reaped_before_the_conn_returns(
     assert done.wait(5)
     t.join(5)
     assert any(c is probe_conn for c in returned)
+
+
+def test_deadline_misses_are_named_as_dropped_not_errored(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr698809: a best-effort kind that misses its tier deadline is an
+    omission to surface, not an error to diagnose — the header must say
+    "dropped at deadline" and must not put the kind in the errored
+    footer."""
+    rt = runtime_with_store
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PER_KIND_S", 0.1)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PRIORITY_S", 1.0)
+    released = threading.Event()
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
+        if kind == "web":
+            released.wait(2)
+        return []
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    try:
+        out = rt._dispatch_cross_kind("*", {"q": "gr698809deadlinemarker"})
+    finally:
+        released.set()
+
+    dropped = [l for l in out.body.splitlines() if "dropped at deadline" in l]
+    assert dropped, out.body[:400]
+    assert "web" in dropped[0]
+    assert "errored, omitted" not in out.body
+
+
+def test_embedder_failure_names_only_kinds_with_a_semantic_leg(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr698809 review: when the shared query embed fails, the
+    "semantic leg skipped" footer must not name kinds that never run a
+    semantic leg (conv/machine/pres are lexical-only) — only kinds whose
+    leg was actually degraded."""
+    rt = runtime_with_store
+    emb = _ProductionStubEmbedder(dim=store.embedding_dim())
+
+    def boom(text: str) -> list[float]:
+        raise RuntimeError("embedder down")
+
+    monkeypatch.setattr(emb, "embed_one", boom)
+    monkeypatch.setattr(rt.hub, "embedder", emb)
+    seen = _record_invoke(monkeypatch, rt)
+
+    out = rt._dispatch_cross_kind("*", {"q": "gr698809embedfailmarker"})
+
+    skip_lines = [l for l in out.body.splitlines() if "semantic leg skipped for" in l]
+    assert skip_lines, out.body[:400]
+    skip_line = skip_lines[0]
+    assert "the query embedder was unavailable" in skip_line
+    fanned_lexonly = sorted(set(seen) & search_mod._CROSS_KIND_LEXICAL_ONLY_KINDS)
+    assert fanned_lexonly, "the fixture should fan out a lexical-only kind"
+    for k in fanned_lexonly:
+        assert not re.search(rf"(?<![\w]){re.escape(k)}(?![\w])", skip_line), (
+            f"lexical-only kind {k!r} must not be named as semantic-skipped"
+        )
+    assert "todo" in skip_line

@@ -58,9 +58,14 @@ Mixed-kind handle lists on get use scalar routing for each address in caller
 order, checking each resolved kind before reading. Same-kind lists retain
 their handler's native batch behavior; writes still require one shared kind.
 
-Cross-kind default searches can salvage a canceled kind with one lexical
-retry within the original deadline. Explicit kind lists and explicit modes
-retain the cancellation so caller-selected search semantics are preserved.
+Cross-kind search reserves workers for finding, memory, todo, gripe, quest
+and paper so the slow cache-backed kinds cannot occupy those workers.
+Priority jobs have five seconds, and best-effort jobs have two. Both tiers
+run concurrently and report omissions in the result header. Fusion
+normalizes each kind's scores and applies kind priors on wildcard queries.
+Default searches can salvage a canceled kind with one lexical retry inside
+its deadline. Explicit kind lists and modes preserve the selected search
+semantics.
 
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.

@@ -66,8 +66,11 @@ def test_migration_drops_exactly_the_reported_ten() -> None:
 def test_dropped_partial_kinds_split() -> None:
     """The dropped kinds stay routable (a missing partial falls back to
     the global route, a rebuilt index serves again) but are out of the
-    expected/buildable index set."""
-    assert {"draft", "quest", "tex"} == _ANN_DROPPED_PARTIAL_KINDS
+    expected/buildable index set. gr698809 revived draft and quest —
+    skill never joins: it has no rows in ``chunk_embeddings``."""
+    assert {"tex"} == _ANN_DROPPED_PARTIAL_KINDS
+    assert {"draft", "quest"} <= set(_ANN_PARTIAL_INDEX_KINDS)
+    assert "skill" not in set(_ANN_PARTIAL_KINDS)
     assert set(_ANN_PARTIAL_KINDS) >= _ANN_DROPPED_PARTIAL_KINDS
     assert (
         set(_ANN_PARTIAL_INDEX_KINDS)

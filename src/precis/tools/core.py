@@ -264,7 +264,7 @@ def _accepted_sorts(kind: str | None, browse: bool) -> tuple[str, ...]:
     """Surface ``sort=`` vocabulary for ``kind``: the generic set unioned with
     the handler's ``EXTRA_SORTS`` (cfp ``deadline``) so a handler-owned sort
     is not rejected before dispatch (gr481617)."""
-    sorts = ("recency", "prio") if browse else ("relevance", "recency")
+    sorts: tuple[str, ...] = ("recency", "prio") if browse else ("relevance", "recency")
     if kind and "," not in kind:
         rt = _get_runtime()
         # A runtime without a hub (the pre-dispatch unit tests stub one in
@@ -272,7 +272,10 @@ def _accepted_sorts(kind: str | None, browse: bool) -> tuple[str, ...]:
         hub = getattr(rt, "hub", None)
         if hub is None:
             return sorts
-        handler = hub.handler_for(rt._expand_kind_code(kind.strip()))
+        expanded = rt._expand_kind_code(kind.strip())
+        if not browse and expanded in {"todo", "gripe"}:
+            sorts = (*sorts, "prio")
+        handler = hub.handler_for(expanded)
         sorts = (*sorts, *getattr(handler, "EXTRA_SORTS", ()))
     return sorts
 
