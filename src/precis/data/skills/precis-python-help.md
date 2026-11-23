@@ -125,6 +125,7 @@ carries `pin refresh reparsed n files in N s`. A refresh that
 overran its budget or a clone without origin/main degrades loudly:
 `pin refresh CUT SHORT: …; pinned index is behind origin/main (at <sha>)`
 (or `answered from the working tree` when no pinned tree exists yet).
+The `view='provenance'` drill-down adds a `Pinned to origin/main:` line.
 Writes never go through the pin — put/edit/delete keep targeting the
 working tree.
 
