@@ -6336,8 +6336,16 @@ def test_lane_outage_requires_a_complete_terminal_devin_error(log: str) -> None:
     assert run_slice._lane_outage(log, log, adapter="devin_tree", exit_code=1) is None
 
 
+@pytest.mark.parametrize(
+    "progress",
+    [
+        "I'll verify the branch head first, then read the diff.",
+        "I'll check how the dispatcher handles the rate limit.",
+    ],
+    ids=["ordinary-progress", "rate-limit-in-transcript"],
+)
 def test_poll_devin_retryable_agent_error_parks_attempt_free(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, progress: str
 ) -> None:
     """gr751832: a Devin session the vendor killed with a retryable
     ``empty_response`` is a blip, not a verdict: no attempt, the lease
@@ -6353,11 +6361,7 @@ def test_poll_devin_retryable_agent_error_parks_attempt_free(
     ctx, handle = _submit(store, seams)
     assert handle is not None and ctx.meta_set["adapter"] == "devin_tree"
     assert "lane" not in ctx.meta["params"]
-    _finish(
-        handle,
-        1,
-        "I'll verify the branch head first, then read the diff.\n" + _DEVIN_AGENT_ERROR,
-    )
+    _finish(handle, 1, f"{progress}\n{_DEVIN_AGENT_ERROR}")
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is False
     assert pctx.status is None and pctx.failure is None

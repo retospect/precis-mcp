@@ -10268,10 +10268,15 @@ def _lane_outage(
     adapter: str = "claude_p",
     exit_code: int | None = None,
 ) -> tuple[str, datetime | None, str] | None:
-    """``(class, retry_at, key)`` when the session died of its lane's
-    window or its credential — else ``None``.
+    """``(class, retry_at, key)`` for a recognized lane failure, else ``None``.
 
-    The lane's window first: the result wording classifies
+    For ``devin_tree``, the vendor's terminal ``Error: Agent error:`` block
+    declaring ``"cognition.ai/retryable": true`` takes precedence over the
+    transcript's wording (:func:`_devin_retryable_agent_error`, gr751832).
+    Class ``vendor`` retries on the same lane without counting an attempt
+    while the park budget lasts.
+
+    Otherwise, the result wording classifies
     ``quota``/``rate``, or the CLI's final JSON carries
     ``api_error_status`` 429 (key ``""`` — no phrase). Its credential
     (gr588221, review B2): the auth allowlist
@@ -10285,12 +10290,7 @@ def _lane_outage(
     401/403 status or Codex's terminal missing-credentials event, then
     the lane's own binary reported missing by the
     process itself (exit 127, or no exit record under a near-empty log,
-    never a line inside a session transcript). And for ``devin_tree``
-    only, the vendor's own retryable marker — the CLI's terminal
-    ``Error: Agent error:`` block declaring
-    ``"cognition.ai/retryable": true`` (:func:`_devin_retryable_agent_error`,
-    gr751832) — class ``vendor``: a blip the same lane retries, not a
-    window, so the attempt is never burned on it. The ``key`` is the
+    never a line inside a session transcript). The ``key`` is the
     phrase mark (``not-logged-in``, ``http-401``, ``cli-missing``,
     ``devin-<errorKind>``), never session text.
 
@@ -10298,6 +10298,11 @@ def _lane_outage(
     your weekly limit · resets 11am (UTC)"; the poll read that as a failed
     attempt, which with the earlier sandbox miss hit the retry cap."""
     from precis.utils.llm.failure import classify_text, lane_auth_key
+
+    if adapter == "devin_tree":
+        kind = _devin_retryable_agent_error(log_text)
+        if kind is not None:
+            return VENDOR_FAILURE_CLASS, None, f"devin-{kind.replace('_', '-')}"
 
     text = result or ""
     status: Any = None
@@ -10339,10 +10344,6 @@ def _lane_outage(
         return "auth", None, f"http-{status}"
     if _cli_missing_on_tail(adapter, tail, exit_code, len(lines)):
         return "auth", None, "cli-missing"
-    if adapter == "devin_tree":
-        kind = _devin_retryable_agent_error(log_text)
-        if kind is not None:
-            return VENDOR_FAILURE_CLASS, None, f"devin-{kind.replace('_', '-')}"
     return None
 
 

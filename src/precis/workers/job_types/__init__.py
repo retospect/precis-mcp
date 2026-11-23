@@ -59,6 +59,9 @@ Rescue sends sampled clean exits at the retry cap to run-quality judging.
 Judge tasks still enter rescue, with their backlink preventing another judge.
 Retryable Devin empty responses prefer another independent flat-rate
 vendor and share a rescue signature keyed by the terminal error.
+Before the retry cap counts a failure, the slice runner retries a
+terminal Devin agent error on the same lane. The terminal error takes
+precedence because transcript progress can quote quota or rate-limit wording.
 Workers prepare release refs for reviewers without Git write access.
 Hub-pinned reviews claim only at their hub. Zero executor capacity raises
 an unplaced ask because capability advertisements hide the claim hold.
