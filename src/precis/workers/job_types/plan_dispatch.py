@@ -355,7 +355,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    again at most hourly), and an open image ask whose node is closed is
    closed with it (td659522 F7); such a wait behind for over
    :data:`PIN_STALE_AFTER` also raises the stale-open alert although its
-   parked job is live;
+   parked job is live, and the alert resolves itself once the node closes
+   or the stale condition clears (gr764155);
    a task whose newest job ended
    (failed, or succeeded without closing it) with attempts at its retry
    cap is parked. The cap is an explicit ``meta.retries`` pin, else the
@@ -592,7 +593,7 @@ from operator import itemgetter
 from typing import Any, Literal, overload
 
 from precis.alert_ids import RULES_BY_ID
-from precis.alerts import raise_alert
+from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.errors import BadInput
 from precis.plans import gates as _gates
 from precis.plans import governs as _governs
@@ -11609,7 +11610,12 @@ def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> 
     node: its newest job is terminal and nothing else runs. So is one whose
     live job is a parked gate image wait (td659522 F7) that has seen the
     image behind the pin for over :data:`PIN_STALE_AFTER`: the parked job
-    would otherwise hide a node that may never close."""
+    would otherwise hide a node that may never close. The pass's live
+    fingerprint set feeds :func:`resolve_stale_alerts`, so the alert
+    resolves itself the tick after the node closes (its image wait saw the
+    pin land) or the condition otherwise clears — a done node holds no
+    queue slot (gr764155)."""
+    live: list[str] = []
     for n in plan.todos():
         if _closed(n) or not _is_pin_bump(n):
             continue
@@ -11625,6 +11631,7 @@ def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> 
         age = _tagged_age(rel.meta.get("repo_release"), now)
         if age is None or age <= PIN_STALE_AFTER:
             continue
+        live.append(f"stale-open:{n.id}")
         record = rel.meta["repo_release"]
         tag = str(record.get("tag") or "?")
         hours = int(age.total_seconds() // 3600)
@@ -11658,6 +11665,13 @@ def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> 
             severity="warn",
             subject_ref_id=n.id,
         )
+    if w.dry_run:
+        return
+    resolved = resolve_stale_alerts(
+        w.store, source=_PIN_STALE_SOURCE, live_fingerprints=live
+    )
+    if resolved:
+        res.notes.append(f"{resolved} stale pin-bump alert(s) resolved")
 
 
 def _todo_status_of(plan: _Plan, store: Any, ref_id: int) -> str | None:

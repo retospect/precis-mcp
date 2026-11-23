@@ -14638,6 +14638,55 @@ def test_stale_open_stays_quiet_for_a_fresh_closed_busy_or_untagged_node(
     assert _stale_alerts(store, pin) == []
 
 
+@pytest.mark.parametrize("clear", ["closed", "busy", "fresh"])
+def test_stale_open_alert_resolves_when_its_condition_clears(
+    store: Store, pin_op: Any, clear: str
+) -> None:
+    """gr764155: the ``stale-open`` alert resolves itself on the next pass
+    once its pin-bump node is done (a finished node holds no queue slot),
+    a live job runs under it again, or its release is re-tagged inside the
+    window; if this fails a cleared condition still sits as the owner's
+    decision."""
+    mint = _pin_plan(store, ready=False)
+    pin, rel = mint.ids["pin"], mint.ids["rel"]
+    _tagged(store, rel, hours=7)
+    pd.run_pass(store)
+    (alert,) = _stale_alerts(store, pin)
+    if clear == "closed":
+        _mark_done(store, pin)
+    elif clear == "busy":
+        _slice_job(store, pin, "land_slice", "running")
+    else:
+        _tagged(store, rel, hours=1)
+    res = pd.run_pass(store)
+    assert _stale_alerts(store, pin) == []
+    assert any("stale pin-bump alert" in n for n in res.notes)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT resolved_at FROM refs WHERE kind = 'alert' "
+            "AND meta->>'fingerprint' = %s",
+            (f"stale-open:{pin}",),
+        ).fetchone()
+    assert row is not None and row[0] is not None
+
+
+def test_stale_open_alert_survives_while_the_node_stays_stale(
+    store: Store, pin_op: Any
+) -> None:
+    """The resolve feeds on the pass's live fingerprint set: a node still
+    stale keeps its alert open (deduped, not re-minted); if this fails the
+    sweep resolves the page it just raised."""
+    mint = _pin_plan(store, ready=False)
+    pin, rel = mint.ids["pin"], mint.ids["rel"]
+    _tagged(store, rel, hours=7)
+    pd.run_pass(store)
+    (alert,) = _stale_alerts(store, pin)
+    res = pd.run_pass(store)
+    (again,) = _stale_alerts(store, pin)
+    assert again["title"] == alert["title"]
+    assert not [n for n in res.notes if "alert" in n]
+
+
 @pytest.mark.parametrize(
     "line", ["moot: gr1 already fixed", "no-op: nothing to do", "validated: it is cut"]
 )

@@ -920,7 +920,8 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "stale-open:{todo}",
         "A pin-bump node is still open over six hours after its release node "
         "tagged, with no live job (a succeeded pin_bump whose land never "
-        "appeared counts).",
+        "appeared counts). Resolves itself once the node closes or the "
+        "stale condition clears.",
         "warn",
         "pin_bump",
         triage="get(kind='todo', id=<todo>, view='comments'): the pin_bump "
@@ -928,7 +929,8 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "ran, or its gate image wait was cancelled (meta.pin_bump.image "
         "says what it last saw); clear the cause (an ask, a held land, "
         "scripts/build-image precis-dev on the land host) or move the pin "
-        "by hand and close the node.",
+        "by hand and close the node — a done node resolves this alert "
+        "itself on the next dispatcher tick.",
     ),
     AlertRule(
         "lane_health",
