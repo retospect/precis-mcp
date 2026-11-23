@@ -289,6 +289,15 @@ downloaded artifact. When `ci-failed` shows nothing on a run reported
 red, read the attempt count before concluding the log is missing — the
 output isn't missing, it belongs to a superseded attempt.
 
+**`--log-failed` waits on the whole run (gr728791).** `gh run view <id>
+--log-failed` refuses a run still in progress — it yields nothing until
+every job has completed, so a failed shard in a still-running matrix
+cannot be read through the shared stream. Read the failed job's own log
+instead (`gh api repos/{owner}/{repo}/actions/jobs/<id>/logs`, with
+`--allow-escape-sequences` on gh ≥2.97), or just run
+`scripts/ci-failed <id>` — it detects the in-progress run and takes the
+per-job path itself.
+
 **Pending main runs are replaced (gr479090).** Main's group never cancels a
 *running* run (`cancel-in-progress` is false), but GitHub keeps at most one
 *pending* run per group: a push that queues behind a running run replaces the
