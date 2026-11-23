@@ -492,8 +492,10 @@ def glyph_cite_hint(store: Store, text: str) -> str:
     may have been dropped or substituted in the extracted text, so quoted
     numbers/units can be off by 10^3-10^6x. A sign-damage-only record
     (gr685717) instead warns about lost minus signs / mangled \u00b1.
-    Advisory only. Scoped to the cites present in the touched text; one
-    batched ref fetch, deduped by ref.
+    Papers with recorded passage corrections (gr724751) keep the warning
+    but name the record — the correction, not a fresh PDF read, settles
+    the covered passages. Advisory only. Scoped to the cites present in
+    the touched text; one batched ref fetch, deduped by ref.
     """
     from precis.utils.glyph_health import glyph_suspected
     from precis.utils.mentions import resolve_handle_target
@@ -528,6 +530,15 @@ def glyph_cite_hint(store: Store, text: str) -> str:
                     f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
                     "have lost Greek/\u03bc characters \u2014 check quoted "
                     "numbers/units against the PDF"
+                )
+            # A recorded passage correction (gr724751) narrows the nag to
+            # the still-uncorrected text — name the record so the caller
+            # checks it instead of re-deriving the reading.
+            n_corrections = len(store.corrections.for_ref(rid))
+            if n_corrections:
+                lines.append(
+                    f" ({n_corrections} passage correction(s) on record: "
+                    f"get(id='{handle}', view='corrections'))"
                 )
     return "".join(lines)
 

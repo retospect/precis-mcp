@@ -379,7 +379,9 @@ put(kind="measure", text="95",
   `implausible_value` (the canonical value is 3+ orders of magnitude from the
   median magnitude of at least three currently approved live values for the
   same measurand and effective currency and price year, where applicable) or
-  `glyph_suspected` (the source paper's extracted text is flagged) — or
+  `glyph_suspected` (the source paper's extracted text is flagged; a
+  correction record on the paper whose span lies in the measure's anchored
+  span and names its literal clears it, an unrelated one does not) — or
   `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
 
 A reading with no stated unit or the bare unit `1` skips the

@@ -166,7 +166,7 @@ from precis.taxonomy.money import (
     taxon_is_currency,
 )
 from precis.taxonomy.nodes import slugify
-from precis.utils.glyph_health import glyph_suspected
+from precis.utils.glyph_health import glyph_suspected, span_in_text
 from precis.utils.text import markup_surface, sci_anchor_pattern
 
 log = logging.getLogger(__name__)
@@ -1243,7 +1243,9 @@ class MeasuresMixin:
         comes from its columns or the token in its reported/canonical unit —
         unconverted currencies and price years never mix (gr510555 S1). On a
         measurand that is not a currency measurand at all every approved row is
-        in the one group and no unit is parsed."""
+        in the one group and no unit is parsed. ``glyph_suspected`` stands
+        down only when a ``chunk_corrections`` record (gr724751) covers the
+        measure's own anchored reading — see :meth:`_glyph_corrected`."""
         # A reading with no unit has no prefix to lose (gr722340).
         # A printed scale such as '%' still needs the check.
         if (reported_unit or "").strip() in ("", "1"):
@@ -1305,7 +1307,13 @@ class MeasuresMixin:
                 "SELECT kind, meta FROM refs WHERE ref_id = %s", (src,)
             ).fetchone()
             if row is not None and row[0] == "paper":
-                if glyph_suspected(row[1]):
+                # A correction record covering this measure's anchored
+                # reading (gr724751) settles it — human-read or
+                # context-inferred — so the glyph flag stands down for
+                # this measure only, not for other values in the chunk.
+                if glyph_suspected(row[1]) and not self._glyph_corrected(
+                    c, int(src), anchor, spec.literal
+                ):
                     out.append(
                         {
                             "rule": "glyph_suspected",
@@ -1318,6 +1326,40 @@ class MeasuresMixin:
                         }
                     )
         return out
+
+    @staticmethod
+    def _glyph_corrected(
+        c: Connection, ref_id: int, anchor: MeasureAnchor | None, literal: str
+    ) -> bool:
+        """True when a ``chunk_corrections`` record settles THIS measure's
+        reading: its extracted span lies inside the text the anchor's span
+        names, and the measure's literal is part of the recorded reading
+        (extracted or corrected). A correction elsewhere in the chunk, or
+        on an unrelated value in the same sentence, does not clear the
+        flag. The span, not the chunk handle, is the anchor, so a body
+        re-extraction keeps the match."""
+        if anchor is None or not (literal or "").strip():
+            return False
+        rows = c.execute(
+            "SELECT extracted_span, corrected_span FROM chunk_corrections"
+            " WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchall()
+        if not rows:
+            return False
+        chunk = c.execute(
+            "SELECT text FROM chunks WHERE chunk_id = %s", (anchor.chunk_id,)
+        ).fetchone()
+        if chunk is None:
+            return False
+        anchored = _span_text(anchor, str(chunk[0]))
+        if anchored is None:
+            return False
+        return any(
+            span_in_text(str(ext), anchored)
+            and (_literal_in(str(ext), literal) or _literal_in(str(cor), literal))
+            for ext, cor in rows
+        )
 
     def _insert_one(
         self,

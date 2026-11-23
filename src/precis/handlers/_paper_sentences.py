@@ -70,6 +70,7 @@ def render_sentences_view(
     s_window: tuple[int, int | None] | None = None,
     banner: str | None = None,
     glyph_warnings: dict[int, list[str]] | None = None,
+    correction_lines: dict[int, list[str]] | None = None,
 ) -> Response:
     """Numbered sentences of ``blocks`` (the ``~lo..hi`` selection).
 
@@ -84,7 +85,9 @@ def render_sentences_view(
     budget cut emits, never a renumbering. ``banner`` (retraction /
     glyph-health banner) prepends the title; ``glyph_warnings`` carries
     per-chunk source-caveat lines so a sentence quoted from this read
-    keeps the warning it was read under (gr725288)."""
+    keeps the warning it was read under (gr725288). ``correction_lines``
+    (gr724751) carries per-chunk correction records, rendered beneath the
+    chunk's sentences."""
     paper = handle_registry.format_handle(ref.kind, ref.id)
     selector = f"~{lo}" if lo == hi else f"~{lo}..{hi}"
     window_suffix = ""
@@ -114,18 +117,20 @@ def render_sentences_view(
         head = f"\n\n## {label}"
         for warning in (glyph_warnings or {}).get(block.id, []):
             head += f"\n{warning}"
+        records = "".join(f"\n{r}" for r in (correction_lines or {}).get(block.id, []))
         start, stop = s_window if s_window is not None else (0, None)
         last = len(spans) - 1 if stop is None else min(stop, len(spans) - 1)
 
         if last < start:
-            parts.append(f"{head}\n(no sentence spans in this chunk)")
+            parts.append(f"{head}\n(no sentence spans in this chunk){records}")
             continuations.append(chunk_call(block.ord))
             continue
         total += last - start + 1
         for index in range(start, last + 1):
             left, right = spans[index]
             prefix = head if index == start else ""
-            parts.append(f"{prefix}\ns{index}: {block.text[left:right]}")
+            tail = records if index == last else ""
+            parts.append(f"{prefix}\ns{index}: {block.text[left:right]}{tail}")
             if index == start:
                 continuations.append(chunk_call(block.ord))
             else:

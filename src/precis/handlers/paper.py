@@ -122,6 +122,7 @@ from precis.store import (
 )
 from precis.store._body_predicate import has_body_sql
 from precis.store._chunks_ops import _year_range_clauses
+from precis.store._corrections_ops import TIERS, ChunkCorrection
 from precis.store._identifiers_ops import (
     _DOI_RE,
     _normalise_identifier,
@@ -151,6 +152,7 @@ from precis.utils.glyph_health import (
     glyph_caveat,
     glyph_suspected,
     passage_glyph_caveat,
+    span_in_text,
 )
 from precis.utils.link_tag_ops import (
     apply_link_ops,
@@ -412,6 +414,10 @@ _SUPPORTED_VIEWS = (
     "page_image",
     "read_region",
     "comments",
+    # First-class glyph-damage correction records (gr724751) —
+    # ``view='corrections'`` lists them; a record also renders under the
+    # passage it covers on chunk reads.
+    "corrections",
     "retired",
     "tags",
     "dependants",
@@ -1069,6 +1075,11 @@ class PaperHandler(Handler):
                 # (:meth:`_queue_pdf_upload`).
                 "pdf_upload_link",
                 "pdf_upload",
+                # correction-record door (gr724751): args={'correction':
+                # {'extracted_span': …, 'corrected_span': …, 'tier': …}}
+                # records a first-class glyph-damage correction on the
+                # paper — :meth:`_record_correction`.
+                "correction",
             }
         ),
         # ``redirect_to`` re-points a retired/merged stub's supersede
@@ -1239,6 +1250,15 @@ class PaperHandler(Handler):
         (gr521094, :meth:`_append_note`); it takes no other field in the
         same call.
 
+        ``put(kind='paper', id=<paper>, args={'correction': {...}})``
+        records a first-class correction of a glyph-damaged passage
+        (gr724751, :meth:`_record_correction`) — extracted span,
+        corrected span, tier (``'human-read'`` / ``'inferred'`` /
+        ``'confirmed-misprint'``), who read and approved. The record
+        renders under the passage on chunk reads and is honoured by the
+        pin term check, the draft glyph-cite hint and the measure
+        glyph flag; the body text stays as extracted.
+
         Ingest paper *bodies* with ``precis add FILE.pdf`` or drop a PDF
         into ``inbox/papers/`` for ``precis watch``. Stub requests enter
         the "papers we need" backlog, where the ``fetch_oa`` worker chases
@@ -1391,6 +1411,50 @@ class PaperHandler(Handler):
             if pdf_upload_link:
                 return self._mint_pdf_upload_link(id)
             return self._queue_pdf_upload(id, pdf_upload_sha, reason, dry_run=dry_run)
+        correction_spec = extras.get("correction")
+        if correction_spec is not None:
+            if id is None:
+                raise BadInput(
+                    "args['correction'] records a correction on an "
+                    f"existing {self.spec.kind}: id= is required",
+                    next="put(kind='paper', id='<pa>', args={'correction': "
+                    "{'extracted_span': '…', 'corrected_span': '…', "
+                    "'tier': 'human-read', 'reader': '<who read the PDF>'}})",
+                )
+            # ``args={'correction': {...}}`` is the glyph-damage
+            # correction-record door (gr724751) — first-class
+            # ``chunk_corrections`` row, not a note. Exclusive of every
+            # other door's fields, same refusal shape as the note door.
+            combined = [
+                name
+                for name, val in (
+                    ("text", text),
+                    ("doi", doi),
+                    ("arxiv", arxiv),
+                    ("identifier", identifier),
+                    ("title", title),
+                    ("year", year),
+                    ("authors", authors),
+                    ("reason", reason),
+                    ("context_ref_id", context_ref_id),
+                    ("citation", citation),
+                    ("record_type", record_type),
+                    ("tags", tags),
+                    ("mode", mode),
+                    ("pdf_url", pdf_url),
+                    ("dry_run", dry_run),
+                )
+                if val is not None and (not isinstance(val, str) or val.strip())
+            ]
+            if combined:
+                raise BadInput(
+                    "args['correction'] records a passage correction; it "
+                    f"does not combine with: {', '.join(combined)}",
+                    next="put(kind='paper', id='<pa>', args={'correction': "
+                    "{'extracted_span': '…', 'corrected_span': '…', "
+                    "'tier': 'human-read', 'reader': '<who read the PDF>'}})",
+                )
+            return self._record_correction(id=id, spec=correction_spec)
         note_text = text
         if id is not None and note_text is not None:
             # ``put(id=<paper>, text='...')`` appends a paper_note
@@ -5988,6 +6052,189 @@ class PaperHandler(Handler):
         """
         _slug, ref_id = self._resolve_paper_slug(id)
         return ref_id
+
+    # ── glyph-damage correction records (gr724751) ─────────────────
+
+    def _record_correction(self, *, id: str | int, spec: Any) -> Response:
+        """``put(id=<paper>, args={'correction': {...}})`` — record one
+        first-class correction of a glyph-damaged passage.
+
+        Required: ``extracted_span`` (the damaged text, verbatim as
+        extracted — it anchors the record), ``corrected_span``, ``tier``
+        (``'human-read'`` | ``'inferred'`` | ``'confirmed-misprint'``).
+        The two human tiers also require ``reader``, ``approved_by``,
+        ``source_file`` and ``page``; ``confirmed-misprint`` also a
+        ``note`` carrying the evidence. Optional: ``chunk`` (a ``pc`` handle
+        advisory pointer), ``note``.
+        The span must occur in a live body chunk — the anchor proof; the
+        body text is never rewritten. A stored record renders under the
+        passage on chunk reads and is honoured by the pin term check,
+        the draft glyph-cite hint and the measure glyph_suspected flag.
+        """
+        ref = self._resolve_paper_ref(id)
+        kind = self.spec.kind
+        if not isinstance(spec, dict):
+            raise BadInput(
+                f"args['correction'] must be a dict, got {type(spec).__name__}",
+                next="put(kind='paper', id='<pa>', args={'correction': "
+                "{'extracted_span': '…', 'corrected_span': '…', "
+                "'tier': 'human-read'}})",
+            )
+
+        def _opt_str(key: str) -> str | None:
+            val = spec.get(key)
+            if val is None:
+                return None
+            text = mask_secrets(str(val)).strip()
+            return text or None
+
+        extracted = (_opt_str("extracted_span") or "").strip()
+        corrected = (_opt_str("corrected_span") or "").strip()
+        if not extracted or not corrected:
+            raise BadInput(
+                "args['correction'] requires non-empty 'extracted_span' "
+                "and 'corrected_span'",
+                next="put(kind='paper', id='<pa>', args={'correction': "
+                "{'extracted_span': '<damaged text as extracted>', "
+                "'corrected_span': '<what it reads>', 'tier': 'human-read'}})",
+            )
+        if extracted == corrected:
+            raise BadInput(
+                "extracted_span and corrected_span are identical — a "
+                "correction record needs an actual change; when the "
+                "extraction is right and the print is wrong use "
+                "tier='confirmed-misprint' with corrected_span = the "
+                "evidence-backed true value (not the printed one)",
+                next="put(kind='paper', id='<pa>', args={'correction': "
+                "{'extracted_span': '<as printed>', 'corrected_span': "
+                "'<the true value>', 'tier': 'confirmed-misprint', "
+                "'reader': '<who>', 'note': '<evidence>'}})",
+            )
+        tier = str(spec.get("tier") or "").strip()
+        if tier not in TIERS:
+            raise BadInput(
+                f"args['correction']['tier'] must be one of {', '.join(TIERS)}; "
+                f"got {tier!r}",
+                options=list(TIERS),
+                next="put(kind='paper', id='<pa>', args={'correction': "
+                "{'extracted_span': '…', 'corrected_span': '…', "
+                "'tier': 'human-read', 'reader': '<who read the PDF>'}})",
+            )
+        reader = _opt_str("reader")
+        if tier in ("human-read", "confirmed-misprint") and not reader:
+            raise BadInput(
+                f"tier={tier!r} means a person read the PDF — name them: "
+                "args['correction']['reader']",
+                next="put(kind='paper', id='<pa>', args={'correction': "
+                "{'extracted_span': '…', 'corrected_span': '…', "
+                f"'tier': '{tier}', 'reader': '<who read the PDF>'}}}}",
+            )
+        if tier in ("human-read", "confirmed-misprint"):
+            missing = [
+                name
+                for name, val in (
+                    ("approved_by", _opt_str("approved_by")),
+                    ("source_file", _opt_str("source_file")),
+                    ("page", spec.get("page")),
+                )
+                if val is None
+            ]
+            if tier == "confirmed-misprint" and not _opt_str("note"):
+                missing.append("note (the evidence)")
+            if missing:
+                raise BadInput(
+                    f"tier={tier!r} needs its provenance: missing {', '.join(missing)}",
+                    next="put(kind='paper', id='<pa>', args={'correction': "
+                    "{'extracted_span': '…', 'corrected_span': '…', "
+                    f"'tier': '{tier}', 'reader': '<who>', "
+                    "'approved_by': '<who approved the restated sentence>', "
+                    "'source_file': '<pdf>', 'page': 4"
+                    + (", 'note': '<evidence>'" if tier == "confirmed-misprint" else "")
+                    + "}})",
+                )
+        page = spec.get("page")
+        if page is not None:
+            try:
+                page = int(page)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['correction']['page'] must be an integer, got {page!r}",
+                    next="put(kind='paper', id='<pa>', args={'correction': "
+                    "{…, 'page': 4}})",
+                ) from None
+        chunk_id: int | None = None
+        chunk_sel = spec.get("chunk")
+        if chunk_sel is not None:
+            parsed = handle_registry.parse(str(chunk_sel))
+            if parsed is None or parsed[0] not in ("paper",) or not parsed[1]:
+                raise BadInput(
+                    f"args['correction']['chunk'] must be a pc chunk handle, "
+                    f"got {chunk_sel!r}",
+                    next="put(kind='paper', id='<pa>', args={'correction': "
+                    "{…, 'chunk': 'pc<id>'}})",
+                )
+            chunk_id = int(parsed[2])
+        # The anchor proof: the extracted span must occur in a live body
+        # chunk of THIS paper (whitespace-tolerant — extraction re-flows
+        # text). The record then rides re-extraction by span, not handle.
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        matching = [b for b in blocks if span_in_text(extracted, b.text)]
+        if not matching:
+            raise BadInput(
+                f"extracted_span {extracted[:80]!r} occurs in no body chunk "
+                f"of {kind} {_pa(ref)} — quote the damaged passage "
+                "verbatim as extracted (whitespace may differ)",
+                next=f"get(id='{_pa(ref)}~<ord>') to re-read the passage, "
+                "then put(kind='paper', id='<pa>', args={'correction': …})",
+            )
+        if chunk_id is not None and all(b.id != chunk_id for b in matching):
+            raise BadInput(
+                f"args['correction']['chunk'] pc{chunk_id} does not carry "
+                "the extracted span",
+                next="omit 'chunk' (the span is the anchor) or name one of "
+                "the chunks that carry it: "
+                + ", ".join(f"pc{b.id}" for b in matching[:3]),
+            )
+        correction = self.store.corrections.add(
+            ref_id=ref.id,
+            chunk_id=chunk_id,
+            page=page,
+            extracted_span=extracted,
+            corrected_span=corrected,
+            tier=tier,
+            reader=reader,
+            approved_by=_opt_str("approved_by"),
+            source_file=_opt_str("source_file"),
+            note=_opt_str("note"),
+        )
+        body = f"# correction cc{correction.id} on {_pa(ref)}\n\n" + (
+            _render_correction_record(correction)
+            + render_next_section(
+                [
+                    (
+                        f"get(kind={kind!r}, id='{_pa(ref)}', view='corrections')",
+                        "list this paper's corrections",
+                    )
+                ]
+            )
+        )
+        return Response(body=body)
+
+    def _render_corrections_view(self, ref: Ref) -> Response:
+        """``view='corrections'`` — every correction record on the paper,
+        oldest first (gr724751)."""
+        corrections = self.store.corrections.for_ref(ref.id)
+        lines = [f"# {_pa(ref)} — corrections"]
+        if not corrections:
+            lines.append(
+                f"no corrections — put(kind={self.spec.kind!r}, id='{_pa(ref)}', "
+                "args={'correction': {'extracted_span': '…', "
+                "'corrected_span': '…', 'tier': 'human-read'}}) records one"
+            )
+        for c in corrections:
+            lines.append("")
+            lines.append(_render_correction_record(c))
+        return Response(body="\n".join(lines))
 
     # ── notes: the append-only comment timeline (gr521094) ─────────
 
@@ -11494,6 +11741,9 @@ class PaperHandler(Handler):
         if view == "comments":
             return self._render_comments_view(ref, args)
 
+        if view == "corrections":
+            return self._render_corrections_view(ref)
+
         if view == "measures":
             from precis.handlers._paper_measures import render_measures_view
 
@@ -12152,6 +12402,10 @@ class PaperHandler(Handler):
             lines.append("")
         pointers = self._figure_pointer_lines(ref, blocks)
         has_glyph_caveat = glyph_suspected(ref.meta)
+        # Correction records (gr724751) render under the passage they
+        # cover; matching is span-anchored so a record survives a body
+        # re-extraction that mints fresh chunk handles.
+        corrections = self.store.corrections.for_ref(ref.id)
         block_spans: list[tuple[int, int]] = []  # (ord, end line index)
         for b in blocks:
             # head each chunk with its computed handle plus the ~ord it
@@ -12160,8 +12414,10 @@ class PaperHandler(Handler):
             lines.append(
                 f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
-            lines.extend(_passage_glyph_warning(b, has_glyph_caveat))
+            covering = tuple(c for c in corrections if c.matches(b.text))
+            lines.extend(_passage_glyph_warning(b, has_glyph_caveat, covering))
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
+            lines.extend(_passage_correction_lines(covering))
             lines.extend(pointers.get(b.ord, ()))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
             # sidecars of this chunk's verified `cites` verdicts, when any
@@ -12347,7 +12603,14 @@ class PaperHandler(Handler):
         blocks = self._read_chunk_range(ref, lo, hi)
         banner = _paper_banner(ref, store=self.store)
         caveat = glyph_suspected(ref.meta)
-        warnings = {b.id: _passage_glyph_warning(b, caveat) for b in blocks}
+        corrections = self.store.corrections.for_ref(ref.id)
+        covered = {
+            b.id: tuple(c for c in corrections if c.matches(b.text)) for b in blocks
+        }
+        warnings = {
+            b.id: _passage_glyph_warning(b, caveat, covered[b.id]) for b in blocks
+        }
+        record_lines = {b.id: _passage_correction_lines(covered[b.id]) for b in blocks}
         return render_sentences_view(
             ref,
             blocks,
@@ -12356,6 +12619,7 @@ class PaperHandler(Handler):
             s_window=s_window,
             banner=banner,
             glyph_warnings=warnings,
+            correction_lines=record_lines,
         )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
@@ -12995,12 +13259,57 @@ def _glyph_damage_banner(caveat: str) -> str:
     return f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}"
 
 
-def _passage_glyph_warning(block: ChunkRow, has_glyph_caveat: bool) -> list[str]:
+def _render_correction_record(c: ChunkCorrection) -> str:
+    """One correction record as a ``> [✓]`` line plus optional note line —
+    rendered under the passage it covers on chunk reads and listed by
+    ``view='corrections'`` (gr724751)."""
+    tier_label = {
+        "human-read": "human-read",
+        "inferred": "inferred from context",
+        "confirmed-misprint": "confirmed as printed; source misprint",
+    }.get(c.tier, c.tier)
+    line = f"> [✓] CORRECTED ({tier_label}): {c.extracted_span!r} reads {c.corrected_span!r}"
+    detail: list[str] = []
+    if c.reader:
+        detail.append(f"read by {c.reader}")
+    if c.source_file:
+        src = c.source_file
+        if c.page is not None:
+            src = f"{src} p. {c.page}"
+        detail.append(f"from {src}")
+    if c.approved_by:
+        detail.append(f"approved by {c.approved_by}")
+    if c.created_by:
+        detail.append(f"recorded by {c.created_by}")
+    detail.append(str(c.created_at.date().isoformat()))
+    line += " — " + ", ".join(detail)
+    if c.note:
+        line += f"\n> {c.note}"
+    return line
+
+
+def _passage_glyph_warning(
+    block: ChunkRow,
+    has_glyph_caveat: bool,
+    corrections: tuple[ChunkCorrection, ...] = (),
+) -> list[str]:
+    """The damage banner, rendered ABOVE the passage; suppressed where
+    correction records cover every signature. The records themselves
+    render beneath the text (:func:`_passage_correction_lines`)."""
     if block.ord >= 0 and not has_glyph_caveat:
-        caveat = passage_glyph_caveat(block.text)
+        caveat = passage_glyph_caveat(
+            block.text, [c.extracted_span for c in corrections]
+        )
         if caveat:
             return [_glyph_damage_banner(caveat), ""]
     return []
+
+
+def _passage_correction_lines(corrections: tuple[ChunkCorrection, ...]) -> list[str]:
+    """One line per correction record covering a passage — rendered
+    UNDER the passage text, even when the passage shows no generic damage
+    signature, so a confirmed reading sits next to the damaged text."""
+    return [_render_correction_record(c) for c in corrections]
 
 
 def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:

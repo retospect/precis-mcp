@@ -25,7 +25,10 @@ domain carved *out* of the mixin stack into a composed sub-store —
 reached **only** as ``store.drafts.*``; the flat delegations are gone
 (see `me690468`). ``chunks``
 (:class:`precis.store._chunks_ops.ChunkStore`) is the second —
-reached **only** as ``store.chunks.*``.
+reached **only** as ``store.chunks.*``. ``corrections``
+(:class:`precis.store._corrections_ops.CorrectionStore`) is the third —
+glyph-damage correction records (migration 0358, gr724751), reached
+**only** as ``store.corrections.*``.
 
 The public API is unchanged: callers that previously imported
 ``Store`` and called ``store.get_ref(...)`` / ``store.add_tag(...)``
@@ -67,6 +70,7 @@ from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
 from precis.store._consideration_ops import ConsiderationMixin
+from precis.store._corrections_ops import CorrectionStore
 from precis.store._dependants import DependantsMixin
 from precis.store._draft_ops import DraftStore
 from precis.store._drive_state_ops import DriveStateMixin
@@ -254,6 +258,13 @@ class Store(
         """The chunks domain, composed rather than mixed in —
         same carve pattern as :attr:`drafts`."""
         return ChunkStore(self.core, host=self)
+
+    @cached_property
+    def corrections(self) -> CorrectionStore:
+        """The glyph-damage correction-record domain, composed rather
+        than mixed in — same carve pattern as :attr:`chunks`
+        (migration 0358, gr724751)."""
+        return CorrectionStore(self.core, host=self)
 
     def emit_hint(self, hint: Hint) -> None:
         """Emit a non-breaking agent hint if a bus is wired and we're inside a

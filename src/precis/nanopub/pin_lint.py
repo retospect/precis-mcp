@@ -39,7 +39,10 @@ Known noise, left for the D3 sweep: a *negated* term ("rather than
 atomically resolved imaging") still counts as claimed, and PDF extraction
 that glues words ("ofCNT-C60CNBs") hides a term the passage does carry.
 For a claimed integer range such as ``2–3``, an exact passage token such
-as ``2e3`` counts as coverage (:func:`_with_printed_ranges`).
+as ``2e3`` counts as coverage (:func:`_with_printed_ranges`). A passage
+with a recorded glyph-damage correction (gr724751) is read against its
+corrected span too (:func:`precis.store._corrections_ops.augment_text`),
+so a claim quoting the corrected value covers the pin.
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ from typing import TYPE_CHECKING, Any
 from precis.nanopub import evidence, term_coverage
 from precis.nanopub.gates import integral_chunk_id
 from precis.nanopub.term_coverage import PaperChunk, UncoveredTerm
+from precis.store._corrections_ops import ChunkCorrection, augment_text
 from precis.taproot import seniority
 from precis.taproot.coverage import KIND_NUMBER
 from precis.utils import handle_registry, mentions
@@ -287,6 +291,13 @@ class PinContext:
         self._hubs: dict[int, _Hub] = {}
         self._chunk_infos: dict[int, evidence.ChunkInfo | None] = {}
         self._extra: dict[int, tuple[list[PaperChunk], dict[int, str]]] = {}
+        self._corrections: dict[int, list[ChunkCorrection]] = {}
+
+    def corrections(self, ref_id: int) -> list[ChunkCorrection]:
+        """Per-paper correction records (gr724751), cached for the call."""
+        if ref_id not in self._corrections:
+            self._corrections[ref_id] = self.store.corrections.for_ref(ref_id)
+        return self._corrections[ref_id]
 
     def hub(self, hub_ref_id: int) -> _Hub:
         cached = self._hubs.get(hub_ref_id)
@@ -428,7 +439,10 @@ def pin_coverage(ctx: PinContext, pin: Pin) -> list[UncoveredTerm] | None:
         abstracts.update(more_abs)
     return coverage_core(
         pin,
-        pinned_texts=[c.text for c in pinned],
+        # A passage with a recorded correction (gr724751) is read against
+        # its corrected span too — a claim quoting the corrected value no
+        # longer reads as uncovered against the damaged extraction.
+        pinned_texts=[augment_text(c.text, ctx.corrections(c.ref_id)) for c in pinned],
         pinned_refs=pinned_refs,
         default_texts=hub.default_texts or [],
         default_refs=hub.default_refs or set(),
