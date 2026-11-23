@@ -459,7 +459,11 @@ def ann_route_plan(
         )
     elif route == "exact":
         index = None
-        reason = "small kind — kind filter + exact distance scan, no HNSW index"
+        reason = (
+            "retired cards dominate the Anki HNSW index — exact distance over live cards"
+            if route_kind == "anki"
+            else "small kind — kind filter + exact distance scan, no HNSW index"
+        )
     else:
         index = "chunk_embeddings_vec_hnsw_idx"
         if route_kind is None:
@@ -500,9 +504,9 @@ def _ann_route(
     * ``"partial"`` — the kind's own partial HNSW index (``ce.kind = <k>``):
       the index exists, is valid+ready, and the kind meets the fill gate
       :func:`_ann_kind_state` defines.
-    * ``"exact"`` — any other kind is small (< 5,000 embedded chunks when
-      0226 was cut): filter to its chunks, then exact distance. Query-only,
-      so it needs neither the backfill nor an index.
+    * ``"exact"`` — Anki and small kinds (< 5,000 embedded chunks when 0226
+      was cut): filter to live chunks, then compute exact distance.
+      Query-only, so it needs neither the backfill nor an index.
 
     A ``kinds`` list of one counts as that kind; longer lists stay global
     (the cross-kind fan-out splits them into single-kind calls).
@@ -510,7 +514,9 @@ def _ann_route(
     k = kind if kinds is None else (kinds[0] if len(kinds) == 1 else None)
     if k is None or k in _ANN_GLOBAL_KINDS:
         return "global", k
-    if k not in _ANN_PARTIAL_KINDS:
+    # gr746586: iterative HNSW scans walk past retired cards that dominate
+    # the Anki index. Keep index maintenance intact pending operator cleanup.
+    if k == "anki" or k not in _ANN_PARTIAL_KINDS:
         return "exact", k
     return ("partial", k) if _ann_kind_state(conn).kind_ready(k) else ("global", k)
 
@@ -729,12 +735,12 @@ _OR_RETRY_MIN_WORDS = 3
 
 
 def _lexical_chunk_source(kind: str | None) -> str:
-    """Fetch taxon chunks by ref before applying full-text predicates.
+    """Fetch Anki and taxon chunks by ref before applying full-text predicates.
 
-    Taxa are a small fraction of the corpus. OFFSET 0 keeps a long query's
+    These kinds are a small fraction of the corpus. OFFSET 0 keeps a long query's
     OR fallback from driving the join through the corpus-wide tsv index.
     """
-    if kind == "taxon":
+    if kind in {"anki", "taxon"}:
         return (
             "refs r CROSS JOIN LATERAL ("
             "SELECT c.* FROM chunks c WHERE c.ref_id = r.ref_id OFFSET 0"

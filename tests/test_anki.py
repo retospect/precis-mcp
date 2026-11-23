@@ -57,6 +57,26 @@ class TestClozeHelpers:
 
 
 class TestAnkiCard:
+    def test_search_retries_card_text_as_any_words(self, store: Store) -> None:
+        handler = _make_handler(store)
+        created = handler.put(
+            text="A {{c1::foundation MLIP}} models interatomic forces.\n---\n"
+            "Transferable across elements.",
+            tags=["aixmat-2026"],
+        )
+        ref_id = int(_search(r"id=(\d+)", created.body).group(1))
+
+        result = handler.search(
+            q="aixmat transferable foundation potential",
+            tags=["aixmat-2026"],
+            mode="lexical",
+            view="ids",
+        )
+
+        assert result.result_count == 1
+        assert f"ak{ref_id}" in result.body.splitlines()
+        assert "q ran as ANY" in result.body
+
     def test_put_image_through_dispatch(
         self,
         runtime_with_store: PrecisRuntime,

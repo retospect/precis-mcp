@@ -462,6 +462,10 @@ def test_route_per_kind(store: Store, kind_indexes: dict[str, bool]) -> None:
         assert _ann_route(conn, None, ["memory"]) == ("partial", "memory")
         for kind in ("draft", "quest"):
             assert _ann_route(conn, kind, None) == ("partial", kind)
+        # Anki bypasses HNSW even while its partial index is ready.
+        assert "anki" in state.indexed
+        assert _ann_route(conn, "anki", None) == ("exact", "anki")
+        assert _ann_route(conn, None, ["anki"]) == ("exact", "anki")
         # Tex remains outside the build set.
         assert _ann_route(conn, "tex", None) == ("global", "tex")
         assert _ann_route(conn, "finding", None) == ("exact", "finding")

@@ -177,6 +177,7 @@ class AnkiHandler(NumericRefHandler):
     #: The body is the card, so emit a `card_combined` search chunk (ord=-1) —
     #: same as memory. `_card_combined_text` strips the cloze markup.
     emits_card: ClassVar[bool] = True
+    search_card_kinds: ClassVar[tuple[str, ...]] = ("card_combined",)
     accepts_put_meta: ClassVar[bool] = True
 
     def put(
