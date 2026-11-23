@@ -1,0 +1,79 @@
+#!/usr/bin/env -S uv run python
+"""Resolve existing measure spans with the same parser used on writes."""
+
+from __future__ import annotations
+
+import argparse
+
+from _common import open_store
+
+from precis.errors import BadInput
+from precis.store._measures_ops import MeasureAnchor, _span_range
+
+_CANDIDATES = """
+WITH inputs AS (
+    SELECT id, 0 AS position, primary_link_id AS link_id, anchor_scheme, span
+    FROM measures
+    UNION ALL
+    SELECT m.id, e.position::integer, (e.item->>'link_id')::bigint,
+           e.item->>'anchor_scheme', e.item->'span'
+    FROM measures m CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(m.meta->'extra_anchors') = 'array'
+             THEN m.meta->'extra_anchors' ELSE '[]'::jsonb END
+    ) WITH ORDINALITY AS e(item, position)
+    WHERE e.item->>'link_id' ~ '^[0-9]{1,18}$'
+)
+SELECT i.id, i.position, i.anchor_scheme, i.span, c.ref_id, c.chunk_id, c.text
+FROM inputs i LEFT JOIN links l ON l.link_id = i.link_id
+LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id AND c.retired_at IS NULL
+LEFT JOIN measure_anchors a ON a.measure_id = i.id AND a.position = i.position
+WHERE a.measure_id IS NULL AND (i.anchor_scheme IS NOT NULL OR i.link_id IS NOT NULL)
+ORDER BY i.id, i.position
+"""
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args()
+    store, _ = open_store()
+    try:
+        with store.tx() as conn:
+            if args.apply:
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext('backfill-measure-anchors'))")
+            rows = conn.execute(_CANDIDATES).fetchall()
+            resolved = 0
+            for measure, position, scheme, span, ref, chunk, text in rows:
+                # Historical raw offsets share the range grammar only when
+                # their payload explicitly names this chunk.
+                if (
+                    scheme == "raw_offsets"
+                    and isinstance(span, list)
+                    and len(span) == 3
+                    and span[0] == chunk
+                ):
+                    scheme = "offsets"
+                try:
+                    bounds = _span_range(MeasureAnchor(ref, chunk, scheme, span), text) if text else None
+                except (BadInput, ValueError):
+                    bounds = None
+                if bounds is None or bounds[0] >= bounds[1]:
+                    print(f"unresolved measure {measure} position {position} ({scheme})")
+                    continue
+                resolved += 1
+                if args.apply:
+                    anchor = store.mint_text_anchor(
+                        ref, chunk, char_start=bounds[0], char_end=bounds[1], conn=conn
+                    )
+                    conn.execute(
+                        "INSERT INTO measure_anchors (measure_id, position, anchor_id) "
+                        "VALUES (%s, %s, %s)",
+                        (measure, position, anchor.anchor_id),
+                    )
+            print(f"{'linked' if args.apply else 'resolvable'}: {resolved}/{len(rows)}")
+    finally:
+        store.close()
+
+
+if __name__ == "__main__":
+    main()

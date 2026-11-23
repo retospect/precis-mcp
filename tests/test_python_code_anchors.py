@@ -145,6 +145,6 @@ def test_anchor_ladder_and_repo_boundary(
     assert "stale: snippet changed in symbol" in handler.get(id=handle).body
     (repo / "example.py").unlink()
     (repo / "relocated.py").write_text(SOURCE, encoding="utf-8")
-    assert "moved: candidates example/relocated.py:2" in handler.get(id=handle).body
+    assert "example/relocated.py:2 — moved" in handler.get(id=handle).body
     (repo / "relocated.py").unlink()
     assert "stale: snippet not found" in handler.get(id=handle).body

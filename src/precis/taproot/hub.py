@@ -1420,7 +1420,7 @@ def attach_evidence(
             if ONE_PAGE_COVERAGE_NOTE not in caveats:
                 caveats.append(ONE_PAGE_COVERAGE_NOTE)
             edge_meta["caveats"] = caveats
-        store.add_link(
+        link = store.add_link(
             src_ref_id=paper_ref_id,
             src_pos=src_pos,
             dst_ref_id=hub_ref_id,
@@ -1429,6 +1429,33 @@ def attach_evidence(
             set_by=set_by,
             conn=c,
         )
+        if link.src_chunk_id is not None:
+            passage = c.execute(
+                "SELECT chunk_id, text FROM chunks WHERE ref_id = %s AND chunk_id = %s "
+                "AND retired_at IS NULL",
+                (paper_ref_id, link.src_chunk_id),
+            ).fetchone()
+            if (
+                passage
+                and passage[1]
+                and not c.execute(
+                    "SELECT 1 FROM evidence_anchors WHERE link_id = %s", (link.id,)
+                ).fetchone()
+            ):
+                chunk_id, text = passage
+                quote = (link.meta or {}).get("quote")
+                start, end = 0, len(text)
+                if isinstance(quote, str) and quote:
+                    found = text.find(quote)
+                    if found >= 0 and text.find(quote, found + 1) < 0:
+                        start, end = found, found + len(quote)
+                anchor = store.mint_text_anchor(
+                    paper_ref_id, chunk_id, char_start=start, char_end=end, conn=c
+                )
+                c.execute(
+                    "INSERT INTO evidence_anchors (link_id, anchor_id) VALUES (%s, %s)",
+                    (link.id, anchor.anchor_id),
+                )
 
     if conn is not None:
         _do(conn)

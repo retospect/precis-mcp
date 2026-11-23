@@ -434,6 +434,10 @@ class TestGuards:
         assert link.id == row["primary_link_id"]
         assert link.dst_ref_id == world["energy"] and link.meta == {}
         assert (row["anchor_scheme"], row["span"]) == ("sentence", "s1")
+        anchor_ids = store.measure_detail(run.output_id)["anchor_ids"]
+        anchor = store.get_anchor(anchor_ids[0])
+        assert anchor is not None and "NH3 yield rate" in anchor.quote
+        assert anchor.chunk_id == link.src_chunk_id
 
     def test_cited_work_is_refused_as_measured_and_lands_asserted(
         self, store: Store, world: dict[str, Any]
@@ -2205,7 +2209,7 @@ class TestAnchorLossAndSupersession:
         with pytest.raises(psycopg.errors.CheckViolation, match="cannot be deleted"):
             _update(store, "DELETE FROM measures WHERE id = %s", (mid,))
         with pytest.raises(psycopg.errors.CheckViolation, match="TRUNCATE"):
-            _update(store, "TRUNCATE measures", ())
+            _update(store, "TRUNCATE measures, measure_anchors", ())
         assert len(store.measures_for(world["paper"])) == 1
 
     def test_a_subject_or_measurand_with_measures_cannot_be_hard_deleted(

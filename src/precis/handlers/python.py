@@ -2687,10 +2687,12 @@ class PythonHandler(Handler):
             note,
             mod.sha256,
         )
-        handle, line, created = anchors.mint(store, observation, mod, sym)
+        handle, line, created, shared_handle = anchors.mint(
+            store, observation, mod, sym
+        )
         verb = "minted" if created else "refreshed"
         return Response(
-            body=f"{verb} {handle} — {parsed.alias}/{mod.file}:{line}",
+            body=f"{verb} {handle} ({shared_handle}) — {parsed.alias}/{mod.file}:{line}",
             reused=not created,
         )
 
@@ -2713,7 +2715,7 @@ class PythonHandler(Handler):
         record = anchors.read(store, handle)
         if record is None:
             raise NotFound(f"unknown code anchor {handle}", next=anchors.MINT_NEXT)
-        observation, location = record
+        observation, location, anchor_id = record
         if observation is None:
             if checkout is not None or expected_root is not None:
                 raise BadInput(
@@ -2771,27 +2773,85 @@ class PythonHandler(Handler):
                     impact_mod._Git(main, self.git_dir_for(main)), observation
                 )
         flag = f" — {review}" if review else ""
-        if sym is None:
-            candidates = anchors.relocate(root, observation.snippet, index=idx)
-            if not candidates:
+        if anchor_id is not None:
+            shared = store.get_anchor(anchor_id)
+            assert shared is not None and shared.symbol_path is not None
+            old_path, _, _ = shared.symbol_path.partition("::")
+            old_module = idx.file(old_path)
+            git = impact_mod._Git(root, self.git_dir_for(root))
+            head = git.resolve_rev("HEAD")
+            old_lines = (old_module.source or "").splitlines() if old_module else []
+            if (
+                head == shared.fingerprint
+                and shared.line_start is not None
+                and old_lines[shared.line_start - 1 : shared.line_end]
+                == shared.quote.split("\n")
+            ):
+                resolution = store.relocate_code_anchor(
+                    anchor_id, head, {shared.symbol_path: old_lines}
+                )
+            else:
+                sources = {
+                    unit.file: (unit.source or "").splitlines()
+                    for unit in idx.modules.values()
+                }
+
+                def locate_symbol(path: str, line: int) -> str:
+                    unit = idx.file(path)
+                    if unit is None:
+                        return path
+                    return f"{path}::{anchors.symbol_at(unit, line).qualname}"
+
+                other_locations = [
+                    (path, line)
+                    for path, line in anchors.relocate(root, observation.snippet) or []
+                    if path not in sources
+                ]
+                resolution = store.relocate_code_anchor(
+                    anchor_id,
+                    None,
+                    sources,
+                    locate_symbol=locate_symbol,
+                    other_locations=other_locations,
+                )
+            line = resolution.line_start
+            if line is None or resolution.symbol_path is None:
                 reason = (
-                    "snippet not found"
-                    if candidates == []
-                    else "relocation search unavailable"
+                    "snippet is ambiguous in repo"
+                    if resolution.method == "ambiguous"
+                    else "snippet changed in symbol"
+                    if sym is not None
+                    else "snippet not found"
                 )
                 return Response(body=f"{handle} stale: {reason}{flag}{detail}")
-            shown = ", ".join(
-                f"{alias}/{path}:{line}" for path, line in candidates[:20]
-            )
-            overflow = ", …" if len(candidates) > 20 else ""
-            return Response(
-                body=f"{handle} moved: candidates {shown}{overflow}{flag}{detail}"
-            )
-
-        assert mod is not None
-        line, reason = anchors.matched_line(mod, sym, observation)
-        if line is None:
-            return Response(body=f"{handle} stale: {reason}{flag}{detail}")
+            current_path, _, _ = resolution.symbol_path.partition("::")
+            mod = idx.file(current_path)
+            if mod is None:
+                return Response(
+                    body=f"{handle} {alias}/{current_path}:{line} — moved{flag}{detail}"
+                )
+            sym = anchors.symbol_at(mod, line)
+        else:
+            if sym is None:
+                candidates = anchors.relocate(root, observation.snippet, index=idx)
+                if not candidates:
+                    reason = (
+                        "snippet not found"
+                        if candidates == []
+                        else "relocation search unavailable"
+                    )
+                    return Response(body=f"{handle} stale: {reason}{flag}{detail}")
+                shown = ", ".join(
+                    f"{alias}/{path}:{line}" for path, line in candidates[:20]
+                )
+                overflow = ", …" if len(candidates) > 20 else ""
+                return Response(
+                    body=f"{handle} moved: candidates {shown}{overflow}{flag}{detail}"
+                )
+            assert mod is not None
+            line, reason = anchors.matched_line(mod, sym, observation)
+            if line is None:
+                return Response(body=f"{handle} stale: {reason}{flag}{detail}")
         note_file(idx, mod)
         moved = (mod.file, line) != (observation.file, observation.start)
         status = " — moved" if moved else " — current" if view == "meta" else ""

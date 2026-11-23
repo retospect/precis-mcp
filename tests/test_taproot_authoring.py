@@ -1129,6 +1129,14 @@ def test_link_evidence_accepts_paper_prefixed_chunk_handle(store: Any) -> None:
     assert f"pc{chunk_id}" in resp.body
     edges = _edges(store, src=paper, dst=hub_id)
     assert any(rel == "corroborates" for rel, _m in edges)
+    with store.pool.connection() as conn:
+        anchor = conn.execute(
+            "SELECT a.chunk_id, a.quote FROM evidence_anchors e "
+            "JOIN anchors a USING (anchor_id) JOIN links l USING (link_id) "
+            "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s",
+            (paper, hub_id),
+        ).fetchone()
+    assert anchor == (chunk_id, "the coupling proceeds at room temperature")
 
 
 def test_link_evidence_remove_accepts_paper_prefixed_chunk_handle(

@@ -829,22 +829,17 @@ def _span_claim(anchor: MeasureAnchor) -> tuple[str, int, int]:
     )
 
 
-def _span_text(anchor: MeasureAnchor, chunk_text: str) -> str | None:
-    """The text the anchor's span names under its scheme — the offsets
-    slice, the named sentence(s), or a numeric atom's containing
-    sentence — resolved with the same splitter the ``view='sentences'``
-    read numbers by. ``None`` when the span names nothing in this chunk
-    (an out-of-range ``s<N>`` or ``#<k>``): the literal then reads
-    ``anchor_mismatch``, never ``anchor_matched`` (gr728422)."""
+def _span_range(anchor: MeasureAnchor, chunk_text: str) -> tuple[int, int] | None:
+    """Resolve legacy measure selectors to offsets in the observed chunk."""
     claim = _span_claim(anchor)
     if claim[0] == "offsets":
-        return chunk_text[claim[1] : claim[2]]
+        return claim[1], min(len(chunk_text), claim[2])
     spans = sentence_spans(chunk_text)
     if claim[0] == "sentences":
         _kind, first, last = claim
         if last >= len(spans):
             return None
-        return chunk_text[spans[first][0] : spans[last][1]]
+        return spans[first][0], spans[last][1]
     # numeric_atom: the k-th numeric region's containing sentence — the
     # same resolution the extraction anchor index gives "<chunk>#<k>".
     from precis.extract.verify import numeric_regions
@@ -860,8 +855,14 @@ def _span_text(anchor: MeasureAnchor, chunk_text: str) -> str | None:
     )
     if holder is None:
         return None
-    a, b = spans[holder]
-    return chunk_text[a:b]
+    return spans[holder]
+
+
+def _span_text(anchor: MeasureAnchor, chunk_text: str) -> str | None:
+    """The text the anchor's span names, ``None`` when it names nothing in
+    this chunk (the literal then reads ``anchor_mismatch``, gr728422)."""
+    bounds = _span_range(anchor, chunk_text)
+    return chunk_text[bounds[0] : bounds[1]] if bounds is not None else None
 
 
 class MeasuresMixin:
@@ -870,6 +871,7 @@ class MeasuresMixin:
     pool: Any
     tx: Any
     add_link: Any
+    mint_text_anchor: Any
     ancestors: Any
     taxon_descendants: Any
     reviews_for: Any
@@ -981,16 +983,25 @@ class MeasuresMixin:
         anchor: MeasureAnchor,
         measurand_ref_id: int,
         link_set_by: str,
-    ) -> tuple[int, str, str | None]:
-        """The shared ``quantifies`` edge for this chunk and measurand, the
-        chunk text, and the text the anchor's span names under its scheme
+    ) -> tuple[int, int | None, str | None]:
+        """Return the shared ``quantifies`` edge ID, anchor ID, and span text.
         (``None`` when the span names nothing in the chunk — the literal
         then reads ``anchor_mismatch``). The scheme and span grammar are
         refused here, so every anchor — primary or extra — is checked
         before its edge is written. Deduplicated by ``add_link``; the span
         stays on the row."""
         ord_, text = self._anchor_chunk(conn, anchor)
-        span_text = _span_text(anchor, text)
+        bounds = _span_range(anchor, text)
+        span_text = text[bounds[0] : bounds[1]] if bounds is not None else None
+        anchor_id = None
+        if bounds is not None and span_text:
+            anchor_id = self.mint_text_anchor(
+                anchor.paper_ref_id,
+                anchor.chunk_id,
+                char_start=bounds[0],
+                char_end=bounds[1],
+                conn=conn,
+            ).anchor_id
         link = self.add_link(
             src_ref_id=anchor.paper_ref_id,
             src_pos=ord_,
@@ -999,7 +1010,7 @@ class MeasuresMixin:
             set_by=link_set_by,
             conn=conn,
         )
-        return int(link.id), text, span_text
+        return int(link.id), anchor_id, span_text
 
     # -- write -------------------------------------------------------------
 
@@ -1650,8 +1661,9 @@ class MeasuresMixin:
         # evidence edge + computed extraction status
         link_id: int | None = None
         status = "unverified"
+        anchor_ids: list[int | None] = [None]
         if anchor is not None:
-            link_id, _chunk_text, span_text = self._anchor_link(
+            link_id, anchor_ids[0], span_text = self._anchor_link(
                 c, anchor, spec.measurand_ref_id, link_set_by
             )
             status = (
@@ -1662,16 +1674,20 @@ class MeasuresMixin:
         if spec.extra_anchors:
             if anchor is None:
                 raise BadInput("extra_anchors need a primary anchor= first")
-            meta["extra_anchors"] = [
-                {
-                    "link_id": self._anchor_link(
-                        c, extra, spec.measurand_ref_id, link_set_by
-                    )[0],
-                    "anchor_scheme": extra.scheme,
-                    "span": extra.span,
-                }
-                for extra in spec.extra_anchors
-            ]
+            extra_links = []
+            for extra in spec.extra_anchors:
+                extra_link_id, extra_anchor_id, _ = self._anchor_link(
+                    c, extra, spec.measurand_ref_id, link_set_by
+                )
+                anchor_ids.append(extra_anchor_id)
+                extra_links.append(
+                    {
+                        "link_id": extra_link_id,
+                        "anchor_scheme": extra.scheme,
+                        "span": extra.span,
+                    }
+                )
+            meta["extra_anchors"] = extra_links
 
         if spec.supersedes is not None:
             old = c.execute(
@@ -1770,6 +1786,13 @@ class MeasuresMixin:
             ) from exc
         assert row is not None
         new_id = int(row[0])
+        for position, anchor_id in enumerate(anchor_ids):
+            if anchor_id is not None:
+                c.execute(
+                    "INSERT INTO measure_anchors (measure_id, position, anchor_id) "
+                    "VALUES (%s, %s, %s)",
+                    (new_id, position, anchor_id),
+                )
         supersede_ids = {*superseded_rejected}
         if spec.supersedes is not None:
             supersede_ids.add(spec.supersedes)
@@ -2570,6 +2593,14 @@ class MeasuresMixin:
                         "kind": a[2],
                         "title": a[3],
                     }
+            r["anchor_ids"] = {
+                position: anchor_id
+                for position, anchor_id in conn.execute(
+                    "SELECT position, anchor_id FROM measure_anchors WHERE measure_id = %s "
+                    "ORDER BY position",
+                    (measure_id,),
+                ).fetchall()
+            }
             earlier: list[dict[str, Any]] = []
             later: list[dict[str, Any]] = []
             seen = {measure_id}

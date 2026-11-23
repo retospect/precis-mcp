@@ -184,7 +184,7 @@ def test_sentences_view_lead_names_resolved_write_check(
     store: Store,
 ) -> None:
     """The lead must not promise a whole-chunk check: since gr728422
-    ``_measures_ops._span_text`` resolves ``s<N>`` against this very
+    ``_measures_ops._span_range`` resolves ``s<N>`` against this very
     numbering, so a wrong index reads ``anchor_mismatch``."""
     ref_id, _chunk_ids = _seed_paper(store, slug="sview08")
     pa = handle_registry.format_handle("paper", ref_id)

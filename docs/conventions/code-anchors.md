@@ -12,11 +12,13 @@ put(kind="python", mode="anchor", id="precis/src/precis/dispatch.py~L12-L14")
 get(kind="python", id="an123", view="meta")
 ```
 
-The default `bare` view shows the current location. `context` shows
-surrounding source, `meta` shows the recorded repository, symbol, commit
-and citing gripe comments, and `fisheye` shows the symbol's code edges.
-A moved snippet can have several candidates. A stale or re-verify result
-calls for checking the current code before relying on the citation.
+Mint also returns the immutable observation's `ac<N>` handle. Both
+handles open through the Python kind. The default `bare` view shows the
+current location. `context` shows surrounding source, `meta` shows the
+recorded repository, symbol, commit and citing gripe comments, and
+`fisheye` shows the symbol's code edges. A unique exact match can move
+across files. Multiple matches make the anchor stale. Check the current
+source before relying on a stale or re-verify citation.
 
 ## Checkout-local citations
 

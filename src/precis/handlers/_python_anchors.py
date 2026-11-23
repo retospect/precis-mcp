@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from precis.errors import BadInput
@@ -13,8 +13,9 @@ from precis.handlers._comment_timeline import HIDDEN_META_KEY
 from precis.handlers._python_impact import _Git
 from precis.python_index import ModuleIndex, RepoIndex, Symbol
 from precis.store import Store
+from precis.utils.handle_registry import format_anchor_handle
 
-HANDLE = re.compile(r"an[0-9]+", re.IGNORECASE)
+HANDLE = re.compile(r"(?:an|ac)[0-9]+", re.IGNORECASE)
 VIEWS = ("bare", "context", "meta", "fisheye")
 MINT_NEXT = "put(kind='python', mode='anchor', id='<repo>/<file.py>~L12-L13')"
 
@@ -37,6 +38,21 @@ class Observation:
     sha: str
     note: str | None
     source_digest: str
+
+
+def symbol_at(mod: ModuleIndex, line: int) -> Symbol:
+    return min(
+        (
+            symbol
+            for symbol in mod.symbols
+            if symbol.start_line <= line <= symbol.end_line
+        ),
+        key=lambda symbol: (
+            symbol.end_line - symbol.start_line,
+            symbol is mod.module_symbol,
+        ),
+        default=mod.module_symbol,
+    )
 
 
 def matching_lines(mod: ModuleIndex, sym: Symbol, snippet: list[str]) -> list[int]:
@@ -66,24 +82,42 @@ def matched_line(
     )
 
 
-def read(store: Store, handle: str) -> tuple[Observation | None, str] | None:
+def read(
+    store: Store, handle: str
+) -> tuple[Observation | None, str, int | None] | None:
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
             SELECT {_PAYLOAD}, CASE WHEN lower(meta->'alias'->>'a') = %s
-                   THEN meta->'alias'->>'b' ELSE meta->'alias'->>'a' END
-            FROM refs WHERE {_LIVE}
-              AND %s IN (lower(meta->'alias'->>'a'), lower(meta->'alias'->>'b'))
+                   THEN meta->'alias'->>'b' ELSE meta->'alias'->>'a' END, a.anchor_id
+            FROM refs LEFT JOIN code_anchor_aliases a USING (ref_id) WHERE {_LIVE}
+              AND (%s IN (lower(meta->'alias'->>'a'), lower(meta->'alias'->>'b'))
+                 OR concat('ac', a.anchor_id) = %s AND a.anchor_id IS NOT NULL)
             ORDER BY ref_id LIMIT 2
             """,
-            (handle, handle),
+            (handle, handle, handle),
         ).fetchall()
     if not rows:
         return None
     if len(rows) != 1:
-        return None, "ambiguous handle in the alias ledger"
-    payload, location = rows[0]
-    return (Observation(**payload) if payload else None), str(location)
+        return None, "ambiguous handle in the alias ledger", None
+    payload, location, anchor_id = rows[0]
+    observation = Observation(**payload) if payload else None
+    if observation is not None and anchor_id is not None and handle.startswith("ac"):
+        anchor = store.get_anchor(anchor_id)
+        assert anchor is not None and anchor.symbol_path is not None
+        assert anchor.line_start is not None
+        file, _, qualname = anchor.symbol_path.partition("::")
+        observation = replace(
+            observation,
+            file=file,
+            qualname=qualname,
+            start=anchor.line_start,
+            snippet=anchor.quote.split("\n"),
+            sha=anchor.fingerprint,
+            note=anchor.note,
+        )
+    return observation, str(location), anchor_id
 
 
 def listed(
@@ -107,7 +141,7 @@ def listed(
 
 def mint(
     store: Store, observation: Observation, mod: ModuleIndex, sym: Symbol
-) -> tuple[str, int, bool]:
+) -> tuple[str, int, bool, str]:
     # Imported here because the ledger owns the shared allocation lock.
     from precis.handlers._gripe_summary import ANCHOR_MINT_LOCK_NAMESPACE
 
@@ -117,15 +151,33 @@ def mint(
         )
         rows = conn.execute(
             f"""
-            SELECT ref_id, meta->'alias'->>'a', {_PAYLOAD}
-            FROM refs WHERE {_LIVE}
+            SELECT refs.ref_id, meta->'alias'->>'a', {_PAYLOAD}, a.anchor_id
+            FROM refs LEFT JOIN code_anchor_aliases a USING (ref_id) WHERE {_LIVE}
               AND {_PAYLOAD}->>'repo' = %s AND {_PAYLOAD}->>'qualname' = %s
-            ORDER BY ref_id FOR UPDATE
+            ORDER BY refs.ref_id FOR UPDATE OF refs
             """,
             (observation.repo, observation.qualname),
         ).fetchall()
         location = f"{observation.file}::{observation.qualname}"
-        for ref_id, handle, payload in rows:
+
+        def register(ref_id: int, recorded: Observation) -> int:
+            anchor = store.mint_code_anchor(
+                recorded.repo,
+                f"{recorded.file}::{recorded.qualname}",
+                recorded.start,
+                recorded.start + len(recorded.snippet) - 1,
+                quote="\n".join(recorded.snippet),
+                commit_sha=recorded.sha,
+                note=recorded.note,
+                conn=conn,
+            )
+            conn.execute(
+                "INSERT INTO code_anchor_aliases (ref_id, anchor_id) VALUES (%s, %s)",
+                (ref_id, anchor.anchor_id),
+            )
+            return anchor.anchor_id
+
+        for ref_id, handle, payload, anchor_id in rows:
             old = Observation(**payload)
             start, _ = matched_line(mod, sym, old)
             if start is None:
@@ -155,7 +207,9 @@ def mint(
                     ref_id,
                 ),
             )
-            return str(handle), start, False
+            if anchor_id is None:
+                anchor_id = register(ref_id, Observation(**refreshed))
+            return str(handle), start, False, format_anchor_handle("code", anchor_id)
 
         # Both old spellings and both sides count, including retired rows.
         row = conn.execute(
@@ -168,7 +222,7 @@ def mint(
         ).fetchone()
         assert row is not None
         handle = f"an{int(row[0]) + 1}"
-        store.insert_ref(
+        ref_id = store.insert_ref(
             kind="alias",
             slug=None,
             title=f"{handle} ⇄ {location}"[:200],
@@ -178,7 +232,8 @@ def mint(
             },
             conn=conn,
         )
-        return handle, observation.start, True
+        anchor_id = register(ref_id.id, observation)
+        return handle, observation.start, True, format_anchor_handle("code", anchor_id)
 
 
 def comments(store: Store, handle: str) -> str:

@@ -28,7 +28,7 @@ A sentence larger than the page gets a marked excerpt, and the next
 window starts at the following span. Numbering stays chunk-local.
 
 The write side now resolves ``s<N>`` itself
-(:func:`precis.store._measures_ops._span_text`, gr728422): the receipt's
+(:func:`precis.store._measures_ops._span_range`, gr728422): the receipt's
 ``anchor_matched`` / ``anchor_mismatch`` checks the literal against the
 sentence(s) the span names — a wrong ``s<N>`` flags ``anchor_mismatch``
 and a span naming nothing in the chunk mismatches too, where before this

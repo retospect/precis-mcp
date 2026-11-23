@@ -231,6 +231,40 @@ _FILE_BACKED_KINDS = frozenset({"python", "md"})
 # Measures use measures.id, not refs.ref_id; mx is only a measure-kind address.
 _OTHER_TABLE_KINDS = frozenset({"tag", "measure"})
 
+# --- anchor codes (gr739606) --------------------------------------------
+# One ``anchors`` table and one id sequence; the prefix is chosen by the
+# row's ``target_type`` and never changes, so a reader knows what an anchor
+# points at before looking it up. State (ok / moved / stale) is never in the
+# handle. Not refs-backed (``anchors.anchor_id``, not a ref_id), so
+# :func:`parse` ignores them — use :func:`parse_anchor`. ``an`` is NOT
+# available: it is the code-observation alias ledger's namespace
+# (``precis.handlers._python_anchors``), and ``co`` is conv's.
+
+ANCHOR_CODES: Final[dict[str, str]] = {"text": "at", "code": "ac", "part": "ap"}
+
+_ANCHOR_CODE_TO_TYPE: Final[dict[str, str]] = {c: t for t, c in ANCHOR_CODES.items()}
+
+
+def format_anchor_handle(target_type: str, anchor_id: int) -> str:
+    """Format a typed text, code, or structured anchor handle."""
+    try:
+        return ANCHOR_CODES[target_type] + str(anchor_id)
+    except KeyError:
+        raise KeyError(
+            f"no anchor handle code for target type {target_type!r}"
+        ) from None
+
+
+def parse_anchor(handle: str) -> tuple[str, int] | None:
+    """Decode a typed anchor handle to ``(target_type, anchor_id)``, else
+    ``None``."""
+    s = normalize(handle)
+    code, body = s[:CODE_LEN], s[CODE_LEN:]
+    if code not in _ANCHOR_CODE_TO_TYPE or not body.isdecimal():
+        return None
+    return _ANCHOR_CODE_TO_TYPE[code], int(body)
+
+
 # --- codeless kinds (providers / stateless tools / private data) ----------
 # Registered handler kinds (``dispatch.boot()``) that are never addressed by
 # a shared ``<code><pk>`` handle — no public ref row to encode. Curated
@@ -305,7 +339,11 @@ def _load_plugin_codes() -> None:
     except Exception as exc:  # defensive — importlib surface is stable
         log.warning("handle-code plugin discovery failed: %s", exc)
         return
-    taken = set(KIND_CODES.values()) | set(CHUNK_CODES.values())
+    taken = (
+        set(KIND_CODES.values())
+        | set(CHUNK_CODES.values())
+        | set(ANCHOR_CODES.values())
+    )
     for ep in eps:
         name = getattr(ep, "name", "<unknown>")
         try:

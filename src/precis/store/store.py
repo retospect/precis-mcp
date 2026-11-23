@@ -6,6 +6,7 @@ from domain mixins, each owning one slice of the persistence surface:
 
 * :class:`precis.store._refs_ops.RefsMixin`               — ref CRUD + title search
 * :class:`precis.store._tags_ops.TagsMixin`               — three tag tables
+* :class:`precis.store._anchors_ops.AnchorsMixin`         — ``anchors`` / ``anchor_resolutions`` (relocatable anchors; migration 0360)
 * :class:`precis.store._links_ops.LinksMixin`             — link graph
 * :class:`precis.store._dependants.DependantsMixin`       — bounded rely-side walk (``dependants``)
 * :class:`precis.store._taxon_ops.TaxonMixin`             — taxon hierarchy traversal (recursive CTEs)
@@ -62,6 +63,7 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
 from precis.hints import Hint, HintBus
+from precis.store._anchors_ops import AnchorsMixin
 from precis.store._argument_ops import ArgumentGraphMixin
 from precis.store._cache_ops import CacheMixin
 from precis.store._cad_ops import CadMixin
@@ -128,6 +130,7 @@ log = logging.getLogger(__name__)
 
 class Store(
     RefsMixin,
+    AnchorsMixin,
     ArgumentGraphMixin,
     CadMixin,
     StructureMixin,

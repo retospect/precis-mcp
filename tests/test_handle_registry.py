@@ -105,6 +105,26 @@ def test_all_codes_globally_distinct() -> None:
     assert len(codes) == len(set(codes)), "duplicate handle code"
 
 
+def test_anchor_codes_are_distinct_from_every_other_code() -> None:
+    others = {*hr.KIND_CODES.values(), *hr.CHUNK_CODES.values()}
+    assert set(hr.ANCHOR_CODES.values()).isdisjoint(others)
+    assert "an" not in others | set(hr.ANCHOR_CODES.values())  # alias ledger's
+
+
+def test_anchor_handle_prefix_mirrors_target_type() -> None:
+    assert hr.format_anchor_handle("text", 7) == "at7"
+    assert hr.format_anchor_handle("code", 7) == "ac7"
+    assert hr.parse_anchor("AT7") == ("text", 7)
+    assert hr.parse_anchor("ac12") == ("code", 12)
+    assert hr.parse_anchor("ap12") == ("part", 12)
+    assert hr.parse_anchor("an71") is None
+    assert hr.parse_anchor("at") is None
+    assert hr.parse_anchor("atx") is None
+    assert hr.parse("at7") is None  # not refs-backed
+    with pytest.raises(KeyError):
+        hr.format_anchor_handle("sound", 1)
+
+
 def test_chunk_codes_only_for_known_kinds() -> None:
     assert set(hr.CHUNK_CODES) <= set(hr.KIND_CODES)
 
