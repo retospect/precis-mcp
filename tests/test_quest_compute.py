@@ -5081,6 +5081,60 @@ class TestLeaderboard:
         # neither candidate carries atom_cost/log_tof → $/rate is a dash
         assert all(r["$/rate"] is None for r in rows)
 
+    def test_engine_column_exposes_stamped_version(self) -> None:
+        from precis.quest.frontier import (
+            FrontierResult,
+            apply_network_demotion,
+            leaderboard,
+        )
+
+        old = Candidate(
+            1,
+            "st1",
+            "A",
+            {"barrier": 0.3},
+            True,
+            flags={
+                "network_basis_by_key": {"barrier": {"version": "0.9.2"}},
+                # A barrierless re-harvest refreshes the display basis only.
+                "network_basis": {"version": "0.10.1"},
+            },
+        )
+        new = Candidate(
+            2,
+            "st2",
+            "B",
+            {"barrier": 0.4},
+            True,
+            flags={"network_basis": {"version": "0.10.1"}, "network_stale": True},
+        )
+        bare = Candidate(3, "st3", "C", {"barrier": 0.5}, True)
+        fr = FrontierResult(
+            objectives=[("barrier", "min")],
+            frontier=[old],
+            dominated=[new, bare],
+            unevaluated=[],
+        )
+        rows, schema = leaderboard(fr)
+        assert "engine" in schema
+        assert [r["engine"] for r in rows] == ["0.9.2", "0.10.1 (stale)", ""]
+
+        apply_network_demotion([old], {"version": "0.10.1"})
+        assert "barrier" not in old.measures
+        rows, _ = leaderboard(fr)
+        assert rows[0]["engine"] == "0.9.2 (stale)"
+
+    def test_engine_column_absent_without_stamps(self) -> None:
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        c = Candidate(1, "st1", "A", {"barrier": 0.3}, True)
+        fr = FrontierResult(
+            objectives=[("barrier", "min")], frontier=[c], dominated=[], unevaluated=[]
+        )
+        rows, schema = leaderboard(fr)
+        assert "engine" not in schema
+        assert "engine" not in rows[0]
+
     def test_untrusted_barrier_flagged_in_leaderboard(self) -> None:
         from precis.quest.frontier import FrontierResult, leaderboard
 

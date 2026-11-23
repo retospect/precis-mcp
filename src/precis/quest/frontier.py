@@ -3399,6 +3399,23 @@ def leaderboard(
         trust = v.get("trust")
         return f"{term} ({trust})" if trust else term
 
+    def _engine_text(c: Candidate) -> str:
+        """The engine version the row's evidence was minted under (gr770579):
+        the newest stamped per-key basis version, else the latest harvest's
+        ``network_basis``; ``" (stale)"`` when the read-time network demotion
+        dropped a key — ``""`` when nothing is stamped."""
+        versions = [
+            str(b["version"]) for b in _key_bases(c).values() if b.get("version")
+        ]
+        harvest_basis = c.flags.get("network_basis")
+        fallback = (
+            harvest_basis.get("version") if isinstance(harvest_basis, dict) else None
+        )
+        version = max(versions, key=_version_key) if versions else fallback
+        if not version:
+            return ""
+        return f"{version} (stale)" if c.flags.get("network_stale") else str(version)
+
     def _trusted_cell(c: Candidate) -> str:
         # The results table's own convention (results_table._trusted_str) —
         # provisional rows are judged on their wrapped candidate.
@@ -3434,6 +3451,7 @@ def leaderboard(
             row["validity"] = _validity_text(c)
             row["env_limiting"] = _env_limiting_text(c)
             row["env_footing"] = _env_footing_text(c)
+            row["engine"] = _engine_text(c)
             quality = (
                 "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
             )
@@ -3475,6 +3493,7 @@ def leaderboard(
             row["validity"] = _validity_text(c)
             row["env_limiting"] = _env_limiting_text(c)
             row["env_footing"] = _env_footing_text(c)
+            row["engine"] = _engine_text(c)
             quality = "; ".join(pc.reasons) or "unconfirmed"
             if pc.on_frontier:
                 quality = f"★ would lead — {quality}"
@@ -3517,6 +3536,14 @@ def leaderboard(
         for r in rows:
             r.pop("env_limiting", None)
             r.pop("env_footing", None)
+    # The engine column (gr770579) exists only when some row carries a
+    # stamped engine version, like ``validity``: older quests stay bit-identical.
+    if any(r.get("engine") for r in rows):
+        engine_col = ["engine"]
+    else:
+        engine_col = []
+        for r in rows:
+            r.pop("engine", None)
     schema = [
         "design",
         "name",
@@ -3529,6 +3556,7 @@ def leaderboard(
         "graduated",
         *validity_col,
         *env_cols,
+        *engine_col,
         "quality",
     ]
     return rows, schema

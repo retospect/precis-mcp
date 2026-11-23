@@ -312,6 +312,12 @@ the selected NEB edge's `engine`. `—` marks a barrier with no engine
 stamp. It filters like any column:
 `args={'columns': ['name', 'engine'], 'where': {'engine': '0.31.0'}}`.
 
+In `view='leaderboard'`, `engine` shows the newest engine version stamped
+across the row's measures, falling back to the latest harvest's
+`network_basis` when no per-measure version exists. The cell appends
+` (stale)` if read-time network demotion flagged a measure. Unstamped
+cells are blank, and the column appears only when a row has a version.
+
 ## Page candidate tables
 
 The default results and frontier tables accept
