@@ -129,7 +129,9 @@ Derived groups name their check after the thing they watch:
   refusing: a starved bucket, spent daily cap, full `llm-api` slot hold,
   or a live Retry-After park); `deploy-fleet-coverage` →
   `deploy-uncovered:<host>` (a live
-  host in no overlay deploy group — deploys silently skip it),
+  host in no overlay deploy group — deploys silently skip it; a managed
+  builder lane's `<host>-<user>` beat is covered through its base host
+  when it carries the builder unit's `boot_ids` evidence — gr708881),
   `deploy-behind:<host>` (its `meta.code_sha` ≠ the deployed sha),
   `deploy-ledger:stale` (every covered host serves one sha the ledger lacks), `deploy-ledger:unpublished|invalid` (no published overlay group map
   yet; blind until then); `local-serving-pressure` →

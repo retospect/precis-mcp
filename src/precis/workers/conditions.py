@@ -91,6 +91,11 @@ was invisible for 4 days):
   ``app_settings.deploy.fleet`` on every successful deploy; this probe
   diffs that ledger against ``host_heartbeat`` — uncovered live hosts and
   hosts whose ``meta.code_sha`` is not the deployed sha are findings.
+  A managed builder lane's beat host is ``<host>-<user>`` (gr695674)
+  while the ledger names the base host, so a slot whose base is covered
+  counts as covered — when the beat carries the builder unit's
+  ``boot_ids`` evidence and exactly one covered host is its dash-prefix
+  (gr708881); the name alone never covers.
 * ``backup-stale`` — gr738880: ``app_state`` ``backup.last_run_at``, which
   the DB-node backup scripts stamp only after a completed dump reached the
   NAS, is older than ``PRECIS_COND_BACKUP_STALE_H`` (36 h) — the nightly
@@ -121,6 +126,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
+from typing import Any
 
 from precis.store import Store
 from precis.workers.bounded_heal import HealSpec, run_bounded_heal
@@ -1196,7 +1202,7 @@ _DEPLOY_IN_FLIGHT_MAX_MIN = 30
 _DEPLOY_FLEET_FRESH_MIN = 60
 
 _DEPLOY_FLEET_SQL = """
-SELECT host, meta->>'code_sha' AS code_sha
+SELECT host, meta->>'code_sha' AS code_sha, meta->'boot_ids' AS boot_ids
   FROM host_heartbeat
  WHERE ts > now() - make_interval(mins => %(fresh_min)s)
    AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
@@ -1208,6 +1214,34 @@ SELECT host, meta->>'code_sha' AS code_sha
 #: — anything else is an unidentifiable build the lag arm can't judge).
 _DEPLOY_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+#: The builder lane's unit/process name — roles/precis_builder_host renders
+#: ``PRECIS_PROCESS=precis-worker-builder`` into the worker-builder unit, so
+#: a managed builder user's own heartbeat writes its ``meta.boot_ids`` (and
+#: activity/code_sha_by_process) under exactly this key. Evidence that a
+#: beat host is a builder slot, never just a name that dash-extends a host.
+_BUILDER_UNIT = "precis-worker-builder"
+
+
+def _builder_slot_base(host: str, covered: set[str], boot_ids: Any) -> str | None:
+    """The covered base host behind a managed builder lane's ``<host>-<user>``
+    beat (gr695674), or ``None`` when the beat is not such a slot.
+
+    A managed builder user (``precis_builder_user`` != ``deploy``) runs its
+    own heartbeat under ``<base>-<user>`` — e.g. ``maple-coder`` — while
+    the deploy that refreshes its venv reaches it through the BASE host's
+    group (20i rides every redeploy, untagged), so the ledger's ``covered``
+    list names the base only. That slot is deploy-covered in substance; it
+    must not fire ``deploy-uncovered`` (gr708881). The ``boot_ids`` evidence
+    keeps an unrelated host that happens to dash-extend a covered name from
+    riding that host's coverage, and an ambiguous prefix — zero or two
+    covered dash-prefixes — stays uncovered: the probe flags rather than
+    guesses.
+    """
+    if _BUILDER_UNIT not in (boot_ids if isinstance(boot_ids, dict) else {}):
+        return None
+    bases = [c for c in covered if host.startswith(c + "-")]
+    return bases[0] if len(bases) == 1 else None
+
 
 def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     """gr507870 — diff the deploy-published fleet ledger against live
@@ -1215,6 +1249,10 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
 
     * ``deploy-uncovered:<host>`` — a live host in no deploy group.
       Deploys never reach it; it keeps serving the last sha it got.
+      A managed builder lane's ``<base>-<user>`` beat (gr695674) is not
+      one: its base's group deploys it (20i), so a slot with covered-base
+      evidence — the builder unit's ``boot_ids`` key and exactly one
+      covered dash-prefix — is covered, not a finding (gr708881).
     * ``deploy-behind:<host>`` — a covered host whose ``meta.code_sha``
       (heartbeat.py's served-commit stamp) is not the deployed sha.
 
@@ -1307,7 +1345,7 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     out: list[ConditionFinding] = []
     covered_shas = {
         str(c) if isinstance(c, str) and _DEPLOY_SHA_RE.match(c) else None
-        for h, c in beats
+        for h, c, _b in beats
         if str(h) in covered_set
     }
     lone_sha = next(iter(covered_shas)) if len(covered_shas) == 1 else None
@@ -1331,9 +1369,14 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
                 ),
             )
         )
-    for host, code_sha in beats:
+    for host, code_sha, boot_ids in beats:
         host = str(host)
-        if host not in covered_set:
+        base = (
+            host
+            if host in covered_set
+            else _builder_slot_base(host, covered_set, boot_ids)
+        )
+        if base is None:
             out.append(
                 ConditionFinding(
                     key=f"deploy-uncovered:{host}",
@@ -1357,7 +1400,7 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
         ):
             skipped_note = (
                 " (the deploy recorded it skipped — it still runs the pre-deploy sha)"
-                if host in skipped_set
+                if base in skipped_set
                 else ""
             )
             in_flight_note = (

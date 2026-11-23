@@ -1429,8 +1429,12 @@ _FLEET_SHA_B = "b" * 40
 _FLEET_SHA_C = "c" * 40
 
 
-def _seed_beat(store: Store, host: str, *, code_sha: str | None = None) -> None:
+def _seed_beat(
+    store: Store, host: str, *, code_sha: str | None = None, boot_ids=None
+) -> None:
     meta = {"code_sha": code_sha} if code_sha else {}
+    if boot_ids is not None:
+        meta["boot_ids"] = boot_ids
     with store.pool.connection() as conn:
         conn.execute("DELETE FROM host_heartbeat WHERE host = %s", (host,))
         conn.execute(
@@ -1495,6 +1499,93 @@ def test_deploy_fleet_flags_uncovered_and_lagging_hosts(
     assert set(mine) == {"deploy-behind:fleet-b", "deploy-uncovered:fleet-c"}
     assert "recorded it skipped" in mine["deploy-behind:fleet-b"]
     assert "no deploy group" in mine["deploy-uncovered:fleet-c"]
+
+
+def test_deploy_fleet_builder_slot_of_covered_host_is_covered(
+    store: Store, fleet_ledger
+) -> None:
+    """gr708881: a managed builder lane beats under <host>-<user> (gr695674)
+    while the ledger names the base host — 20i refreshes the slot's venv
+    through the base's group on every redeploy, so the slot is covered,
+    not deploy-uncovered. Stale slot code still fires deploy-behind under
+    the slot's own name."""
+    _set_ledger(store, {"sha": _FLEET_SHA_A, "covered": ["fleet-a"]})
+    fleet_ledger.extend(("fleet-a", "fleet-a-coder"))
+    _seed_beat(store, "fleet-a", code_sha=_FLEET_SHA_A)
+    _seed_beat(
+        store,
+        "fleet-a-coder",
+        code_sha=_FLEET_SHA_A,
+        boot_ids={"precis-worker-builder": "boot-1"},
+    )
+    keys = {f.key for f in _probe_deploy_fleet(store)}
+    assert "deploy-uncovered:fleet-a-coder" not in keys
+
+    _seed_beat(
+        store,
+        "fleet-a-coder",
+        code_sha=_FLEET_SHA_B,
+        boot_ids={"precis-worker-builder": "boot-1"},
+    )
+    mine = {f.key: f.detail for f in _probe_deploy_fleet(store)}
+    assert "deploy-uncovered:fleet-a-coder" not in mine
+    assert "deploy-behind:fleet-a-coder" in mine
+
+
+def test_deploy_fleet_builder_slot_of_uncovered_host_still_flags(
+    store: Store, fleet_ledger
+) -> None:
+    """The slot rides the BASE's coverage, not the unit name: a builder
+    lane on a host in no deploy group still fires deploy-uncovered for
+    both names — the evidence exempts the covered-base case only."""
+    _set_ledger(store, {"sha": _FLEET_SHA_A, "covered": ["fleet-a"]})
+    fleet_ledger.extend(("fleet-z", "fleet-z-coder"))
+    _seed_beat(store, "fleet-z", code_sha=_FLEET_SHA_A)
+    _seed_beat(
+        store,
+        "fleet-z-coder",
+        code_sha=_FLEET_SHA_A,
+        boot_ids={"precis-worker-builder": "boot-1"},
+    )
+    keys = {f.key for f in _probe_deploy_fleet(store)}
+    assert "deploy-uncovered:fleet-z" in keys
+    assert "deploy-uncovered:fleet-z-coder" in keys
+
+
+def test_deploy_fleet_dash_extended_host_without_builder_evidence_stays_flagged(
+    store: Store, fleet_ledger
+) -> None:
+    """A real host whose name merely dash-extends a covered host is NOT
+    covered by it: the builder exemption requires the unit's boot_ids
+    evidence, never the name alone (and never a different unit's key)."""
+    _set_ledger(store, {"sha": _FLEET_SHA_A, "covered": ["fleet-a"]})
+    fleet_ledger.extend(("fleet-a", "fleet-a-lane", "fleet-a-old"))
+    _seed_beat(store, "fleet-a", code_sha=_FLEET_SHA_A)
+    _seed_beat(store, "fleet-a-lane", code_sha=_FLEET_SHA_A)
+    _seed_beat(
+        store,
+        "fleet-a-old",
+        code_sha=_FLEET_SHA_A,
+        boot_ids={"precis-worker": "boot-1"},
+    )
+    keys = {f.key for f in _probe_deploy_fleet(store)}
+    assert "deploy-uncovered:fleet-a-lane" in keys
+    assert "deploy-uncovered:fleet-a-old" in keys
+
+
+def test_builder_slot_base_requires_exactly_one_covered_prefix() -> None:
+    """Ambiguity is a finding, not a guess: zero or two covered
+    dash-prefixes never exempt a beat."""
+    from precis.workers.conditions import _builder_slot_base
+
+    boots = {"precis-worker-builder": "b"}
+    assert _builder_slot_base("maple-coder", {"maple"}, boots) == "maple"
+    assert _builder_slot_base("maple-coder", {"maple2"}, boots) is None
+    assert _builder_slot_base("maple-x-y", {"maple", "maple-x"}, boots) is None
+    assert _builder_slot_base("maple", {"maple"}, boots) is None
+    assert _builder_slot_base("maple-coder", {"maple"}, None) is None
+    assert _builder_slot_base("maple-coder", {"maple"}, {}) is None
+    assert _builder_slot_base("maple-coder", {"maple"}, {"precis-worker": "b"}) is None
 
 
 def test_deploy_fleet_stale_ledger_is_one_finding(store: Store, fleet_ledger) -> None:
