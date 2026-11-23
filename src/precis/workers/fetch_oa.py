@@ -21,7 +21,12 @@ per stub, by DOI/arXiv/S2 id unless noted. No gate listed = free, no key:
 9. **Europe PMC** — biomedical OA full text, DOI→PMCID.
 10. **CORE** — green-OA repository copies; key-gated
     (``PRECIS_CORE_API_KEY``), the net for paywalled publishers.
-11. **arXiv** — direct PDF by arXiv ID.
+11. **arXiv** — direct PDF by arXiv ID. The id itself is resolved
+    from the arXiv-issued DOI or OpenAlex/S2 metadata when absent; as a
+    last resort (gr763208) a stub with a real title asks the arXiv API
+    for that title and takes an id only on a strict title (+ first-author)
+    match — a preprint nobody has linked to the DOI, or a title-only
+    stub, otherwise never reaches arXiv at all.
 12. **Semantic Scholar** — ``openAccessPdf`` field, low-volume no-key.
 13. **OpenAlex content** — paid, key-gated cache of full text.
 
@@ -111,6 +116,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse, urlsplit
+from xml.etree import ElementTree
 
 import httpx
 from psycopg import Connection
@@ -130,6 +136,8 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.identity import (
+    _first_author_surname,
+    _surname_from_string,
     arxiv_id_of_doi,
     is_placeholder_title,
 )
@@ -170,6 +178,10 @@ _SOURCE_OPENALEX = "fetcher:openalex"
 _SOURCE_EUROPEPMC = "fetcher:europepmc"
 _SOURCE_CORE = "fetcher:core"
 _SOURCE_ARXIV = "fetcher:arxiv"
+#: arXiv API title search (gr763208) — the resolve-time leg that finds an
+#: id for a title-only (or unlinked-DOI) stub. Same provider as
+#: ``_SOURCE_ARXIV``; never runs as a cascade leg of its own.
+_SOURCE_ARXIV_TITLE = "fetcher:arxiv_title"
 _SOURCE_S2 = "fetcher:s2"
 _SOURCE_OPENALEX_CONTENT = "fetcher:openalex_content"
 
@@ -363,6 +375,7 @@ _PROVIDER_KEYS: dict[str, str | None] = {
     _SOURCE_EUROPEPMC_JATS: "europepmc",
     _SOURCE_CORE: "core",
     _SOURCE_ARXIV: "arxiv",
+    _SOURCE_ARXIV_TITLE: "arxiv",
     _SOURCE_ARXIV_HTML: "arxiv",
     _SOURCE_ARXIV_SOURCE: "arxiv",
     _SOURCE_S2: "s2",
@@ -668,6 +681,11 @@ class StubRef:
     #: an identical event each time.
     retraction_status: str | None = None
     title: str | None = None
+    #: ``refs.authors`` (JSONB list) — used only by the arXiv API title
+    #: search (gr763208), which gates a match on the first author's
+    #: surname when the stub knows it. ``Any`` because the column holds
+    #: either a list of strings or ``{"family", "given"}`` dicts.
+    authors: Any = None
 
 
 # The default worker batch is 32 refs. One compact summary per ref bounds
@@ -930,7 +948,8 @@ def claim_stubs_to_fetch(
                  WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
                r.retraction_status                                 AS retraction_status,
                r.title,
-               {arxiv_fallback}
+               {arxiv_fallback},
+               r.authors
     """.format(arxiv_fallback=arxiv_fallback_sql("r"))
     from_where = f"""
           FROM refs r
@@ -1108,6 +1127,7 @@ def claim_stubs_to_fetch(
             arxiv_unregistered=unregistered,
             retraction_status=r[5],
             title=r[6],
+            authors=r[8],
         )
 
     return [_build(r) for r in rows]
@@ -2331,6 +2351,147 @@ def _resolve_arxiv_id(stub: StubRef, *, email: str) -> str | None:
                 stub.ref_id,
                 exc,
             )
+    return None
+
+
+# ── arXiv API title search (gr763208) ──────────────────────────────
+#
+# Every route above translates an identifier we already hold into an
+# arXiv id; none asks arXiv about the paper itself. A preprint that
+# OpenAlex has not yet linked to the published DOI — or a stub whose only
+# real metadata is its title — therefore never reached arXiv at all, and
+# sat in the no-open-access backlog until a human found the copy by hand.
+# This leg closes that gap: one ``export.arxiv.org/api/query`` call per
+# stub, gated on a strict title match (+ first-author surname when the
+# stub knows it), so no arXiv id is ever written from a loose match.
+
+#: arXiv query-API root. The Atom endpoint is the only arXiv route that
+#: accepts a bibliographic query; ``abs``/``pdf`` URLs need an id.
+_ARXIV_API_BASE = "https://export.arxiv.org/api/query"
+
+#: Minimum ``fuzz.ratio`` (0-100, rapidfuzz) between the stub title and an
+#: entry title before the entry's id is taken. Deliberately stricter than
+#: the 80 the PDF title check tolerates: that check only *rejects* a
+#: download, while this one *writes an identifier* onto the stub. The PDF
+#: title check (:func:`_pdf_title_warnings`) still re-verifies the bytes
+#: after the fetch, so a bad match costs one download, not a wrong body.
+_ARXIV_TITLE_MATCH_MIN = 90
+
+#: Candidates inspected per query. The API ranks by relevance; beyond a
+#: handful the extra entries only dilute the gates.
+_ARXIV_TITLE_SEARCH_MAX_RESULTS = 5
+
+#: Atom namespace of the arXiv API feed.
+_ARXIV_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+
+def _arxiv_title_search_query(title: str, first_author_surname: str) -> str:
+    """arXiv ``search_query`` for one stub's title (+ first author).
+
+    The title searches as a phrase (``ti:"…"``); a known first-author
+    surname is ANDed in as ``au:"…"`` to cut near-title collisions —
+    common for preprint↔published pairs where the stub's title matches
+    several arXiv entries.
+    """
+    clean_title = title.replace('"', " ")
+    phrase = f'ti:"{clean_title}"'
+    if first_author_surname:
+        au = first_author_surname.replace('"', " ")
+        return f'au:"{au}" AND {phrase}'
+    return phrase
+
+
+def _parse_arxiv_api_entries(feed: str) -> list[tuple[str | None, str, str]]:
+    """Parse an arXiv API Atom feed → ``(arxiv_id, title, first_author)``.
+
+    ``arxiv_id`` is the versioned bare id from the entry's ``<id>``
+    (``https://arxiv.org/abs/2401.12345v2`` → ``2401.12345v2``) validated
+    through :func:`_normalize_arxiv_id`, or ``None`` when the entry's id
+    doesn't parse. Titles are whitespace-collapsed (the API wraps them
+    across lines); the first ``<author>`` element's name is the surname
+    gate's handle.
+    """
+    root = ElementTree.fromstring(feed)
+    entries: list[tuple[str | None, str, str]] = []
+    for entry in root.findall(f"{_ARXIV_ATOM_NS}entry"):
+        raw_id = (entry.findtext(f"{_ARXIV_ATOM_NS}id") or "").strip()
+        m = re.match(r"^https?://arxiv\.org/abs/(.+?)/?$", raw_id)
+        arxiv_id = _normalize_arxiv_id(m.group(1)) if m else None
+        title = " ".join((entry.findtext(f"{_ARXIV_ATOM_NS}title") or "").split())
+        first_author = ""
+        author = entry.find(f"{_ARXIV_ATOM_NS}author")
+        if author is not None:
+            first_author = " ".join(
+                (author.findtext(f"{_ARXIV_ATOM_NS}name") or "").split()
+            )
+        entries.append((arxiv_id, title, first_author))
+    return entries
+
+
+def _arxiv_title_matches(stub_title: str, candidate_title: str) -> bool:
+    """``True`` only on a close title match (≥ :data:`_ARXIV_TITLE_MATCH_MIN`).
+
+    Normalization reuses :func:`precis.ingest.verify_metadata._normalize`
+    (markup strip, NFKC, dash fold, lowercase) so the comparison sees the
+    same spellings the ingest-side title check does. rapidfuzz ships in
+    the ``[paper]`` extra, so it imports lazily — on a host without the
+    extra the leg declines rather than taking the fetch pass down.
+    """
+    from precis.ingest.verify_metadata import _normalize
+
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        log.info("fetch_oa: rapidfuzz unavailable — arxiv title search leg off")
+        return False
+    a = _normalize(stub_title)
+    b = _normalize(candidate_title)
+    if not a or not b:
+        return False
+    return bool(fuzz.ratio(a, b) >= _ARXIV_TITLE_MATCH_MIN)
+
+
+def _query_arxiv_title_search(stub: StubRef) -> str | None:
+    """arXiv id for a stub with a real title, else ``None`` (gr763208).
+
+    One Atom query through :func:`safe_get`, paced by the shared ``arxiv``
+    limiter like every other arXiv call. Takes the first entry that clears
+    both gates — :func:`_arxiv_title_matches`, and, when the stub knows
+    its first author, an exact surname agreement with the entry's first
+    author (both sides through :mod:`precis.identity`'s surname keys, so
+    ``"Smith, John"`` and ``"John Smith"`` compare equal). Raises on
+    transport failure — the caller classifies the outcome.
+    """
+    require_rate_limit("arxiv")
+    title = " ".join((stub.title or "").split())
+    surname = _first_author_surname(stub.authors)
+    params = {
+        "search_query": _arxiv_title_search_query(title, surname),
+        "start": 0,
+        "max_results": _ARXIV_TITLE_SEARCH_MAX_RESULTS,
+    }
+    with http_client(
+        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header()}
+    ) as client:
+        resp = safe_get(client, _ARXIV_API_BASE, params=params)
+        resp.raise_for_status()
+        entries = _parse_arxiv_api_entries(resp.text)
+    for arxiv_id, entry_title, first_author in entries:
+        if arxiv_id is None:
+            continue
+        if not _arxiv_title_matches(title, entry_title):
+            continue
+        if surname and _surname_from_string(first_author) != surname:
+            log.info(
+                "fetch_oa: arxiv title search skipped %s for ref_id=%s — "
+                "first-author surname %r != %r",
+                arxiv_id,
+                stub.ref_id,
+                _surname_from_string(first_author),
+                surname,
+            )
+            continue
+        return arxiv_id
     return None
 
 
@@ -4002,6 +4163,103 @@ def _with_resolved_arxiv(
     if _ms(arxiv_t0) >= _SLOW_FAIL_MS:
         gate.fail(lane)
     # A fast None can be either a miss or a fast error, so leave health alone.
+    # gr763208: the identifier routes above only translate ids we already
+    # hold — a preprint nobody has linked to the DOI, or a title-only stub,
+    # gets one more chance from the arXiv API itself.
+    return _with_arxiv_title_search(stub, gate=gate, stop_at=stop_at, store=store)
+
+
+def _with_arxiv_title_search(
+    stub: StubRef,
+    *,
+    gate: _ProviderGate,
+    stop_at: float | None,
+    store: Store | None = None,
+) -> StubRef:
+    """Resolve an arXiv id by title against the arXiv API (gr763208).
+
+    Runs after :func:`_with_resolved_arxiv`'s identifier routes miss, on
+    a stub with a real (non-placeholder) title only — a placeholder would
+    match every entry. The lookup sits behind the ``arxiv`` provider lane
+    like the download leg, so a saturated or sick arXiv defers instead of
+    stalling the pass. On a match the id is registered on the stub and
+    persisted as a strict ``arxiv`` row (so the next claim sees it
+    in-band); :func:`_try_arxiv` then fetches the PDF, and
+    :func:`_pdf_title_warnings` re-verifies the bytes independently, so
+    a bad match costs one download, never a wrong body.
+
+    A miss (or a lookup error) records an event under
+    ``fetcher:arxiv_title`` — without one a title-only stub would write
+    no ``fetcher:%`` event in a whole pass (every cascade leg silently
+    no-ops on a missing identifier) and be re-queried on every pass
+    instead of settling onto the monthly backoff like the other legs.
+    ``store=None`` skips the leg: the event is part of its contract.
+    """
+    if store is None or not stub.title or is_placeholder_title(stub.title):
+        return stub
+    if not gate.acquire("arxiv", deadline=_meta_wait_deadline(stop_at)):
+        log.info(
+            "fetch_oa: arxiv title search deferred for ref_id=%s — arxiv lane busy",
+            stub.ref_id,
+        )
+        return stub
+    t0 = time.perf_counter()
+    error: str | None = None
+    try:
+        found = _query_arxiv_title_search(stub)
+    except RateLimited:
+        # Our own shared limiter refused — not a provider answer; the
+        # deferral-class event keeps the bucket out of the attempts count.
+        _timed_event(
+            store,
+            stub.ref_id,
+            source=_SOURCE_ARXIV_TITLE,
+            event="rate_limited",
+            payload={"provider": "arxiv", "limiter": "shared"},
+            duration_ms=_ms(t0),
+        )
+        return stub
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 429:
+            # Server-side throttle — deferral-class too (gr510430 shape):
+            # the stub is retried on its base window, not backed off as
+            # tried-and-missed.
+            _timed_event(
+                store,
+                stub.ref_id,
+                source=_SOURCE_ARXIV_TITLE,
+                event="rate_limited",
+                payload={"provider": "arxiv", "limiter": "server"},
+                duration_ms=_ms(t0),
+            )
+            return stub
+        found = None
+        error = str(exc)[:200]
+        log.info(
+            "fetch_oa: arxiv title search failed for ref_id=%s: %s",
+            stub.ref_id,
+            error,
+        )
+    finally:
+        gate.release("arxiv")
+    if found:
+        gate.healthy("arxiv")
+        _persist_arxiv_alias(store, stub.ref_id, found)
+        return dataclasses.replace(stub, arxiv=found)
+    if _ms(t0) >= _SLOW_FAIL_MS:
+        gate.fail("arxiv")
+    payload: dict[str, Any] = {"title": stub.title}
+    if error is not None:
+        payload["error"] = error
+    _timed_event(
+        store,
+        stub.ref_id,
+        source=_SOURCE_ARXIV_TITLE,
+        event="api_error" if error is not None else "no_oa_version",
+        payload=payload,
+        duration_ms=_ms(t0),
+    )
     return stub
 
 

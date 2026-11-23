@@ -10,6 +10,10 @@ row, and drops successful PDFs into the watch inbox. Coverage shape:
 * :func:`_try_unpaywall` / :func:`_try_arxiv` / :func:`_try_s2`:
   each returns ``None`` when the relevant identifier is missing;
   emits the right ``FetchOutcome.event`` for each branch.
+* :func:`_query_arxiv_title_search` (gr763208): the arXiv API title
+  leg resolves an id for a title-only / unlinked-DOI stub on a strict
+  title + first-author match; a miss records ``no_oa_version`` so the
+  stub backs off monthly instead of re-querying every pass.
 * :func:`run_oa_fetch_pass` cascade: stops at first ``fetch_ok``,
   records intermediate events, isolates per-stub failures, plays
   nicely with the SSRF guard.
@@ -1184,6 +1188,363 @@ class TestResolveArxivFromDoi:
         )
         assert path is not None
         assert urls == ["https://arxiv.org/pdf/1504.03028.pdf"]
+
+
+_ARXIV_FEED_VASWANI = """<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/1706.03762v7</id>
+    <title>Attention Is All
+    You Need</title>
+    <author><name>Ashish Vaswani</name></author>
+    <author><name>Noam Shazeer</name></author>
+  </entry>
+</feed>
+"""
+
+
+def _feed_resp(feed: str) -> Any:
+    class _R:
+        def raise_for_status(self) -> None:
+            return None
+
+        @property
+        def text(self) -> str:
+            return feed
+
+    return _R()
+
+
+class TestArxivTitleSearch:
+    """gr763208: a stub with a real title gets one arXiv API query leg.
+
+    The identifier routes (DOI/S2 → arXiv) only translate ids we already
+    hold; this leg asks arXiv about the paper itself, gated on a strict
+    title match (+ first-author surname when known), and records a miss
+    so the stub settles onto the monthly backoff instead of re-querying
+    every pass.
+    """
+
+    def test_parse_feed_normalizes_entries(self) -> None:
+        entries = fetch_oa._parse_arxiv_api_entries(_ARXIV_FEED_VASWANI)
+        assert entries == [
+            ("1706.03762v7", "Attention Is All You Need", "Ashish Vaswani")
+        ]
+
+    def test_query_takes_close_match_with_author(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def _fake_get(client: Any, url: str, /, **kw: Any) -> Any:
+            seen["url"] = url
+            seen["params"] = kw.get("params")
+            return _feed_resp(_ARXIV_FEED_VASWANI)
+
+        monkeypatch.setattr(fetch_oa, "safe_get", _fake_get)
+        stub = StubRef(
+            ref_id=1,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key=None,
+            title="Attention Is All You Need",
+            authors=["Vaswani, Ashish"],
+        )
+        assert fetch_oa._query_arxiv_title_search(stub) == "1706.03762v7"
+        assert seen["url"] == fetch_oa._ARXIV_API_BASE
+        assert seen["params"]["search_query"] == (
+            'au:"vaswani" AND ti:"Attention Is All You Need"'
+        )
+        assert seen["params"]["max_results"] == fetch_oa._ARXIV_TITLE_SEARCH_MAX_RESULTS
+
+    def test_query_without_author_omits_au_term(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def _fake_get(client: Any, url: str, /, **kw: Any) -> Any:
+            seen["params"] = kw.get("params")
+            return _feed_resp(_ARXIV_FEED_VASWANI)
+
+        monkeypatch.setattr(fetch_oa, "safe_get", _fake_get)
+        stub = StubRef(
+            ref_id=1,
+            doi=None,
+            arxiv=None,
+            s2_id=None,
+            cite_key=None,
+            title="Attention Is All You Need",
+        )
+        assert fetch_oa._query_arxiv_title_search(stub) == "1706.03762v7"
+        assert seen["params"]["search_query"] == 'ti:"Attention Is All You Need"'
+
+    def test_query_rejects_loose_title(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            fetch_oa,
+            "safe_get",
+            lambda client, url, /, **kw: _feed_resp(_ARXIV_FEED_VASWANI),
+        )
+        stub = StubRef(
+            ref_id=1,
+            doi=None,
+            arxiv=None,
+            s2_id=None,
+            cite_key=None,
+            title="Completely Different Subject Matter Entirely",
+        )
+        assert fetch_oa._query_arxiv_title_search(stub) is None
+
+    def test_query_rejects_wrong_first_author(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa,
+            "safe_get",
+            lambda client, url, /, **kw: _feed_resp(_ARXIV_FEED_VASWANI),
+        )
+        stub = StubRef(
+            ref_id=1,
+            doi=None,
+            arxiv=None,
+            s2_id=None,
+            cite_key=None,
+            title="Attention Is All You Need",
+            authors=["Smith, John"],
+        )
+        assert fetch_oa._query_arxiv_title_search(stub) is None
+
+    def test_query_skips_unparsable_entry_ids(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        feed = _ARXIV_FEED_VASWANI.replace(
+            "http://arxiv.org/abs/1706.03762v7", "http://example.org/not-arxiv"
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "safe_get",
+            lambda client, url, /, **kw: _feed_resp(feed),
+        )
+        stub = StubRef(
+            ref_id=1,
+            doi=None,
+            arxiv=None,
+            s2_id=None,
+            cite_key=None,
+            title="Attention Is All You Need",
+        )
+        assert fetch_oa._query_arxiv_title_search(stub) is None
+
+    def test_match_registers_and_persists_id(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = _seed_paper_stub(
+            store, doi=None, s2_id="S2X", title="Attention Is All You Need"
+        )
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        monkeypatch.setattr(
+            fetch_oa, "_query_arxiv_title_search", lambda stub: "1706.03762"
+        )
+        stub = StubRef(
+            ref_id=ref_id,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key="smith2024example",
+            title="Attention Is All You Need",
+            authors=["Vaswani, Ashish"],
+        )
+        got = fetch_oa._with_resolved_arxiv(
+            stub, email="", gate=fetch_oa._ProviderGate(), stop_at=None, store=store
+        )
+        assert got.arxiv == "1706.03762"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'arxiv'",
+                (ref_id,),
+            ).fetchone()
+            assert row is not None and row[0] == "1706.03762"
+            # A match is not a miss: no arxiv_title event.
+            n_events = conn.execute(
+                "SELECT count(*) FROM ref_events WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            assert n_events is not None and n_events[0] == 0
+
+    def test_miss_writes_no_oa_version_event_and_backs_off(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = _seed_paper_stub(
+            store, doi=None, s2_id="S2X", title="A Real Title Worth Searching"
+        )
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        monkeypatch.setattr(fetch_oa, "_query_arxiv_title_search", lambda stub: None)
+        stub = StubRef(
+            ref_id=ref_id,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key="smith2024example",
+            title="A Real Title Worth Searching",
+        )
+        got = fetch_oa._with_resolved_arxiv(
+            stub, email="", gate=fetch_oa._ProviderGate(), stop_at=None, store=store
+        )
+        assert got.arxiv is None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT source, event, payload->>'title' FROM ref_events "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "fetcher:arxiv_title"
+            assert row[1] == "no_oa_version"
+            assert row[2] == "A Real Title Worth Searching"
+            # The event arms the retry window: the stub is not re-queried
+            # on the next claim (monthly backoff, like the other legs).
+            assert claim_stubs_to_fetch(conn, limit=10) == []
+            conn.commit()
+
+    def test_rate_limited_is_a_deferral_not_a_miss(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = _seed_paper_stub(
+            store, doi=None, s2_id="S2X", title="A Real Title Worth Searching"
+        )
+
+        def _refuse(stub: StubRef) -> str:
+            raise RateLimited("arxiv")
+
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        monkeypatch.setattr(fetch_oa, "_query_arxiv_title_search", _refuse)
+        stub = StubRef(
+            ref_id=ref_id,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key="smith2024example",
+            title="A Real Title Worth Searching",
+        )
+        got = fetch_oa._with_resolved_arxiv(
+            stub, email="", gate=fetch_oa._ProviderGate(), stop_at=None, store=store
+        )
+        assert got.arxiv is None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT event FROM ref_events WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            assert row is not None and row[0] == "rate_limited"
+
+    def test_server_429_is_rate_limited_not_a_miss(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare arXiv 429 is a deferral-class event (gr510430 shape), so a
+        throttled stub is retried on its base window, not backed off as
+        tried-and-missed."""
+        ref_id = _seed_paper_stub(
+            store, doi=None, s2_id="S2X", title="A Real Title Worth Searching"
+        )
+
+        def _throttled(stub: StubRef) -> str:
+            raise httpx.HTTPStatusError(
+                "429",
+                request=httpx.Request("GET", fetch_oa._ARXIV_API_BASE),
+                response=httpx.Response(429),
+            )
+
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        monkeypatch.setattr(fetch_oa, "_query_arxiv_title_search", _throttled)
+        stub = StubRef(
+            ref_id=ref_id,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key="smith2024example",
+            title="A Real Title Worth Searching",
+        )
+        got = fetch_oa._with_resolved_arxiv(
+            stub, email="", gate=fetch_oa._ProviderGate(), stop_at=None, store=store
+        )
+        assert got.arxiv is None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT event, payload->>'limiter' FROM ref_events WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "rate_limited"
+            assert row[1] == "server"
+
+    def test_placeholder_title_skips_the_leg(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = _seed_paper_stub(store, doi=None, s2_id="S2X", title="(no title)")
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        search = Mock()
+        monkeypatch.setattr(fetch_oa, "_query_arxiv_title_search", search)
+        stub = StubRef(
+            ref_id=ref_id,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key="smith2024example",
+            title="(no title)",
+        )
+        got = fetch_oa._with_resolved_arxiv(
+            stub, email="", gate=fetch_oa._ProviderGate(), stop_at=None, store=store
+        )
+        assert got.arxiv is None
+        search.assert_not_called()
+        with store.pool.connection() as conn:
+            n_events = conn.execute(
+                "SELECT count(*) FROM ref_events WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            assert n_events is not None and n_events[0] == 0
+
+    def test_cascade_fetches_arxiv_copy_found_by_title(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end through ``_run_cascade``: the title search registers
+        the id mid-pass and ``_try_arxiv`` downloads the PDF."""
+        ref_id = _seed_paper_stub(
+            store, doi=None, s2_id="S2X", title="Attention Is All You Need"
+        )
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        monkeypatch.setattr(
+            fetch_oa, "_query_arxiv_title_search", lambda stub: "1706.03762"
+        )
+        urls: list[str] = []
+
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
+            urls.append(url)
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        monkeypatch.setattr(fetch_oa, "_pdf_title_warnings", lambda *a, **k: [])
+        stub = StubRef(
+            ref_id=ref_id,
+            doi=None,
+            arxiv=None,
+            s2_id="S2X",
+            cite_key="smith2024example",
+            title="Attention Is All You Need",
+            authors=["Vaswani, Ashish"],
+        )
+        path = fetch_oa._run_cascade(
+            store,
+            stub,
+            tmp_path,
+            email="",
+            api_key="",
+            wiley_token="",
+            core_key="",
+        )
+        assert path is not None
+        assert urls == ["https://arxiv.org/pdf/1706.03762.pdf"]
 
 
 class TestOpenAlexMetaParams:
@@ -3039,6 +3400,11 @@ class TestRunCascade:
             fetch_oa, "_query_core_fulltext_urls", lambda doi, *, api_key: []
         )
         monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", lambda paper_id: None)
+        # …and the gr763208 arXiv title-search follow-up (a live arXiv API
+        # call) — these tests assert exact cascade event rows.
+        monkeypatch.setattr(
+            fetch_oa, "_with_arxiv_title_search", lambda stub, **kw: stub
+        )
 
     def test_disabled_by_default_short_circuits(
         self,
@@ -4208,6 +4574,12 @@ class TestThroughputBounds:
         )
         # Same for the DOI→arXiv id resolver (a live OpenAlex call).
         monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", lambda *a, **k: None)
+        # …and its gr763208 title-search follow-up (a live arXiv API call):
+        # these tests measure the cascade legs' gate behaviour, not the
+        # resolve-time legs.
+        monkeypatch.setattr(
+            fetch_oa, "_with_arxiv_title_search", lambda stub, **kw: stub
+        )
 
     @staticmethod
     def _gate_knobs(monkeypatch: pytest.MonkeyPatch, **kw: Any) -> None:
