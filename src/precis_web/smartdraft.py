@@ -1465,6 +1465,98 @@ def cite_integrity_ok(store: Store, text: str, cache: dict[int, bool]) -> bool:
     return True
 
 
+def _finding_cite(m: re.Match[str]) -> tuple[str, str | None] | None:
+    """``(finding handle, pin)`` when the ``_COMBINED_BODY`` match ``m``
+    cites a finding record (``[fi5]``, ``[label](fi5)``, ``fi5``), else
+    ``None``."""
+    finding = (
+        (m.group("tgt") or "").strip()
+        if m.group("disp")
+        else (m.group("bare") or m.group("bcite") or "")
+    )
+    parsed = handle_registry.parse(finding)
+    if parsed is None or parsed[0] != "finding" or parsed[1]:
+        return None
+    return finding, m.groupdict().get("pin")
+
+
+def _prewarm_finding_retractions(
+    store: Any, texts: list[str], cache: dict[Any, Any]
+) -> None:
+    """Resolve every unpinned finding cite in ``texts`` into
+    :func:`retraction_targets`' cache in bulk: the cited hubs' evidence,
+    cite keys and evidence papers in a fixed number of queries instead of
+    ~a dozen round trips per hub. Fills only entries whose answer equals
+    the lazy per-cite path's: a live finding whose keys resolve directly,
+    and a non-SI live paper per key. A pinned cite, a merged or missing
+    finding, a hub that falls back to its conjuncts and an SI evidence
+    record stay with the lazy path."""
+    from precis.export.latex import _COMBINED_BODY, _iter_refs
+    from precis.store.si_links import SI_PDF_ROLE
+    from precis.taproot.cite import hub_cite_keys
+    from precis.taproot.seniority import derive_evidence_bulk, is_claim_hub_bulk
+    from precis.utils import mentions
+
+    wanted: dict[tuple[str, str, str | None], int] = {}
+    for text in texts:
+        for m in _iter_refs(text or "", _COMBINED_BODY):
+            hit = _finding_cite(m)
+            if hit is None or mentions.parse_pin_suffix(hit[1])[0] is not None:
+                continue
+            cache_key = ("finding", hit[0], hit[1])
+            parsed = handle_registry.parse(hit[0])
+            if cache_key not in cache and parsed is not None:
+                wanted[cache_key] = int(parsed[2])
+    if not wanted:
+        return
+    findings = {
+        rid: ref
+        for rid, ref in store.fetch_refs_by_ids(
+            set(wanted.values()), include_deleted=False
+        ).items()
+        if ref.kind == "finding"
+    }
+    if not findings:
+        return
+    hub_flags = is_claim_hub_bulk(store, findings)
+    evidence = derive_evidence_bulk(store, [r for r in findings if hub_flags.get(r)])
+    supporter_ids = {
+        e.paper_ref_id
+        for ev in evidence.values()
+        for e in ev.originators + ev.corroborators
+    }
+    cite_key_map: dict[int, list[str]] = {}
+    paper_refs: dict[int, Any] = {}
+    if supporter_ids:
+        cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
+        paper_refs = store.fetch_refs_by_ids(supporter_ids, include_deleted=False)
+    keys_by_finding: dict[int, list[str]] = {}
+    for rid, ref in findings.items():
+        if rid in evidence:
+            keys, _notes = hub_cite_keys(
+                store, evidence[rid], cite_key_map=cite_key_map, paper_refs=paper_refs
+            )
+        else:
+            meta = ref.meta or {}
+            key = meta.get("primary_cite_key") or meta.get("pub_id")
+            keys = [str(key)] if key else []
+        if keys:
+            keys_by_finding[rid] = keys
+    for cache_key, rid in wanted.items():
+        if rid in keys_by_finding:
+            cache[cache_key] = keys_by_finding[rid]
+    si_cache = cache.setdefault("si_slug", {})
+    for pid, aliases in cite_key_map.items():
+        ref = paper_refs.get(pid)
+        if ref is None or ref.kind != "paper" or not ref.slug:
+            continue
+        if ref.pdf_role == SI_PDF_ROLE:
+            continue
+        for alias in aliases:
+            si_cache.setdefault(alias, (str(ref.slug), False))
+        cache.setdefault(("r", str(ref.slug)), ref)
+
+
 def retraction_targets(
     store: Any, text: str, cache: dict[Any, Any]
 ) -> list[tuple[str, Any]]:
@@ -1573,14 +1665,9 @@ def retraction_targets(
                 label = token
                 key = _handle_key(token)
         if key is None or label is None:
-            finding = (
-                (m.group("tgt") or "").strip()
-                if m.group("disp")
-                else (m.group("bare") or m.group("bcite") or "")
-            )
-            parsed = handle_registry.parse(finding)
-            if parsed is not None and parsed[0] == "finding" and not parsed[1]:
-                pin = m.groupdict().get("pin")
+            hit = _finding_cite(m)
+            if hit is not None:
+                finding, pin = hit
                 cache_key = ("finding", finding, pin)
                 if cache_key not in cache:
                     cache[cache_key] = (
@@ -1824,13 +1911,32 @@ def review_payloads_for(
     # (the export's own per-walk answer, ``cited_paper_refs``'s too).
     # ``Any``: the memo is a delegating proxy, not a ``Store`` subclass.
     cite_store: Any = RefLookupMemo(store)
-    out: dict[str, dict[str, Any]] = {}
-    for n in nodes:
-        ind = review_indicator(
-            n.chunk_id, n.chunk_kind, status_by_chunk, section_titles=section_titles
+    reviewed = [
+        (n, ind)
+        for n in nodes
+        if (
+            ind := review_indicator(
+                n.chunk_id, n.chunk_kind, status_by_chunk, section_titles=section_titles
+            )
         )
-        if ind is None:
-            continue
+        is not None
+    ]
+    # The retraction flags in bulk: every cited finding's evidence, then
+    # every cited paper's notices, before the per-block loop reads them.
+    _prewarm_finding_retractions(store, [n.text for n, _ in reviewed], retraction_cache)
+    from precis.export._retraction_marks import RetractionMarks
+
+    marks = retraction_cache.setdefault("retraction_marks", RetractionMarks())
+    marks.prefetch(
+        store,
+        {
+            int(ref.id)
+            for n, _ in reviewed
+            for _label, ref in retraction_targets(cite_store, n.text, retraction_cache)
+        },
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for n, ind in reviewed:
         ind["integrity_ok"] = cite_integrity_ok(cite_store, n.text, integrity_cache)
         ind["claim_trust"] = claim_trust_for_block(store, n.text, trust_cache)
         ind["issues"] = chunk_issues(

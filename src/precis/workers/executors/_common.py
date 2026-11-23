@@ -1196,6 +1196,35 @@ def placement_requires(
     return frozenset(tokens)
 
 
+#: Placement tokens that bind only once some live host advertises them
+#: together with the rest of the job's tokens (gr701559). ``gate_image``
+#: needs both gate images on the probing heartbeat's docker and is new: a
+#: fleet where no host advertises it yet would leave every build and land
+#: unplaceable. Until one host does, the job places on its other tokens
+#: and the submit preflight (``capability_probe.gate_host_lack``) refuses
+#: a host that cannot run the gate.
+ROLLOUT_PLACEMENT_TOKENS = frozenset({"gate_image", "uv_bin"})
+
+
+def effective_placement(
+    meta: dict[str, Any],
+    advertised: dict[str, set[str]],
+    lane_adapters: Mapping[str, str] | None = None,
+) -> frozenset[str]:
+    """The :func:`placement_requires` tokens the claim enforces against
+    ``advertised`` (``host -> tokens``, live hosts): the full set when one
+    host offers all of it, else the set without
+    :data:`ROLLOUT_PLACEMENT_TOKENS`. The check spans the fleet, not a
+    ``target_node`` pin, so once gate hosts exist a land pinned to a bare
+    host waits (and pages) instead of failing its preflight on every
+    claim."""
+    tokens = placement_requires(meta, lane_adapters)
+    rollout = tokens & ROLLOUT_PLACEMENT_TOKENS
+    if not rollout or any(tokens <= have for have in advertised.values()):
+        return tokens
+    return tokens - rollout
+
+
 def _placement_ok(
     meta: dict[str, Any],
     advertised: dict[str, set[str]],
@@ -1203,14 +1232,14 @@ def _placement_ok(
     lane_adapters: Mapping[str, str] | None = None,
 ) -> bool:
     """Check-only placement gate (td543917): ``True`` when the job_type
-    declares no :func:`placement_requires` tokens, or the host that would
+    declares no :func:`effective_placement` tokens, or the host that would
     run it (its ``target_node`` pin, else this claiming host — the
     :func:`_coordinator_capability_ok` derivation) advertises every one.
     Applied on every claim path, unlike that opt-in gate: the static
     ``JobTypeSpec.requires`` of an ``ssh_node`` job (``has_gpaw``) is not a
     ``resource_slots`` token, so ``ssh_node`` cannot opt into
     ``check_job_type_requires`` without stranding every GPU job."""
-    tokens = placement_requires(meta, lane_adapters)
+    tokens = effective_placement(meta, advertised, lane_adapters)
     if not tokens:
         return True
     params = meta.get("params") or {}
@@ -1229,11 +1258,11 @@ def placement_gap(
     advertised: dict[str, set[str]],
     lane_adapters: Mapping[str, str] | None = None,
 ) -> frozenset[str]:
-    """The job's :func:`placement_requires` tokens when NO live host in
+    """The job's :func:`effective_placement` tokens when NO live host in
     ``advertised`` (``host -> tokens``) offers all of them at once, else
     empty. A ``target_node`` pin narrows the search to that host. Shared by
     the sweeper's unschedulable alert and the plan tick's queued note."""
-    tokens = placement_requires(meta, lane_adapters)
+    tokens = effective_placement(meta, advertised, lane_adapters)
     if not tokens:
         return frozenset()
     pin = (meta.get("params") or {}).get("target_node")
@@ -2650,7 +2679,7 @@ def claim_executor_jobs(
                 "claim: skip job %s on %s — placement %s not advertised",
                 ref_id,
                 default_host,
-                sorted(placement_requires(meta, lane_adapters_for(meta))),
+                sorted(effective_placement(meta, advertised, lane_adapters_for(meta))),
             )
             return None
         if reclaim_stale_running and meta.get("reserved"):

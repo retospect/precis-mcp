@@ -11072,6 +11072,7 @@ def _step_unplaced(
     from precis.workers.executors._common import (
         advertised_by_host,
         dark_advertised_by_host,
+        effective_placement,
         lane_adapter_map,
         placement_gap,
         placement_requires,
@@ -11172,7 +11173,7 @@ def _step_unplaced(
         # A hub pin (gr741695) is the exception: the task's work is only
         # in that host's hub, so the ask is where its release is spelled
         # out (:func:`_mint_unplaced_ask`), dark host or not.
-        tokens = placement_requires(j.meta, lane_map)
+        tokens = effective_placement(j.meta, advertised, lane_map)
         pin = (j.meta.get("params") or {}).get("target_node")
         waiting_on = (
             None

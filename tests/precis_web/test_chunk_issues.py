@@ -9,6 +9,11 @@ from typing import Any
 
 from precis_web import smartdraft
 
+#: td767081: a status with no recorded notice (every paper here: the fake
+#: store holds no notices) cannot be judged or closed, so its label says to
+#: run a forced check (``_retraction_marks.LEGACY_HINT``).
+_LEGACY = " (no notice recorded: run a forced retraction check)"
+
 
 def test_clean_chunk_has_no_issues() -> None:
     assert smartdraft.chunk_issues(True, None, []) == []
@@ -105,7 +110,7 @@ def test_retraction_issues_in_flags_statused_and_never_checked() -> None:
     assert issues == [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pa10] is retracted",
+            "text": "cited paper [pa10] is retracted" + _LEGACY,
         },
         {
             "kind": "unchecked-citation",
@@ -140,7 +145,7 @@ def test_retraction_issues_in_resolves_chunk_handles() -> None:
     assert issues == [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pc7] is expression of concern",
+            "text": "cited paper [pc7] is expression of concern" + _LEGACY,
         }
     ]
 
@@ -155,7 +160,7 @@ def test_retraction_issues_in_flags_bare_handle_cites() -> None:
     assert issues == [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pa12345] is retracted",
+            "text": "cited paper [pa12345] is retracted" + _LEGACY,
         }
     ]
     # Under the 4-digit floor a bare token stays prose (``pt111`` a
@@ -181,7 +186,7 @@ def test_retraction_issues_in_flags_display_link_cites() -> None:
     assert issues == [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pa12345] is retracted",
+            "text": "cited paper [pa12345] is retracted" + _LEGACY,
         }
     ]
 
@@ -198,7 +203,7 @@ def test_retraction_issues_in_follows_merge_redirects() -> None:
     assert issues == [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pa99] is retracted",
+            "text": "cited paper [pa99] is retracted" + _LEGACY,
         }
     ]
 
@@ -214,7 +219,7 @@ def test_retraction_issues_in_cites_si_parent() -> None:
     assert issues == [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pa31] is retracted",
+            "text": "cited paper [pa31] is retracted" + _LEGACY,
         }
     ]
 
@@ -260,7 +265,7 @@ def test_retraction_issues_in_resolves_slug_cite_forms() -> None:
         assert issues == [
             {
                 "kind": "retracted-citation",
-                "text": f"cited paper [{label}] is retracted",
+                "text": f"cited paper [{label}] is retracted" + _LEGACY,
             }
         ], text
     issues = smartdraft.retraction_issues_in(store, "See [§jones23~p2].", {})
@@ -308,7 +313,7 @@ def test_retraction_issues_in_skips_bare_handles_in_code_and_math() -> None:
     expected = [
         {
             "kind": "retracted-citation",
-            "text": "cited paper [pa12345] is retracted",
+            "text": "cited paper [pa12345] is retracted" + _LEGACY,
         }
     ]
     for text in [

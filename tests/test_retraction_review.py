@@ -112,3 +112,38 @@ def test_notice_lifecycle_in_viewer_and_exports(store: Store, tmp_path: Path) ->
     new_id = new[0].persisted_ref_id
     assert new_id is not None and new_id != notice_id
     assert render_body(store, draft).body.count(f"corrected (pa{new_id})") == 2
+
+
+def test_hub_cite_flags_match_between_bulk_prewarm_and_lazy(store: Store) -> None:
+    """The reader resolves ``[fi]`` cites' evidence and notices in bulk
+    (``_prewarm_finding_retractions`` + ``RetractionMarks.prefetch``); the
+    flags must equal the per-cite path's, and the bulk notice read the
+    per-paper one."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import attach_evidence, mint_hub
+    from precis_web.smartdraft import _prewarm_finding_retractions
+
+    paper = store.insert_ref(kind="paper", slug="hub-evidence-2026", title="Evidence")
+    clean = store.insert_ref(kind="paper", slug="hub-clean-2026", title="Clean")
+    hub = mint_hub(
+        store, CanonicalClaim(sentence="A claim about a reaction.", scope={"m": "x"})
+    )
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=paper.id, role="corroborates")
+    notices, _ = _merge_crossref_and_rw_notices(
+        [], [_RWCacheRow(None, "Retraction", [], None, None, None, record_id=75)]
+    )
+    assert paper.slug is not None
+    with store.tx() as conn:
+        persist_retraction_notices(conn, store, paper.id, paper.slug, notices)
+    text = f"Claim [fi{hub}]."
+
+    lazy = retraction_issues_in(store, text, {}, dc="")
+    assert len(lazy) == 1 and "retracted (pa" in lazy[0]["text"]
+    cache: dict[object, object] = {}
+    _prewarm_finding_retractions(store, [text], cache)
+    assert ("finding", f"fi{hub}", None) in cache
+    assert retraction_issues_in(store, text, cache, dc="") == lazy
+
+    bulk = store.retraction_notices_bulk([paper.id, clean.id])
+    assert bulk == {paper.id: store.retraction_notices(paper.id)}
+    assert store.retraction_notices(clean.id) == []

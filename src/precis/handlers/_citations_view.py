@@ -304,6 +304,7 @@ def _build_rows(
     from precis.export._retraction_marks import RetractionMarks
 
     marks = RetractionMarks()
+    marks.prefetch(store, paper_ids)
     refs_by_id = store.fetch_refs_by_ids(paper_ids | finding_ids)
     dois = store.identifiers_for_refs(list(paper_ids))
     block_counts = {rid: store.chunks.count_usable_chunks(rid) for rid in paper_ids}
@@ -350,6 +351,7 @@ def _build_rows(
     if evidence_rows_paper_ids:
         ev_refs_by_id = store.fetch_refs_by_ids(evidence_rows_paper_ids)
         ev_dois = store.identifiers_for_refs(list(evidence_rows_paper_ids))
+        marks.prefetch(store, evidence_rows_paper_ids)
         already_emitted: set[int] = set()
         for c in raw:
             if c.kind != "finding":

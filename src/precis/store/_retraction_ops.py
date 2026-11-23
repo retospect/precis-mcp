@@ -1,5 +1,6 @@
 """Stored notice analysis and decisions for individual draft blocks."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -44,9 +45,19 @@ class RetractionVerdict:
 class RetractionMixin(StoreCore):
     def retraction_notices(self, paper_id: int) -> list[RetractionNotice]:
         """Include historic notice links whose import predates source indexing."""
+        return self.retraction_notices_bulk([paper_id]).get(paper_id, [])
+
+    def retraction_notices_bulk(
+        self, paper_ids: Iterable[int]
+    ) -> dict[int, list[RetractionNotice]]:
+        """:meth:`retraction_notices` for many papers in one query, ``{paper
+        id: notices}``; a paper with no notice is absent."""
+        ids = sorted(set(paper_ids))
+        if not ids:
+            return {}
         with self.pool.connection() as conn:
             rows = conn.execute(
-                f"""SELECT DISTINCT r.ref_id,
+                f"""SELECT DISTINCT l.src_ref_id, r.ref_id,
                        CASE l.relation WHEN 'retracted-by' THEN 'retracted'
                            WHEN 'corrected-by' THEN 'corrected'
                            ELSE 'expression_of_concern' END,
@@ -55,13 +66,16 @@ class RetractionMixin(StoreCore):
                    FROM links l
                    JOIN refs r ON r.ref_id = l.dst_ref_id AND r.retired_at IS NULL
                    LEFT JOIN retraction_notices n ON n.notice_id = r.ref_id
-                   WHERE l.src_ref_id = %s
+                   WHERE l.src_ref_id = ANY(%s)
                      AND l.relation IN ('retracted-by', 'corrected-by', 'concern-raised-by')
                      AND {secret_fence("r", path="retraction-notices")}
-                   ORDER BY r.ref_id""",
-                (paper_id,),
+                   ORDER BY l.src_ref_id, r.ref_id""",
+                (ids,),
             ).fetchall()
-        return [RetractionNotice(*row) for row in rows]
+        out: dict[int, list[RetractionNotice]] = {}
+        for row in rows:
+            out.setdefault(int(row[0]), []).append(RetractionNotice(*row[1:]))
+        return out
 
     def retraction_verdicts(
         self, chunk_id: int, text_hash: str

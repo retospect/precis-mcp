@@ -27,7 +27,8 @@
     <input type="hidden" name="sha" value="{{ sha }}">
     {% if not notice.analysis %}
     <label class="block">What changed in the paper?
-      <textarea class="block w-full rounded border border-line p-2" name="note" required></textarea>
+      <textarea class="block w-full rounded border border-line p-2" name="note" required
+                placeholder="What the notice retracts or corrects, in the paper's terms…"></textarea>
     </label>
     <button class="rounded border border-line px-3 py-1" name="action" value="analyse">Save analysis</button>
     {% elif not verdict %}
@@ -38,13 +39,15 @@
       </select>
     </label>
     <label class="block">Reason
-      <textarea class="block w-full rounded border border-line p-2" name="note" required></textarea>
+      <textarea class="block w-full rounded border border-line p-2" name="note" required
+                placeholder="Why the notice does or does not touch this block's claim…"></textarea>
     </label>
     <button class="rounded border border-line px-3 py-1" name="action" value="judge">Record verdict</button>
     <button class="rounded border border-line px-3 py-1" name="action" value="propose">Submit for judging</button>
     {% else %}
     <label class="block">How was the issue addressed?
-      <textarea class="block w-full rounded border border-line p-2" name="note" required></textarea>
+      <textarea class="block w-full rounded border border-line p-2" name="note" required
+                placeholder="The edit, replacement source or caveat that settles it…"></textarea>
     </label>
     <button class="rounded border border-line px-3 py-1" name="action" value="close">Close notice for this block</button>
     {% endif %}

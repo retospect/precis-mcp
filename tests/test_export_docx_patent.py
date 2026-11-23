@@ -38,7 +38,11 @@ class _Ref:
         meta: dict[str, Any] | None = None,
         title: str | None = None,
         slug: str | None = None,
+        id: int = 1,
     ) -> None:
+        # ``id``: the inline cite reads the cited ref's retraction notices
+        # by ref id (td767081), as every store ref carries one.
+        self.id = id
         self.meta = meta or {}
         self.title = title
         self.slug = slug

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from precis.export.sources import _resolve_source_ref
@@ -20,6 +21,18 @@ class RetractionMarks:
         self.verdicts: dict[
             tuple[int, str], dict[tuple[int, int], RetractionVerdict]
         ] = {}
+
+    def prefetch(self, store: Any, paper_ids: Iterable[int]) -> None:
+        """Load the notices of every paper in ``paper_ids`` not yet memoised
+        in one query, so a window or export reads them once, not per paper.
+        A store without the bulk read is left to :meth:`for_paper`."""
+        load = getattr(store, "retraction_notices_bulk", None)
+        missing = {pid for pid in paper_ids if pid not in self.notices}
+        if load is None or not missing:
+            return
+        got = load(missing)
+        for pid in missing:
+            self.notices[pid] = got.get(pid, [])
 
     def for_paper(self, store: Any, paper: Any) -> list[RetractionNotice]:
         if paper.id not in self.notices:

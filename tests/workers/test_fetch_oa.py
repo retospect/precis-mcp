@@ -3475,7 +3475,12 @@ class TestRetractionGate:
         with store.pool.connection() as conn:
             stubs = claim_stubs_to_fetch(conn, limit=10)
             conn.commit()
-        assert [s.ref_id for s in stubs] == []
+        # td767081: the gate now records the notice as its own paper ref
+        # (STATUS:notice, carrying the notice DOI), an ordinary stub the
+        # chase may claim. The retracted paper itself must never return.
+        notices = [n.id for n in store.retraction_notices(ref_id)]
+        assert len(notices) == 1
+        assert [s.ref_id for s in stubs] == notices
         assert ref_id not in [r["ref_id"] for r in store.stub_backlog()]
 
     def test_clean_stub_proceeds_to_normal_cascade(

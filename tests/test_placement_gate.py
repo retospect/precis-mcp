@@ -27,6 +27,11 @@ SLICE_HOST: dict[str, int | None] = {
     "git": 1,
 }
 
+#: The gate-host tokens run_slice / land_slice declare (gr701559); they
+#: bind only once a live host advertises them (``effective_placement``).
+GATE = {"gate_image", "uv_bin"}
+GATE_HOST: dict[str, int | None] = {**SLICE_HOST, "gate_image": 1, "uv_bin": 1}
+
 
 def _queue(store: Store, job_type: str, params: dict[str, Any] | None = None) -> int:
     meta = {"job_type": job_type, "executor": "ssh_node", "params": params or {}}
@@ -80,8 +85,8 @@ def _alert_open(store: Store, fingerprint: str) -> bool:
 @pytest.mark.parametrize(
     ("name", "placement"),
     [
-        ("run_slice", {"repo_checkout", "builder", "git"}),
-        ("land_slice", {"repo_checkout", "git"}),
+        ("run_slice", {"repo_checkout", "builder", "git"} | GATE),
+        ("land_slice", {"repo_checkout", "git"} | GATE),
         ("repo_release", {"repo_checkout", "git"}),
         ("pin_bump", {"repo_checkout", "git"}),
         ("release_cut", {"repo_checkout", "git"}),
@@ -343,38 +348,38 @@ def test_adapter_placement_tokens_cover_every_slice_adapter() -> None:
     ("meta", "lane_adapters", "expected"),
     [
         # No lane named → the ``builder`` floor stands.
-        ({"job_type": "run_slice"}, None, {"repo_checkout", "builder", "git"}),
+        ({"job_type": "run_slice"}, None, {"repo_checkout", "builder", "git"} | GATE),
         # A stamped adapter (a prior submit resolved the lane) swaps the
         # floor for its bin token — no lane table needed.
         (
             {"job_type": "run_slice", "adapter": "kimi_tree"},
             None,
-            {"repo_checkout", "kimi_bin", "git"},
+            {"repo_checkout", "kimi_bin", "git"} | GATE,
         ),
         # An unknown adapter stamp falls back to the floor, not a
         # phantom token.
         (
             {"job_type": "run_slice", "adapter": "no_such"},
             None,
-            {"repo_checkout", "builder", "git"},
+            {"repo_checkout", "builder", "git"} | GATE,
         ),
         # A ``params.lane`` pin resolves through the lane→adapter map.
         (
             {"job_type": "run_slice", "params": {"lane": "kimi"}},
             {"kimi": "kimi_tree"},
-            {"repo_checkout", "kimi_bin", "git"},
+            {"repo_checkout", "kimi_bin", "git"} | GATE,
         ),
         # Lane the map can't resolve → the floor stands (the claim path
         # then leaves it to run_slice's pinned-bin park).
         (
             {"job_type": "run_slice", "params": {"lane": "kimi"}},
             {"codex": "codex_exec"},
-            {"repo_checkout", "builder", "git"},
+            {"repo_checkout", "builder", "git"} | GATE,
         ),
         (
             {"job_type": "run_slice", "params": {"lane": "kimi"}},
             None,
-            {"repo_checkout", "builder", "git"},
+            {"repo_checkout", "builder", "git"} | GATE,
         ),
         # The adapter stamp wins over a lane pin — it is the resolved
         # truth, the pin only a fallback.
@@ -385,14 +390,14 @@ def test_adapter_placement_tokens_cover_every_slice_adapter() -> None:
                 "params": {"lane": "kimi"},
             },
             {"kimi": "kimi_tree"},
-            {"repo_checkout", "codex_bin", "git"},
+            {"repo_checkout", "codex_bin", "git"} | GATE,
         ),
         # A non-run_slice spec never substitutes — no ``builder`` floor
         # to swap, and an adapter stamp is irrelevant to it.
         (
             {"job_type": "land_slice", "adapter": "kimi_tree"},
             None,
-            {"repo_checkout", "git"},
+            {"repo_checkout", "git"} | GATE,
         ),
         # A job_type with no spec places nowhere.
         ({"job_type": "no_such_type"}, None, set()),
@@ -435,16 +440,16 @@ def test_placement_gap_reads_the_substituted_token() -> None:
     [
         (
             {"job_type": "run_slice", "params": {"repo": "catpath"}},
-            {"repo_checkout", "builder", "git", "repo_checkout_catpath"},
+            {"repo_checkout", "builder", "git", "repo_checkout_catpath"} | GATE,
         ),
         # Composes with the lane-bin substitution.
         (
             {"job_type": "run_slice", "params": {"repo": "catpath", "lane": "kimi"}},
-            {"repo_checkout", "kimi_bin", "git", "repo_checkout_catpath"},
+            {"repo_checkout", "kimi_bin", "git", "repo_checkout_catpath"} | GATE,
         ),
         (
             {"job_type": "land_slice", "params": {"repo": "catpath"}},
-            {"repo_checkout", "git", "repo_checkout_catpath"},
+            {"repo_checkout", "git", "repo_checkout_catpath"} | GATE,
         ),
         (
             {"job_type": "repo_release", "params": {"repo": "catpath"}},
@@ -458,23 +463,23 @@ def test_placement_gap_reads_the_substituted_token() -> None:
         # A repo with no profile still adds its token: fail closed.
         (
             {"job_type": "run_slice", "params": {"repo": "nope"}},
-            {"repo_checkout", "builder", "git", "repo_checkout_nope"},
+            {"repo_checkout", "builder", "git", "repo_checkout_nope"} | GATE,
         ),
         # The default repo, an empty or non-string value, and no repo at
         # all keep the plain tokens.
         (
             {"job_type": "run_slice", "params": {"repo": "precis"}},
-            {"repo_checkout", "builder", "git"},
+            {"repo_checkout", "builder", "git"} | GATE,
         ),
         (
             {"job_type": "land_slice", "params": {"repo": "precis"}},
-            {"repo_checkout", "git"},
+            {"repo_checkout", "git"} | GATE,
         ),
         (
             {"job_type": "run_slice", "params": {"repo": ""}},
-            {"repo_checkout", "builder", "git"},
+            {"repo_checkout", "builder", "git"} | GATE,
         ),
-        ({"job_type": "land_slice", "params": {}}, {"repo_checkout", "git"}),
+        ({"job_type": "land_slice", "params": {}}, {"repo_checkout", "git"} | GATE),
     ],
 )
 def test_placement_requires_adds_the_second_repo_token(
@@ -552,3 +557,64 @@ def test_lane_pinned_run_slice_alert_heals_on_a_matching_bin_host(
     _advertise(store, "node-b", {"repo_checkout": 1, "kimi_bin": 1, "git": 1})
     assert _alert_unschedulable_jobs(store) == 0
     assert not _alert_open(store, f"unschedulable:{jid}")
+
+
+# ── gate-host rollout tokens (gr701559) ────────────────────────────
+
+
+def test_gate_tokens_bind_only_once_a_host_advertises_them() -> None:
+    """``gate_image`` / ``uv_bin`` are new probes: while no live host
+    advertises the job's tokens with them, placement falls back to the
+    rest (else every build and land would be unplaceable fleet-wide);
+    once one host does, they bind for every host."""
+    from precis.workers.executors._common import (
+        _placement_ok,
+        effective_placement,
+        placement_gap,
+    )
+
+    meta = {"job_type": "land_slice", "params": {"todo_id": 1}}
+    bare = {"repo_checkout", "git"}
+    gated = bare | GATE
+    assert effective_placement(meta, {"h1": bare}) == frozenset(bare)
+    assert _placement_ok(meta, {"h1": bare}, "h1")
+    assert placement_gap(meta, {"h1": bare}) == frozenset()
+    fleet = {"h1": bare, "h2": gated}
+    assert effective_placement(meta, fleet) == frozenset(gated)
+    assert not _placement_ok(meta, fleet, "h1")
+    assert _placement_ok(meta, fleet, "h2")
+    # A host with the gate tokens but not the rest does not arm them:
+    # nothing could place the job there either.
+    assert effective_placement(meta, {"h1": bare, "h2": GATE}) == frozenset(bare)
+    # Job types without the rollout tokens are untouched.
+    deploy = {"job_type": "release_deploy"}
+    assert effective_placement(deploy, fleet) == frozenset({"repo_checkout", "git"})
+
+
+def test_pinned_land_waits_on_a_bare_host_once_gate_hosts_exist() -> None:
+    """The arming check spans the fleet, not the pin: a land pinned to a
+    host without the gate images waits (and pages) once a gate host
+    exists, instead of failing its preflight on every claim."""
+    from precis.workers.executors._common import _placement_ok, placement_gap
+
+    meta = {"job_type": "land_slice", "params": {"todo_id": 1, "target_node": "h1"}}
+    bare = {"repo_checkout", "git"}
+    fleet = {"h1": bare, "h2": bare | GATE}
+    assert not _placement_ok(meta, fleet, "h2")
+    assert placement_gap(meta, fleet) == frozenset(bare | GATE)
+    assert placement_gap(meta, {"h1": bare}) == frozenset()
+
+
+def test_ssh_node_skips_run_slice_on_a_bare_host_beside_a_gate_host(
+    store: Store, _ssh_host: list[int]
+) -> None:
+    """On the real claim pass: node-a without the gate images holds off a
+    build once node-b has them, and claims it when it has them too."""
+    _advertise(store, "node-a", SLICE_HOST)
+    _advertise(store, "node-b", GATE_HOST)
+    jid = _queue(store, "run_slice", {"todo_id": 1})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    assert _status(store, jid) == "queued"
+    _advertise(store, "node-a", GATE_HOST)
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]
