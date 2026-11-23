@@ -18,6 +18,9 @@
   (``[99999]``) still trip the bad-citation check. The cutoff is a lint
   heuristic, since handle parsing imposes no five-digit minimum. See
   :func:`precis.draft.lint._classify_chunk_ref_tokens`.
+- Narration applies the curated chemistry lexicon before saved PubChem
+  synonyms. The chem adapter enriches its records during lookup; render
+  reads them locally so provider timeouts cannot delay audio.
 - Abbreviation hygiene warns about authored definitions of glossary terms:
   export defines first use across chunks, so a later authored definition
   can repeat it. Write hints cover newly introduced definitions; the full

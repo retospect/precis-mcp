@@ -190,3 +190,35 @@ def test_speak_chemistry_reads_the_json_lexicon_table() -> None:
     # Ambiguous / English-word formulas are deliberately absent.
     assert speak_chemistry("NO") == "NO"
     assert speak_chemistry("Fe3O4") == "Fe3O4"
+
+
+# ── reverse lookup (gr695202) ────────────────────────────────────────────
+
+
+def test_spoken_compound_offline_tiers() -> None:
+    assert speak_chemistry("H2O and CAS 67-64-1") == "water and CAS acetone"
+    assert speak_chemistry("Propan-2-one or N,N-dimethylformamide.") == (
+        "acetone or dimethylformamide."
+    )
+    assert speak_chemistry("unknownium and 999-12-0") == "unknownium and 999-12-0"
+
+
+def test_spoken_compound_cached_tier() -> None:
+    cached = {
+        ("propan-2-ol", "name"): ["IPA", "Propan-2-ol", "isopropanol"],
+        ("C3H8O", "formula"): ["Isopropanol"],
+        ("67-64-1", "cas"): ["Propanone"],
+    }
+    assert (
+        speak_chemistry(
+            "C3H8O and PROPAN-2-OL, 67-64-1. xC3H8O and C3H8O-x.", cached=cached
+        )
+        == "isopropanol and isopropanol, acetone. xC3H8O and C3H8O-x."
+    )
+
+
+def test_pick_spoken_synonym_rules() -> None:
+    from precis.draft.chem_speak import pick_spoken_synonym
+
+    assert pick_spoken_synonym(["DTXSID123", "ACETONE", "7-oxo, x", "a" * 40]) is None
+    assert pick_spoken_synonym(["Dimethyl ketone", "Acetone"]) == "acetone"

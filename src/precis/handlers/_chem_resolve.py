@@ -4,7 +4,9 @@ The pure resolver behind ``get(kind='chem', id=...)``. Network access is
 injected as a :data:`Fetch` callable so tests replay recorded responses;
 :func:`http_fetch` is the production fetcher (SSRF-pinned ``safe_get``).
 
-Tiers, first answer wins:
+Molecular formulas use a bounded PubChem fastformula CID search. Multiple
+CIDs are ambiguous regardless of how many return structural properties.
+For names and registry IDs the resolver uses these tiers:
 
 1. **abbreviation table** — curated lab shorthand (DCM, THF, Boc2O, …).
    Known-ambiguous shorthand (TEA, DCE, DMA, DMP) carries every reading
@@ -42,6 +44,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
+from ase.data import atomic_numbers
+
 from precis.pcb._http import Policy
 
 #: ``fetch(url) -> (http_status, body_text)``. Raises on transport failure.
@@ -50,6 +54,16 @@ Fetch = Callable[[str], tuple[int, str]]
 OPSIN_URL = "https://www.ebi.ac.uk/opsin/ws/{name}.json"
 PUBCHEM_CIDS_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/cids/JSON"
+)
+PUBCHEM_FORMULA_URL = (
+    "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/fastformula/{formula}"
+    "/cids/JSON?MaxRecords=5"
+)
+PUBCHEM_KEY_URL = (
+    "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{key}/cids/JSON"
+)
+PUBCHEM_SYNONYMS_URL = (
+    "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/synonyms/JSON"
 )
 PUBCHEM_PROPS_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cids}"
@@ -79,6 +93,7 @@ def _warm_rdkit() -> None:
 
 threading.Thread(target=_warm_rdkit, daemon=True, name="chem-rdkit-warm").start()
 
+_FORMULA_TERM = re.compile(r"([A-Z][a-z]?)([1-9][0-9]*)?")
 _CAS_RE = re.compile(r"^(\d{2,7})-(\d{2})-(\d)$")
 
 # name, SMILES. One entry = unambiguous; several = refuse and list them.
@@ -171,6 +186,7 @@ class Resolution:
     """``(tier, outcome)`` in the order tried — hit / miss / fault: … / skipped."""
     notes: list[str] = field(default_factory=list)
     canonicaliser: str = ""
+    synonyms: list[str] = field(default_factory=list)
 
     @property
     def answer(self) -> StructureReading | None:
@@ -195,6 +211,7 @@ class Resolution:
             "smiles": ans.smiles if ans else None,
             "inchikey": ans.inchikey if ans else None,
             "source": ans.source if ans else None,
+            "synonyms": self.synonyms,
             "candidates": [
                 {
                     "name": c.name,
@@ -238,6 +255,14 @@ def classify_query(query: str) -> str:
         return "cas"
     if lookup_abbreviation(query) is not None:
         return "abbreviation"
+    terms = _FORMULA_TERM.findall(query)
+    if (
+        terms
+        and "".join(symbol + count for symbol, count in terms) == query
+        and (len(terms) > 1 or terms[0][1])
+        and all(atomic_numbers.get(symbol, 0) > 0 for symbol, _ in terms)
+    ):
+        return "formula"
     return "name"
 
 
@@ -354,21 +379,38 @@ def _pubchem_props(cids: list[int], fetch: Fetch) -> list[dict[str, Any]]:
     status, body = _call(fetch, url)
     if status != 200:
         raise _Fault(f"PubChem properties HTTP {status}")
-    rows = (json.loads(body).get("PropertyTable") or {}).get("Properties") or []
-    return [r for r in rows if isinstance(r, dict)]
+    try:
+        rows = json.loads(body)["PropertyTable"]["Properties"]
+        if not isinstance(rows, list):
+            raise ValueError("invalid property list")
+        return [r for r in rows if isinstance(r, dict)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _Fault("invalid PubChem property response") from exc
 
 
-def _tier_pubchem(query: str, fetch: Fetch, notes: list[str]) -> list[StructureReading]:
-    status, body = _call(fetch, PUBCHEM_CIDS_URL.format(name=_q(query)))
+def _pubchem_cids(url: str, fetch: Fetch) -> list[int]:
+    status, body = _call(fetch, url)
     if status in (400, 404):
         return []
     if status != 200:
         raise _Fault(f"HTTP {status}")
-    cids = [
-        int(c)
-        for c in ((json.loads(body).get("IdentifierList") or {}).get("CID") or [])
-        if int(c) > 0
-    ]
+    try:
+        cids = json.loads(body)["IdentifierList"]["CID"]
+        if not isinstance(cids, list) or any(type(c) is not int or c < 1 for c in cids):
+            raise ValueError("invalid CID list")
+        return list(dict.fromkeys(cids))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _Fault("invalid PubChem identifier response") from exc
+
+
+def _tier_pubchem(query: str, fetch: Fetch, notes: list[str]) -> list[StructureReading]:
+    cids = _pubchem_cids(PUBCHEM_CIDS_URL.format(name=_q(query)), fetch)
+    return _pubchem_readings(query, cids, fetch, notes)
+
+
+def _pubchem_readings(
+    query: str, cids: list[int], fetch: Fetch, notes: list[str]
+) -> list[StructureReading]:
     if not cids:
         return []
     out: list[StructureReading] = []
@@ -392,6 +434,35 @@ def _tier_pubchem(query: str, fetch: Fetch, notes: list[str]) -> list[StructureR
             f"PubChem returned {len(cids)} records; first {MAX_CANDIDATES} shown"
         )
     return out
+
+
+def enrich_synonyms(res: Resolution, fetch: Fetch) -> None:
+    """Attach PubChem synonyms only to an already resolved structure."""
+    answer = res.answer
+    if answer is None:
+        return
+    try:
+        if answer.source.startswith("PubChem CID "):
+            cid = int(answer.source.removeprefix("PubChem CID "))
+        elif answer.inchikey:
+            cids = _pubchem_cids(PUBCHEM_KEY_URL.format(key=_q(answer.inchikey)), fetch)
+            if len(cids) != 1:
+                return
+            cid = cids[0]
+        else:
+            return
+        status, body = _call(fetch, PUBCHEM_SYNONYMS_URL.format(cid=cid))
+        if status != 200:
+            return
+        for row in json.loads(body)["InformationList"]["Information"]:
+            if row.get("CID") == cid:
+                res.synonyms = [
+                    name for name in row.get("Synonym", []) if isinstance(name, str)
+                ][:256]
+                return
+    except (_Fault, AttributeError, KeyError, TypeError, ValueError):
+        # Failure to enrich must not discard the structural answer.
+        return
 
 
 def _tier_cir(query: str, fetch: Fetch, notes: list[str]) -> list[StructureReading]:
@@ -496,6 +567,33 @@ def resolve(
             return None
         res.tiers.append((tier, "hit" if got else "miss"))
         return got
+
+    if qtype == "formula":
+        url = PUBCHEM_FORMULA_URL.format(formula=_q(query))
+        cids = run("PubChem formula", lambda: _pubchem_cids(url, fetch)) or []
+        if cids:
+            readings = (
+                run(
+                    "PubChem properties",
+                    lambda: _pubchem_readings(query, cids, fetch, notes),
+                )
+                or []
+            )
+            res.candidates = readings
+            if len(cids) > 1:
+                res.status = "ambiguous"
+                notes.append("The formula identifies multiple PubChem records.")
+                if len(readings) < min(len(cids), MAX_CANDIDATES):
+                    notes.append("PubChem properties are INCOMPLETE")
+                if len(cids) >= MAX_CANDIDATES:
+                    notes.append(f"Formula candidates capped at {MAX_CANDIDATES}.")
+            elif len(readings) == 1 and readings[0].source == f"PubChem CID {cids[0]}":
+                res.status = "resolved"
+            else:
+                res.status = "fault"
+        elif faulted:
+            res.status = "fault"
+        return res
 
     if qtype != "name":
         res.tiers.append(("OPSIN", "skipped (CAS number)"))

@@ -172,6 +172,7 @@ def run_briefing_audio(
         lang=lang,
         lexicon=load_personal_lexicon(),
         episode_date=episode_date,
+        store=store,
     )
     if not segments:
         return {**empty, "ref_id": ref.id, "reason": "empty-briefing"}

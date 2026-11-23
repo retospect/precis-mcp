@@ -14,7 +14,10 @@ layer reads three things off a draft and never writes back:
   respoken (:func:`precis.draft.chem_speak.speak_chemistry` — ``Zn(NO3)2·6H2O``
   → "zinc nitrate hexahydrate", ``MOF-74`` → "MOF 74") *after* the lexicon so
   a user override of a specific formula's surface form wins. The formula
-  table lives in the ``chemistry`` section of ``data/tts_lexicon.json``. Once
+  table lives in the ``chemistry`` section of ``data/tts_lexicon.json``.
+  Curated CAS numbers and IUPAC names also expand. Matching unambiguous
+  chem-cache records can supply PubChem synonyms with a local store read.
+  Once
   :func:`split_by_script` has settled a span's language, its numerals are
   spelled out deterministically (:func:`precis.draft.verbalize.verbalize_text`:
   abbreviations per ``data/tts_lexicon.json``, relative dates anchored to
@@ -371,6 +374,7 @@ def markdown_segments(
     cjk_lang: str | None = None,
     kana_voice: str | None = None,
     episode_date: date | None = None,
+    store: Any = None,
 ) -> list[NarrationSegment]:
     """Split markdown prose into speakable narration segments — one per block,
     and one per *list item* inside a list block.
@@ -388,8 +392,13 @@ def markdown_segments(
     natively — the news-briefing producer and the Japanese reading cast both
     render through this."""
     segments: list[NarrationSegment] = []
-    for kind, block in markdown_blocks(text):
-        spoken = speak_chemistry(apply_lexicon(speakable_markdown(block), lexicon))
+    blocks = [
+        (kind, apply_lexicon(speakable_markdown(block), lexicon))
+        for kind, block in markdown_blocks(text)
+    ]
+    cached = _cached_chemistry(store, "\n".join(block for _, block in blocks))
+    for kind, block in blocks:
+        spoken = speak_chemistry(block, cached=cached)
         if kind == "item":
             spoken = close_sentence(spoken)
         if not _HAS_VOICE.search(spoken):
@@ -466,6 +475,11 @@ def resolve_lexicon(
     return merged
 
 
+def _cached_chemistry(store: Any, text: str) -> dict[tuple[str, str], list[str]]:
+    lookup = getattr(store, "narration_chem_synonyms", None)
+    return lookup(text) if lookup is not None and text else {}
+
+
 def render_narration(
     store: Any,
     ref: Any,
@@ -484,10 +498,14 @@ def render_narration(
     doc-class defaults or the draft's own meta).
     """
     segments: list[NarrationSegment] = []
-    for c in store.drafts.reading_order(ref.id):
-        if c.chunk_kind in _SKIP_KINDS:
-            continue
-        spoken = speak_chemistry(apply_lexicon(speakable(c.text or ""), lexicon))
+    chunks = [
+        (c, apply_lexicon(speakable(c.text or ""), lexicon))
+        for c in store.drafts.reading_order(ref.id)
+        if c.chunk_kind not in _SKIP_KINDS
+    ]
+    cached = _cached_chemistry(store, "\n".join(block for _, block in chunks))
+    for c, block in chunks:
+        spoken = speak_chemistry(block, cached=cached)
         if not _HAS_VOICE.search(spoken):
             continue
         meta = c.meta or {}

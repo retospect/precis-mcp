@@ -162,6 +162,36 @@ class CacheMixin:
         )
         return (ref, cache)
 
+    def narration_chem_synonyms(self, text: str) -> dict[tuple[str, str], list[str]]:
+        """Read saved synonym lists whose query occurs in narration prose."""
+        sql = f"""
+            SELECT cs.meta->>'query', cs.meta->>'query_type', cs.meta->'synonyms'
+            FROM cache_state cs JOIN refs ON refs.ref_id = cs.ref_id
+            WHERE cs.provider = 'chem' AND cs.is_current
+              AND refs.retired_at IS NULL
+              AND {secret_fence("refs", path="cache")}
+              AND cs.meta->>'status' = 'resolved'
+              AND cs.meta->'synonyms' <> '[]'::jsonb
+              AND (cs.fresh_until IS NULL OR cs.fresh_until > now())
+              AND CASE cs.meta->>'query_type'
+                WHEN 'name' THEN
+                    (cs.meta->>'source' = 'OPSIN' OR cs.meta->>'query' LIKE '%%-%%')
+                    AND strpos(lower(%s), lower(cs.meta->>'query')) > 0
+                WHEN 'cas' THEN strpos(%s, cs.meta->>'query') > 0
+                WHEN 'formula' THEN
+                    cs.meta->>'query' ~ '[a-z0-9]'
+                    AND strpos(%s, cs.meta->>'query') > 0
+                ELSE false
+              END
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (text, text, text)).fetchall()
+        return {
+            (query, kind): [name for name in synonyms if isinstance(name, str)]
+            for query, kind, synonyms in rows
+            if query and isinstance(synonyms, list)
+        }
+
     def get_cache_entry_by_ref_id(
         self,
         *,

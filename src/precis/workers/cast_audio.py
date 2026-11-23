@@ -237,6 +237,7 @@ def _news_lead_in(
             lang=default_lang,
             lexicon=load_personal_lexicon(),
             episode_date=episode_date,
+            store=store,
         )
     ]
     log.info(

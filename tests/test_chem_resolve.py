@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
+from precis.draft.narrate import markdown_segments
 from precis.errors import BadInput, Upstream
 from precis.handlers import _chem_resolve as cr
 from precis.handlers.chem import ChemHandler
@@ -72,6 +73,7 @@ def _aspirin_routes() -> dict[str, tuple[int, str] | Exception]:
         _pc_name("aspirin"): (200, _fx("pubchem_name_aspirin.json")),
         _pc_props("2244"): (200, _fx("pubchem_cid_2244.json")),
         _cir("aspirin"): (200, "CC(=O)Oc1ccccc1C(O)=O\n"),
+        cr.PUBCHEM_SYNONYMS_URL.format(cid=2244): NOT_FOUND,
     }
 
 
@@ -338,6 +340,89 @@ def test_handler_resolves_and_caches(chem: ChemHandler) -> None:
     again = chem.get(id="aspirin").body
     assert "PubChem CID 2244" in again
     assert len(fetch.calls) == n  # served from cache
+
+
+def test_formula_refuses_multiple_cids_with_incomplete_properties() -> None:
+    fetch = Replay(
+        {
+            cr.PUBCHEM_FORMULA_URL.format(formula="C4H10"): (
+                200,
+                '{"IdentifierList":{"CID":[7843,6360]}}',
+            ),
+            _pc_props("7843,6360"): (
+                200,
+                '{"PropertyTable":{"Properties":[{"CID":7843,"SMILES":"CCCC"}]}}',
+            ),
+        }
+    )
+    res = cr.resolve("C4H10", fetch)
+    assert res.status == "ambiguous"
+    assert res.answer is None
+    assert len(res.candidates) == 1
+    cr.enrich_synonyms(res, fetch)
+    assert len(fetch.calls) == 2
+
+
+def test_formula_synonyms_flow_from_chem_cache_to_narration(chem: ChemHandler) -> None:
+    fetch = Replay(
+        {
+            cr.PUBCHEM_FORMULA_URL.format(formula="CH4"): (
+                200,
+                '{"IdentifierList":{"CID":[297]}}',
+            ),
+            _pc_props("297"): (
+                200,
+                '{"PropertyTable":{"Properties":[{"CID":297,"SMILES":"C"}]}}',
+            ),
+            cr.PUBCHEM_SYNONYMS_URL.format(cid=297): (
+                200,
+                '{"InformationList":{"Information":[{"CID":297,'
+                '"Synonym":["74-82-8","Marsh gas","Methane"]}]}}',
+            ),
+        }
+    )
+    chem.fetch = fetch
+    # CH4 is curated offline, so verify the actual persisted synonym list
+    # even though the curated pronunciation wins when both are available.
+    assert "resolved" in chem.get(id="CH4").body
+    assert chem.store.narration_chem_synonyms("CH4") == {
+        ("CH4", "formula"): ["74-82-8", "Marsh gas", "Methane"]
+    }
+    assert chem.store.narration_chem_synonyms("ch4") == {}
+    segments = markdown_segments(
+        "We used CH4.", voice="af_heart", lang="en-us", store=chem.store
+    )
+    assert segments[0].text == "We used methane."
+    assert len(fetch.calls) == 3
+
+
+def test_opsin_synonyms_enrich_through_exact_inchikey(chem: ChemHandler) -> None:
+    query = "2-acetyloxybenzoic acid"
+    chem.fetch = Replay(
+        {
+            _opsin(query): (
+                200,
+                '{"status":"SUCCESS","smiles":"CC(=O)Oc1ccccc1C(=O)O"}',
+            ),
+            cr.PUBCHEM_KEY_URL.format(key=ASPIRIN_KEY): (
+                200,
+                '{"IdentifierList":{"CID":[2244]}}',
+            ),
+            cr.PUBCHEM_SYNONYMS_URL.format(cid=2244): (
+                200,
+                '{"InformationList":{"Information":[{"CID":2244,'
+                '"Synonym":["50-78-2","Aspirin"]}]}}',
+            ),
+        }
+    )
+    assert "resolved" in chem.get(id=query).body
+    assert chem.store.narration_chem_synonyms(query) == {
+        (query, "name"): ["50-78-2", "Aspirin"]
+    }
+    segments = markdown_segments(
+        f"We used {query}.", voice="af_heart", lang="en-us", store=chem.store
+    )
+    assert segments[0].text == "We used aspirin."
 
 
 def test_handler_refusal_lists_candidates(chem: ChemHandler) -> None:

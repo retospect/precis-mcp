@@ -1,4 +1,4 @@
-"""``chem`` kind — chemical name / CAS / abbreviation → SMILES + InChIKey.
+"""``chem`` kind — name / formula / CAS / abbreviation → SMILES + InChIKey.
 
 ``get(kind='chem', id='aspirin')`` resolves the identifier through the
 tiers in :mod:`precis.handlers._chem_resolve` (abbreviation table → OPSIN
@@ -16,7 +16,9 @@ and is *not* cached, so an outage never pins a false "not found".
 
 The structured answer lives in ``cache_state.meta`` (``smiles``,
 ``inchikey``, ``status``, ``candidates``, ``tiers``) for callers that
-want it without parsing the body.
+want it without parsing the body. Resolved structures can carry PubChem
+CID synonyms for offline narration. A bounded fastformula lookup refuses
+multiple CIDs, even if some of their structural properties are unavailable.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from precis.handlers._chem_resolve import (
     Fetch,
     Resolution,
     cas_checksum_ok,
+    enrich_synonyms,
     http_fetch,
     is_cas,
     normalise_query,
@@ -55,9 +58,9 @@ class ChemHandler(CacheBackedHandler):
         kind="chem",
         title="Chemical identifier resolver",
         description=(
-            "Resolve a chemical name, CAS number or lab abbreviation to "
-            "canonical SMILES + InChIKey: abbreviation table, then OPSIN, "
-            "then PubChem cross-checked against NCI/CIR. Every answer names "
+            "Resolve a chemical name, formula, CAS number or lab abbreviation to "
+            "canonical SMILES + InChIKey. Formula queries use PubChem fastformula. "
+            "Name queries use OPSIN and PubChem with CIR corroboration. Every answer names "
             "its source; ambiguous identifiers are refused with candidates "
             "listed. Cached 30 days. See precis-chem-help."
         ),
@@ -85,13 +88,13 @@ class ChemHandler(CacheBackedHandler):
         key = normalise_query(query)
         if not key:
             raise BadInput(
-                "chem requires a name, CAS number or abbreviation",
+                "chem requires a name, formula, CAS number or abbreviation",
                 next="get(kind='chem', id='aspirin')",
             )
         if len(key) > 300:
             raise BadInput(
                 "chem identifier longer than 300 characters",
-                next="use a shorter name or CAS number: get(kind='chem', id='aspirin')",
+                next="use a shorter identifier: get(kind='chem', id='aspirin')",
             )
         if is_cas(key) and not cas_checksum_ok(key):
             raise BadInput(
@@ -111,17 +114,18 @@ class ChemHandler(CacheBackedHandler):
         # same way (r40 dogfood, gr489605): same short leg, same switch.
         cir_enabled = settings.get_bool("chem.cir_enabled") is not False
         opsin_enabled = settings.get_bool("chem.opsin_enabled") is not False
+        fetch = self.fetch if self.fetch is not None else http_fetch()
         if self.fetch is not None:
             res = resolve(
                 key,
-                self.fetch,
+                fetch,
                 cir_enabled=cir_enabled,
                 opsin_enabled=opsin_enabled,
             )
         else:
             res = resolve(
                 key,
-                http_fetch(),
+                fetch,
                 polite_fetch("CIR", CIR_POLICY, timeout_s=8.0) if cir_enabled else None,
                 cir_enabled=cir_enabled,
                 opsin_enabled=opsin_enabled,
@@ -136,6 +140,8 @@ class ChemHandler(CacheBackedHandler):
                 f"chem: no source answered for {key!r} ({_tier_line(res)})",
                 next="retry later; the miss was not cached",
             )
+        if res.query_type != "abbreviation":
+            enrich_synonyms(res, fetch)
         return FetchResult(
             title=_title(res),
             body_blocks=[ChunkInsert(ord=0, text=render_resolution(res))],
@@ -174,7 +180,9 @@ def render_resolution(res: Resolution) -> str:
         if ans.source_smiles and ans.source_smiles != ans.smiles:
             lines.append(f"source smiles: {ans.source_smiles}")
     elif res.status == "ambiguous":
-        if len(res.candidates) == 1:
+        if res.query_type == "formula":
+            lines.append(f"{res.query} (formula) → REFUSED: multiple PubChem records.")
+        elif len(res.candidates) == 1:
             lines.append(
                 f"{res.query} ({res.query_type}) → REFUSED: underspecified. The "
                 "registry's pick is shown; confirm it by asking for its full "

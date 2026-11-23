@@ -534,3 +534,26 @@ def test_speakable_strips_single_bracket_finding_handles() -> None:
     assert "[" not in out
     assert "  " not in out
     assert out == "Copper rule holds and more here."
+
+
+def test_render_narration_uses_compound_cache_and_lexicon() -> None:
+    class CachedStore(_Store):
+        def narration_chem_synonyms(
+            self, text: str
+        ) -> dict[tuple[str, str], list[str]]:
+            assert text == "Try 2-acetyloxybenzoic acid and 67-64-1 in water."
+            return {("2-acetyloxybenzoic acid", "name"): ["50-78-2", "Aspirin"]}
+
+    store = CachedStore(
+        [
+            _Chunk("para", "Try **2-acetyloxybenzoic acid** and 67-64-1 in H2O."),
+        ]
+    )
+    segments = render_narration(
+        store,
+        _Ref(),
+        default_voice="af_heart",
+        default_lang="en-us",
+        lexicon={"H2O": "water"},
+    )
+    assert segments[0].text == "Try aspirin and acetone in water."

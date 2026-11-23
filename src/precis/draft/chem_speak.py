@@ -8,11 +8,11 @@ these letter-by-letter or mangles the digits.
 **CONSERVATIVE by design**: :func:`speak_chemistry` only rewrites a span it
 recognizes with high confidence via a curated lookup (ions, common exact
 formulas) or a narrow structural grammar (the hydrate salt shape); anything
-that doesn't fully match is left byte-identical rather than guessed at. No
-network calls (a PubChem-backed lookup is explicitly out of scope, filed
-separately), no new dependencies.
+that doesn't fully match is left byte-identical. Curated registry IDs and
+IUPAC names follow the formula table. Matching saved chem queries can
+supply spoken synonyms from PubChem. All substitutions use local data.
 
-Three transforms, in match-priority order (most specific first, so a looser
+Notation transforms, in match-priority order (most specific first, so a looser
 pattern later can't re-carve a span the specific one already claimed):
 
 1. :data:`_HYDRATE` — ``Cation(Anion)n·mH2O`` salt formulas (curated cation/
@@ -53,7 +53,8 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
+from collections.abc import Mapping, Sequence
+from functools import cache, lru_cache
 from importlib import resources
 
 # ── ion tables (curated, not exhaustive) ────────────────────────────────
@@ -235,19 +236,105 @@ def _designator_repl(m: re.Match[str]) -> str:
     return f"{acronym} {m.group(2)}"
 
 
-def speak_chemistry(text: str) -> str:
+def speak_chemistry(
+    text: str, *, cached: Mapping[tuple[str, str], Sequence[str]] | None = None
+) -> str:
     """Rewrite recognized chemistry notation in ``text`` into spoken words.
 
     Conservative: a span that doesn't fully match a curated lookup or the
-    narrow hydrate-salt grammar is left byte-identical. Runs in match-
-    priority order — hydrate salts (most specific) before the exact-formula
-    table before the generic designator pattern — so a looser rule later
-    never re-carves a span an earlier, more specific one already claimed.
+    narrow hydrate-salt grammar is left byte-identical unless the
+    caller supplied synonyms for an unambiguous saved query. Hydrates
+    and exact formulas take priority over cached names and designators.
     """
     t = _HYDRATE.sub(_hydrate_repl, text)
     t = _formula_re().sub(_formula_repl, t)
+    t = _spell_compounds(t, cached)
     t = _DESIGNATOR.sub(_designator_repl, t)
     return t
 
 
-__all__ = ["speak_chemistry"]
+# ── reverse lookup: formula / registry ID / IUPAC name -> spoken name ────
+
+
+@cache
+def _lexicon_chem(section: str) -> dict[str, str]:
+    raw = json.loads(
+        resources.files("precis.data")
+        .joinpath("tts_lexicon.json")
+        .read_text(encoding="utf-8")
+    )
+    return {k.casefold(): v for k, v in raw.get(section, {}).items()}
+
+
+_PLAIN_NAME = re.compile(r"[A-Za-z]+(?:[ -][A-Za-z]+)*")
+_SPOKEN_MAX_LEN = 30
+
+
+def pick_spoken_synonym(synonyms: Sequence[str]) -> str | None:
+    """Pick a name worth saying aloud from a cached PubChem synonym list.
+
+    PubChem's preferred title and first synonym are often an IUPAC name, a
+    registry code or an all-caps trade name, so neither is trusted. A synonym
+    survives only if it contains plain words, includes lowercase letters,
+    and is at least four characters and at most :data:`_SPOKEN_MAX_LEN` characters. Of the
+    survivors the shortest wins (ties: PubChem order). ``None`` = no safe
+    spoken name; the caller leaves the text verbatim.
+    """
+    best: str | None = None
+    for syn in synonyms:
+        name = syn.strip()
+        if not 4 <= len(name) <= _SPOKEN_MAX_LEN:
+            continue
+        if not _PLAIN_NAME.fullmatch(name):
+            continue
+        if name.isupper():
+            continue
+        if best is None or len(name) < len(best):
+            best = name.lower()
+    return best
+
+
+def _spell_compounds(
+    text: str, cached: Mapping[tuple[str, str], Sequence[str]] | None
+) -> str:
+    # Fold systematic names only. Formula case distinguishes elements.
+    names = {
+        key: spoken
+        for key, spoken in _lexicon_chem("chemistry_iupac").items()
+        if key != spoken
+    }
+    exact = dict(_lexicon_chem("chemistry_registry"))
+    clashes: set[str] = set()
+    for (query, kind), synonyms in (cached or {}).items():
+        spoken = pick_spoken_synonym(synonyms)
+        if spoken is None or query.casefold() == spoken:
+            continue
+        if kind == "name":
+            key = query.casefold()
+            if key in _lexicon_chem("chemistry_iupac"):
+                continue
+            if key in names and names[key] != spoken:
+                clashes.add(key)
+            names.setdefault(key, spoken)
+        else:
+            exact.setdefault(query, spoken)
+    for key in clashes:
+        names.pop(key, None)
+
+    patterns = [(key, re.escape(key)) for key in exact] + [
+        (key, f"(?i:{re.escape(key)})") for key in names
+    ]
+    alternatives = "|".join(
+        pattern for _, pattern in sorted(patterns, key=lambda item: -len(item[0]))
+    )
+    if not alternatives:
+        return text
+    pattern = rf"(?<![\w·-])(?:{alternatives})(?![\w·-])"
+    return re.sub(
+        pattern,
+        lambda m: exact.get(m[0], names.get(m[0].casefold(), m[0])),
+        text,
+    )
+
+
+__all__ = ["pick_spoken_synonym", "speak_chemistry"]

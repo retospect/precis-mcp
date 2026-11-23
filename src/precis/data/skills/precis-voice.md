@@ -111,12 +111,15 @@ the raw digits. Code owns *pronunciation* now; you keep owning two things:
   the rounded number in prose and let the reader tap through to the precise
   one on the page.
 - **Common chemistry notation is auto-respoken** (`precis.draft.chem_speak`,
-  same code-owns-pronunciation layer): a curated set of exact formulas
+  same code-owns-pronunciation layer): offline rules cover exact formulas
   (`CO2` → "carbon dioxide", `H2O` → "water"), `Cation(Anion)n·mH2O` hydrate
   salts (`Zn(NO3)2·6H2O` → "zinc nitrate hexahydrate"), and acronym-number
-  designators (`MOF-74` → "MOF seventy-four"). Anything outside that curated
-  set passes through untouched — for a rare formula, still write the spoken
-  name yourself or lexicon it.
+  designators (`MOF-74` → "MOF seventy-four"). Curated CAS numbers and
+  IUPAC names such as `67-64-1` and `propan-2-one` become "acetone".
+  After these offline rules, narration can choose a short, speech-friendly
+  PubChem synonym for the identifier from a fresh, resolved `chem` cache
+  entry (see `precis-chem-help`). Narration makes no PubChem requests.
+  If neither tier matches, write the spoken name or add it to the lexicon.
 - **What the verbalizer explicitly does *not* handle** — for these, still
   write the words yourself:
   - **Scientific notation**: `1.2×10^19` — spell it out instead, "about one

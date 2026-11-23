@@ -1,5 +1,5 @@
 {
-  "_doc": "TTS lexicon (precis.draft.verbalize + precis.draft.chem_speak) — one plain data file the phonetics DB can share (gr690184). letters: spelled out letter by letter. words: read as a word, value is the respelling the synthesizer gets. expand: replaced by the spoken phrase (matched case-sensitively, trailing dots included). chemistry: exact chemical formula -> spoken name (precis.draft.chem_speak), word-boundary matched so a trailing letter glued onto the formula blocks the match. Unknown all-caps tokens of 2-6 letters default to letters; mixed-case tokens outside the chemistry table are never touched. No entry with more than one common name (Fe3O4 = iron oxide / magnetite) and no formula colliding with an English word (NO) — ambiguity means don't guess.",
+  "_doc": "TTS lexicon (precis.draft.verbalize + precis.draft.chem_speak) — one plain data file the phonetics DB can share (gr690184). letters: spelled out letter by letter. words: read as a word, value is the respelling the synthesizer gets. expand: replaced by the spoken phrase (matched case-sensitively, trailing dots included). chemistry: exact chemical formula -> spoken name (precis.draft.chem_speak), word-boundary matched so a trailing letter glued onto the formula blocks the match. chemistry_registry: exact CAS registry ID to spoken name. chemistry_iupac: case-insensitive systematic name to spoken name. Unknown all-caps tokens of 2-6 letters default to letters; mixed-case tokens outside the chemistry table are never touched. No entry with more than one common name (Fe3O4 = iron oxide / magnetite) and no formula colliding with an English word (NO) — ambiguity means don't guess.",
   "letters": [
     "DFT", "DNA", "RNA", "PCR", "AI", "ML", "LLM", "GPU", "CPU", "API",
     "USB", "LED", "XRD", "XPS", "STM", "AFM", "TEM", "SEM", "NMR", "UV",
@@ -71,5 +71,29 @@
     "WS2": "tungsten disulfide",
     "WSe2": "tungsten diselenide",
     "WTe2": "tungsten ditelluride"
+  },
+  "chemistry_registry": {
+    "7732-18-5": "water",
+    "124-38-9": "carbon dioxide",
+    "7664-41-7": "ammonia",
+    "67-64-1": "acetone",
+    "64-17-5": "ethanol",
+    "67-56-1": "methanol",
+    "71-43-2": "benzene",
+    "108-88-3": "toluene",
+    "7647-14-5": "sodium chloride",
+    "64-19-7": "acetic acid"
+  },
+  "chemistry_iupac": {
+    "propan-2-one": "acetone",
+    "ethanol": "ethanol",
+    "methanol": "methanol",
+    "ethanoic acid": "acetic acid",
+    "oxidane": "water",
+    "dihydrogen monoxide": "water",
+    "ethene": "ethylene",
+    "trichloromethane": "chloroform",
+    "propan-2-ol": "isopropanol",
+    "n,n-dimethylformamide": "dimethylformamide"
   }
 }

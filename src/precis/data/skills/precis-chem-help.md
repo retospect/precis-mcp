@@ -1,11 +1,12 @@
 ---
 id: precis-chem-help
 family: tools
-title: precis — chemical name to SMILES
-summary: Resolve a chemical name, CAS number or lab abbreviation to canonical SMILES + InChIKey, with the source named and ambiguity refused
+title: precis — chemical identifier to SMILES
+summary: Resolve a chemical name, formula, CAS number or lab abbreviation to canonical SMILES + InChIKey, with the source named and ambiguity refused
 answers:
   - how do I turn a chemical name into a SMILES string?
   - how do I look up a CAS number?
+  - can I look up a molecular formula?
   - what does DCM / TEA / Boc2O mean as a structure?
   - why did my chemical name come back ambiguous?
 applies-to: get/tag/link (kind='chem')
@@ -14,9 +15,9 @@ kinds: [chem, rxn, route]
 status: active
 ---
 
-# precis-chem-help — chemical name to SMILES
+# precis-chem-help — chemical identifier to SMILES
 
-`get(kind='chem', id='<name | CAS | abbreviation>')` returns canonical
+`get(kind='chem', id='<name | formula | CAS | abbreviation>')` returns canonical
 SMILES and the InChIKey for one compound. Use it before you write a
 SMILES by hand into `put(kind='rxn', rxn_smiles=...)` or
 `put(kind='route', target=...)`: a SMILES written from memory is the
@@ -27,6 +28,7 @@ get(kind='chem', id='aspirin')
 get(kind='chem', id='50-78-2')            # CAS number, check digit verified
 get(kind='chem', id='2-acetyloxybenzoic acid')
 get(kind='chem', id='DCM')                # lab shorthand
+get(kind='chem', id='C4H10')              # formula, refused if multiple CIDs match
 ```
 
 A resolved answer looks like this:
@@ -66,6 +68,11 @@ When rdkit is installed, the SMILES is canonicalised with rdkit and the
 InChIKey is computed from it. The `canonical:` line names the rdkit
 version. If the source's own InChIKey disagrees, a `note:` line says so.
 
+After CAS and curated shorthand checks, an exact molecular formula with
+element symbols in standard case is classified as `formula`. Formula
+queries go directly to PubChem fastformula for matching compound IDs
+(CIDs), followed by a PubChem properties lookup for the structures.
+
 ## Ambiguity is refused
 
 The resolver gives no SMILES when an identifier has more than one reading.
@@ -74,6 +81,8 @@ Instead it lists the readings with their sources:
 - shorthand with several meanings: `TEA` (triethylamine or
   triethanolamine), `DCE`, `DMA`, `DMP`;
 - PubChem returning several records for one name;
+- PubChem fastformula returning multiple CIDs for one formula, even when
+  structural properties are available for only one candidate;
 - PubChem and CIR reading the same name as different structures. For
   example, PubChem maps the bare name "dichloroethane" to the
   1,1-isomer, while "1,2-dichloroethane" is the common solvent.
@@ -107,8 +116,10 @@ same way: systematic names then resolve from PubChem/CIR alone, and the
 bad check digit is refused before any lookup.
 
 The structured answer is stored in the cache meta as `smiles`,
-`inchikey`, `status`, `candidates` and `tiers`. Bare
-`get(kind='chem')` lists recent lookups.
+`inchikey`, `status`, `candidates` and `tiers`. Resolved lookups can also
+cache PubChem CID `synonyms` for narration. Synonym enrichment is
+best-effort, so a structure can still resolve when synonyms are unavailable.
+Bare `get(kind='chem')` lists recent lookups.
 
 ## Limits
 
