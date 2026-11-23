@@ -290,9 +290,11 @@ that holds the lane's credentials with ``params.target_node``):
   judged, and reads a land folder as empty once its job ended; a folder the
   hub does not hold stays and is reported (:func:`_alert_kept_folders`:
   the task's comment and the alert).
-  The sweep judges a folder only by a job row of its own task
-  (``params.todo_id``); a folder with no such row is never touched, and one
-  alert says so (:func:`_unowned_folder`). A stored ``FAILED`` push is tried
+  The sweep settles a folder only by a job row of its own task
+  (``params.todo_id``); a folder with no such row stays and raises one alert
+  (:func:`_unowned_folder`). The periodic index-lock check uses recognized
+  slice folder names, including legacy worktrees without an attempt job.
+  A stored ``FAILED`` push is tried
   again after 30, 60, 120 and 240 seconds (:data:`PUSH_RETRY_AFTER_S`). One
   call of the sweep has a time budget shared by the roots (:data:`TIDY_BUDGET_S`).
   A build folder is deleted only in the pass that finalized it
@@ -12422,7 +12424,10 @@ def tidy(store: Any, node: str | None) -> None:
     settles every attempt folder of every checkout this host builds in
     (:func:`_host_roots`): a terminal job's folder gets its push record
     (:func:`_settle`), is dropped when the hub holds its head, and otherwise
-    stays with a report (:func:`_alert_kept_folders`). At most one sweep per
+    stays with a report (:func:`_alert_kept_folders`). The sweep checks stale
+    index locks only in recognized attempt and legacy slice folders, including
+    the land probes. A budgeted pass resumes at the next folder on that root.
+    At most one sweep per
     :data:`TIDY_EVERY_S` in this process. Every worker that runs the
     executor calls this, also on a host that builds nothing: a checkout
     with neither a hub nor a folders directory is passed over before any

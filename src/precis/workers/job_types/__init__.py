@@ -75,6 +75,9 @@ production rollout, and the launch check prevents a stale slice server
 from supplying evidence for a validation verdict. An endpoint that
 cannot prove the revision gives back the lease without spending an attempt.
 
+The periodic sweep reaches parked slice locks and resumes across watch
+budgets, so a slow folder cannot starve later folders.
+
 Build folders are disposable (gr741695, ``_slice_ws``): every ``run_slice``
 and ``land_slice`` job cuts its own clone of the host's hub (a bare
 repository, one ref ``refs/factory/build/<todo>/<job>`` per attempt) and no

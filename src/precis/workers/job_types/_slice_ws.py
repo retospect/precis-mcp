@@ -77,6 +77,7 @@ import subprocess
 import sys
 import time
 import uuid
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -158,6 +159,9 @@ _MAINTAIN_TIMEOUT_S = 300.0
 _SHA = re.compile(r"[0-9a-f]{40}")
 _BUILD_REF = re.compile(r"refs/factory/build/(\d+)/(\d+)")
 _ATTEMPT_DIR = re.compile(r"slice-td(\d+)-(land-)?j(\d+)")
+_LEGACY_SLICE_DIR = re.compile(r"slice-(?:main-)?td\d+")
+# One cursor per worktrees directory, used under the host watch lock.
+_SWEEP_AFTER: dict[Path, Path] = {}
 _CUT_TMP = re.compile(r"slice-.+\.cut-[0-9a-f-]+")
 _DROP_TMP = re.compile(r"slice-.+\.drop-[0-9a-f-]+")
 _BASE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
@@ -1089,22 +1093,27 @@ def sweep(
     a stored one. A :attr:`~Pushed.safe` folder is dropped; any other
     stays and yields a note that begins ``"kept"`` and names the folder,
     for the caller's alert. A land folder holds no work of its own:
-    ``settle`` returns an ``EMPTY`` record once its job ended. Leftovers
-    older than an hour are removed: the ``*.cut-*`` temporary of a failed
-    :func:`cut` and the ``*.drop-*`` remains of a :func:`drop` that could
-    not finish. Then :func:`maintain_hub` runs.
+    ``settle`` returns an ``EMPTY`` record once its job ended.
 
-    ``budget_s`` bounds the time under the watch pass's lock: once it is
-    spent no further folder is started (one already started is finished)
-    and the hub's tidy-up is left for a sweep that got through. A folder
-    that was judged is cheap the next time, so a later sweep reaches the
-    rest. Never raises; returns one note per action."""
+    Attempt folders and legacy slice worktrees are checked for empty index
+    locks older than an hour. The process checks in land_slice keep locks
+    whose owners might still be live. This covers parked folders that never
+    reach a launch reaper (gr657310). The sweep also removes hour-old
+    ``*.cut-*`` and ``*.drop-*`` leftovers, then runs :func:`maintain_hub`.
+
+    When ``budget_s`` runs out, the sweep finishes the current folder and
+    defers the remaining folders and hub maintenance. The next budgeted
+    pass resumes after the last visited folder, even if it was removed.
+    Never raises. Returns one note per action."""
     notes: list[str] = []
     try:
         folders = _rs().worktrees_dir(root)
         began = time.monotonic()
         entries = sorted(folders.iterdir()) if folders.is_dir() else []
-        for seen, entry in enumerate(entries):
+        previous = _SWEEP_AFTER.get(folders) if budget_s is not None else None
+        start = bisect_right(entries, previous) if previous is not None else 0
+        for seen in range(start, len(entries)):
+            entry = entries[seen]
             if budget_s is not None and time.monotonic() - began >= budget_s:
                 notes.append(
                     f"sweep paused after {time.monotonic() - began:.0f}s with "
@@ -1113,6 +1122,9 @@ def sweep(
                 )
                 return notes
             notes.extend(_sweep_one(entry, settle, keep))
+            if budget_s is not None:
+                _SWEEP_AFTER[folders] = entry
+        _SWEEP_AFTER.pop(folders, None)
         hub = hub_path(root)
         if (hub / "HEAD").is_file():
             note = maintain_hub(hub)
@@ -2128,6 +2140,22 @@ def _make_writable_and_retry(
     func(path)
 
 
+def _sweep_index_lock(entry: Path) -> list[str]:
+    """The stale ``index.lock`` reap note for one folder, when land_slice's
+    keep-on-doubt judge called it dead — a 0-byte lock older than an hour
+    only, the sweep's stricter line (gr657310): a parked slice's folder
+    is never launched into, so the submit/land reapers never reach its
+    lock — the sweep does, for attempt folders and the reused
+    ``slice-td<id>``/``slice-main-td<id>`` trees alike. Empty otherwise;
+    never raises."""
+    # land_slice imports this module at load time; the lazy import keeps
+    # the dependency one-way.
+    from precis.workers.job_types import land_slice as _ls
+
+    note = _ls._sweep_index_lock(entry)
+    return [note] if note else []
+
+
 def _sweep_one(
     entry: Path,
     settle: Callable[[Path, int, int, str], Pushed | None],
@@ -2157,18 +2185,25 @@ def _sweep_one(
                 ]
             return [f"removed the leftover of {what}: {entry.name}"]
         parsed = parse_attempt_dir(entry)
-        if parsed is None or not entry.is_dir():
+        if parsed is None and not _LEGACY_SLICE_DIR.fullmatch(entry.name):
             return []
+        if entry.is_symlink() or not entry.is_dir():
+            return []
+        notes = _sweep_index_lock(entry)
+        if parsed is None:
+            return notes
         todo_id, job_id, role = parsed
         pushed = settle(entry, todo_id, job_id, role)
         if pushed is None:
-            return []
+            return notes
         if not pushed.safe:
-            return [f"kept {entry.name}: {pushed.state}: {pushed.note}"[:400]]
+            return notes + [f"kept {entry.name}: {pushed.state}: {pushed.note}"[:400]]
         sub: list[str] = []
         if drop(entry, notes=sub):
-            return [f"dropped {entry.name} ({pushed.state})"]
-        return [f"kept {entry.name}: could not be removed ({'; '.join(sub)[:200]})"]
+            return notes + [f"dropped {entry.name} ({pushed.state})"]
+        return notes + [
+            f"kept {entry.name}: could not be removed ({'; '.join(sub)[:200]})"
+        ]
     except Exception as exc:
         log.warning("sweep of %s failed", entry, exc_info=True)
         return [

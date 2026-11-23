@@ -8166,7 +8166,7 @@ def _mint_job(
     if band is not None:
         meta_extra[_dscore.CLAIM_BAND_META_KEY] = band
     with store.tx() as conn:
-        job_id, _reused = mint_job_once(
+        job_id, reused = mint_job_once(
             store,
             conn=conn,
             job_type=job_type,
@@ -8180,13 +8180,16 @@ def _mint_job(
         )
         for value in stale:
             store.remove_tag(n.id, Tag.open(value), conn=conn)
-        store.append_event(
-            n.id,
-            source=NAME,
-            event="job-minted",
-            payload={"job_id": job_id, "job_type": job_type, "executor": executor},
-            conn=conn,
-        )
+        if not reused:
+            # gr657310: a reused mint is silent — the idem key's live job
+            # was already counted at its own mint.
+            store.append_event(
+                n.id,
+                source=NAME,
+                event="job-minted",
+                payload={"job_id": job_id, "job_type": job_type, "executor": executor},
+                conn=conn,
+            )
     for value in stale:
         n.open_tags.pop(value, None)
     return job_id

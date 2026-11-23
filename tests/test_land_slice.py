@@ -9263,6 +9263,67 @@ def test_index_lock_replaced_between_judgement_and_unlink_is_kept(
     assert "attempt:1" not in store.tag_strings(42)
 
 
+def test_stale_lock_reaped_without_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657310: a slice parked behind an ask or a review is never
+    launched into, so the submit/land reapers never reach its
+    ``index.lock`` — the host sweep (``_sweep_index_lock``, no job in
+    hand) judges the same keep-on-doubt rule and reaps the provably dead
+    one, under the sweep's stricter line: 0-byte and older than an hour.
+    A younger, or a nonempty, lock is kept; any doubt still keeps it."""
+    tree = tmp_path / "slice-td770064"
+    gitdir = tree / ".git"
+    gitdir.mkdir(parents=True)
+    lock = gitdir / "index.lock"
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args == ["rev-parse", "--absolute-git-dir"]:
+            return _proc(str(gitdir) + "\n")
+        return _proc(rc=1)
+
+    monkeypatch.setattr(land_slice, "_git", fake_git)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+
+    def plant(payload: bytes, age_s: float) -> None:
+        lock.write_bytes(payload)
+        old = time.time() - age_s
+        os.utime(lock, (old, old))
+
+    # The sweep's line: 0-byte and older than an hour reaps.
+    plant(b"", land_slice.SWEEP_INDEX_LOCK_STALE_S + 600)
+    note = land_slice._sweep_index_lock(tree)
+    assert note is not None and "reaped stale 0-byte index.lock" in note
+    assert not lock.exists()
+
+    def unexpected_probe(path: Path) -> bool:
+        pytest.fail(f"process probe for an ineligible lock in {path}")
+
+    monkeypatch.setattr(land_slice, "_git_in_tree", unexpected_probe)
+    monkeypatch.setattr(land_slice, "_held_open", unexpected_probe)
+    # 0-byte but only 20 minutes old: past the launch path's 10-minute
+    # line, under the sweep's hour — the periodic pass keeps it.
+    plant(b"", land_slice.INDEX_LOCK_STALE_S + 600)
+    assert land_slice._sweep_index_lock(tree) is None
+    assert lock.exists()
+    # Older than an hour but nonempty: a writer got past open() — kept.
+    plant(b"payload", land_slice.SWEEP_INDEX_LOCK_STALE_S + 600)
+    assert land_slice._sweep_index_lock(tree) is None
+    assert lock.exists()
+    # Kept on doubt: a git the sweep cannot rule out holds the live lock.
+    plant(b"", land_slice.SWEEP_INDEX_LOCK_STALE_S + 600)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: True)
+    assert land_slice._sweep_index_lock(tree) is None
+    assert lock.exists()
+    # A folder that is not a repo answers no gitdir — skipped silently.
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    monkeypatch.setattr(land_slice, "_git", lambda a, c: _proc(rc=1))
+    assert land_slice._sweep_index_lock(plain) is None
+
+
 def test_already_on_main_identical_tree_finishes_green_without_ship(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:

@@ -1459,6 +1459,21 @@ def test_free_run_breaks_on_a_real_attempt(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def test_reused_mint_appends_no_event(store: Store) -> None:
+    """gr657310: a mint whose idem key already owns a live job reuses it —
+    the second ``_mint_job`` returns the same id and appends no second
+    ``job-minted`` event."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    n = pd._load(store).nodes[task]
+    first = pd._mint_job(store, n, "run_slice", "ssh_node", {"todo_id": task})
+    second = pd._mint_job(store, n, "run_slice", "ssh_node", {"todo_id": task})
+    assert second == first
+    events = store.events_for(task, event="job-minted")
+    assert len(events) == 1
+    assert events[0].payload["job_id"] == first
+
+
 def test_identical_free_failures_cap_to_a_coordinator_ask(
     store: Store,
 ) -> None:

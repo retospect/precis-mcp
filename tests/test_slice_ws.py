@@ -1623,6 +1623,45 @@ def test_a_sweep_stops_starting_folders_when_its_time_is_spent(
     assert not any("paused" in n for n in notes) and maintained == [rig.hub]
 
 
+def test_budgeted_sweep_resumes_past_folders_that_stay(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trees = [rig.cut(job=j) for j in (1, 2, 3)]
+    visited: list[Path] = []
+    clock = 0.0
+
+    def settle(tree: Path, todo: int, job: int, role: str) -> None:
+        nonlocal clock
+        visited.append(tree)
+        clock += 2
+
+    monkeypatch.setattr(ws.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(ws, "maintain_hub", lambda hub: None)
+    for _ in trees:
+        ws.sweep(rig.root, settle, budget_s=1)
+    assert visited == trees
+    assert all(tree.is_dir() for tree in trees)
+
+
+def test_sweep_checks_only_recognized_slice_directories(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.job_types import land_slice
+
+    folders = ws._rs().worktrees_dir(rig.root)
+    folders.mkdir(parents=True, exist_ok=True)
+    names = ("slice-td1", "slice-main-td2", "manual", "slice-td3-other")
+    for name in names:
+        (folders / name).mkdir()
+    (folders / "slice-td4").symlink_to(folders / "manual", target_is_directory=True)
+    (folders / "slice-td5").touch()
+    visited: list[Path] = []
+    monkeypatch.setattr(land_slice, "_sweep_index_lock", visited.append)
+    monkeypatch.setattr(ws, "maintain_hub", lambda hub: None)
+    assert ws.sweep(rig.root, lambda *a: pytest.fail("legacy folder settled")) == []
+    assert visited == sorted(folders / name for name in names[:2])
+
+
 def test_sweep_drops_safe_folders_and_keeps_the_rest(
     rig: _Rig, evicted: list[tuple[str, bool]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1690,6 +1729,46 @@ def test_sweep_of_a_host_with_no_folders_does_not_raise(tmp_path: Path) -> None:
     """The janitor runs on every tick, including on a host that has never cut
     anything."""
     assert ws.sweep(tmp_path / "no-root", lambda *a: None) == []
+
+
+def test_sweep_reaps_a_stale_zero_byte_lock_without_a_launch(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657310: the periodic sweep is the only reaper a parked slice's
+    folder gets — it is never launched into, so the launch path's reaper
+    never runs. The sweep reaps a 0-byte ``index.lock`` older than its
+    hour with no live git; a younger one and a nonempty one are kept."""
+    from precis.workers.job_types import land_slice
+
+    tree = rig.cut()
+    gitdir = Path(_g(tree, "rev-parse", "--absolute-git-dir"))
+    lock = gitdir / "index.lock"
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setattr(ws, "maintain_hub", lambda hub: None)
+
+    # Older than the sweep's hour, 0-byte, no live git: reaped in the pass.
+    lock.write_bytes(b"")
+    _age(lock, land_slice.SWEEP_INDEX_LOCK_STALE_S + 60)
+    notes = ws.sweep(rig.root, lambda *a: None)
+    assert not lock.exists()
+    assert any("reaped stale 0-byte index.lock" in n for n in notes)
+
+    # Twenty minutes old: past the launch path's ten minutes, under the
+    # sweep's hour — kept for a later pass.
+    lock.write_bytes(b"")
+    _age(lock, land_slice.INDEX_LOCK_STALE_S + 600)
+    notes = ws.sweep(rig.root, lambda *a: None)
+    assert lock.exists()
+    assert not any("reaped stale" in n for n in notes)
+
+    # Nonempty even past the hour: a writer got past open() — never the
+    # sweep's to remove.
+    lock.write_bytes(b"payload")
+    _age(lock, land_slice.SWEEP_INDEX_LOCK_STALE_S + 60)
+    notes = ws.sweep(rig.root, lambda *a: None)
+    assert lock.exists()
+    assert not any("reaped stale" in n for n in notes)
 
 
 def test_sweep_settles_and_drops_one_folder_after_another_and_makes_no_lock_file(

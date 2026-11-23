@@ -779,6 +779,12 @@ SHIP_LOCK_DIR = "precis-ship-worktree.lock.d"
 #: keep-on-doubt rule as scripts/reap-index-locks' STALE_SECONDS.
 INDEX_LOCK_STALE_S = 600
 
+#: The host sweep's stale-lock line (gr657310): the periodic pass runs
+#: with no job in hand and nobody watching, so it reaps only a 0-byte
+#: lock older than one hour — stricter than the launch path's
+#: :data:`INDEX_LOCK_STALE_S`, which a waiting job's own reaper backs.
+SWEEP_INDEX_LOCK_STALE_S = 3600
+
 #: How long a live ``index.lock`` is waited on before the job fails
 #: retryable (``attempt_free`` — the tick re-mints the land; the red
 #: path would charge the branch for infra that is not its fault).
@@ -4188,7 +4194,9 @@ def _tree_doubt() -> str:
     )
 
 
-def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result | None]:
+def _index_lock_state(
+    lock: Path, checkout: Path, *, periodic: bool = False
+) -> tuple[str, os.stat_result | None]:
     """``(state, judged)``: ``state`` is ``"absent" | "stale" | "live"``
     and ``judged`` the stat the judgement ran on (``None`` when absent).
     The removal path carries ``judged`` to the unlink so only the inode
@@ -4200,12 +4208,16 @@ def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result |
     inside ``checkout`` (:func:`_git_in_tree` answered ``False``). A
     young lock, one lsof or ps cannot judge, or one with a live git in
     the tree is ``"live"`` — waited on, never removed. The reason a lock
-    is kept is :func:`_index_lock_judge`'s third field."""
+    is kept is :func:`_index_lock_judge`'s third field. The periodic sweep
+    also checks for an empty lock older than an hour before probing processes."""
     try:
         st = lock.stat()
     except OSError:
         return "absent", None
-    if time.time() - st.st_mtime < index_lock_stale_s():
+    age = time.time() - st.st_mtime
+    if age < index_lock_stale_s():
+        return "live", st
+    if periodic and (st.st_size != 0 or age <= SWEEP_INDEX_LOCK_STALE_S):
         return "live", st
     if _git_in_tree(checkout) is not False:
         return "live", st
@@ -4381,7 +4393,7 @@ def _git_in_tree(checkout: Path) -> bool | None:
 
 
 def _reap_index_lock(
-    ctx: Any, lock: Path, judged: os.stat_result, *, who: str = NAME
+    ctx: Any | None, lock: Path, judged: os.stat_result, *, who: str = NAME
 ) -> bool:
     """Remove the ``index.lock`` the keep-on-doubt judge called stale —
     identified by ``judged``, the stat :func:`_index_lock_state` saw.
@@ -4391,7 +4403,7 @@ def _reap_index_lock(
     (gr650484). ``False`` when the identity no longer matches or the
     unlink lost a race (another reaper got there first — fine either
     way). ``who`` prefixes the job_event line (run_slice reuses this
-    reap)."""
+    reap); ``ctx=None`` (the host sweep, no job in hand) skips it."""
     try:
         now = lock.stat()
     except OSError:
@@ -4406,13 +4418,36 @@ def _reap_index_lock(
         lock.unlink()
     except OSError:
         return False
-    ctx.append_chunk(
-        "job_event",
-        f"{who}: reaped stale index.lock {lock} "
-        f"(age {int(time.time() - judged.st_mtime)}s; no live git in the "
-        "tree held it)",
-    )
+    if ctx is not None:
+        ctx.append_chunk(
+            "job_event",
+            f"{who}: reaped stale index.lock {lock} "
+            f"(age {int(time.time() - judged.st_mtime)}s; no live git in the "
+            "tree held it)",
+        )
     return True
+
+
+def _sweep_index_lock(tree: Path) -> str | None:
+    """Reap an empty index lock older than an hour in a recognized slice
+    folder (gr657310). Parked slices may never reach the launch reapers.
+    Use the same process checks and judged-inode unlink as those reapers,
+    with a stricter age and size check. A note records a successful reap.
+    Returns ``None`` on doubt or failure."""
+    try:
+        gitdir = _worktree_gitdir(tree) if (tree / ".git").exists() else None
+        if gitdir is None:
+            return None
+        lock = gitdir / "index.lock"
+        state, judged = _index_lock_state(lock, tree, periodic=True)
+        if state != "stale" or judged is None:
+            return None
+        if _reap_index_lock(None, lock, judged, who=NAME):
+            age = int(time.time() - judged.st_mtime)
+            return f"reaped stale 0-byte index.lock {lock} (age {age}s)"
+    except Exception:
+        log.warning("%s: index.lock sweep of %s failed", NAME, tree, exc_info=True)
+    return None
 
 
 def _clear_index_locks(
@@ -7576,6 +7611,7 @@ __all__ = [
     "SHIP_LOCK_DIR",
     "SPEC",
     "SUBJECT_CAP",
+    "SWEEP_INDEX_LOCK_STALE_S",
     "UNKNOWN_GATE_CROSS",
     "cross_line",
     "failed_test_ids",
