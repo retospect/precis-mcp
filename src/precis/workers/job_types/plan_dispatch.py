@@ -5251,8 +5251,8 @@ def _foreign_verdict(store: Any, n: _Node, verdict: tuple[str, str]) -> bool:
 def _sent_back_at(store: Any, n: _Node, held: dict[str, Any]) -> datetime | None:
     """When a pre-land FIX/REVERT sent ``n`` back (gr738860): the
     stash's ``at`` stamp, else — a stash written before the stamp — the
-    ``created_at`` of the newest comment on the node carrying
-    :data:`_templates.PRELAND_HANDBACK_MARK`. ``None`` when neither
+    ``created_at`` of the newest comment on the node carrying a mark of
+    :data:`_templates.PRELAND_HANDBACK_MARKS`. ``None`` when neither
     reads (the caller keeps the job-bounded read)."""
     raw = held.get("at")
     if isinstance(raw, str) and raw:
@@ -5264,9 +5264,9 @@ def _sent_back_at(store: Any, n: _Node, held: dict[str, Any]) -> datetime | None
             return at if at.tzinfo else at.replace(tzinfo=UTC)
     for c in _comments(store, n.id):
         created = getattr(c, "created_at", None)
-        if _templates.PRELAND_HANDBACK_MARK in str(c.text) and isinstance(
-            created, datetime
-        ):
+        if any(
+            m in str(c.text) for m in _templates.PRELAND_HANDBACK_MARKS
+        ) and isinstance(created, datetime):
             return created
     return None
 
@@ -9460,9 +9460,12 @@ def _newest_brief_chunk(n: _Node, chunks: list[Any]) -> Any | None:
 
 #: The hand-back's trailing ``(review td<N>, <mark> — rebuild on it …)``
 #: parenthetical (:func:`_review_back_to_builder`): the tick's own
-#: boilerplate, not part of the finding.
+#: boilerplate, not part of the finding. Every stored mark matches —
+#: the emitted one and the tokens earlier engines wrote.
 _HANDBACK_TAIL_RE = re.compile(
-    r"\n*\(review td\d+, " + re.escape(_templates.PRELAND_HANDBACK_MARK) + r".*\)\s*\Z",
+    r"\n*\(review td\d+, (?:"
+    + "|".join(re.escape(m) for m in _templates.PRELAND_HANDBACK_MARKS)
+    + r").*\)\s*\Z",
     re.DOTALL,
 )
 #: The hand-back's ``handoff: review: <KIND> —`` head.
@@ -9481,8 +9484,8 @@ def _handback_finding(
 ) -> str | None:
     """The finding of the newest pre-land hand-back on ``n`` still
     waiting for its rebuild (gr738860), else ``None``: the newest comment
-    starting ``handoff: review:`` that carries
-    :data:`_templates.PRELAND_HANDBACK_MARK`, its head and trailing
+    starting ``handoff: review:`` that carries a mark of
+    :data:`_templates.PRELAND_HANDBACK_MARKS`, its head and trailing
     parenthetical stripped. ``None`` once a coordinator ``brief:``
     (:func:`_route_text`'s) is newer — the coordinator has spoken — or a
     builder job was created after it (a rebuild already ran on that
@@ -9494,7 +9497,7 @@ def _handback_finding(
             if (
                 ref_id == n.id
                 and text.lstrip().lower().startswith("handoff: review:")
-                and _templates.PRELAND_HANDBACK_MARK in text
+                and any(m in text for m in _templates.PRELAND_HANDBACK_MARKS)
             ):
                 text = _HANDBACK_TAIL_RE.sub("", text.strip())
                 return _HANDBACK_HEAD_RE.sub("", text, count=1).strip() or None
@@ -9503,7 +9506,7 @@ def _handback_finding(
             c
             for c in _comments(store, n.id)
             if str(c.text).lstrip().lower().startswith("handoff: review:")
-            and _templates.PRELAND_HANDBACK_MARK in str(c.text)
+            and any(m in str(c.text) for m in _templates.PRELAND_HANDBACK_MARKS)
         ),
         None,
     )

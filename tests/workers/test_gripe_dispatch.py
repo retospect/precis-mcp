@@ -1936,14 +1936,17 @@ def test_sweep_asks_about_a_stalled_chain_and_does_not_close_it(
     a = _gripe(store, "a", prio=1)
     root, build = _chain_for(store, a)
     _park(store, build, "waiting-for:coordinator")
+    build_ref = f"refs/factory/build/{build}/1"
     store.stamp_ref_meta(
         build,
         {
             "parked": {
                 "host": "build-host-1",
-                "worktree": "/srv/wt/slice-td7",
+                "ref": build_ref,
+                "sha": "ab" * 20,
                 "head": "ab" * 20,
-                "reason": "ladder spent",
+                "wip": False,
+                "state": "pushed",
                 "at": "2026-11-16T10:00:00Z",
                 "job": 1,
             }
@@ -1969,10 +1972,18 @@ def test_sweep_asks_about_a_stalled_chain_and_does_not_close_it(
         for c in store.chunks.list_chunks_for_ref(ask)
         if c.chunk_kind == "todo_body"
     )
-    # names the state and the parked branch/host
+    # names the state and where the parked work is: the hub attempt ref
+    # on its host — not the retired branch/worktree model (gr741695)
     assert f"td{build} STATUS:open [waiting-for:coordinator]" in body
-    assert "`build-host-1`" in body and "/srv/wt/slice-td7" in body
-    assert ("ab" * 6) in body and f"refs/factory/slice/{build}" in body
+    assert "`build-host-1`" in body and f"`{build_ref}`" in body
+    assert ("ab" * 6) in body
+    assert f"refs/factory/slice/{build}" not in body
+    assert "worktree" not in body and "on any host" not in body
+    assert "continue from that commit on build-host-1" in body
+    # the hub case: resume continues from the saved commit, pinned to its
+    # host (gr742630)
+    assert "carry on from the saved commit on the build host named above" in body
+    assert "deletes the saved hub ref and rebuilds from the base" in body
     # the build is blocked-by the ask: answering it re-arms the build
     assert ask in {
         link.dst_ref_id
@@ -1984,6 +1995,88 @@ def test_sweep_asks_about_a_stalled_chain_and_does_not_close_it(
     assert any("ask td" in c for c in _comments(store, a))
     texts = [c.text for c in store.chunks.list_chunks_for_ref(root)]
     assert any("chain stalled" in t and f"ask td{ask}" in t for t in texts)
+
+
+def test_sweep_ask_names_folder_only_work(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A withheld/failed push parks a folder-only record: the ask names
+    the attempt folder and that no hub holds the work — and that a
+    resume does not read the folder (gr741695)."""
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    root, build = _chain_for(store, a)
+    _park(store, build, "waiting-for:coordinator")
+    store.stamp_ref_meta(
+        build,
+        {
+            "parked": {
+                "host": "build-host-1",
+                "ref": f"refs/factory/build/{build}/2",
+                "sha": "cd" * 20,
+                "head": "cd" * 20,
+                "wip": False,
+                "state": "withheld",
+                "at": "2026-11-17T10:00:00Z",
+                "job": 2,
+            }
+        },
+    )
+    _age_node(store, build, 7)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    [z] = res.extra["stalled"]
+    assert z["root"] == root
+    [ask] = _asks_on(store, root)
+    body = next(
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_body"
+    )
+    assert f"slice-td{build}-j2" in body and "`build-host-1`" in body
+    assert ("cd" * 6) in body
+    assert "the hub holds nothing" in body
+    assert "recover the commits from it by hand first" in body
+    # the hub-ref wording is folder-only-wrong here: no ref, no host pin
+    assert "continue from that commit on build-host-1." not in body
+    # gr742630: the whole ask must keep the hub-case promise out — the
+    # footer names what resume actually does with folder-only work
+    assert "carry on from the saved commit" not in body
+    assert "pins the build to that host" not in body
+    assert "deletes the saved hub ref" not in body
+    assert (
+        "`resume` re-arms the build from the newest work a hub holds, or "
+        "the base when a hub holds none" in body
+    )
+    assert "recover their commits by hand first" in body
+    assert "`start over` rebuilds from the base" in body
+
+
+def test_sweep_ask_with_no_saved_work_neither_overpromises(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stalled chain with nothing parked: `resume` must not promise a
+    saved commit or a host pin that no record names (gr742630)."""
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    root, build = _chain_for(store, a)
+    _park(store, build, "paused")
+    _age_node(store, build, 7)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    [z] = res.extra["stalled"]
+    assert z["root"] == root
+    [ask] = _asks_on(store, root)
+    body = next(
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_body"
+    )
+    assert "No saved work is stamped on the build" in body
+    assert "carry on from the saved commit" not in body
+    assert "pins the build to that host" not in body
+    assert "deletes the saved hub ref" not in body
+    assert "with no saved work it cuts from the base" in body
 
 
 def test_a_second_sweep_with_the_ask_open_does_nothing(

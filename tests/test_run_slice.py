@@ -1471,51 +1471,54 @@ def test_brief_parts_keeps_review_handback_over_brief() -> None:
     and the rejected branch routed back into the same open review
     unbuilt (gr674785 review, td675373). A session's own last message
     that merely begins ``handoff: review:`` (no tick trailer) still
-    loses to the brief."""
-    from precis.plans.templates import PRELAND_HANDBACK_MARK
+    loses to the brief. Every stored trailer mark counts — the emitted
+    hub wording and the pre-hub token hand-backs already posted carry
+    (gr742630)."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARKS
 
-    handback = (
-        "handoff: review: FIX — a.py misses the empty case\n\n"
-        f"(review td77, {PRELAND_HANDBACK_MARK} — rebuild on it from the "
-        "brief with this finding in mind)"
-    )
-    store = _Store()
-    store.add_todo(
-        42,
-        "Build the widget",
-        body="Do X, then Y.",
-        comments=("brief: a coordinator note", handback),
-        tags=("attempt:1",),
-    )
-    _body, latest, _latest_ord = run_slice._brief_parts(store, 42)
-    assert latest == handback
-    store.add_todo(
-        43,
-        "Review the widget",
-        body="Read the diff.",
-        comments=(
-            "brief: the branch is fixed; verify with git show",
-            "handoff: review: FIX — a.py misses the empty case",
-        ),
-        tags=("attempt:1",),
-    )
-    _body, latest, _latest_ord = run_slice._brief_parts(store, 43)
-    assert latest == "brief: the branch is fixed; verify with git show"
-    # The rebuild died and left its own last message: the finding is
-    # still the newest steer, so the retry gets it, not the older brief.
-    store.add_todo(
-        44,
-        "Build the widget",
-        body="Do X, then Y.",
-        comments=(
-            "brief: a coordinator note",
-            handback,
-            "handoff: got as far as the parser",
-        ),
-        tags=("attempt:1",),
-    )
-    _body, latest, _latest_ord = run_slice._brief_parts(store, 44)
-    assert latest == handback
+    for i, mark in enumerate(PRELAND_HANDBACK_MARKS):
+        handback = (
+            "handoff: review: FIX — a.py misses the empty case\n\n"
+            f"(review td77, {mark} — rebuild on it from the "
+            "brief with this finding in mind)"
+        )
+        store = _Store()
+        store.add_todo(
+            42 + 10 * i,
+            "Build the widget",
+            body="Do X, then Y.",
+            comments=("brief: a coordinator note", handback),
+            tags=("attempt:1",),
+        )
+        _body, latest, _latest_ord = run_slice._brief_parts(store, 42 + 10 * i)
+        assert latest == handback
+        store.add_todo(
+            43 + 10 * i,
+            "Review the widget",
+            body="Read the diff.",
+            comments=(
+                "brief: the branch is fixed; verify with git show",
+                "handoff: review: FIX — a.py misses the empty case",
+            ),
+            tags=("attempt:1",),
+        )
+        _body, latest, _latest_ord = run_slice._brief_parts(store, 43 + 10 * i)
+        assert latest == "brief: the branch is fixed; verify with git show"
+        # The rebuild died and left its own last message: the finding is
+        # still the newest steer, so the retry gets it, not the older brief.
+        store.add_todo(
+            44 + 10 * i,
+            "Build the widget",
+            body="Do X, then Y.",
+            comments=(
+                "brief: a coordinator note",
+                handback,
+                "handoff: got as far as the parser",
+            ),
+            tags=("attempt:1",),
+        )
+        _body, latest, _latest_ord = run_slice._brief_parts(store, 44 + 10 * i)
+        assert latest == handback
 
 
 def test_brief_parts_drops_reviewer_own_verdict() -> None:

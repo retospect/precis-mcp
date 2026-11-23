@@ -52,11 +52,14 @@ Each fire:
   hours (default 6) and no ask is open in the plan — is NOT closed. It
   gets ONE ask-user todo, ``td<root>: chain stalled <age> — resume, start
   over, or drop?``, blocking its build nodes, naming the state found and
-  the parked branch/host (``meta.parked``, ``plan_dispatch``'s park
-  stamp) if any. The open ask keeps the chain out of the sweep and out of
-  dispatch; closing it re-arms the build (``plan_dispatch._step_rearm``:
-  resume from the saved branch, or ``start over``); dropping it is
-  closing the root ``won't-do``. The gripe's open tag ``chain-stalls:<n>``
+  where the parked work is (``meta.parked``, ``plan_dispatch``'s park
+  stamp: the host, the hub attempt ref — or the attempt folder when the
+  push was withheld/failed, gr741695) if any. The open ask keeps the
+  chain out of the sweep and out of dispatch; closing it re-arms the
+  build (``plan_dispatch._step_rearm``: resume from the saved hub
+  attempt, pinned to its host — or ``start over``, which drops the saved
+  ref and rebuilds from the base); dropping it is closing the root
+  ``won't-do``. The gripe's open tag ``chain-stalls:<n>``
   counts the asks. At most :data:`_STALL_BATCH` asks a pass.
 * **Moot resolve** (:func:`resolve_moot_gripes`, first, gr759153). A
   build that finds its gripe's fix already on main drops the plan with
@@ -202,6 +205,7 @@ from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.todo.blocked import dispatch_blocked_by
 from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
+from precis.workers.job_types import _slice_ws
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
 from precis.workers.runner import BatchResult, inner_result_payload
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
@@ -904,12 +908,13 @@ def sweep_stalled(
     in the plan, and nothing moved on ANY plan node (``updated_at``, tag
     stamps, jobs) for :func:`stall_hours` — gets ONE ask-user todo,
     ``td<root>: chain stalled <age> — resume, start over, or drop?``,
-    blocking its build nodes and naming the state found and the parked
-    branch/host (``meta.parked``). The chain is never closed: the open ask
-    keeps it out of dispatch and of this sweep (an open ask in the plan
-    shields it), and closing the ask re-arms the build —
-    ``plan_dispatch._step_rearm``, which resumes from the saved branch or,
-    on ``start over``, drops it. Each source gripe or todo carries
+    blocking its build nodes and naming the state found and where the
+    parked work is (``meta.parked``). The chain is never closed: the open
+    ask keeps it out of dispatch and of this sweep (an open ask in the
+    plan shields it), and closing the ask re-arms the build —
+    ``plan_dispatch._step_rearm``, which resumes from the hub attempt the
+    park record names (pinned to its host) or, on ``start over``, drops
+    the saved ref and cuts from the base. Each source gripe or todo carries
     ``chain-stalls:<n>`` (replaced per ask); the count no longer holds
     the source — the open ask does. At most ``limit`` chains are asked
     about per pass, idlest first. Returns one dict per ask: ``root``,
@@ -980,10 +985,20 @@ def _ask_stalled(
         return _write_stalled_ask(store, current, fresh_idle)
 
 
-def _chain_state(store: Store, c: Chain) -> tuple[str, list[str]]:
-    """``(state, parked lines)`` of the chain's build nodes: STATUS and
-    the park-ish tags each carries, and where its saved branch is
-    (``meta.parked``: host, worktree, head)."""
+#: ``meta.parked`` / ``meta.push.state`` values whose work is in no hub,
+#: only in the attempt folder on ``push.host`` (the same set
+#: ``plan_dispatch._FOLDER_ONLY_STATES`` keys on, gr741695).
+_FOLDER_ONLY_STATES = frozenset({_slice_ws.WITHHELD, _slice_ws.FAILED})
+
+
+def _chain_state(store: Store, c: Chain) -> tuple[str, list[str], bool]:
+    """``(state, parked lines, hub_saved)`` of the chain's build nodes:
+    STATUS and the park-ish tags each carries, and where its saved work
+    is (``meta.parked``: host, ref, sha, head, wip, state, at, job —
+    ``plan_dispatch``'s park stamp). ``hub_saved`` is True when any
+    record names work a host's hub holds (a non-folder-only record with
+    a ``ref``) — the only state a ``resume`` continues a saved commit
+    from; the ask's resume instructions branch on it (gr742630)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -1003,18 +1018,73 @@ def _chain_state(store: Store, c: Chain) -> tuple[str, list[str]]:
         ).fetchall()
     states: list[str] = []
     saved: list[str] = []
+    hub_saved = False
     for ref_id, parked, status, tags in rows:
         states.append(
             f"td{ref_id} STATUS:{status or 'open'}" + (f" [{tags}]" if tags else "")
         )
-        if isinstance(parked, dict) and parked.get("head"):
-            saved.append(
-                f"td{ref_id}: branch slice/{ref_id} saved on `{parked.get('host')}` "
-                f"(worktree `{parked.get('worktree')}`, head "
-                f"`{str(parked['head'])[:12]}`, pushed to "
-                f"`refs/factory/slice/{ref_id}`)"
+        if (
+            isinstance(parked, dict)
+            and parked.get("ref")
+            and parked.get("state") not in _FOLDER_ONLY_STATES
+        ):
+            hub_saved = True
+        line = _parked_line(ref_id, parked)
+        if line:
+            saved.append(line)
+    return "; ".join(states) or "no build node found", saved, hub_saved
+
+
+def _parked_line(ref_id: int, parked: Any) -> str | None:
+    """The ask-body sentence for one build's ``meta.parked`` record, or
+    ``None`` when the record names no work: the hub attempt ref a resume
+    continues from (pinned to its host), the folder-only case a resume
+    does not read, and the newer-folder note — mirroring
+    ``plan_dispatch._park_line`` / ``_park_newer_line`` (gr741695)."""
+    if not isinstance(parked, dict):
+        return None
+    head = str(parked.get("head") or parked.get("sha") or "")[:12]
+    host = str(parked.get("host") or "")
+    state = parked.get("state")
+    if state in _FOLDER_ONLY_STATES:
+        return (
+            f"td{ref_id}: work is only in the attempt folder "
+            f"`slice-td{ref_id}-j{parked.get('job')}` on `{host}` "
+            f"(head `{head}`; state {state}) — the hub holds nothing. A "
+            f"resume re-arms td{ref_id} from the newest work a hub holds, "
+            "or the base; it does not read that folder, so recover the "
+            "commits from it by hand first."
+        )
+    ref = parked.get("ref")
+    if ref:
+        wip = (
+            " (the top commit is a `wip:` snapshot of the uncommitted tree)"
+            if parked.get("wip")
+            else ""
+        )
+        line = (
+            f"td{ref_id}: work saved in the hub of `{host}` at ref `{ref}` "
+            f"(head `{head}`{wip}) — a resume re-arms td{ref_id} to "
+            f"continue from that commit on {host}."
+        )
+        fol = parked.get("folder")
+        if isinstance(fol, dict):
+            line += (
+                f" Newer work, not in the hub: folder "
+                f"`slice-td{ref_id}-j{fol.get('job')}` on `{fol.get('host')}` "
+                f"(head `{str(fol.get('head') or '')[:12]}`, "
+                f"{fol.get('state')}) — a resume does not read it: recover "
+                "its commits by hand first, or they are lost."
             )
-    return "; ".join(states) or "no build node found", saved
+        return line
+    if head and host:
+        # A pre-gr741695 record ({host, worktree, head}) naming the old
+        # branch-and-worktree model: say what it actually holds.
+        return (
+            f"td{ref_id}: branch slice/{ref_id} saved on `{host}` (worktree "
+            f"`{parked.get('worktree')}`, head `{head}`)"
+        )
+    return None
 
 
 def _mint_stalled_ask(
@@ -1057,7 +1127,7 @@ def _mint_stalled_ask(
 
 
 def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
-    state, saved = _chain_state(store, c)
+    state, saved, hub_saved = _chain_state(store, c)
     age = f"{idle:.0f} h"
     handle = f"td{c.root_id}"
     title = f"{handle}: chain stalled {age} — resume, start over, or drop?"
@@ -1069,9 +1139,31 @@ def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
     where = (
         " ".join(saved)
         if saved
-        else "No saved branch is stamped on the build (it never reached "
+        else "No saved work is stamped on the build (it never reached "
         "park-save, or nothing was uncommitted or ahead of the base)."
     )
+    # The resume instruction matches the saved-work state the ask names —
+    # a saved hub commit, folder-only work, or none (gr742630): promising
+    # "continue from the saved commit" in the folder-only or no-work case
+    # contradicts the parked lines above it.
+    if hub_saved:
+        resume = (
+            "`resume` re-arms the build to carry on from the saved commit "
+            "on the build host named above (the hub ref pins the build to "
+            "that host)"
+        )
+        start_over = "`start over` deletes the saved hub ref and rebuilds from the base"
+    elif saved:
+        resume = (
+            "`resume` re-arms the build from the newest work a hub holds, "
+            "or the base when a hub holds none — it does not read the "
+            "attempt folder(s) named above, so recover their commits by "
+            "hand first"
+        )
+        start_over = "`start over` rebuilds from the base"
+    else:
+        resume = "`resume` re-arms the build; with no saved work it cuts from the base"
+        start_over = "`start over` rebuilds from the base"
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
@@ -1095,12 +1187,10 @@ def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
         f"The plan under {handle} ({origin}) "
         f"has stood still for {age}: {found}\n\n{where}\n\n"
         "Nothing was closed and nothing is thrown away. Answer with the "
-        "option you pick and close this todo: `resume` re-arms the build to "
-        "carry on from the saved branch (on any host); `start over` drops "
-        "the saved branch and rebuilds from the base; `drop` — close "
-        f"{handle} STATUS:won't-do. `resume` lifts STATUS:paused on the "
-        "build; a `waiting-for:*` hold (waiting on files) stays until lifted "
-        "by hand."
+        f"option you pick and close this todo: {resume}; {start_over}; "
+        f"`drop` — close {handle} STATUS:won't-do. `resume` lifts "
+        "STATUS:paused on the build; a `waiting-for:*` hold (waiting on "
+        "files) stays until lifted by hand."
     )
     ask = _mint_stalled_ask(store, c, title, body, meta)
     _comment_todo(

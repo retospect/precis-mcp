@@ -342,10 +342,22 @@ SLICE_REF_NS = "refs/factory/"
 
 
 #: The trailer ``plan_dispatch`` ends a pre-land FIX/REVERT hand-back
-#: with (gr684815). ``run_slice._brief_parts`` reads it to tell the
-#: tick's hand-back — the finding the rebuild exists to act on — from a
-#: session's own last message, which may also begin ``handoff: review:``.
-PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
+#: with (gr684815) — where the rejected build still sits: the build
+#: host's hub (``BUILD_REF_KEY``) since gr741695, so new hand-backs say
+#: so. Readers match every token in :data:`PRELAND_HANDBACK_MARKS`:
+#: comments posted before the switch keep their old mark, which stays
+#: recognized but is never emitted again.
+#: ``run_slice._brief_parts`` reads it to tell the tick's hand-back — the
+#: finding the rebuild exists to act on — from a session's own last
+#: message, which may also begin ``handoff: review:``.
+PRELAND_HANDBACK_MARK = "pre-land: the build is still in the build host's hub"
+#: Every hand-back trailer a reader recognizes: the emitted
+#: :data:`PRELAND_HANDBACK_MARK` first, then the stored tokens earlier
+#: engines wrote ("the branch is still on origin", pre-gr741695).
+PRELAND_HANDBACK_MARKS = (
+    PRELAND_HANDBACK_MARK,
+    "pre-land: the branch is still on origin",
+)
 #: The text ``plan_dispatch`` puts between a mechanical-red ``brief:`` and
 #: the red job it names (gr705291). ``run_slice._wants_session`` reads it
 #: to tell that brief — an instruction to change the branch — from a plain one.

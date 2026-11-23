@@ -2218,9 +2218,13 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # (tag off, ``STATUS:doing`` back to ``open``, ``meta.rescue`` plus the
 # ``rearmed_*`` floor stamps, a
 # ``brief:`` comment the rebuilt run reads back through
-# ``run_slice._brief_parts``, continuing from the node's
-# ``meta.build_ref`` in a fresh clone, pinned to the host whose hub holds
-# that work, gr741695); ``rescue: NOFIX fixed <sha> — <why>`` closes the node
+# ``run_slice._brief_parts``. The run starts in a fresh clone on the
+# host whose hub holds the task's pushed work: at launch
+# ``_slice_ws.resolve_start`` selects the newest eligible attempt ref
+# there — ``meta.build_ref``, unless a newer attempt supersedes it or
+# the build floor excludes it — or the run starts from the job's
+# configured base when none is selected, gr741695); ``rescue: NOFIX
+# fixed <sha> — <why>`` closes the node
 # ``won't-do`` and the plan's gripe ``verify`` with no ask once ``<sha>``
 # is an ancestor of origin/main in the worker's fix repo (gr635531; an
 # unverifiable sha falls through to the ask below); ``rescue: NOFIX —
@@ -3051,11 +3055,17 @@ def _rearm_node(
         stamp["rearmed_after_job"] = ended[-1].id
     at = f" at {head}" if head else ""
     resume = (
-        f"Resume: the run reuses this todo's worktree and branch — "
-        f"continue on {branch}{at} (`git log origin/main..HEAD` lists the "
-        "commits already there). If that list is empty or the branch is "
-        "gone, the run starts fresh from origin/main: rebuild from this "
-        "brief."
+        f"Resume: the run starts in a fresh clone. The rescue evidence "
+        f"names {branch}{at}. The worker uses `resolve_start` to select the "
+        "attempt in the build host's hub, honoring the todo's "
+        "`meta.build_ref` unless a newer attempt supersedes it or the build "
+        "floor excludes it. The job records the selected attempt in "
+        "`meta.start`. If the final `resolve_start` result is `None`, the run starts "
+        "from the job's configured base (`meta.base`): rebuild from this "
+        "brief. If the recorded ref still names the newest eligible attempt "
+        "and is missing or moved, `resolve_start` raises `RefMoved` and the job ends "
+        "attempt-free before the session starts — an operator puts the "
+        "ref back or clears `meta.build_ref`."
     )
     with store.atomic() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))
@@ -3106,7 +3116,11 @@ def _rearm_node(
             conn=conn,
         )
     res.rearmed.append(n.id)
-    res.notes.append(f"td{n.id}: re-armed from td{task_id} (n=1); resumes on {branch}")
+    res.notes.append(
+        f"td{n.id}: re-armed from td{task_id} (n=1); the rebuilt run starts "
+        "on the attempt `resolve_start` selects in the build host's hub at "
+        "launch, or the job's configured base when none is selected"
+    )
 
 
 def _ask_node(

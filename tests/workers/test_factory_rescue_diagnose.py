@@ -486,6 +486,12 @@ def test_rearm_once_rearms_and_clears_the_tag(store: Store) -> None:
     assert "a second line of corrected brief" in newest
     assert "Resume:" in newest
     assert f"slice/{task}" in newest and "abc1234" in newest
+    # gr742630: the resume describes the resolver's fallback even when
+    # a selected attempt has no commits ahead of the base.
+    assert "the final `resolve_start` result is `None`" in newest
+    assert "job's configured base (`meta.base`)" in newest
+    assert "git log origin/main..HEAD" not in newest
+    assert "RefMoved" in newest and "clears `meta.build_ref`" in newest
     from precis.workers.job_types import run_slice
 
     _body_txt, latest, _latest_ord = run_slice._brief_parts(store, task)

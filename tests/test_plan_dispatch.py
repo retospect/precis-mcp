@@ -8285,8 +8285,9 @@ def test_preland_review_signal_never_credits_a_replacement_build(
 def test_preland_review_revert_sends_the_branch_back_to_the_builder(
     store: Store,
 ) -> None:
-    """Pre-land REVERT == FIX shape: the branch is still on origin, so
-    "revert" is a rebuild — the builder reopens, no revert task mints."""
+    """Pre-land REVERT == FIX shape: the build is still in the host's
+    hub, so "revert" is a rebuild — the builder reopens, no revert task
+    mints."""
     mint = _reviewed_pending(store, "review: REVERT — breaks the API")
     build, review = mint.ids["build"], mint.ids["review"]
     res = pd.run_pass(store)
@@ -8478,6 +8479,10 @@ def test_preland_fix_handback_outranks_an_older_brief(store: Store) -> None:
         c for c in _todo_comments(store, build) if c.startswith("handoff: review:")
     )
     assert run_slice._outranks_brief(handback)
+    # gr742630: the emitted trailer names the hub the build sits in; the
+    # pre-hub "branch is still on origin" wording is never written again
+    # (stored comments that carry it still match).
+    assert "host's hub" in handback and "on origin" not in handback
     rounds = _meta(store, build)["preland_fix_rounds"]
     assert rounds["count"] == 1 and rounds["finding"]
 

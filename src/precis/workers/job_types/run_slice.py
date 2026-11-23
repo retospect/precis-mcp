@@ -4618,11 +4618,12 @@ def _outranks_brief(handoff: str) -> bool:
     the lander's failure note, or the tick's pre-land review hand-back.
     Neither is a dead session's last message, so each steers the retry
     like a ``brief:`` does (:func:`_brief_parts`)."""
-    from precis.plans.templates import PRELAND_HANDBACK_MARK
+    from precis.plans.templates import PRELAND_HANDBACK_MARKS
 
     lowered = handoff.lower()
     return lowered.startswith(_LANDER_HANDOFF_PREFIX) or (
-        lowered.startswith(_REVIEW_HANDBACK_PREFIX) and PRELAND_HANDBACK_MARK in handoff
+        lowered.startswith(_REVIEW_HANDBACK_PREFIX)
+        and any(m in handoff for m in PRELAND_HANDBACK_MARKS)
     )
 
 
