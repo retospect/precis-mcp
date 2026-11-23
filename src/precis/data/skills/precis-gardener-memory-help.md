@@ -183,8 +183,9 @@ evidence, repairing with an anchored `edit` — then
 close in this order: check `view='links'` for a prior closed review on
 the same memory, record the `kg-review` stamp on the verified SHA
 (the trust edit below), comment what changed, and mark the todo
-`STATUS:done`. Closing without the stamp leaves the review
-unrecorded. Unsettled yields `ask-user:<the open
+`STATUS:done`. The done-tag is enforced: closing is refused while any
+linked live memory lacks a current stamp, and so is minting the todo
+already `STATUS:done` ("Close a review" below). Unsettled yields `ask-user:<the open
 question>` on the todo — a mid-task block on a reply is an ask, not a
 queue park ([[precis-user-queue-help]]). An open review todo suppresses repeat
 asks on the same memory. A done review suppresses a repeat for the
@@ -209,6 +210,27 @@ demotion invalidates a current stamp. The stamp records your judgement
 and may leave the detector reporting `version_bumped` until the
 evaluator stamps the revision. Mechanics and the plain
 `considered` act: [[precis-edit-help]] "Record a trust act".
+
+`STATUS:done` checks the stamp, not the comment: the close is refused
+until every live memory the todo links `raises-concern-about` carries a
+`kg-review:<model>:<date>:ok|fixed` stamp on its current sha. A later
+`edit` of the memory voids the stamp — restamp the new revision before
+closing. A todo minted already `STATUS:done` is refused outright, and so
+is a close when no live memory is linked: without the link there is no
+review to record, so link the memory or close `STATUS:won't-do`.
+
+When the repo check could not run and corroboration settled the review
+([[precis-memory-help]] "Working a memory-review todo"), no verdict is
+stamped. Comment the evidence, then close with the audited hop-out:
+
+```python
+put(kind='todo', id=<todo>, text='<what corroborated the claim>')
+tag(kind='todo', id=<todo>, add=['STATUS:done'],
+    reason='repo-check-unavailable: <why the check could not run>')
+```
+
+The escape is `tag`-only — a `put` close cannot carry `reason=` — and a
+bare `repo-check-unavailable:` with no explanation is refused.
 
 For `review_due` the todo is also the door for an accepted change: the
 detector has no apply door, so no proposal row is written. To clear

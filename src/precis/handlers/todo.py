@@ -2047,6 +2047,16 @@ class TodoHandler(NumericRefHandler):
                 self.store, ref_id=ref.id, tags=all_tag_strs, conn=conn
             )
             parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in redirected]
+            from precis.utils.memory_hubs import REVIEW_TAG
+
+            if (
+                Tag.open(REVIEW_TAG) in parsed_tags
+                and Tag.closed("STATUS", "done") in parsed_tags
+            ):
+                raise BadInput(
+                    "a memory-review todo cannot be created with STATUS:done",
+                    next="create the review open, link the memory, and record its review before closing",
+                )
             for tag in parsed_tags:
                 self.store.add_tag(
                     ref.id,
@@ -3080,10 +3090,10 @@ class TodoHandler(NumericRefHandler):
         # so every check the base ``tag`` would raise on must fire first —
         # a rejected ``add=`` must not leave a changed prio behind.
         self._resolve_live_ref(ref_id)
-        for s in add or []:
-            Tag.parse_strict(s, kind=self.kind)
+        parsed_add = [Tag.parse_strict(s, kind=self.kind) for s in add or []]
         for s in remove or []:
             Tag.parse_strict(s, kind=self.kind)
+        guards.check_memory_review_done(self.store, ref_id, parsed_add, reason)
         if meta and "schedule" in meta:
             guards.check_schedule_in_meta(dict(meta))
         if prio is not None:

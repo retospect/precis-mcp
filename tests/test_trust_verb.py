@@ -392,6 +392,96 @@ def test_kg_review_stamp_records_model_and_date_structured(
     assert models[-1] == "claude-opus-5-5"
 
 
+@pytest.mark.parametrize("close_verb", ["put", "tag"])
+def test_memory_review_close_requires_current_stamp(
+    runtime_with_store: PrecisRuntime, store: Store, close_verb: str
+) -> None:
+    runtime = runtime_with_store
+    mid = _put_memory(runtime, "claim to review")
+    created = runtime.dispatch(
+        "put",
+        {
+            "kind": "todo",
+            "text": "review the claim",
+            "tags": ["memory-review"],
+            "link": f"memory:{mid}",
+            "rel": "raises-concern-about",
+        },
+    )
+    handle = re.search(r"\btd\d+\b", created)
+    assert handle, created
+    tid = int(handle[0][2:])
+    close = (
+        {"tags": ["STATUS:done"], "text": "Checked the evidence. No change."}
+        if close_verb == "put"
+        else {"add": ["STATUS:done"]}
+    )
+
+    def stamp(reason: str) -> None:
+        runtime.dispatch(
+            "edit",
+            {
+                "kind": "memory",
+                "id": mid,
+                "mode": "trust",
+                "__extras__": {
+                    "trust": {
+                        "confidence": "considered",
+                        "reason": reason,
+                        "expected_sha": _sha(store, "ref", mid),
+                    },
+                },
+            },
+        )
+
+    with pytest.raises(BadInput, match="current kg-review trust stamp"):
+        runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    assert "STATUS:open" in {str(tag) for tag in store.tags_for(tid)}
+    stamp("plain consideration")
+    with pytest.raises(BadInput, match="current kg-review trust stamp"):
+        runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    stamp("kg-review:fixture:2026-11-23:ok")
+    runtime.dispatch(
+        "edit",
+        {"kind": "memory", "id": mid, "mode": "replace", "text": "repaired claim"},
+    )
+    stamp("checked the edited wording")
+    with pytest.raises(BadInput, match="current kg-review trust stamp"):
+        runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    stamp("kg-review:fixture:2026-11-23:fixed")
+    runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    assert "STATUS:done" in {str(tag) for tag in store.tags_for(tid)}
+
+
+def test_memory_review_corroboration_can_close_with_an_explicit_reason(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    runtime = runtime_with_store
+    mid = _put_memory(runtime, "claim corroborated by a sibling")
+    from precis.handlers.todo import TodoHandler
+
+    todo = TodoHandler(hub=runtime.hub)
+    created = todo.put(
+        text="review the claim",
+        tags=["memory-review"],
+        link=f"memory:{mid}",
+        rel="raises-concern-about",
+    )
+    assert created.ref_id is not None
+    todo.put(id=created.ref_id, text="The dated sibling check corroborated the claim.")
+    with pytest.raises(BadInput, match="current kg-review trust stamp"):
+        todo.tag(
+            id=created.ref_id, add=["STATUS:done"], reason="repo-check-unavailable:"
+        )
+    todo.tag(
+        id=created.ref_id,
+        add=["STATUS:done"],
+        reason="repo-check-unavailable: python kind disabled in this build",
+    )
+    assert "STATUS:done" in {str(tag) for tag in store.tags_for(created.ref_id)}
+    assert _stamp(store, "ref", mid) == ("generated", "hunch", 1)
+
+
 def test_kg_review_stamp_on_put_marks_the_reviewer(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

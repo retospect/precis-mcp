@@ -1318,11 +1318,21 @@ When the review is settled:
    the end of the `kg-review:` reason string; `confidence` itself only
    takes `considered` or `hunch`. The structured reason is what
    review-due and fresh-review checks read.
-3. Once the stamp succeeds, or step 2 was skipped because the repo check
-   could not run, summarize what you checked, the evidence and any change
-   you made. Use
-   `put(kind='todo', id=<this todo>, text=<review comment>, tags=['STATUS:done'])`
-   to record the comment and close the todo.
+3. Summarize what you checked, the evidence and any change you made. The
+   done-tag is enforced: `STATUS:done` is refused while any linked live
+   memory lacks a current `kg-review` stamp, and an `edit` after stamping
+   voids it — restamp the new sha first. When the stamp succeeded, close
+   with
+   `put(kind='todo', id=<this todo>, text=<review comment>, tags=['STATUS:done'])`.
+   When step 2 was skipped because the repo check could not run, the
+   comment records the corroborating evidence and the close is the tag
+   call — a `put` close cannot carry `reason=`:
+
+   ```python
+   put(kind='todo', id=<this todo>, text='<review comment, repo check not run: why>')
+   tag(kind='todo', id=<this todo>, add=['STATUS:done'],
+       reason='repo-check-unavailable: <why>')
+   ```
 
 Still unsettled → append your findings to the todo body, then yield
 `tag(kind='todo', id=<this todo>, add=['ask-user:<the open

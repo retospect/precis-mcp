@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.store._todo_sql import todo_root_sql
+from precis.store.types import Tag
 from precis.utils import handle_registry
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_ALIASES
 
@@ -1251,6 +1252,73 @@ def check_fix_meta(meta: dict[str, Any] | None) -> None:
             f"meta.fix.check does not parse: {e}",
             next=_FIX_META_NEXT,
         ) from e
+
+
+def check_memory_review_done(
+    store: Store, todo_id: int, added: list[Tag], reason: str | None
+) -> None:
+    """Refuse ``STATUS:done`` on a ``memory-review`` todo while its review
+    is unrecorded (gr759109).
+
+    Every live memory the todo links ``raises-concern-about`` must carry a
+    ``consider`` act whose ``payload.kg_review.verdict`` is ``ok|fixed``,
+    recorded no earlier than the todo and against the memory's current
+    content sha — a later edit voids the stamp, so the close re-asks for
+    a fresh one. The stamp grammar and the ledger it lands in live one
+    hop out: :mod:`precis.store.revision_context` (``KG_REVIEW_PREFIX``,
+    :func:`parse_kg_review`) and the ``revisions.trust_acts`` ledger in
+    :mod:`precis.store._review_ops`.
+
+    ``reason='repo-check-unavailable: <why>'`` is the audited hop-out for
+    the documented corroboration close: a review settled without the repo
+    check cannot assert a kg-review verdict, so an explicit ``tag()``
+    reason stands in for the stamp (a ``put`` close cannot carry one).
+    """
+    from precis.utils.memory_hubs import REVIEW_TAG
+
+    done = Tag.closed("STATUS", "done")
+    if done not in added:
+        return
+    current = store.tags_for(todo_id)
+    if done in current or Tag.open(REVIEW_TAG) not in (*current, *added):
+        return
+    with store.tx() as conn:
+        rows = conn.execute(
+            "SELECT m.ref_id, m.trust_confidence = 'considered' AND EXISTS ("
+            "SELECT 1 FROM revisions rev "
+            "CROSS JOIN LATERAL jsonb_array_elements(rev.trust_acts) act "
+            "WHERE rev.target_kind = 'ref' AND rev.target_id = m.ref_id "
+            "AND rev.at >= t.created_at "
+            "AND act->>'action' = 'consider' "
+            "AND act->'payload'->'kg_review'->>'verdict' IN ('ok', 'fixed') "
+            "AND act->>'expected_sha' = precis_target_sha('ref', m.ref_id)) "
+            "FROM refs t JOIN links l ON l.src_ref_id = t.ref_id "
+            "JOIN refs m ON m.ref_id = l.dst_ref_id "
+            "WHERE t.ref_id = %s AND l.relation = 'raises-concern-about' "
+            "AND m.kind = 'memory' AND m.retired_at IS NULL "
+            "ORDER BY m.ref_id",
+            (todo_id,),
+        ).fetchall()
+    if not rows:
+        raise BadInput(
+            "memory review has no live memory linked by raises-concern-about",
+            next="link the memory under review or close with STATUS:won't-do",
+        )
+    # The documented corroboration fallback cannot assert a kg-review verdict.
+    # Require an explicit, audited reason on tag(), separate from ordinary prose.
+    prefix, _, explanation = (reason or "").partition(":")
+    if prefix == "repo-check-unavailable" and explanation.strip():
+        return
+    missing = [f"me{memory_id}" for memory_id, stamped in rows if not stamped]
+    if missing:
+        raise BadInput(
+            f"memory review needs a current kg-review trust stamp on {', '.join(missing)}",
+            next="record edit(kind='memory', mode='trust') with confidence='considered', "
+            "the current expected_sha and reason='kg-review:<model>:<YYYY-MM-DD>:ok|fixed', "
+            "then close the todo. If corroboration settled the review without the repo "
+            "check, comment the evidence and use tag(add=['STATUS:done'], "
+            "reason='repo-check-unavailable: <why>')",
+        )
 
 
 def check_status_done_artifact(

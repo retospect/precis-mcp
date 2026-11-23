@@ -7,6 +7,10 @@ Neutral home for what used to be ``todo/views`` and
 Board reads apply ref visibility during recursive walks and before
 aggregation. A hidden intermediate ref ends the walk, so a visible
 descendant cannot reveal the path through it.
+
+Memory review closure checks the trust ledger for the current content
+of the linked memories. Corroboration when the repo could not be checked
+uses an explicit audit reason so it does not count as a trust stamp.
 """
 
 #: STATUS values that close a todo — the one set every "is this todo
