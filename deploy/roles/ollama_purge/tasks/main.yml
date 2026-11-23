@@ -43,6 +43,12 @@
   community.general.homebrew:
     name: ollama
     state: absent
+    update_homebrew: false
+    upgrade_all: false
+  # Homebrew itself can also perform maintenance during an uninstall.
+  environment:
+    HOMEBREW_NO_AUTO_UPDATE: "1"
+    HOMEBREW_NO_AUTOREMOVE: "1"
   become: false
 
 - name: Remove Ollama data + logs (macOS)
@@ -132,12 +138,17 @@
   become: true
 
 # ── Report reclaimed space ────────────────────────────────────────────────
-- name: Report disk usage on local Ollama paths (post-purge should show absent)
-  ansible.builtin.shell: |
-    df -h / | tail -1 | awk '{print "  root FS: " $4 " avail"}'
+- name: Report filesystem usage after the purge
+  ansible.builtin.command:
+    argv:
+      - df
+      - -h
+      - "{{ '/System/Volumes/Data' if os_family == 'darwin' else '/' }}"
   register: ollama_purge_df
   changed_when: false
 
 - name: Purge summary
   ansible.builtin.debug:
-    msg: "{{ inventory_hostname }}: purge complete. {{ ollama_purge_df.stdout }}"
+    msg: |-
+      {{ inventory_hostname }}: purge complete.
+      {{ ollama_purge_df.stdout | default('') }}
