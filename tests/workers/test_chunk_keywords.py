@@ -1435,6 +1435,21 @@ class TestBulkWrite:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("platform,peak", [("linux", 2048), ("darwin", 2097152)])
+def test_process_peak_rss_mib(
+    monkeypatch: pytest.MonkeyPatch, platform: str, peak: int
+) -> None:
+    from types import SimpleNamespace
+
+    import precis.workers.chunk_keywords as ck
+
+    monkeypatch.setattr(ck.sys, "platform", platform)
+    monkeypatch.setattr(
+        ck.resource, "getrusage", lambda _: SimpleNamespace(ru_maxrss=peak)
+    )
+    assert ck.process_peak_rss_mib() == 2.0
+
+
 class TestDedicatedLoop:
     def test_empty_queue_sleeps_then_rechecks(
         self, store: Store, monkeypatch: Any
@@ -1603,6 +1618,7 @@ class TestDedicatedLoop:
             return {"claimed": 2, "ok": 2, "failed": 0}
 
         monkeypatch.setattr(ck, "run_chunk_keywords_pass", _fake_pass)
+        monkeypatch.setattr(ck, "process_peak_rss_mib", lambda: 128.5)
         with caplog.at_level(logging.INFO, logger="precis.workers.runner"):
             ck.run_dedicated_loop(
                 store,
@@ -1620,6 +1636,7 @@ class TestDedicatedLoop:
         assert payload["handler"] == "chunk_keywords"
         assert payload["ok"] == 2
         assert "duration_ms" in payload
+        assert payload["process_peak_rss_mib"] == 128.5
 
     def test_shard_index_must_be_below_count(self, store: Store) -> None:
         import precis.workers.chunk_keywords as ck

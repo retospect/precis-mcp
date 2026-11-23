@@ -58,6 +58,7 @@ def build_ref_passes(
         or not env_flag("PRECIS_CHUNK_KEYWORDS_DEDICATED")
     ):
         from precis.workers.chunk_keywords import (
+            process_peak_rss_mib,
             run_chunk_keywords_pass,
             tier1_counts,
         )
@@ -94,7 +95,14 @@ def build_ref_passes(
             # Tier-1 counts ride in ``extra`` (own payload keys), never
             # in the claimed/ok/failed drain ledger (gr739436).
             return BatchResult.from_dict(
-                "chunk_keywords", {**r, "extra": tier1_counts(r)}
+                "chunk_keywords",
+                {
+                    **r,
+                    "extra": {
+                        **tier1_counts(r),
+                        "process_peak_rss_mib": process_peak_rss_mib(),
+                    },
+                },
             )
 
         ref_passes.append(_chunk_keywords_pass)

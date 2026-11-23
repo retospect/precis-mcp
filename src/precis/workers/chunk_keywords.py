@@ -153,6 +153,8 @@ from __future__ import annotations
 
 import logging
 import re
+import resource
+import sys
 import time
 from collections.abc import Callable, Iterable
 from datetime import timedelta
@@ -209,6 +211,19 @@ TIER1_MIN_AGE = timedelta(minutes=15)
 #: apart from ``claimed``/``ok``/``failed``, the KeyBERT drain ledger the
 #: health probes sum.
 TIER1_KEY_PREFIX = "tier1_"
+
+
+def process_peak_rss_mib() -> float:
+    """Lifetime peak RSS of this worker process, in MiB.
+
+    Both worker paths log it alongside pass wall time (gr701709). It
+    includes other work in this process and excludes remote embedder
+    memory. To measure chunks/hour, count successful KeyBERT writes
+    over elapsed wall time, including gaps between claims.
+    """
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    units_per_mib = 1024**2 if sys.platform == "darwin" else 1024
+    return round(peak / units_per_mib, 1)
 
 
 def tier1_counts(result: dict[str, int]) -> dict[str, int]:
@@ -2172,6 +2187,7 @@ def run_dedicated_loop(
                     "failed": result["failed"],
                     "report_only": False,
                     "duration_ms": int((clock() - t0) * 1000),
+                    "process_peak_rss_mib": process_peak_rss_mib(),
                     **tier1_counts(result),
                 }
             },
@@ -2220,6 +2236,7 @@ __all__ = [
     "extract_chunk_keywords",
     "is_keyword_eligible",
     "keyword_eligible_chunk_count",
+    "process_peak_rss_mib",
     "run_chunk_keywords_pass",
     "run_dedicated_loop",
     "unkeyworded_chunk_count",
