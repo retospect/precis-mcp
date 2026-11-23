@@ -67,6 +67,7 @@ import numpy as np
 from precis.errors import BadInput
 from precis.structure import check as _chem
 from precis.structure import probe
+from precis.structure.scene import Bond
 from precis_geom import steps as _steps
 from precis_geom import trace as _trace
 from precis_geom.assembly import Geom
@@ -81,6 +82,15 @@ FMAX = 0.1
 MAX_DISP_A = 2.0
 #: Optimiser steps between bond re-perceptions / checkpoints.
 PROBE_EVERY = 10
+#: The finite-scene probe's KD-tree nomination margin, in ulps of the
+#: coordinates' magnitude × the cell's condition number. The tree's
+#: ``|pos_i − pos_j|`` and the kernel's stored-frac MIC are two roundings
+#: of one distance, a few ulps of that scale apart — a scaled bound keeps
+#: the tree over-reporting at any coordinate scale where a fixed epsilon
+#: would silently lose a borderline pair. The real slop is a handful of
+#: ulps; 4096 is a wide margin and still microscopic (≈1e-8 Å at 10⁴ Å
+#: extent and a conditioning of 10³).
+_KD_MARGIN_ULPS = 4096.0
 #: Changed bonds / lost rings named in the summary before "+N more".
 _NAMED = 4
 #: Bump when the relax rungs / verdict change in a way the step's own source
@@ -358,7 +368,6 @@ def _judge(
     declared = {_pair(b) for b in before.bonds if b.i != b.j}
     start = _perceived(before)
     end = _perceived(after)
-    perceived_bonds = probe.detect_bonds(after)
     moved = probe.diff(before, after).max_disp
     limits = _limits(rung, before)
 
@@ -392,7 +401,11 @@ def _judge(
         if any(frozenset((r[k], r[(k + 1) % len(r)])) not in end for k in range(len(r)))
     ]
     frag_before = len(probe.fragments(_graph_scene(before, before.bonds)))
-    frag_after = len(probe.fragments(_graph_scene(after, perceived_bonds)))
+    # ``end`` is already the relaxed scene's perceived pair set — rebuild
+    # bonds from it rather than detecting a second time.
+    frag_after = len(
+        probe.fragments(_graph_scene(after, [Bond(a, b) for a, b in map(sorted, end)]))
+    )
     reasons: list[str] = []
     if contacts:
         reasons.append(
@@ -441,25 +454,81 @@ def _monitor(
     before: Any,
     work: Any,
     *,
+    rung: str,
     done0: int,
     ck: _steps.Checkpoint | None,
     seed: dict[str, Any],
 ) -> Any:
     """The ``on_step`` hook: every :data:`PROBE_EVERY` steps re-perceive the
     bonds at the optimiser's positions and stop at the first change the
-    input did not already show; and save the checkpoint."""
+    input did not already show; and save the checkpoint.
+
+    The probe judges the frac the ``rung``'s write-back would store for
+    the positions it is shown — ``detect_bonds``'s exact input at the end
+    of the run, not a re-derived approximation of it."""
     from precis.structure import _pair_kernel
 
     labels = list(work.atoms)
     index = {la: k for k, la in enumerate(labels)}
-    lat, pbc = _pair_kernel.cell_arrays(work.cell)
+    cell = work.cell
+    lat, pbc = _pair_kernel.cell_arrays(cell)
     radii = _pair_kernel.radii_of(work, labels)
-    inv = np.linalg.inv(lat)
 
-    def perceive(frac: np.ndarray) -> frozenset[tuple[int, int]]:
+    def kernel_pairs(frac: np.ndarray) -> frozenset[tuple[int, int]]:
         # the kernel behind probe.detect_bonds, minus its Bond objects
         ii, jj, _d, _img = _pair_kernel.pairs_within(frac, lat, pbc, radii, 1.2, True)
         return frozenset(zip(ii.tolist(), jj.tolist(), strict=True))
+
+    if pbc.any():
+
+        def perceive(frac: np.ndarray, cart: np.ndarray) -> frozenset[tuple[int, int]]:
+            # a MIC through a periodic wall is not the Cartesian distance —
+            # the tree cannot nominate, so the kernel sweep is the probe
+            return kernel_pairs(frac)
+
+    else:
+        from scipy.spatial import cKDTree
+
+        # A finite scene's MIC is the Cartesian distance, so a KD-tree on
+        # the optimiser's own positions can nominate the candidate pairs
+        # (O(N log N) per probe, and the probe runs every PROBE_EVERY
+        # optimiser steps — the kernel's O(N^2) sweep was the check's
+        # dominant cost on a big molecule, gr778239). The tree only
+        # selects: ``mic_scalar`` — the same kernel ``pairs_within`` runs —
+        # makes the inclusive cutoff call on the same frac values
+        # ``detect_bonds`` will judge, so probe and verdict cannot disagree
+        # at the cutoff. The margin scales with the coordinates and the
+        # cell's conditioning rather than a fixed epsilon
+        # (``_KD_MARGIN_ULPS``): the tree only ever over-reports, and
+        # whatever it cannot nominate safely — a non-finite position, a
+        # degenerate cell — falls back to the kernel sweep, the judge's own
+        # path.
+        max_cut = float(2.4 * radii.max())
+        try:
+            cond = float(np.linalg.cond(lat))
+        except np.linalg.LinAlgError:
+            cond = np.inf
+
+        def perceive(frac: np.ndarray, cart: np.ndarray) -> frozenset[tuple[int, int]]:
+            margin = (
+                _KD_MARGIN_ULPS
+                * np.finfo(float).eps
+                * cond
+                * max(1.0, float(np.abs(cart).max()))
+            )
+            if not (
+                np.isfinite(margin)
+                and np.isfinite(cart).all()
+                and np.isfinite(frac).all()
+            ):
+                return kernel_pairs(frac)
+            pairs = cKDTree(cart).query_pairs(max_cut + margin, output_type="ndarray")
+            return frozenset(
+                (int(i), int(j))
+                for i, j in pairs
+                if _pair_kernel.mic_scalar(frac[i], frac[j], lat, pbc)[0]
+                <= (radii[i] + radii[j]) * 1.2
+            )
 
     declared = {
         (min(index[b.i], index[b.j]), max(index[b.i], index[b.j]))
@@ -467,12 +536,11 @@ def _monitor(
         if b.i != b.j
     }
     start = np.array([a.frac for a in before.atoms.values()], dtype=np.float64)
-    start_off = perceive(start) ^ declared
+    start_off = perceive(start, cell.frac_to_cart(start)) ^ declared
 
     def hook(n: int, pos: np.ndarray, _curve: list[float]) -> bool:
         if n == 0 or n % PROBE_EVERY:
             return False
-        fracs = np.ascontiguousarray(np.asarray(pos, dtype=float) @ inv)
         if ck is not None:
             ck.save(
                 {
@@ -482,7 +550,11 @@ def _monitor(
                     "pos": np.asarray(pos, dtype=float).tolist(),
                 }
             )
-        new = (perceive(fracs) ^ declared) - start_off
+        cart = np.asarray(pos, dtype=float)
+        # the exact frac the rung's write-back would store for these
+        # positions — what detect_bonds will judge at the end
+        frac = _relax.stored_frac(cell, cart, rung)
+        new = (perceive(frac, cart) ^ declared) - start_off
         if new:
             seed["early_exit"] = n
             return True
@@ -547,7 +619,7 @@ def _relax_step(
     done0 = _resume(ck, work, steps)
     seed: dict[str, Any] = {"early_exit": None}
     hook = (
-        _monitor(before, work, done0=done0, ck=ck, seed=seed)
+        _monitor(before, work, rung=rung, done0=done0, ck=ck, seed=seed)
         if rung in _ENERGY
         else None
     )

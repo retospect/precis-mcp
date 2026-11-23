@@ -64,6 +64,7 @@ from typing import Any
 import numpy as np
 
 from . import elements, export, georelax
+from .cell import Cell
 from .scene import Scene
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,38 @@ def _attach_step_hook(
             opt.max_steps = opt.nsteps
 
     opt.attach(_step, interval=1)
+
+
+def stored_frac(cell: Cell, cart: np.ndarray, rung: str) -> np.ndarray:
+    """The fractional positions a relax rung's write-back stores on the
+    scene for optimiser Cartesian positions ``cart``.
+
+    One conversion, shared by every consumer of "what frac will the scene
+    hold": ``uff``/``geo`` store ``cell.cart_to_frac`` atom by atom;
+    ``emt``/``xtb`` (and ``ml``) store ASE ``get_scaled_positions`` — a
+    ``solve`` on the completed cell with the pbc axes wrapped *twice* (a
+    single ``x % 1.0`` can leave a bare ``1.0``, ASE's own convention),
+    then ``cell.wrap``. A batched ``cart @ inv(lattice)`` can round
+    differently from either, so the collapse check's per-step probe goes
+    through here rather than re-deriving the frac — it must perceive the
+    exact values ``probe.detect_bonds`` will judge at the end (gr778239).
+    """
+    cart = np.asarray(cart, dtype=float)
+    if rung in ("emt", "xtb", "ml"):
+        from ase.cell import Cell as _AseCell
+
+        # Atoms.get_scaled_positions(): solve on the completed cell, pbc
+        # axes wrapped twice.
+        frac = _AseCell(np.asarray(cell.lattice, dtype=float)).scaled_positions(cart)
+        for ax in range(3):
+            if cell.pbc[ax]:
+                frac[:, ax] %= 1.0
+                frac[:, ax] %= 1.0
+    else:
+        # per-atom, exactly as the write-back loops store it — a batched
+        # multiply is not guaranteed to round the same way
+        frac = np.array([cell.cart_to_frac(p) for p in cart])
+    return np.array([cell.wrap(f) for f in frac])
 
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
@@ -597,8 +630,9 @@ def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         tol=tol,
     )
 
+    stored = stored_frac(scene.cell, coords, "geo")
     for idx, la in enumerate(labels):
-        scene.atoms[la].frac = scene.cell.wrap(scene.cell.cart_to_frac(coords[idx]))
+        scene.atoms[la].frac = stored[idx]
     max_disp = float(np.linalg.norm(coords - before, axis=1).max())
     # Same qualitative-forces estimate as ``clean`` (gripe 161576) — ``geo``
     # has no calculator of its own either.
@@ -821,9 +855,9 @@ def _relax_emt(
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
-    scaled = atoms.get_scaled_positions()
+    stored = stored_frac(scene.cell, atoms.get_positions(), "emt")
     for idx, la in enumerate(labels):
-        scene.atoms[la].frac = scene.cell.wrap(np.asarray(scaled[idx], dtype=float))
+        scene.atoms[la].frac = stored[idx]
     after = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
     max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
     forces = atoms.get_forces()
@@ -1037,8 +1071,9 @@ def _relax_uff(
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
     after = atoms.get_positions()
+    stored = stored_frac(scene.cell, after, "uff")
     for idx, la in enumerate(labels):
-        scene.atoms[la].frac = scene.cell.wrap(scene.cell.cart_to_frac(after[idx]))
+        scene.atoms[la].frac = stored[idx]
     max_disp = float(np.linalg.norm(after - before, axis=1).max())
     forces = atoms.get_forces()
     max_force = float(np.sqrt((forces**2).sum(axis=1).max()))
@@ -1289,9 +1324,9 @@ def _relax_xtb(
     force_tol = fmax if fmax is not None else max(tol, 0.05)
     converged = bool(opt.run(fmax=force_tol, steps=steps))
 
-    scaled = atoms.get_scaled_positions()
+    stored = stored_frac(scene.cell, atoms.get_positions(), "xtb")
     for idx, la in enumerate(labels):
-        scene.atoms[la].frac = scene.cell.wrap(np.asarray(scaled[idx], dtype=float))
+        scene.atoms[la].frac = stored[idx]
     after = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
     max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
     forces = atoms.get_forces()
@@ -1702,9 +1737,9 @@ def _relax_ml(
         from .cell import Cell
 
         scene.cell = Cell(np.asarray(atoms.get_cell(), dtype=float), scene.cell.pbc)
-    scaled = atoms.get_scaled_positions()
+    stored = stored_frac(scene.cell, atoms.get_positions(), "ml")
     for idx, la in enumerate(labels):
-        scene.atoms[la].frac = scene.cell.wrap(np.asarray(scaled[idx], dtype=float))
+        scene.atoms[la].frac = stored[idx]
     after = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
     max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
     forces = atoms.get_forces()

@@ -43,6 +43,21 @@ C60-minus-hexagon (180 atoms) in 173/39 steps. Both stayed one fragment
 with verdict ``ok``. These fixtures give no bond-graph reason to switch
 the finite default to xTB; ``tests/workspaces/test_mol_relax.py`` pins the
 small comparison and the system-type selection with/without tblite.
+
+The ``relax`` probe is the check's hot spot: every 10 optimiser steps it
+re-perceives the bond graph at the optimiser's positions. On a finite
+scene a ``scipy`` KD-tree nominates the candidate pairs on the Cartesian
+positions — the kernel's O(N²) MIC sweep was the check's dominant cost on
+a big molecule (gr778239) — but only nominates: every candidate is still
+judged by the same pair kernel ``probe.detect_bonds`` runs, on the exact
+frac values the rung's write-back stores
+(:func:`precis.structure.relax.stored_frac`). So a mid-run probe can only
+over-report a change, never see a different bond set from the verdict —
+the trade is a wider nomination margin (scaled to the coordinates and the
+cell's conditioning, falling back to the kernel sweep when it cannot
+bound the round-off) for a probe that is no longer O(N²) per step. On a
+periodic scene the wrapped MIC is not a Cartesian distance and the probe
+keeps the kernel sweep.
 """
 
 from precis.structure.check import check
