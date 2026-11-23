@@ -899,8 +899,8 @@ get(kind='memory', id='/review', args={'hours': 0})
 ## Register a new `section:` type
 
 The type set is closed per space: it is the `section:<name>` values the
-space's root hub (no parent, other hubs under it) names in its body. `put`
-and `tag` refuse any other value with `[error:BadInput]` listing the set; a
+space's root hub (no parent, other hubs under it) names in its body. `put`,
+`tag` and `edit` refuse any other value with `[error:BadInput]` listing the set; a
 space whose root names none stays open. A new type is an edit of the root
 node's body, not a tag.
 
@@ -915,6 +915,10 @@ tag(kind="memory", id="me12", add=["section:rulings"])
 
 Removing an unregistered value a node already carries is not refused:
 `tag(kind="memory", id="me12", remove=["section:rulings"], add=["section:workflow"])`.
+`edit` checks the node's stored tags, so a node still carrying an
+unregistered `section:` value cannot be edited until that tag is removed.
+An `OPEN:section:x` spelling is checked like `section:x`. Operators list
+offenders with `precis memory audit-sections` (read-only).
 
 ## Title a hub or sub-hub
 
