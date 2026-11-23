@@ -282,10 +282,11 @@ def test_sanity_board_routes_all_twenty_nets_with_clean_drc() -> None:
     t0 = time.perf_counter()
     stage = kernel._route_stage(design, ir, fps)
     elapsed = time.perf_counter() - t0
-    # measured: ~18s in a plain local run, 31-37s on the macOS nightly
+    # measured: ~15-18s in a plain local run, 31-37s on the macOS nightly
     # runner (gr647532 — a 30s cap tripped on runner speed, not on a route
-    # blowup). 60s still trips if the stage goes quadratic.
-    assert elapsed < budget(60.0), f"route stage took {elapsed:.1f}s"
+    # blowup; gr778234 — the 60s cap tripped the same way on a loaded arm64
+    # runner). 120s still trips if the stage goes quadratic.
+    assert elapsed < budget(120.0), f"route stage took {elapsed:.1f}s"
     done = [n for n, r in stage.rows.items() if r["status"] == "realized"]
     assert len(done) == 20, sorted(set(stage.rows) - set(done))
     model = pcb_session._copper_model(
