@@ -33,8 +33,10 @@ from precis.store.types import ChunkInsert
 
 
 class _Snippet:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, start: float = 0.0) -> None:
         self.text = text
+        self.start = start
+        self.duration = 2.0
 
 
 class _Track:
@@ -805,21 +807,18 @@ def test_shared_limiter_refusal_maps_to_rate_limited(
 # ── chunk-range reads for long transcripts (gr533135) ────────────────
 
 
-def _long_transcript() -> str:
-    return "\n".join(
-        f"segment {i:03d}: the speaker explains the mechanism in detail"
-        for i in range(200)
-    )
-
-
 def _patch_long_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 
-    body = _long_transcript()
-
     class Long(_StubApi):
         def fetch(self, video_id: str, languages: list[str]) -> Any:
-            return [_Snippet(body)]
+            return [
+                _Snippet(
+                    f"segment {i:03d}: the speaker explains the mechanism in detail",
+                    start=i * 2.0,
+                )
+                for i in range(200)
+            ]
 
     monkeypatch.setattr(
         sys.modules["youtube_transcript_api"], "YouTubeTranscriptApi", Long
