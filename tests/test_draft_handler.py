@@ -77,6 +77,30 @@ def test_create_requires_project_then_outlines(draft: DraftHandler, hub: Hub) ->
     assert "Title" in out and bool(re.search(r"dc\d+", out)) and "[heading]" in out
 
 
+def test_chunk_provenance_link_add_and_remove(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="provenance", title="Draft", project=_proj(hub))
+    chunk = _order(hub, "provenance")[0]
+    memory = hub.live_store.insert_ref(kind="memory", slug=None, title="Source")
+    target = f"memory:me{memory.id}"
+
+    with pytest.raises(BadInput, match="targets a chunk"):
+        draft.link(id="provenance", target=target, rel="derived-from")
+
+    ack = draft.link(id=chunk.dc, target=target, rel="derived-from")
+    assert chunk.dc in ack.body
+    (edge,) = hub.live_store.links_for(
+        chunk.ref_id, direction="out", relation="derived-from"
+    )
+    assert edge.src_chunk_id == chunk.chunk_id
+    assert edge.dst_ref_id == memory.id
+    assert edge.dst_chunk_id is None
+
+    draft.link(id=chunk.dc, target=target, rel="derived-from", mode="remove")
+    assert not hub.live_store.links_for(
+        chunk.ref_id, direction="out", relation="derived-from"
+    )
+
+
 def test_recent_list_path_redirects_to_search(draft: DraftHandler, hub: Hub) -> None:
     # gr48523(2): a '/recent'-style list path on a slug-addressed kind used to
     # dead-end as "slug '/recent' not found". It now raises a BadInput that

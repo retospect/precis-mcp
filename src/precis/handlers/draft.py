@@ -796,11 +796,7 @@ class DraftHandler(Handler):
     #: Relations a draft accepts through the generic (non-placement)
     #: ``apply_link_ops`` path. Deliberately narrow — cross-references
     #: between drafts still live in prose, not this verb (the autolinker
-    #: on ``edit`` handles those) — but ``serves`` is the one relation
-    #: an outside kind (``quest``) needs materialised as a real edge,
-    #: not a mention: a draft (e.g. a living dossier) put in a quest's
-    #: service (gripe 161912; see ``precis-quest-help``: "Any node ...
-    #: can serve a quest").
+    #: on ``edit`` handles those). This set is for whole-draft links.
     _GENERIC_LINK_RELS: ClassVar[frozenset[str]] = frozenset({"serves", "draft-of"})
 
     #: ref.meta keys ``edit(kind='draft', id=<slug>, meta=…)`` may patch
@@ -828,16 +824,7 @@ class DraftHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Folder placement (``rel='parent'``), a ``serves`` edge or the
-        ``draft-of`` owner bind.
-
-        ``rel='parent'`` is the reserved virtual relation — a
-        ``refs.parent_id`` write into a ``kind='folder'`` container, never a stored ``links`` row. ``rel='serves'`` goes
-        through the shared ``apply_link_ops`` path (the same one
-        paper/structure use), most notably targeting a ``quest:`` ref.
-        Every other relation is rejected — cross-references between
-        drafts still live in prose, not this verb.
-        """
+        """Place or link a whole draft, or link a chunk to its provenance."""
         from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 
         if rel == RESERVED_PARENT_REL:
@@ -845,25 +832,49 @@ class DraftHandler(Handler):
             return place_ref(
                 self.store, kind="draft", ref=ref, target=target, mode=mode
             )
-        if rel in self._GENERIC_LINK_RELS:
-            ref = resolve_live_slug_ref(self.store, kind="draft", id=str(id).strip())
+        if rel == "derived-from" or rel in self._GENERIC_LINK_RELS:
             target = require_link_target("draft", target)
             validate_link_mode(mode)
+            src_pos = None
+            if rel == "derived-from":
+                handle = self._require_chunk_id(str(id).strip(), verb="link")
+                chunk = self.store.drafts.get_draft_chunk(handle)
+                if (
+                    chunk is not None
+                    and not chunk.retired
+                    and self.store.get_ref(kind="draft", id=chunk.ref_id) is not None
+                ):
+                    src_pos = self.store.drafts.chunk_ord_map(chunk.ref_id).get(
+                        chunk.chunk_id
+                    )
+                if chunk is None or src_pos is None:
+                    raise NotFound(
+                        f"live draft chunk {handle!r} not found",
+                        next="get(kind='draft', id='<slug>', view='toc') lists "
+                        "live chunk handles",
+                    )
+                src_ref_id, ref_label = chunk.ref_id, chunk.dc
+            else:
+                ref = resolve_live_slug_ref(
+                    self.store, kind="draft", id=str(id).strip()
+                )
+                src_ref_id, ref_label = ref.id, str(ref.slug or ref.id)
             if rel == "draft-of" and mode == "add":
-                owners = self.store.drafts.draft_owners(ref.id)
+                owners = self.store.drafts.draft_owners(src_ref_id)
                 if owners:
                     raise BadInput(
-                        f"draft {ref.slug or ref.id} already has a live "
+                        f"draft {ref_label} already has a live "
                         f"draft-of owner (todo {owners[0]}); draft-of is 1:1",
                         next=[
-                            f"link(kind='draft', id='{ref.slug or ref.id}', "
+                            f"link(kind='draft', id='{ref_label}', "
                             f"target='todo:{owners[0]}', rel='draft-of', "
                             "mode='remove') then add the new owner",
                         ],
                     )
             n_added, n_removed, proposals = apply_link_ops(
                 self.store,
-                ref.id,
+                src_ref_id,
+                src_pos=src_pos,
                 link=target if mode == "add" else None,
                 unlink=target if mode == "remove" else None,
                 rel=rel,
@@ -872,7 +883,7 @@ class DraftHandler(Handler):
             return Response(
                 body=format_link_tag_ack(
                     kind=self.spec.kind,
-                    ref_label=str(ref.slug),
+                    ref_label=ref_label,
                     n_links_added=n_added,
                     n_links_removed=n_removed,
                     n_tags_added=0,
@@ -882,8 +893,9 @@ class DraftHandler(Handler):
             )
         raise BadInput(
             "draft link supports only rel='parent' (folder placement), "
-            "rel='serves' (mark this draft as serving a quest) or "
-            "rel='draft-of' (bind/unbind the owning project todo)",
+            "rel='serves' (mark this draft as serving a quest), "
+            "rel='draft-of' (bind/unbind the owning project todo), or "
+            "rel='derived-from' (record a draft chunk's provenance)",
             next=[
                 "link(kind='draft', id='<slug>', target='folder:N', "
                 "rel='parent') places; mode='remove' unfiles",
@@ -892,6 +904,8 @@ class DraftHandler(Handler):
                 "link(kind='draft', id='<slug>', target='todo:N', "
                 "rel='draft-of', mode='remove') unbinds the owner; mode='add' "
                 "binds one when none is live",
+                "link(kind='draft', id='dc<N>', target='memory:me<N>', "
+                "rel='derived-from') records the chunk's provenance",
                 "cross-references live in prose, not the link verb: "
                 "edit(kind='draft', id='dc<src>', text='…existing… "
                 "[dc<target>]') and the autolinker materialises the "

@@ -733,6 +733,7 @@ def apply_link_ops(
     link: str | None,
     unlink: str | None,
     rel: str | None,
+    src_pos: int | None = None,
     meta: dict[str, Any] | None = None,
     merge_meta: bool = False,
     hub: Any = None,
@@ -784,6 +785,7 @@ def apply_link_ops(
         else:
             written = store.add_link_or_propose(
                 src_ref_id=src_ref_id,
+                src_pos=src_pos,
                 dst_ref_id=target.ref_id,
                 dst_pos=target.pos,
                 relation=relation,
@@ -811,6 +813,7 @@ def apply_link_ops(
         # ``NumericRefHandler._update``'s behaviour.
         n_removed = store.remove_link(
             src_ref_id=src_ref_id,
+            src_pos=src_pos,
             dst_ref_id=target.ref_id,
             dst_pos=target.pos,
             relation=relation if rel is not None else None,

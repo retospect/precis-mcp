@@ -2,6 +2,8 @@
 
 - Cascade recovery emits typed puts in reading order. Child puts use new
   parent handles because the retired tree stays out of reading order.
+- An outbound ``derived-from`` link starts at the draft chunk so readers
+  can trace the passage to its source.
 - Pin advisories check each table row separately so a source column can
   cover values in its row. Captions and headers have their own scope.
   See :func:`precis.draft.lint.pin_hint`.
