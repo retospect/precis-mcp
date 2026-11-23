@@ -1,0 +1,130 @@
+---
+# Shared macOS launchd reload for a network `precis serve` LaunchDaemon that
+# self-supervises (gr660009): instead of bootout+bootstrap (SIGKILL — every
+# in-flight call dies and the listener is dark until the new process binds),
+# signal the long-lived supervisor with SIGHUP. It forwards a cutover drain
+# to the serving child and respawns it on the already-swapped venv while the
+# listen socket stays bound the whole time — connections wait in the kernel
+# backlog, clients see a few quiet seconds, none are refused.
+#
+# Falls back to the standard bootout/bootstrap bounce (reload_launchd.yml)
+# when the service is not running (rc 42), the plist differs from the
+# last successful bootstrap (rc 44), or the drain did not produce a
+# serving generation within the window (rc 43 — whatever holds the port is
+# SIGKILLed first, so the full bounce can bind it).
+#
+# Caller must pass:
+#   reload_unit:  the launchd label, e.g. com.precis.mcp-public
+#   reload_port:  the loopback TCP port the daemon serves (health check)
+- name: "read the rendered plist checksum for {{ reload_unit }}"
+  become: true
+  ansible.builtin.stat:
+    path: "/Library/LaunchDaemons/{{ reload_unit }}.plist"
+    checksum_algorithm: sha256
+  register: _precis_reload_plist
+
+- name: "draining reload {{ reload_unit }} (macos)"
+  become: true
+  changed_when: true
+  ansible.builtin.shell: |
+    set -u
+    unit={{ reload_unit }}
+    port={{ reload_port | int }}
+
+    # SIGHUP preserves launchd's loaded ProgramArguments and environment.
+    # A missing receipt also takes the bootstrap path on the first deploy.
+    loaded=$(cat "/var/db/${unit}.plist.sha256" 2>/dev/null || true)
+    if [ "${loaded}" != {{ _precis_reload_plist.stat.checksum | quote }} ]; then
+      echo "${unit}: unconfirmed plist — falling back to a full bounce" >&2
+      exit 44
+    fi
+
+    pid() {
+      launchctl print "system/${unit}" 2>/dev/null \
+        | sed -nE 's/^[[:space:]]*pid = ([0-9]+).*/\1/p' | head -1
+    }
+    child_of() { pgrep -P "$1" 2>/dev/null | head -1; }
+    # The shape the install asserts on this port: a 401 carrying the OAuth
+    # resource_metadata challenge. --max-time bounds the request: while a
+    # generation is mid-boot the supervisor's backlog takes the connection
+    # but nobody answers it yet, so curl must fail fast and retry, not hang.
+    serving() {
+      curl -sS --max-time 10 -o /dev/null -D - -X POST "http://127.0.0.1:${port}/mcp" 2>/dev/null \
+        | awk 'BEGIN { code = ""; challenge = 0 }
+               /^HTTP\// { code = $2 }
+               /^[Ww][Ww][Ww]-[Aa]uthenticate:/ { if (index($0, "resource_metadata=")) challenge = 1 }
+               END { exit !(code == "401" && challenge) }'
+    }
+
+    p=$(pid)
+    if [ -z "${p}" ]; then
+      echo "${unit}: not running — falling back to a full bounce" >&2
+      exit 42
+    fi
+    # The supervised serve child (empty while a pre-self-supervision direct
+    # serve runs, or between generations). A turnover is done only when a
+    # DIFFERENT child answers the health check: the old child keeps serving
+    # through its drain, so a passing check alone proves nothing.
+    before=$(child_of "${p}")
+
+    if ! kill -HUP "${p}" 2>/dev/null; then
+      echo "${unit}: signal failed (process gone?) — falling back to a full bounce" >&2
+      exit 43
+    fi
+
+    deadline=$(( $(date +%s) + 300 ))
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+      cur=$(pid)
+      if [ -n "${cur}" ] && [ "${cur}" != "${p}" ]; then
+        # The tracked process changed: a crash/KeepAlive respawn (also the
+        # very first deploy of the self-supervision, where the old direct
+        # serve dies of SIGHUP and launchd respawns a supervised one). Any
+        # healthy child of the new process is a fresh generation.
+        p=${cur}
+        before=""
+      fi
+      if [ -n "${p}" ] && serving; then
+        now=$(child_of "${p}")
+        if [ -z "${before}" ] || [ "${now}" != "${before}" ]; then
+          echo "${unit}: drained; new generation serving (pid ${p}, child ${now:-none})"
+          exit 0
+        fi
+      fi
+      sleep 2
+    done
+    echo "${unit}: drain produced no new generation within 300s — killing the holder and rebouncing" >&2
+    kill -9 "${p}" 2>/dev/null || true
+    # The serving child inherited its own copy of the listen socket: reap
+    # every process still holding the port, or the full bounce cannot bind.
+    listeners=$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -n "${listeners}" ]; then
+      echo "${listeners}" | xargs kill -9 2>/dev/null || true
+    fi
+    exit 43
+  register: _precis_draining_reload
+  failed_when: _precis_draining_reload.rc not in [0, 42, 43, 44]
+
+- name: "full bounce fallback for {{ reload_unit }}"
+  when: _precis_draining_reload.rc in [42, 43, 44]
+  vars:
+    _precis_reload_receipt: "/var/db/{{ reload_unit }}.plist.sha256"
+  block:
+    - name: "invalidate the previous plist receipt for {{ reload_unit }}"
+      become: true
+      ansible.builtin.file:
+        path: "{{ _precis_reload_receipt }}"
+        state: absent
+
+    - name: "bootstrap {{ reload_unit }} with the rendered plist"
+      ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+      vars:
+        reload_persistent: true
+
+    - name: "record the bootstrapped plist checksum for {{ reload_unit }}"
+      become: true
+      ansible.builtin.copy:
+        content: "{{ _precis_reload_plist.stat.checksum }}\n"
+        dest: "{{ _precis_reload_receipt }}"
+        owner: root
+        group: wheel
+        mode: "0600"

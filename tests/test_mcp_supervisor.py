@@ -64,6 +64,29 @@ DRAIN_CHILD = textwrap.dedent(
     """
 )
 
+# A stand-in for a supervised serve child with the cutover handler: SIGUSR1
+# finishes the "call in flight" (appends to the marker) and exits 0, the way
+# precis.install_watchdog.install_cutover_signal drains on a deploy bounce;
+# meanwhile it serves up to N connections with its generation marker.
+CUT_CHILD = textwrap.dedent(
+    """
+    import os, signal, socket, sys, time
+    fd, serves, marker = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+    sock = socket.socket(fileno=fd)
+    def cutover(signum, frame):
+        with open(marker, "a", encoding="utf-8") as fh:
+            fh.write(f"cutover {os.getpid()}\\n")
+        sys.exit(0)
+    signal.signal(signal.SIGUSR1, cutover)
+    for _ in range(serves):
+        conn, _ = sock.accept()
+        conn.sendall(f"gen {os.getpid()}\\n".encode())
+        conn.close()
+    sock.detach()
+    time.sleep(60)
+    """
+)
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -227,6 +250,39 @@ def test_sigterm_reaches_the_child_as_a_drain_request(tmp_path: Path) -> None:
     assert proc.returncode == 0
 
 
+def test_sighup_bounces_the_generation_and_the_supervisor_stays_up(
+    tmp_path: Path,
+) -> None:
+    """gr660009: the launchd deploy bounce turns the generation over — the
+    old child drains (marker), a fresh generation serves afterwards, and the
+    supervisor (which holds the listen socket) is still there at the end."""
+    port = _free_port()
+    marker = tmp_path / "cutovers"
+    proc = _start(tmp_path, port, "8", str(marker), child_source=CUT_CHILD)
+    try:
+        first = _connect_and_read(port)
+        proc.send_signal(signal.SIGHUP)
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.exists(), "the child never received the cutover signal"
+        # The supervisor holds the port through the turnover, so this connect
+        # must not be refused; the drained child can no longer accept it.
+        second = _connect_and_read(port)
+        assert second != first, "the old generation served after its cutover"
+        assert proc.poll() is None, "a bounce must not stop the supervisor"
+    finally:
+        err = _stop(proc)
+    assert "generation 2 started" in err
+
+
+def test_a_bounce_is_ignored_while_stopping() -> None:
+    sup = mcp_supervisor.Supervisor(socket.socket(), ["x"], None)
+    sup.stopping = signal.SIGTERM
+    sup._on_bounce(signal.SIGHUP, None)
+    assert not sup._bounce_pending
+
+
 def test_a_child_killed_by_sigterm_is_a_restart_not_a_crash(tmp_path: Path) -> None:
     """uvicorn re-raises SIGTERM after its shutdown, so a child someone
     SIGTERMed dies of the signal. That was asked for: no crash backoff."""
@@ -328,6 +384,68 @@ def test_child_argv_substitutes_the_fd() -> None:
         "--fd",
         "3",
     ]
+
+
+def test_supervisor_command_relaunches_serve_on_the_fd() -> None:
+    """gr660009: a launchd-bound serve execs into the module with itself as
+    the --fd child; the supervisor binds, the child never touches --host/--port."""
+    cmd = mcp_supervisor.supervisor_command(
+        python="/venv/bin/python",
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=8766,
+        token=None,
+        migrate=False,
+        read_only=False,
+    )
+    sep = cmd.index("--")
+    sup, child = cmd[:sep], cmd[sep + 1 :]
+    assert sup[0] == "/venv/bin/python"
+    assert "precis.mcp_supervisor" in sup
+    assert "--no-liveness" in sup
+    assert "--host" in sup and "127.0.0.1" in sup
+    assert "--port" in sup and "8766" in sup
+    assert child[0] == "/venv/bin/python"
+    assert "precis.cli" in child
+    fd_at = child.index("--fd") + 1
+    assert child[fd_at] == "{fd}"
+    assert "--host" not in child and "--port" not in child
+
+
+def test_supervisor_command_forwards_the_serve_flags() -> None:
+    cmd = mcp_supervisor.supervisor_command(
+        python="py",
+        transport="sse",
+        host="0.0.0.0",
+        port=9,
+        token="tok",
+        migrate=True,
+        read_only=True,
+    )
+    child = cmd[cmd.index("--") + 1 :]
+    for flag in ("--token", "tok", "--migrate", "--read-only"):
+        assert flag in child
+
+
+def test_wants_self_supervision_only_for_launchd_network_serves() -> None:
+    want: dict[str, Any] = {
+        "transport": "streamable-http",
+        "fd": None,
+        "uds": None,
+        "platform": "darwin",
+        "ppid": 1,
+        "environ": {},
+    }
+    assert mcp_supervisor.wants_self_supervision(**want)
+    for override in (
+        {"fd": 7},  # already a supervisor's child
+        {"uds": "/tmp/callback.sock"},  # per-run unix callback
+        {"transport": "stdio"},  # per-session serve
+        {"platform": "linux"},  # the container's fallback direct serve
+        {"ppid": 42},  # terminal or test runner
+        {"environ": {"PRECIS_SERVE_SUPERVISOR": "0"}},  # explicit opt-out
+    ):
+        assert not mcp_supervisor.wants_self_supervision(**{**want, **override})
 
 
 def test_the_child_command_must_carry_the_fd_placeholder() -> None:

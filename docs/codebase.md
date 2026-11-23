@@ -327,7 +327,9 @@ swaps the typed surface for one `precis(command, text=)` tool over the same
 dispatcher — `tools/command_parser.py`; on this dev machine every Claude Code
 session shares one streamable-http server whose PID 1 is
 `mcp_supervisor.py`, which holds the port across restarts and runs
-`precis serve --fd` as a child, with `mcp_liveness.py` killing a wedged one), the **CLI**
+`precis serve --fd` as a child, with `mcp_liveness.py` killing a wedged one.
+The macOS public MCP daemon also uses that supervisor to retain its socket
+across code deploys. See the [MCP OAuth runbook](runbooks/mcp-oauth.md#public-mcp-deploy-restarts)), the **CLI**
 (`precis …`), the **web UI** (`src/precis_web/`, behind HTTP Basic against
 `web_users` — `precis_web/auth.py`, roster via `precis users`, self-service
 at `/account`: password, ORCID iD (the identity an attesting nanopub

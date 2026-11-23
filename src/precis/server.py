@@ -3385,6 +3385,14 @@ def main(
     loop takes over, register atexit shutdown, kick off the background
     embedder warmup, then hand control to FastMCP.
 
+    A network transport launched directly by launchd (the mcp-public
+    gateway daemon) never gets this far in the serving shape: it re-execs
+    into :mod:`precis.mcp_supervisor`, which binds the port and respawns
+    this entry as its ``--fd`` child, so a deploy's restart is a drained
+    generation turnover instead of a dead listener (gr660009). The gate
+    is :func:`precis.mcp_supervisor.wants_self_supervision`; terminals,
+    tests, stdio and ``--uds`` serves are unaffected.
+
     ``transport="stdio"`` (the default — every existing caller) is
     **byte-identical** to before this function grew keyword args: same
     ``mcp.run(transport="stdio")`` call, no token/host/port ever
@@ -3401,6 +3409,24 @@ def main(
     ``read_only`` serves only :data:`READ_ONLY_VERBS`
     (:func:`_restrict_to_read_verbs`), applied before the runtime starts.
     """
+    from precis import mcp_supervisor
+
+    if mcp_supervisor.wants_self_supervision(
+        transport=transport,
+        fd=fd,
+        uds=uds,
+        platform=sys.platform,
+        ppid=os.getppid(),
+        environ=os.environ,
+    ):
+        mcp_supervisor.relaunch_as_supervisor(
+            transport=transport,
+            host=host,
+            port=port,
+            token=token,
+            migrate=migrate,
+            read_only=read_only,
+        )
     from precis.config import load_config
     from precis.utils.log_scrub import install_log_scrub
     from precis.utils.utc_logging import force_utc_timestamps
@@ -3484,11 +3510,15 @@ def main(
                 "would expose the corpus to anything that can reach the port"
             )
     if fd is not None:
-        # Supervised (the fd is the supervisor's socket): SIGHUP drains
-        # in-flight calls and exits 0 so the supervisor respawns (gr460711).
-        from precis.install_watchdog import install_drain_signal
+        # Supervised (the fd is a supervisor's socket): SIGHUP drains with
+        # the quiet-window deferral and exits 0 so the supervisor respawns
+        # (gr460711); SIGUSR1 is the prompt cutover drain the supervisor's
+        # bounce forwards, so a deploy's turnover is not deferred by the
+        # quiet window (gr660009).
+        from precis.install_watchdog import install_cutover_signal, install_drain_signal
 
         install_drain_signal()
+        install_cutover_signal()
     _run_network_transport(
         transport=transport,
         host=host,

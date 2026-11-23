@@ -12,6 +12,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -540,6 +541,38 @@ def test_install_swap_exit_goes_through_the_drain(
     assert seen["reason"] == "install-swapped"
     assert seen["old_fingerprint"] == baseline
     assert seen["quiet_s"] == install_watchdog.resolved_respawn_quiet_s()
+
+
+def test_cutover_signal_drains_without_the_quiet_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr660009: the deploy bounce forwards SIGUSR1, and the drain it
+    triggers must NOT wait out the quiet window — a cutover drops sessions
+    regardless, so the quiet deferral would only delay the new code."""
+    calls: list[dict[str, object]] = []
+    fired = threading.Event()
+    handlers: dict[int, Any] = {}
+
+    def _fake_drain(**kw: object) -> None:
+        calls.append(kw)
+        fired.set()
+
+    monkeypatch.setattr(install_watchdog, "drain_then_exit", _fake_drain)
+    # Capture the installed handler instead of arming a real SIGUSR1 one in
+    # the xdist worker (monkeypatch restores the real signal.signal at teardown).
+    monkeypatch.setattr(
+        install_watchdog.signal,
+        "signal",
+        lambda sig, h: handlers.setdefault(sig, h),
+    )
+    assert install_watchdog.CUTOVER_SIGNAL is not None
+    assert install_watchdog.install_cutover_signal(drain_timeout_s=30.0)
+    handlers[install_watchdog.CUTOVER_SIGNAL](install_watchdog.CUTOVER_SIGNAL, None)
+    assert fired.wait(10.0), "the cutover signal never started a drain"
+    assert calls[0]["reason"] == "cutover"
+    assert calls[0]["quiet_s"] == 0.0
+    assert calls[0]["drain_timeout_s"] == 30.0
+    assert calls[0]["defer_cap_s"] == install_watchdog.resolved_respawn_defer_cap_s()
 
 
 @pytest.mark.parametrize("quiet_s", [60.0, 0.0], ids=["quiet-window", "drain"])

@@ -814,6 +814,59 @@ def drain_then_exit(
 DRAIN_SIGNAL = getattr(signal, "SIGHUP", signal.SIGTERM)
 
 
+def _install_restart_signal(
+    *,
+    signum: int | None,
+    drain_timeout_s: float | None,
+    quiet_s: float,
+    defer_cap_s: float | None,
+    reason: str,
+    detail: str,
+    why: str,
+) -> bool:
+    """Wire ``signum`` to a drained exit; ``False`` when not installable.
+
+    Only for a process something respawns (a child of
+    :mod:`precis.mcp_supervisor`, the launchd self-supervision): exit 0 is
+    a restart only then. The handler runs on the main thread, which is the
+    event loop the in-flight calls need to finish, so the drain runs on its
+    own thread. A repeat signal mid-drain is ignored.
+    """
+    if signum is None:
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    timeout = resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s
+    cap = resolved_respawn_defer_cap_s() if defer_cap_s is None else defer_cap_s
+    draining = threading.Event()
+
+    def _on_restart_signal(_signum: int, _frame: object) -> None:
+        if draining.is_set():
+            return
+        draining.set()
+        # The served-sha stamp stays: the drain still serves sessions, so
+        # the release confirm must keep counting this instance —
+        # drain_then_exit drops the key itself just before the hard exit,
+        # and a SIGKILL before then leaves it to age out, the safe
+        # direction (gr762430).
+        threading.Thread(
+            target=drain_then_exit,
+            kwargs={
+                "reason": reason,
+                "detail": detail,
+                "why": why,
+                "drain_timeout_s": timeout,
+                "quiet_s": quiet_s,
+                "defer_cap_s": cap,
+            },
+            name="drain-restart",
+            daemon=True,
+        ).start()
+
+    signal.signal(signum, _on_restart_signal)
+    return True
+
+
 def install_drain_signal(
     *,
     drain_timeout_s: float | None = None,
@@ -822,48 +875,59 @@ def install_drain_signal(
 ) -> bool:
     """Make :data:`DRAIN_SIGNAL` a drained restart; ``False`` if not installable.
 
-    Only for a child of :mod:`precis.mcp_supervisor`: exit 0 is a restart
-    only when something respawns the process. The handler runs on the main
-    thread, which is the event loop the in-flight calls need to finish, so
-    the drain runs on its own thread. A repeat signal mid-drain is ignored.
+    The drain carries the gr548248 quiet-window deferral: the exit drops
+    every in-memory MCP session, so it waits out a quiet window (bounded by
+    the deferral cap) before cutting over. That is right for a watchdog
+    restart, wrong for a deploy — see :func:`install_cutover_signal`.
     """
-    if not hasattr(signal, "SIGHUP"):
-        return False
-    if threading.current_thread() is not threading.main_thread():
-        return False
-    timeout = resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s
-    quiet = resolved_respawn_quiet_s() if quiet_s is None else quiet_s
-    cap = resolved_respawn_defer_cap_s() if defer_cap_s is None else defer_cap_s
-    draining = threading.Event()
+    return _install_restart_signal(
+        signum=DRAIN_SIGNAL,
+        drain_timeout_s=drain_timeout_s,
+        quiet_s=resolved_respawn_quiet_s() if quiet_s is None else quiet_s,
+        defer_cap_s=defer_cap_s,
+        reason="restart-requested",
+        detail=f"signal {DRAIN_SIGNAL.name}",
+        why=(
+            f"{DRAIN_SIGNAL.name}: restart requested — exiting cleanly "
+            "so the supervisor starts a fresh server"
+        ),
+    )
 
-    def _on_drain_signal(_signum: int, _frame: object) -> None:
-        if draining.is_set():
-            return
-        draining.set()
-        # The served-sha stamp stays: the quiet deferral and the drain
-        # still serve sessions, so the release confirm must keep counting
-        # this instance — drain_then_exit drops the key itself just before
-        # the hard exit, and a SIGKILL before then leaves it to age out,
-        # the safe direction (gr762430).
-        threading.Thread(
-            target=drain_then_exit,
-            kwargs={
-                "reason": "restart-requested",
-                "detail": f"signal {DRAIN_SIGNAL.name}",
-                "why": (
-                    f"{DRAIN_SIGNAL.name}: restart requested — exiting cleanly "
-                    "so the supervisor starts a fresh server"
-                ),
-                "drain_timeout_s": timeout,
-                "quiet_s": quiet,
-                "defer_cap_s": cap,
-            },
-            name="drain-restart",
-            daemon=True,
-        ).start()
 
-    signal.signal(DRAIN_SIGNAL, _on_drain_signal)
-    return True
+#: Signal for a deploy's generation cutover (gr660009): drain in-flight
+#: calls *without* the quiet-window deferral and exit, so whatever holds
+#: the listening socket respawns this process on the new install at once.
+#: The deferral :func:`install_drain_signal` carries exists so a bounce
+#: does not land mid-conversation; a cutover drops sessions regardless,
+#: so waiting out a quiet window would only delay the new code.
+#: Windows has no SIGUSR1; the name must still import, and
+#: install_cutover_signal() declines there.
+CUTOVER_SIGNAL = getattr(signal, "SIGUSR1", None)
+
+
+def install_cutover_signal(*, drain_timeout_s: float | None = None) -> bool:
+    """Make :data:`CUTOVER_SIGNAL` a prompt drained exit; ``False`` if not installable.
+
+    For a child serving on a socket its supervisor keeps bound across
+    generations: the supervisor's bounce forwards this signal, the child
+    finishes its in-flight calls within the drain bound (no quiet-window
+    wait, no deferral cap — a deploy's turnover must complete in bounded
+    time) and exits 0, and the next generation boots on the swapped install
+    while the socket never goes dark.
+    """
+    name = CUTOVER_SIGNAL.name if CUTOVER_SIGNAL is not None else "SIGUSR1"
+    return _install_restart_signal(
+        signum=CUTOVER_SIGNAL,
+        drain_timeout_s=drain_timeout_s,
+        quiet_s=0.0,
+        defer_cap_s=None,
+        reason="cutover",
+        detail=f"signal {name}",
+        why=(
+            f"{name}: cutover — draining in-flight calls and exiting so "
+            "the next generation starts on the new install"
+        ),
+    )
 
 
 class CheckoutWatchdog(threading.Thread):

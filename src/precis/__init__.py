@@ -72,6 +72,10 @@ register from the in-tree ``BUILTINS``, plugins load last through
 The install watchdog waits for quiet and drains active tool calls before
 exiting after a deploy, to limit disruption to sessions. Stopping the
 watchdog cancels the pending restart (``install_watchdog.py``).
+The macOS public MCP daemon disables the install watchdog so its child
+cannot restart during the venv swap. The deploy signals
+``mcp_supervisor.py`` after installation to drain the serving child while
+keeping the listener bound for its replacement.
 
 ``__version__`` is read from the installed distribution metadata, so it cannot
 drift from ``pyproject.toml``; the literal is a fallback for a bare source tree.

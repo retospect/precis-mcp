@@ -103,6 +103,7 @@ src/precis/ingest/marker.py::_run_in_subprocess_with_timeout 1
 src/precis/llm_eval/scorers.py::score_code 1
 src/precis/mcp_supervisor.py::Supervisor._run_prepare 1
 src/precis/mcp_supervisor.py::Supervisor.run 1
+src/precis/mcp_supervisor.py::relaunch_as_supervisor 1
 src/precis/remote/_runtime_check.py::bounded_command 1
 src/precis/remote/credentials.py::vault_ssh_session 1
 src/precis/remote/ssh.py::bounded_process 1

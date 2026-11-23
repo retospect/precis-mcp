@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,21 @@ from typing import Any
 import pytest
 
 from precis import cli
+
+
+def test_python_dash_m_invokes_the_same_cli() -> None:
+    """The launchd self-supervision spawns its serve child as
+    ``python -m precis.cli`` (gr660009); it must reach the same parser as
+    the ``precis`` console script."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "precis.cli", "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0
+    assert "serve" in proc.stdout
 
 
 def test_no_args_exits(

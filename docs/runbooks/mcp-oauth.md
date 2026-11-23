@@ -82,6 +82,34 @@ The public daemon also exposes the `python` kind read-only: its plist env sets
 `PRECIS_PYTHON_READONLY=1`, which makes `put`/`edit`/`delete` on `python`
 refuse while every other kind (gripe filing, etc.) keeps its normal writes.
 
+### Public MCP deploy restarts
+
+For a code-only deploy, launchd's `precis serve` process re-execs as
+`precis.mcp_supervisor` at startup and owns the listening socket. The deploy
+sends SIGHUP to the supervisor, which forwards SIGUSR1 to the serving child
+to drain calls already in flight within the configured timeout, without
+waiting for a quiet window. Calls that arrive during the drain can be
+interrupted. The install watchdog stays disabled on this daemon. The new
+child starts from the updated venv on the same socket. New connections can
+queue during startup and may time out if the client deadline expires.
+
+The reload checks for a new generation and an unauthenticated HTTP 401
+with a `resource_metadata` challenge. This substitutes for MCP initialize
+and one authenticated read, which still need an OAuth client to verify.
+The deploy uses the same listener throughout a drain.
+
+The first deploy with this helper performs a full launchd bootout/bootstrap.
+It also does so when the plist changes, so launchd picks up new arguments
+and environment, or when the daemon is absent. If the draining reload
+cannot verify turnover within 300 seconds, it forces a full bounce.
+The full bounce can briefly take the listener down and interrupt active
+calls. Set `PRECIS_SERVE_SUPERVISOR=0` in the daemon environment to opt
+out of socket supervision. Restarts in that mode can interrupt connections.
+
+Reconnect or retry reads after a timeout. For a write with no reply,
+look up its expected effect before retrying. The write may have committed
+before the connection closed.
+
 ### Web database identity
 
 After the database ownership cutover, the web login uses `precis_ingress`;

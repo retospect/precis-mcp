@@ -392,12 +392,13 @@ def test_drain_signal_drains_in_flight_calls_then_exits_clean(
 
 def test_drain_signal_is_wired_for_supervised_serves_only() -> None:
     """Exit 0 is a restart only when something respawns the process, so the
-    handler is installed only when serving on the supervisor's fd."""
+    handlers are installed only when serving on the supervisor's fd."""
     from precis import server
 
     source = Path(server.__file__).read_text(encoding="utf-8")
     assert "if fd is not None:" in source
     assert "install_drain_signal()" in source
+    assert "install_cutover_signal()" in source
 
 
 def test_precis_status_renders_the_checkout_reason(

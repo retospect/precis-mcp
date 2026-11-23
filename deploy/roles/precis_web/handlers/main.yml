@@ -22,11 +22,14 @@
 # its one restart, taken once both venv installs have finished and the plist
 # is rendered (public-mcp.yml flushes handlers). Waiting for the bounce would
 # leave it serving a swapped venv through the drain wait (gr338977, gr660587).
+# Code-only restarts use SIGHUP so the supervisor holds the socket
+# while the child drains and respawns. A plist change needs a full
+# bootout/bootstrap to load the new daemon configuration (gr660009).
 - name: restart precis-mcp-public
-  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd_draining.yml"
   vars:
     reload_unit: com.precis.mcp-public
-    reload_persistent: true
+    reload_port: "{{ precis_mcp_public_port }}"
   when:
     - os_family == "darwin"
     - precis_mcp_public_enabled | default(false) | bool
