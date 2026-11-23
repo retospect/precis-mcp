@@ -174,21 +174,22 @@ for whatever the pending migration adds until the migration lands.
 
 ## How do I look up a table's columns?
 
-Read the schema reference through `md` ([[precis-md-help]]):
+Read the live catalog through the `schema` kind (read-only, no rows):
 
 ```python
-get(kind="md")  # discover mounted root aliases
-get(kind="md", id="main/docs/reference/schema.md")  # table headings
-get(kind="md", id="main/docs/reference/schema.md~refs")  # columns, types, constraints
+get(kind="schema")  # list tables
+get(kind="schema", id="refs")  # columns, types, constraints, FKs both ways
+get(kind="schema", id="refs", view="profile")  # sizes, distinct counts, index use
+get(kind="schema", id="refs", view="jsonb", args={"column": "meta"})  # jsonb keys
 ```
 
-Use the root alias returned by the first call: a checkout root uses
-`<alias>/docs/reference/schema.md`; a docs-only root uses
-`<alias>/reference/schema.md`. The heading selector is the table name.
-This is a generated reference with its source date in the file, not live
-schema introspection; compare `schema_state` above when diagnosing drift.
-If no mounted root contains it, report the missing schema reference to
-Reto; a local checkout is not required by this read route.
+Follow the next-call hints to hop along a foreign key.
+
+Fallback when `schema` is unavailable: the generated reference through
+`md` ([[precis-md-help]]) — `get(kind="md")` lists root aliases, then
+`get(kind="md", id="<alias>/docs/reference/schema.md~refs")`. It is static
+with its source date in the file, not live; compare `schema_state` above
+when diagnosing drift.
 
 ## What container am I running in?
 ## What's the container hostname?

@@ -7,6 +7,9 @@ Plaintext and Markdown take the links view as an explicit argument so paths
 ending in ``/links`` keep addressing files across verbs.
 LLM diagnostics bound call-log scans to recent windows and report the
 effective decide modes through the same memo used by live routing.
+Schema introspection reads the live public catalog in a bounded read-only
+transaction. Column statistics project only numeric fields. JSONB key
+counts scan one ordinary table and use the database role's row visibility.
 Staged findings retain the URL and verbatim quote without fetching.
 Gripe themes span unrelated defects. Automatic merges require matching
 project and cluster scope, and filing receipts suggest out-of-scope keepers.

@@ -73,6 +73,10 @@ entrypoint (serve/web/worker/ingest-watch/alertmanager) —
 `AUTO_MIGRATE_LOCK_KEY`), `PRECIS_SKIP_SCHEMA_CHECK` is the emergency
 bypass.
 
+`get(kind='schema')` browses the deployed public catalog. Relation definitions
+link both directions of foreign keys. Separate views report aggregate
+statistics and count top-level keys for a selected JSONB column.
+
 ## The lifecycle, end to end
 
 Private study activity is a non-ref exception to the corpus model:

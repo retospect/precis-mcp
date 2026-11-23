@@ -48,7 +48,8 @@ get(kind="math", q="population of Ireland")  # compute
 
 Most kinds list their views in `precis-<kind>-help`. For `websearch`,
 open `precis-perplexity-help`. The `cfp`, `email`, `make`, `route`,
-`semanticscholar`, and `skill` kinds have no dedicated kind help skill.
+`schema`, `semanticscholar`, and `skill` kinds have no dedicated kind
+help skill.
 Use `search(kind='skill', q='<kind>')` to find related help or read the
 `options=` of an unknown-view refusal for that kind's supported views.
 

@@ -5776,6 +5776,8 @@ _INTROSPECTION_POINTERS: tuple[str, ...] = (
     "(STATUS tag set-times; `args={'bucket','closed'}`)",
     "- corpus storage facts: `get(kind='job', id='/facts')` "
     "(refs per kind, chunk coverage, PDF bytes, DB size)",
+    "- live database tables, columns, foreign keys and aggregate profiles "
+    "(no rows): `get(kind='schema')`, then `get(kind='schema', id='<table>')`",
 )
 
 #: ``(import name, display label, kinds it backs, pip install hint)``.

@@ -141,6 +141,7 @@ name/path.
 | `job` | `jo55` | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-minter-help`. | store |
 | `message` | `ms11` | Proactive outbound (Discord post) | store |
 | `email` | *(no handle — live IMAP adapter)* | Live, read-only mailbox browse over IMAP — mirrors nothing. `get(kind='email')` lists recent mail; `id='INBOX'` a folder; `id='INBOX/<uid>'` reads one message; `account='addr@host'` picks among configured accounts. Never marks mail `\Seen`. | store |
+| `schema` | `refs` (no handle — live catalog adapter) | Read-only public-schema introspection — `get(kind='schema')` lists relations, `id='<table>'` columns/constraints/indexes and FKs both ways, `view='profile'` aggregate stats, `view='jsonb', args={'column': …}` key counts | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
 | `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |
 

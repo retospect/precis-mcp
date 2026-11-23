@@ -1284,6 +1284,10 @@ def boot(
         # the handler falls back to lexical search without it.
         _gated(TagHandler)
 
+        from precis.handlers.schema import SchemaHandler
+
+        _gated(SchemaHandler)
+
         # Corpus-wide random-pick. Store-backed because it reads
         # ``blocks`` directly; no embedder needed (it uses the
         # stored embeddings as a "has content" filter, not for
