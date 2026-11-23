@@ -181,6 +181,57 @@ def test_trusted_empty_prints_ladder(store: Any) -> None:
     assert "provisional (measured, unconfirmed)" in plain
 
 
+def test_frontier_reports_the_kept_barriers_engine(store: Any) -> None:
+    qid = _mk_quest(store)
+    pathway = _mk_provisional(store, qid, 0)
+    neb = _mk_provisional(store, qid, 1)
+    legacy = _mk_provisional(store, qid, 2)
+    store.stamp_ref_meta(
+        pathway,
+        {
+            "network_basis": {"version": "9.9.9"},
+            "network_basis_by_key": {"barrier": {"version": "0.31.0"}},
+        },
+    )
+    store.stamp_ref_meta(
+        neb,
+        {
+            "barrier_source": "struct_neb",
+            "neb_run_id": 10,
+            "neb_edge_fs_ref_id": 20,
+            "neb_edges": {
+                "20": {
+                    "fs_ref_id": 20,
+                    "neb_run_id": 10,
+                    "barrier": 0.31,
+                    "engine": "neb-v1",
+                },
+                "21": {
+                    "fs_ref_id": 21,
+                    "neb_run_id": 11,
+                    "barrier": 0.31,
+                    "engine": "neb-v2",
+                },
+            },
+        },
+    )
+    store.stamp_ref_meta(legacy, {"network_basis": {"version": "9.9.9"}})
+
+    h = QuestHandler(hub=Hub(store=store))
+    plain = h.get(id=qid, view="frontier", args={"trusted": True}).body
+    assert re.search(r"cand-0 .*engine=0\.31\.0", plain)
+    assert re.search(r"cand-1 .*engine=neb-v1", plain)
+    assert re.search(r"cand-2 .*engine=—", plain)
+
+    projected = h.get(
+        id=qid,
+        view="frontier",
+        args={"columns": ["name", "engine"], "where": {"engine": "neb-v1"}},
+    ).body
+    assert "name=cand-1 engine=neb-v1" in projected
+    assert "name=cand-0" not in projected
+
+
 def test_trusted_empty_ladder_limit_widens(store: Any) -> None:
     """12 provisional candidates: the default read prints the top-10 page
     plus the widen hint; ``args={'limit': N}`` shows every rung."""

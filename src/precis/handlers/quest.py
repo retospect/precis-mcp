@@ -2899,6 +2899,9 @@ class QuestHandler(NumericRefHandler):
                 lines.append("no candidate structures serve this quest yet.")
         rows: list[dict[str, Any]] = []
         keys = {key for key, _ in raw_fr.objectives}
+        # Reserved row columns; a measure key with one of these names is
+        # shadowed (e.g. a measure named `engine` never reaches the row).
+        row_columns = ["band", "handle", "name", "trusted", "blocker", "engine"]
         for band, candidates, _ in groups:
             for c in candidates:
                 pc = provisional.get(c.ref_id)
@@ -2914,6 +2917,7 @@ class QuestHandler(NumericRefHandler):
                         "trusted": {True: "yes", False: "no", None: "?"}[verdict],
                         "blocker": blockers.get(c.ref_id)
                         or ("; ".join(pc.reasons) if pc else ""),
+                        "engine": c.flags.get("barrier_engine"),
                         "_ref_id": c.ref_id,
                         "_untrusted": sorted(pc.untrusted_keys) if pc else [],
                         "_assurance": frontier_mod.assurance_note(c),
@@ -2922,14 +2926,8 @@ class QuestHandler(NumericRefHandler):
                         else "",
                     }
                 )
-        columns = [
-            "band",
-            "handle",
-            "name",
-            "trusted",
-            "blocker",
-            *sorted(keys - {"band", "handle", "name", "trusted", "blocker"}),
-        ]
+        measure_columns = sorted(keys.difference(row_columns))
+        columns = [*row_columns, *measure_columns]
         lens_args = _lens_args(args, lens_sort)
         spec = parse_lens_args(
             lens_args,
@@ -2956,7 +2954,7 @@ class QuestHandler(NumericRefHandler):
                     out.append(
                         "  "
                         + " ".join(
-                            f"{col}={row.get(col, '—')}"
+                            f"{col}={row.get(col) if row.get(col) is not None else '—'}"
                             + (" ⚠untrusted" if col in row["_untrusted"] else "")
                             for col in cols
                         )
@@ -2965,14 +2963,16 @@ class QuestHandler(NumericRefHandler):
                 values = " ".join(
                     f"{key}={row[key]:g}"
                     + (" ⚠untrusted" if key in row["_untrusted"] else "")
-                    for key in sorted(
-                        keys - {"band", "handle", "name", "trusted", "blocker"}
-                    )
+                    for key in measure_columns
                     if key in row
                 )
                 line = f"  {row['handle']} {row['name']}"
                 if band != "awaiting":
                     line += f" — {values or '(no measures)'}"
+                if row["engine"] is not None:
+                    line += f" · engine={row['engine']}"
+                elif "barrier" in row:
+                    line += " · engine=—"
                 line += row["_marker"]
                 if band in {"pass", "frontier", "dominated"}:
                     if row["_ref_id"] in graduated:

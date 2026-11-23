@@ -305,6 +305,13 @@ pathway across all tiers. `engine`, `template` and `stale` describe the
 barrier basis. For other declared objectives use the objective suffix,
 as in `engine_energy`, `template_energy` and `stale_energy`.
 
+`view='frontier'` rows carry an `engine` column: the engine behind the
+*kept* barrier, read from its recorded source — a pathway barrier stamps
+`network_basis_by_key['barrier'].version`, a `struct_neb` barrier stamps
+the selected NEB edge's `engine`. `—` marks a barrier with no engine
+stamp. It filters like any column:
+`args={'columns': ['name', 'engine'], 'where': {'engine': '0.31.0'}}`.
+
 ## Page candidate tables
 
 The default results and frontier tables accept

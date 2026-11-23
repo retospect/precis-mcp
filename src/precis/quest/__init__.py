@@ -176,6 +176,9 @@ Package-level invariants (detail lives on the named module):
   ``fidelity_mechanical_gpu_h_budget`` at 1.5 GPU-h per seed. A fresh science
   verdict vetoes failed-job redispatch, including amnesties, and routes
   the blocker to the quest agent. ``view='trust'`` matches harvest staleness.
+  Frontier rows stamp the barrier's engine —
+  ``network_basis_by_key['barrier'].version`` or the NEB edge's ``engine``;
+  unstamped renders ``—``.
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
   (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps dispatch/tick; extras
   stay ``hypothesis`` leads until the in-flight one's sims land.

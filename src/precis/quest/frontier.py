@@ -2272,6 +2272,22 @@ def _candidate_from_structure(
             for k, b in meta["network_basis_by_key"].items()
             if isinstance(b, dict)
         }
+    if "barrier" in measures:
+        # The latest harvest or a sibling NEB edge may have a different
+        # engine. Only the source of the kept barrier can name its engine.
+        engine = None
+        if "struct_neb" in (meta.get("barrier_source"), meta.get("barrier_fidelity")):
+            from precis.quest.compute import _recorded_neb_edge
+
+            edge = _recorded_neb_edge(meta) if meta.get("neb_run_id") else None
+            if edge is not None:
+                engine = edge.get("engine")
+        else:
+            engine = (
+                flags.get("network_basis_by_key", {}).get("barrier", {}).get("version")
+            )
+        if isinstance(engine, str) and engine:
+            flags["barrier_engine"] = engine
     # Window-objectives diagnostics (quest.window_objectives, SPSO slice 6):
     # "which slab model to trust" at the operating point, the limiting rung
     # there, and the harvest's missing-input notes — display context for the
