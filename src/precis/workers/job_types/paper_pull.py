@@ -199,6 +199,20 @@ def preview_sha(store: Store, ref_id: int) -> str | None:
     return None
 
 
+def _refinement_target(store: Store, ref_id: int) -> tuple[str, int] | None:
+    """Canonical PDF and minimum replacement length for a flagged paper."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pdf_sha256, meta->'needs_refinement'->'last_body_page' "
+            "FROM refs WHERE ref_id = %s AND kind = 'paper' AND retired_at IS NULL "
+            "AND meta->'needs_refinement'->>'pdf_sha256' = pdf_sha256",
+            (ref_id,),
+        ).fetchone()
+    if row is not None and type(row[1]) is int:
+        return str(row[0]).strip(), row[1] + 1
+    return None
+
+
 def _clear_preview_pin(store: Store, ref_id: int) -> None:
     """Best-effort removal of a ``pdf_preview_refetch`` pin whose drop failed.
 
@@ -231,8 +245,8 @@ def target_problem(
     for a ref that already has a body (e.g. markup-ingested full text), folds
     attach-only and keeps its chunks (gr519746, the web upload repair case)
     — or while bodiless (a held preview gets re-pointed, 5d95cb2fc/gr465474).
-    Complete refs refuse unless the URL path explicitly allows a short
-    held article preview; that path pins both PDF hashes for ingest."""
+    The URL path also accepts a short preview or a flagged page-coverage
+    mismatch; both pin the old and new PDF hashes for ingest."""
     with store.pool.connection() as conn:
         row = conn.execute(
             f"SELECT r.kind, {has_body_sql('r')}, r.pdf_sha256 IS NOT NULL "
@@ -244,7 +258,14 @@ def target_problem(
     kind, has_body, has_pdf = row
     if kind != "paper":
         return f"is a {kind}, not a paper"
-    if has_body and has_pdf and not (allow_preview and preview_sha(store, ref_id)):
+    if (
+        has_body
+        and has_pdf
+        and not (
+            allow_preview
+            and (_refinement_target(store, ref_id) or preview_sha(store, ref_id))
+        )
+    ):
         return (
             "already has a body and a held PDF — a pulled file can't fold "
             "onto a complete ref"
@@ -413,12 +434,26 @@ def pull(
             problem = target_problem(store, ref_id, allow_preview=url is not None)
             if problem is not None:
                 raise _dl._Failed("bad_target", f"ref {ref_id} {problem}")
-            old_sha = preview_sha(store, ref_id) if has_body and url else None
+            refinement = _refinement_target(store, ref_id) if has_body and url else None
+            old_sha = (
+                refinement[0]
+                if refinement
+                else preview_sha(store, ref_id)
+                if has_body and url
+                else None
+            )
             if old_sha is not None:
-                if checks["identity"] == "unchecked" or checks["pages"] <= 2:
+                if checks["identity"] == "unchecked" or (
+                    not refinement and checks["pages"] <= 2
+                ):
                     raise _dl._Failed(
                         "preview_suspected",
-                        "replacement needs identity and more than two pages",
+                        "replacement needs a confirmed paper identity and full text",
+                    )
+                if refinement and checks["pages"] < refinement[1]:
+                    raise _dl._Failed(
+                        "incomplete_pdf",
+                        f"replacement needs at least {refinement[1]} pages",
                     )
                 store.update_ref(
                     ref_id,
@@ -428,6 +463,7 @@ def pull(
                             "to": sha,
                             "url": final_url,
                             "at": now_iso(),
+                            "refinement": refinement is not None,
                         }
                     },
                 )
@@ -446,7 +482,8 @@ def pull(
                     # the Marker run whose chunks the fold would discard
                     # anyway (gr519746's repair case: markup body + cleared
                     # PDF).
-                    printable_only=has_body and old_sha is None,
+                    printable_only=has_body
+                    and (old_sha is None or refinement is not None),
                 )
                 # Sidecar first, PDF last: the watcher keys off the ``.pdf``.
                 os.replace(sidecar_path(staged), sidecar_path(target))

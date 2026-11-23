@@ -16,6 +16,8 @@ Subcommands:
   article papers whose extracted ``pdf_pages`` span is <= 2 (the signature in
   ``docs/runbooks/elsevier-preview-pdf-remediation.md``): ref id, title,
   pages, chunk count. Writes nothing.
+* ``precis paper flag-page-mismatches`` — mark out-of-bounds extraction
+  page addresses on existing papers. Updates metadata only.
 * ``precis paper fetch-si <id>`` — stamp ``meta.si_fetch`` on one paper so
   the fetch lane's SI pass discovers, downloads and ingests its
   supplementary files as linked ``role='supplement'`` refs. The CLI
@@ -86,6 +88,14 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     sp.add_argument("--limit", type=int, default=None, help="Cap rows listed.")
     sp.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    pc = psub.add_parser(
+        "flag-page-mismatches",
+        help="Flag paper bodies that address pages beyond the held PDF.",
+    )
+    pc.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -180,6 +190,9 @@ def run(args: argparse.Namespace) -> None:
     if args.paper_cmd == "suspect-previews":
         _run_suspect_previews(args)
         return
+    if args.paper_cmd == "flag-page-mismatches":
+        _run_flag_page_mismatches(args)
+        return
     if args.paper_cmd == "fetch-si":
         _run_fetch_si(args)
         return
@@ -191,6 +204,24 @@ def run(args: argparse.Namespace) -> None:
         return
     print(f"paper: unknown subcommand {args.paper_cmd!r}", file=sys.stderr)
     sys.exit(2)
+
+
+def _run_flag_page_mismatches(args: argparse.Namespace) -> None:
+    from precis.ingest.page_coverage import stamp_page_mismatches
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        with store.pool.connection() as conn:
+            upper = conn.execute("SELECT coalesce(max(ref_id), 0) FROM refs").fetchone()
+        assert upper is not None
+        count = 0
+        batch_size = 1000
+        for first in range(1, int(upper[0]) + 1, batch_size):
+            with store.tx() as conn:
+                count += stamp_page_mismatches(conn, first, first + batch_size - 1)
+    finally:
+        store.close()
+    print(f"flag-page-mismatches: flagged {count} paper(s)")
 
 
 def _run_authors_resplit(args: argparse.Namespace) -> None:

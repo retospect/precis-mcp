@@ -547,11 +547,10 @@ Queues a `paper_pull` job: a worker fetches the URL (SSRF-guarded, 50 MB cap,
 stub (`source='agent_url'`, `url`), so the normal ingest attaches the body.
 Accepted targets: a body-less stub; a sha-less paper whose body came from
 markup (the file folds attach-only, keeping the body); a bodiless paper
-holding a preview PDF; and — the gr715554 case — a paper whose body came
+holding a preview PDF; a paper whose body came
 from a short held preview (at most 2 pages, article entry type), taking a
-fuller public copy. Everything else refuses up front, non-papers and
-complete papers (a body AND a held PDF that is not a short article preview)
-included: a drop would mint a duplicate rather than fold.
+fuller public copy; or a paper whose held PDF has a page-coverage mismatch
+recorded in `meta.needs_refinement`. Other targets refuse up front.
 
 The preview replacement is hash-pinned and growth-checked (gr715554). The
 pull records `meta.pdf_preview_refetch` — `from` the held preview's sha,
@@ -577,6 +576,33 @@ is another paper (check the title it quotes), `preview_suspected` means a
 publisher preview (find the full text elsewhere); `identity_unchecked` on a
 `dropped` record means the stub had no usable title or DOI, so check the
 folded body yourself. The folded paper keeps the URL as `meta.source_url`.
+
+## Repair a paper flagged as needing refinement
+
+`meta.needs_refinement` records the held `pdf_sha256`, its `pdf_page_count`,
+and the zero-based `last_body_page` that exceeds its coverage. Treat tables
+from that extraction as untrusted until repaired. When using the paper,
+verify the source version and submit a complete legal copy via `pdf_url`.
+The pull requires confirmed identity and enough pages to include
+`last_body_page`. An undersized replacement fails with `incomplete_pdf`.
+
+Wait for ingest to attach the new `pdf_sha256` identifier as an alias. This
+keeps the existing body and canonical PDF in place. Use the replacement
+SHA recorded as `meta.paper_pull.sha256` in the re-extraction request.
+
+```python
+edit(kind='paper', id='pa990', args={
+    'reextract': True, 'pdf_sha256': '<replacement sha>',
+    'reason': 'repair PDF page coverage mismatch',
+})
+```
+
+Successful repair promotes the replacement PDF, swaps in its body,
+clears `meta.needs_refinement`, and saves independent page-image table
+readings in `meta.table_vision_readings` with PDF SHA, page index,
+extractor, version, and model. Review `get(kind='paper', id=…, view='dependants')`
+after repair and update affected work. Supersede any affected signed finding
+with a new finding.
 
 No legal copy to fetch at all — every leg of the daily fetch failed
 (no open version, publisher 403, body-less markup)? Re-queueing does

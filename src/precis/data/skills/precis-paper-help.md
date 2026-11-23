@@ -646,6 +646,13 @@ handles. Read a chunk directly with `get(id='pc…')`. The fallback lists
 up to 12 matches in body order. If more matches exist, follow the
 `Next:` call with `args={'after_ord': N}` to list the next page.
 
+The **Needs refinement** warning means the extracted text refers to pages
+beyond the held PDF. Treat its extracted tables as untrusted and follow the
+repair steps in [[precis-paper-ref-help]]. When a second reading is stored,
+`args={'reading': 'vision'}` lists its zero-based PDF page indices and
+`args={'reading': 'vision', 'page': N}` opens one page's independent
+image-based reading with provenance. Use the vision selector on its own.
+
 `view='measures'` lists outputs grouped by table (`T<n>`), then prose,
 with the same eligibility as default paper-scoped measure search. It
 matches the paper as subject or anchor owner and includes flagged outputs

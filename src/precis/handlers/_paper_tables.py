@@ -20,6 +20,11 @@ cell anchor the recipe slice writes through ``insert_measure``.
 caption or row labels hold any of the words (case-insensitive, on the
 ``markup_surface`` text).
 
+``args={'reading': 'vision'}`` lists pages with stored second readings.
+Add ``'page': N`` to open one by zero-based PDF page index. This selector
+is separate from ``table``, ``match``, and ``after_ord``. A page-coverage
+flag warns readers to treat extracted tables as untrusted until repair.
+
 When the paper has no ``chunk_kind='table'`` chunks at all, the view
 does not stop at "no tables": it lists the body chunks that look like
 labeled tables (a ``Table <n>`` caption line or a pipe grid) with their
@@ -66,6 +71,38 @@ _ROW_CAP = 50
 #: Parts of one split table rendered before a per-run fold line —
 #: an explicit ``args={'table': n}`` shows the whole run.
 _PART_CAP = 3
+
+
+def refinement_warning(ref: Ref) -> str:
+    if not (ref.meta or {}).get("needs_refinement"):
+        return ""
+    pa = _pa(ref)
+    return (
+        "> [!] **Needs refinement.** The extracted text addresses pages beyond "
+        "the held PDF. Treat the extracted tables as untrusted. When using this "
+        "paper, verify the source version, then pull the complete PDF with "
+        f"`put(kind='paper', id='{pa}', args={{'pdf_url': URL}})`. After it attaches, "
+        "re-extract using the new SHA."
+    )
+
+
+def _render_vision_reading(ref: Ref, page: Any) -> str:
+    readings = (ref.meta or {}).get("table_vision_readings") or []
+    for reading in readings:
+        if type(page) is int and page == reading["page"]:
+            return (
+                f"# {_pa(ref)} · PDF page {page} · second reading\n\n"
+                f"Extractor {reading['extractor']} v{reading['version']} · "
+                f"{reading['model']} · PDF {reading['pdf_sha256']}\n\n"
+                f"{reading['text']}"
+            )
+    pages = ", ".join(str(reading["page"]) for reading in readings)
+    if not readings:
+        return f"No second reading is stored for {_pa(ref)}."
+    return (
+        f"{_pa(ref)} vision reading pages (zero-based): {pages}"
+        "\nUse args={'reading': 'vision', 'page': N} to open a reading."
+    )
 
 
 def _pa(ref: Ref) -> str:
@@ -207,6 +244,27 @@ def render_tables_view(
 ) -> Response:
     """``view='tables'`` — every ``chunk_kind='table'`` chunk of the
     paper as a parsed grid, in ord order."""
+    warning = refinement_warning(ref)
+    prefix = warning + "\n\n" if warning else ""
+    if args and args.get("reading") is not None:
+        page = args.get("page")
+        if (
+            args["reading"] != "vision"
+            or (page is not None and (type(page) is not int or page < 0))
+            or any(args.get(key) is not None for key in ("table", "match", "after_ord"))
+        ):
+            raise BadInput(
+                "vision readings take an optional zero-based page index",
+                next="`args={'reading': 'vision'}` lists the pages with second readings",
+            )
+        return Response(body=prefix + _render_vision_reading(ref, page))
+    available = (ref.meta or {}).get("table_vision_readings")
+    vision_note = (
+        "\n\nIndependent page-image readings are available with "
+        "`args={'reading': 'vision'}`."
+        if available
+        else ""
+    )
     tables, neighbours = store.chunks.table_chunks_for_ref(ref.id)
     pa = _pa(ref)
     after_ord = args.get("after_ord") if args else None
@@ -219,7 +277,7 @@ def render_tables_view(
             next=f"get(id='{pa}', view='tables') lists the first page",
         )
     if not tables:
-        body = f"no tables in {pa}"
+        body = prefix + f"no tables in {pa}"
         matches = store.chunks.table_like_chunks_for_ref(
             ref.id,
             limit=_BODY_CHUNK_LIMIT + 1,
@@ -260,7 +318,7 @@ def render_tables_view(
             )
         elif after_ord is not None and not like:
             body += f" (no table-like body chunks after ordinal {after_ord})"
-        body += render_next_section(nxt)
+        body += vision_note + render_next_section(nxt)
         return Response(body=body)
 
     sel = args.get("table") if isinstance(args, dict) else None
@@ -359,7 +417,7 @@ def render_tables_view(
         what = (
             f"match={str(match).strip()!r}" if match is not None else f"table={sel!r}"
         )
-        body = f"no tables in {pa} match {what}"
+        body = prefix + f"no tables in {pa} match {what}"
         body += render_next_section(
             [
                 (
@@ -374,7 +432,8 @@ def render_tables_view(
     head = f"# {pa} — {n} table{'s' if n != 1 else ''}"
     if sel is not None or match is not None:
         head += f" (showing {shown_groups} table{'s' if shown_groups != 1 else ''})"
-    body = head + "\n\n" + "\n\n".join(sections)
+    body = prefix + head + "\n\n" + "\n\n".join(sections)
+    body += vision_note
     body += render_next_section(
         [
             (

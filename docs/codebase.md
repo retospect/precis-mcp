@@ -235,6 +235,11 @@ queue order and model routes stay unchanged. Readiness requires matching
 artifacts. Other enrichment stages refuse targeted requests where the worker
 cannot provide a revision-specific receipt.
 
+Paper ingest checks extracted page addresses against the canonical PDF.
+The same metadata-only check can flag the existing corpus. A flagged
+paper's explicit re-extraction can pair the replacement body with
+independent page-image readings of its tables.
+
 Paper cards draw on the publisher abstract, a labelled generated abstract,
 or leading body prose. New nanopub approvals use chunk-anchored passages.
 RDF and LaTeX preserve context literals already frozen into publish rows.

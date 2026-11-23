@@ -1220,6 +1220,7 @@ _CORPUS_PLACING_STATUSES = frozenset(
         "filled_pres",
         "attached",
         "attached_pres",
+        "refinement_attached",
     }
 )
 
@@ -1321,6 +1322,9 @@ def _handle_success(
                 result.ref_id,
                 result.kind,
             )
+        elif result.pdf_refinement_attached and corpus_dest is not None:
+            dest = _move_to_corpus(pdf, cite_key=result.cite_key, corpus_dir=corpus_dir)
+            status = "refinement_attached"
         elif result.body_chunks_written > 0 and corpus_dest is not None:
             # gr510690 — the ref already has a corpus file, but this call
             # wrote the ref's *first* body chunks: it filled a bodiless

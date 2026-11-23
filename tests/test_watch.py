@@ -1323,6 +1323,44 @@ class TestProcessPdf:
         # A corpus placement rewrites storage_path to the new file.
         store.set_pdf_storage_path.assert_called_once_with("5" * 64, str(dest))
 
+    def test_refinement_attachment_keeps_both_files(self, tmp_path: Path) -> None:
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "replacement.pdf"
+        pdf.write_bytes(b"%PDF-1.7\ncomplete copy")
+        old = corpus_dir / "p" / "paper24.pdf"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"%PDF-1.4\ntruncated copy")
+        result = IngestResult(
+            ref_id=90,
+            inserted=False,
+            paper_id="page-coverage",
+            pub_id=None,
+            cite_key="paper24",
+            pdf_sha256="9" * 64,
+            content_hash=None,
+            chunks_written=0,
+            identifiers={"cite_key": "paper24"},
+            ref_has_body=True,
+            pdf_refinement_attached=True,
+        )
+        store = MagicMock()
+        with patch("precis.cli.watch.precis_add", return_value=result):
+            dest = process_pdf(
+                pdf,
+                store=store,
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+        assert dest is not None and dest != old and dest.parent == old.parent
+        assert dest.read_bytes() == b"%PDF-1.7\ncomplete copy"
+        assert old.read_bytes() == b"%PDF-1.4\ntruncated copy"
+        store.set_pdf_storage_path.assert_called_once_with("9" * 64, str(dest))
+
     def test_attach_only_supersedes_corpus_file(self, tmp_path: Path):
         """gr519746: an attach-only drop (``inserted=False``, 0 body
         chunks written, ``pdf_promoted=True`` — the ingest promoted

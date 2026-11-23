@@ -999,6 +999,7 @@ class PaperHandler(Handler):
                 "after_ord",
                 "match",
                 "table",
+                "reading",
                 "ord",
                 # ``view='links'`` (gr627629): args={'cursor': '<bucket>:
                 # <link_id>'} resumes the paged table where the footer's
@@ -3012,11 +3013,12 @@ class PaperHandler(Handler):
             effective_view != "tables"
             and isinstance(args, dict)
             and any(
-                args.get(key) is not None for key in ("table", "match", "after_ord")
+                args.get(key) is not None
+                for key in ("table", "match", "after_ord", "reading")
             )
         ):
             raise BadInput(
-                "args={'table'|'match'|'after_ord'} only apply to view='tables', "
+                "args={'table'|'match'|'after_ord'|'reading'} only apply to view='tables', "
                 f"not view={effective_view!r}",
                 next=(
                     f"get(id='{_pa(ref)}', view='tables', "
@@ -8287,12 +8289,16 @@ class PaperHandler(Handler):
         switch_note = (
             f" and re-point pdf_sha256 from {pointer} to {kept_sha}" if switched else ""
         )
+        refinement = bool((ref.meta or {}).get("needs_refinement"))
+        key = paper_reextract.idem_key(ref.id, kept_sha)
+        if refinement:
+            key += ":refinement-v1"
         if dry:
             return Response(
                 body=(
                     f"DRY RUN (no write) - would queue paper_reextract "
                     f"(job_inproc, idem_key "
-                    f"'{paper_reextract.idem_key(ref.id, kept_sha)}') to "
+                    f"'{key}') to "
                     f"re-extract {handle} from stored pdf {kept_sha}"
                     f"{switch_note}. The job probes the file, checks its "
                     "leading pages against this paper's title/DOI, "
@@ -8315,7 +8321,7 @@ class PaperHandler(Handler):
                 "pdf_sha256": kept_sha,
                 "reason": reason,
             },
-            idem_key=paper_reextract.idem_key(ref.id, kept_sha),
+            idem_key=key,
         )
         state = "already queued" if getattr(resp, "reused", False) else "queued"
         return Response(
@@ -13322,7 +13328,9 @@ def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     when a store is passed — the numbered-page span alone is not enough:
     the physical page count and the body volume must also say "preview"
     (gr514187). Without a store it falls back to the raw span check."""
-    lines = [_retraction_banner(ref)]
+    from precis.handlers._paper_tables import refinement_warning
+
+    lines = [_retraction_banner(ref), refinement_warning(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
         lines.append(_glyph_damage_banner(caveat))

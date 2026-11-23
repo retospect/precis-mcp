@@ -32,6 +32,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.identity import normalize_arxiv, normalize_doi
+from precis.ingest.page_coverage import stamp_page_mismatches
 from precis.store._identifiers_ops import _dropped_pairs
 from precis.store._refs_ops import clear_acquire_unverified, project_paper_authors
 from precis.utils.authors import AUTHOR_SOURCES
@@ -549,6 +550,8 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
             )
         _write_chunk_images(ref_id, written_chunks, conn=conn)
     chunks_written = len(chunk_rows)
+    if paper.kind == "paper" and paper.pdf_sha256 and chunk_rows:
+        stamp_page_mismatches(conn, ref_id, ref_id)
 
     return WriteResult(
         ref_id=ref_id,
@@ -806,7 +809,7 @@ def register_aliases_and_maybe_upgrade(
 
     # A URL pull pins both hashes after checking identity and page count.
     # Keep the preview until a larger body arrives; retain its PDF alias.
-    if has_body and new_body > 0 and paper.pdf_sha256:
+    if has_body and paper.pdf_sha256 and (new_body > 0 or paper.kind == "paper"):
         pin_row = conn.execute(
             "SELECT meta->'pdf_preview_refetch' FROM refs WHERE ref_id = %s",
             (existing_ref_id,),
@@ -817,6 +820,17 @@ def register_aliases_and_maybe_upgrade(
             and pin.get("from") == str(existing_pdf_row[0]).strip()
             and pin.get("to") == paper.pdf_sha256
         ):
+            if pin.get("refinement"):
+                # The new PDF is an alias until the explicit re-extract
+                # checks its tables and can commit a complete replacement.
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'pdf_preview_refetch' "
+                    "WHERE ref_id = %s",
+                    (existing_ref_id,),
+                )
+                return 0
+            if not new_body:
+                return 0
             old_row = conn.execute(
                 "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord >= 0",
                 (existing_ref_id,),
@@ -1004,6 +1018,8 @@ def register_aliases_and_maybe_upgrade(
     # has them. Only the first body-bearing ingest (markup or Marker)
     # populates chunks; a later PDF just contributes the printable above.
     if has_body:
+        if paper.kind == "paper" and paper.pdf_sha256 and not already_has_pdf:
+            stamp_page_mismatches(conn, existing_ref_id, existing_ref_id)
         log.info(
             "register_aliases_and_maybe_upgrade: ref_id=%s already has body "
             "chunks; attach-only (pdf_promoted=%s, no chunks written)",
@@ -1063,6 +1079,8 @@ def register_aliases_and_maybe_upgrade(
             )
         _write_chunk_images(existing_ref_id, paper.chunks, conn=conn)
     n_body = sum(1 for c in paper.chunks if c.ord >= 0)
+    if paper.kind == "paper" and n_body:
+        stamp_page_mismatches(conn, existing_ref_id, existing_ref_id)
     n_cards = len(chunk_rows) - n_body
     # A pinned ref that was bodiless (the td461154 bodiless re-fetch pins
     # these too) spends its one shot here once a body lands; left in
@@ -1101,6 +1119,8 @@ _BODY_OWNED_META_KEYS: frozenset[str] = frozenset(
         "extract_used_fallback",
         "extract_fallback_reason",
         "extract_fallback_empty",
+        "needs_refinement",
+        "table_vision_readings",
         # The foreign-prefix marker names ords in *this* body (gr515439) —
         # it moves with the chunks and is stale the moment they change.
         "article_start_ord",

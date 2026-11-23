@@ -135,6 +135,93 @@ def _fake_body(n_chunks: int, *, meta: dict[str, Any] | None = None) -> Any:
     )
 
 
+def test_flagged_reextract_saves_independent_reading_with_body(
+    store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fitz
+
+    from precis.identity import make_pdf_sha256
+    from precis.ingest.db_writer import ChunkToWrite
+    from precis.utils.llm import router
+    from precis.workers.job_types.paper_reextract import reextract
+
+    rid = _seed(store, "rex-flagged", title="An Experimental Study of Tables")
+    old_pdf = tmp_path / "short.pdf"
+    _write_pdf(old_pdf, text="An Experimental Study of Tables")
+    old_sha = make_pdf_sha256(old_pdf.read_bytes())
+    _pdf(store, rid, old_sha, str(old_pdf))
+    _body(store, rid)
+    store.update_ref(
+        rid,
+        meta_patch={
+            "needs_refinement": {
+                "pdf_sha256": old_sha,
+                "pdf_page_count": 1,
+                "last_body_page": 2,
+            }
+        },
+    )
+    rejected = reextract(store, rid, pdf_sha256=old_sha, corpus_dirs=(tmp_path,))
+    assert rejected["reason"].startswith("incomplete_pdf")
+    assert len(_body_texts(store, rid)) == 2
+
+    new_pdf = tmp_path / "complete.pdf"
+    with fitz.open() as doc:
+        for _ in range(3):
+            doc.new_page().insert_text((72, 72), "An Experimental Study of Tables")
+        doc.save(str(new_pdf))
+    new_sha = make_pdf_sha256(new_pdf.read_bytes())
+    _pdf(store, rid, new_sha, str(new_pdf))
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (old_sha, rid)
+        )
+
+    requests: list[router.LlmRequest] = []
+
+    def vision(request: router.LlmRequest) -> router.LlmResult:
+        requests.append(request)
+        return router.LlmResult(
+            text="Table II from pixels",
+            cost_usd=0.01,
+            turns_used=1,
+            model="test-vision",
+            tier=router.Tier.BIG,
+        )
+
+    monkeypatch.setattr(router, "route", vision)
+    body = _fake_body(0)
+    body.chunks.extend(
+        [
+            ChunkToWrite(0, "caption", "Table II. Caption", page_first=2),
+            ChunkToWrite(1, "table", "First reading", page_first=2),
+        ]
+    )
+    outcome = reextract(
+        store,
+        rid,
+        pdf_sha256=new_sha,
+        corpus_dirs=(tmp_path,),
+        extractor=lambda _path, _candidate: body,
+    )
+    assert outcome["status"] == "extracted", outcome
+    assert _body_texts(store, rid) == ["Table II. Caption", "First reading"]
+    assert len(requests) == 1
+    assert requests[0].images[0].data.startswith(b"\x89PNG")
+    meta = _meta(store, rid)
+    assert "needs_refinement" not in meta
+    assert meta["table_vision_readings"] == [
+        {
+            "page": 2,
+            "pdf_sha256": new_sha,
+            "extractor": "table_vision",
+            "version": 1,
+            "model": "test-vision",
+            "text": "Table II from pixels",
+        }
+    ]
+
+
 class TestHealBodilessRef:
     def test_force_reextracts_a_settled_sha(self, store: Store, tmp_path: Any) -> None:
         """A sha already judged once is excluded from the unattended

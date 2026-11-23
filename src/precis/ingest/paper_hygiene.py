@@ -1102,7 +1102,7 @@ def _heal_one_candidate(
         pdf_pages_last=body.page_last,
         pdf_role="main",
         pdf_storage_path=str(path),
-        pdf_page_count=body.page_count or pages,
+        pdf_page_count=pages,
         pdf_size_bytes=path.stat().st_size,
         meta=body.meta,
         chunks=body.chunks,

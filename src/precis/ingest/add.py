@@ -285,6 +285,8 @@ class IngestResult:
     #: cite_key corpus path — from a byte-different re-drop on a ref that
     #: already holds a PDF (a genuine duplicate → ``errors/duplicates``).
     pdf_promoted: bool = False
+    #: The watcher must retain this replacement alongside the current PDF.
+    pdf_refinement_attached: bool = False
 
 
 class MarkupTriggerSpent(Exception):
@@ -1441,12 +1443,27 @@ def _ingest_pdf(
             # re-point) — as opposed to merely registering an alias on a
             # ref that already held a PDF (a real duplicate re-drop).
             pre_sha_row = conn.execute(
-                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                "SELECT pdf_sha256, meta->'pdf_preview_refetch' "
+                "FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR NO KEY UPDATE",
                 (existing,),
             ).fetchone()
             pre_sha = pre_sha_row[0] if pre_sha_row else None
+            pin = pre_sha_row[1] if pre_sha_row else None
             chunks_written = register_aliases_and_maybe_upgrade(
                 existing, paper, conn=conn
+            )
+            refinement_attached = bool(
+                input.printable_only
+                and paper.pdf_sha256
+                and isinstance(pin, dict)
+                and pin.get("refinement")
+                and pin.get("from") == pre_sha
+                and pin.get("to") == paper.pdf_sha256
+                and conn.execute(
+                    "SELECT 1 FROM ref_identifiers WHERE ref_id = %s "
+                    "AND id_kind = 'pdf_sha256' AND id_value = %s",
+                    (existing, paper.pdf_sha256),
+                ).fetchone()
             )
             post_sha_row = conn.execute(
                 "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
@@ -1488,8 +1505,10 @@ def _ingest_pdf(
             elif bound_stub_id is None and target == existing and chunks_written:
                 bound_stub_id = existing
                 bound_via = "identifier-dedup"
-            if bound_stub_id is None and (
-                input.fold_ref_id is not None or target == existing
+            if (
+                not refinement_attached
+                and bound_stub_id is None
+                and (input.fold_ref_id is not None or target == existing)
             ):
                 _note_target_duplicate(store, input, existing, conn=conn)
             if bound_stub_id is not None:
@@ -1547,6 +1566,7 @@ def _ingest_pdf(
                         else 0
                     ),
                     pdf_promoted=pdf_promoted,
+                    pdf_refinement_attached=refinement_attached,
                 ),
                 kind=stored_kind,
             )
@@ -3646,6 +3666,7 @@ def _hit_result_from_db(
     chunks_written: int = 0,
     body_chunks_written: int = 0,
     pdf_promoted: bool = False,
+    pdf_refinement_attached: bool = False,
 ) -> IngestResult:
     """Build an ``inserted=False`` result by re-fetching the existing
     ref's identifiers from the DB.
@@ -3677,7 +3698,11 @@ def _hit_result_from_db(
         paper_id = identifiers.get("paper_id", fallback.paper_id)
         pub_id = identifiers.get("pub_id", fallback.pub_id)
         cite_key = identifiers.get("cite_key", fallback.cite_key_prefix)
-        pdf_sha256 = identifiers.get("pdf_sha256", fallback.pdf_sha256)
+        pdf_sha256 = (
+            fallback.pdf_sha256
+            if pdf_refinement_attached
+            else identifiers.get("pdf_sha256", fallback.pdf_sha256)
+        )
         content_hash = identifiers.get("content_hash", fallback.content_hash)
     else:
         paper_id = identifiers.get("paper_id", "")
@@ -3708,6 +3733,7 @@ def _hit_result_from_db(
         ref_has_body=_ref_has_body(ref_id, conn=conn),
         body_chunks_written=body_chunks_written,
         pdf_promoted=pdf_promoted,
+        pdf_refinement_attached=pdf_refinement_attached,
     )
 
 

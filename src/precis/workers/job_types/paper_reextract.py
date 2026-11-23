@@ -36,6 +36,7 @@ gr517423 finding 5), ``deferred`` parks the job for a retry.
 from __future__ import annotations
 
 import logging
+from hashlib import file_digest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -108,7 +109,7 @@ def _ref_state(store: Store, ref_id: int) -> dict[str, Any] | None:
             "       (SELECT p.id_value FROM ref_identifiers p "
             "         WHERE p.ref_id = r.ref_id AND p.id_kind = 'paper_id' "
             "         LIMIT 1) AS paper_id, "
-            "       lf.source AS last_fetch_source "
+            "       lf.source AS last_fetch_source, r.meta->'needs_refinement' "
             "  FROM refs r "
             "  LEFT JOIN ref_identifiers ck "
             "    ON ck.ref_id = r.ref_id AND ck.id_kind = 'cite_key' "
@@ -137,6 +138,7 @@ def _ref_state(store: Store, ref_id: int) -> dict[str, Any] | None:
         doi,
         paper_id,
         last_src,
+        refinement,
     ) = row
     pointer = str(pointer).strip() if pointer else None
     return {
@@ -154,6 +156,7 @@ def _ref_state(store: Store, ref_id: int) -> dict[str, Any] | None:
         "doi": str(doi) if doi else None,
         "paper_id": str(paper_id) if paper_id else f"ref{ref_id}",
         "last_fetch_source": last_src,
+        "refinement": refinement if isinstance(refinement, dict) else None,
     }
 
 
@@ -193,6 +196,7 @@ def reextract(
     """
     from precis.corpus_layout import corpus_roots_from_env, resolve_local_pdf
     from precis.ingest import body_ops, db_writer
+    from precis.ingest.page_coverage import PAGE_SPAN_RE, stamp_page_mismatches
     from precis.ingest.paper_hygiene import (
         _PREVIEW_FETCH_SOURCES,
         BODILESS_MARKER_TIMEOUT_S,
@@ -227,7 +231,10 @@ def reextract(
             reason=f"pdf {target} is no longer attached",
             pdf_sha256=target,
         )
-    if state["last_fetch_source"] in _PREVIEW_FETCH_SOURCES:
+    refinement = state["refinement"]
+    if state["last_fetch_source"] in _PREVIEW_FETCH_SOURCES and not (
+        refinement and target != state["pointer"]
+    ):
         return _record(
             store,
             ref_id,
@@ -282,6 +289,10 @@ def reextract(
         )
 
     try:
+        if refinement:
+            with path.open("rb") as pdf_file:
+                if file_digest(pdf_file, "sha256").hexdigest() != target:
+                    raise ValueError("local file does not match the requested PDF SHA")
         pages, with_text = _probe_pdf(path)
     except Exception as exc:
         return _record(
@@ -297,6 +308,15 @@ def reextract(
             ref_id,
             "failed",
             reason="unreadable: empty: 0 pages",
+            pdf_sha256=target,
+        )
+    if refinement and pages <= refinement["last_body_page"]:
+        return _record(
+            store,
+            ref_id,
+            "failed",
+            reason=f"incomplete_pdf: the last extracted page index is "
+            f"{refinement['last_body_page']}, but this file has {pages} pages",
             pdf_sha256=target,
         )
     if with_text == 0:
@@ -368,6 +388,34 @@ def reextract(
             reason=f"unreadable: {reason_txt}",
             pdf_sha256=target,
         )
+    if refinement:
+        from precis.workers.job_types._table_vision import read_tables
+
+        if any(
+            (chunk.page_first is not None and chunk.page_first >= pages)
+            or (chunk.page_last is not None and chunk.page_last >= pages)
+            or any(int(label) >= pages for label in PAGE_SPAN_RE.findall(chunk.text))
+            for chunk in body.chunks
+        ):
+            return _record(
+                store,
+                ref_id,
+                "failed",
+                reason="new extraction still addresses pages outside the replacement PDF",
+                pdf_sha256=target,
+            )
+        try:
+            body.meta["table_vision_readings"] = read_tables(
+                path, target, body.chunks, pages
+            )
+        except Exception as exc:
+            return _record(
+                store,
+                ref_id,
+                "failed",
+                reason=f"table vision reading failed: {str(exc)[:160]}",
+                pdf_sha256=target,
+            )
 
     # The swap: one transaction, ref row locked — DELETE the old body
     # and INSERT the new one (the append-only replace, same shape as
@@ -381,7 +429,8 @@ def reextract(
     )
     with store.tx() as conn:
         row = conn.execute(
-            "SELECT pdf_sha256, retired_at, meta->>'superseded_by' "
+            "SELECT pdf_sha256, retired_at, meta->>'superseded_by', "
+            "meta->'needs_refinement' "
             "FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
             (ref_id,),
         ).fetchone()
@@ -394,6 +443,8 @@ def reextract(
                 pdf_sha256=target,
             )
         pointer_now = str(row[0]).strip() if row[0] else None
+        if row[3] != refinement or (refinement and pointer_now != state["pointer"]):
+            return {"status": "skipped", "reason": "refinement state changed mid-run"}
         id_rows = conn.execute(
             "SELECT id_value FROM ref_identifiers WHERE ref_id = %s "
             "AND id_kind = 'pdf_sha256'",
@@ -473,6 +524,12 @@ def reextract(
                 (body.content_hash, ref_id, JOB_TYPE),
             )
         db_writer._merge_ingest_meta(ref_id, body.meta, conn=conn)
+        conn.execute(
+            "UPDATE pdfs SET page_count = %s "
+            "WHERE pdf_sha256 = %s AND page_count IS DISTINCT FROM %s",
+            (pages, target, pages),
+        )
+        stamp_page_mismatches(conn, ref_id, ref_id)
         repointed = pointer_now != target
         store.append_event(
             ref_id,

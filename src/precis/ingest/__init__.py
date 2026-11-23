@@ -19,6 +19,8 @@ body. A matching source and quote enter ordinary citation chase; retained
 verifier metadata never establishes trust. Bodyless papers safely leave staged
 findings untouched (``finding_drafts.py``).
 
+Page coverage (``page_coverage``) flags unrenderable page addresses for on-demand repair.
+
 Short held article previews can take a longer agent-supplied PDF through
 ``paper_pull``. Hash-pinned ingest replaces the body only on growth, keeping
 the old PDF alias and journaling both hashes and the source URL. Failed
