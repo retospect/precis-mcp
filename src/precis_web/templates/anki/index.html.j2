@@ -98,7 +98,7 @@
 <div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
   <form method="post" action="/anki/cap" class="space-y-2">
     <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
-      <label for="anki-cap" class="text-xs text-fg-muted">concepts per morning</label>
+      <label for="anki-cap" class="text-xs text-fg-muted">new cards per day</label>
       <input id="anki-cap" name="per_day" type="number" min="0" max="100"
              value="{{ cap }}"
              class="w-24 rounded border border-line px-2 py-1 text-sm
@@ -113,8 +113,8 @@
             class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
                    hover:bg-info-solid-strong transition">Save</button>
     <p class="text-[11px] text-fg-faint">
-      Currently {{ cap }} — reads <code>{{ dated_key }}</code>, then
-      <code>{{ cap_key }}</code>, then <code>PRECIS_READING_CARDS_PER_DAY</code>.
+      Budget before the forge adjusts for due Anki reviews. Each distinct
+      cloze number in a note counts as one card.
     </p>
   </form>
 </div>

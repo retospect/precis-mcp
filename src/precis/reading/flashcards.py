@@ -6,8 +6,8 @@ Runs Monday mornings *before* the reading brief (the `card_forge` job_type), so
 the week starts with fresh cards on the phone and the brief can report what
 changed. Two halves:
 
-**Mint** — up to a daily cap of concepts (candidate/active, no cards yet, newest
-first) each get 1–3 cloze cards authored by the model (`precis-cloze` craft),
+**Mint** — within a load-adjusted daily budget of Anki cards, the model
+authors cloze notes for pending highlights and cardless concepts,
 written as `anki` refs `represents`-linked to their concept. They ride the
 existing add-only `precis anki-sync` up to the phone; the stats that come back
 feed `reading/mastery.py`.
@@ -36,12 +36,18 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Any
 
-from precis.anki.cloze import acronym_hint_leaks, has_cloze, space_adjacent_braces
+from precis.anki.cloze import (
+    acronym_hint_leaks,
+    cloze_card_count,
+    space_adjacent_braces,
+)
+from precis.anki.creds import anki_logins
 from precis.anki.work_tracking import (
     has_work_source_tag,
     is_work_item_text,
@@ -68,10 +74,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CARDS_PER_DAY = 5  # concepts carded per morning, not cards
+DEFAULT_CARDS_PER_DAY = 5
+DEFAULT_DUE_REVIEW_LIMIT = 100
 DEFAULT_STREAK_CAP = 3  # rewrites per concept before escalating to the human
 _MAX_CARDS_PER_CONCEPT = 3
 _AUTHORED_BY = "card_forge"
+_MINT_BUDGET_LOCK = 0x63666F726765  # pg_advisory_xact_lock bigint namespace
 
 _HINT_RULE = (
     "Use a one-word category hint that never gives away the answer. For an "
@@ -206,12 +214,15 @@ class ForgeReport:
     decisions: list[CardDecision] = field(default_factory=list)
     refused: list[tuple[int, str]] = field(default_factory=list)  # (concept, why)
     skipped: int = 0
+    mint_throttled: bool = False
 
     def lines(self) -> list[str]:
         out: list[str] = []
+        if self.mint_throttled:
+            out.append("reduced new-card budget for due Anki reviews")
         for concept_id, card_ids in self.minted:
             out.append(
-                f"minted {len(card_ids)} card(s) for concept cn{concept_id}: "
+                f"minted {len(card_ids)} note(s) for concept cn{concept_id}: "
                 + ", ".join(f"ak{c}" for c in card_ids)
             )
         for d in self.decisions:
@@ -256,7 +267,8 @@ def author_card(
     hints that give the answer away, and :class:`ConceptGoneError` (a
     ``ValueError``) when the concept is retired or missing at write time."""
     cloze_text, extra = _split_extra(text)
-    if not has_cloze(cloze_text):
+    card_count = cloze_card_count(cloze_text)
+    if not card_count:
         raise ValueError("card body has no {{cN::…}} cloze deletion")
     if leaks := acronym_hint_leaks(cloze_text):
         raise ValueError(f"hint initials spell the answer for {', '.join(leaks)}")
@@ -271,6 +283,7 @@ def author_card(
         "authored_by": _AUTHORED_BY,
         "concept_ref_id": concept_id,
         **(extra_meta or {}),
+        "minted_card_count": card_count,
     }
     stripped = _strip_cloze(cloze_text)
     card_text = f"{stripped}\n\n{extra}".rstrip() if extra else stripped
@@ -307,10 +320,10 @@ def _deck_for(cohort: str | None) -> str:
     return f"Precis::{cohort}" if cohort else "Precis::reading"
 
 
-def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> int:
-    """Batches already authored today by this pass — makes a re-run top up to
-    the cap instead of doubling it. Scoped to the cohort when given (a
-    cohort-scoped forge isn't starved by another cohort's mints)."""
+def _minted_today(
+    conn: Connection, now: datetime, *, cohort: str | None, solo_login: str | None
+) -> Counter[str | None]:
+    """Count today's intake at publication time, including subsequently retired notes."""
     midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
     cohort_clause = (
         "AND EXISTS (SELECT 1 FROM refs c WHERE c.kind='concept' "
@@ -322,15 +335,39 @@ def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> 
     params: tuple[Any, ...] = (
         (_AUTHORED_BY, midnight, cohort) if cohort else (_AUTHORED_BY, midnight)
     )
+    counts: Counter[str | None] = Counter()
+    for owner, count, body in conn.execute(
+        "SELECT a.owner_login, a.meta->'minted_card_count', a.meta->'fields'->>'Text' "
+        "FROM refs a WHERE a.kind='anki' AND NOT (a.meta ? 'rework_of') "
+        f"AND a.meta->>'authored_by' = %s AND a.created_at >= %s {cohort_clause}",
+        params,
+    ):
+        counts[owner or solo_login] += (
+            count
+            if isinstance(count, int) and count > 0
+            else max(1, cloze_card_count(body or ""))
+        )
+    return counts
+
+
+def _due_reviews_by_owner(store: Store) -> dict[str, int]:
+    """Read live own-note review counts from the latest successful syncs."""
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT COUNT(DISTINCT COALESCE(a.meta->>'highlight_submission', "
-            "a.meta->>'concept_ref_id')) FROM refs a "
-            "WHERE a.kind='anki' AND a.retired_at IS NULL "
-            f"AND a.meta->>'authored_by' = %s AND a.created_at >= %s {cohort_clause}",
-            params,
-        ).fetchone()
-    return int(row[0] or 0) if row else 0
+        return dict(
+            conn.execute(
+                """SELECT owner_login, SUM((meta->'anki_stats'->>'due_reviews')::integer)
+                   FROM refs WHERE kind = 'anki' AND retired_at IS NULL
+                     AND owner_login IS NOT NULL
+                     AND (meta->>'source') IS DISTINCT FROM 'anki-foreign'
+                     AND jsonb_typeof(meta->'anki_stats'->'due_reviews') = 'number'
+                   GROUP BY owner_login"""
+            ).fetchall()
+        )
+
+
+def _review_budget(per_day: int, due: int, limit: int) -> int:
+    # Round up to leave at least one card of headroom until the pause threshold.
+    return (per_day * max(0, limit - due) + limit - 1) // limit
 
 
 _LATEST_HIGHLIGHT = """
@@ -345,7 +382,11 @@ _CARD_OWNER = "COALESCE(c.owner_login, c.meta->>'asked_by')"
 
 
 def _cardless_concepts(
-    store: Store, *, cohort: str | None, limit: int
+    store: Store,
+    *,
+    cohort: str | None,
+    limit: int,
+    paused_owners: list[str] | None = None,
 ) -> list[tuple[int, str, str, str | None, str | None, str]]:
     """Pending highlights and unmastered concepts without a live owner card."""
     cohort_clause = "AND jsonb_exists(c.meta->'cohorts', %s)" if cohort else ""
@@ -357,6 +398,7 @@ def _cardless_concepts(
         LEFT JOIN LATERAL ({_LATEST_HIGHLIGHT}) h ON true
         WHERE c.kind='concept' AND c.retired_at IS NULL
           {cohort_clause}
+          AND COALESCE({_CARD_OWNER}, '') <> ALL(%s)
           AND (h.submission IS NOT NULL OR (
               COALESCE(c.meta->>'state','candidate') != 'mastered'
               AND NOT (c.meta ? 'card_forge_skip')
@@ -369,7 +411,9 @@ def _cardless_concepts(
         ) DESC, c.ref_id DESC
         LIMIT %s
     """
-    params: tuple[Any, ...] = (cohort, limit) if cohort else (limit,)
+    params: tuple[Any, ...] = (
+        (cohort, paused_owners or [], limit) if cohort else (paused_owners or [], limit)
+    )
     with store.pool.connection() as conn:
         return [
             (int(cid), name or "", definition or "", owner, submission, context or "")
@@ -453,18 +497,42 @@ def mint_daily_cards(
     now: datetime | None = None,
     report: ForgeReport | None = None,
 ) -> ForgeReport:
-    """Author today's new cards: up to ``per_day`` batches, 1–3 cloze
-    cards each. Idempotent per day (a re-run tops up to the cap)."""
+    """Author within today's cloze-card budget, reduced by each owner's load."""
     now = now or datetime.now(UTC)
     report = report or ForgeReport()
-    remaining = per_day - _minted_today(store, now, cohort=cohort)
+    if per_day <= 0:
+        return report
+    due_reviews = _due_reviews_by_owner(store)
+    logins = anki_logins(store) if any(due_reviews.values()) else []
+    solo_login = logins[0] if len(logins) == 1 else None
+    due_limit = max(
+        1, _env_int("PRECIS_READING_DUE_REVIEW_LIMIT", DEFAULT_DUE_REVIEW_LIMIT)
+    )
+    budgets = {
+        owner: _review_budget(per_day, due, due_limit)
+        for owner, due in due_reviews.items()
+    }
+    report.mint_throttled = any(budget < per_day for budget in budgets.values())
+    with store.pool.connection() as conn:
+        used = _minted_today(conn, now, cohort=cohort, solo_login=solo_login)
+    remaining = per_day - used.total()
     if remaining <= 0:
         return report
+    paused_owners = [
+        owner for owner, budget in budgets.items() if used[owner] >= budget
+    ]
+    if solo_login in paused_owners:
+        paused_owners.append("")
     system = f"{skill_preamble}\n\n{_MINT_SYS}".strip() if skill_preamble else _MINT_SYS
     deck = _deck_for(cohort)
     for concept_id, name, definition, owner, submission, context in _cardless_concepts(
-        store, cohort=cohort, limit=remaining
+        store, cohort=cohort, limit=remaining, paused_owners=paused_owners
     ):
+        budget_owner = owner or solo_login
+        owner_budget = budgets.get(budget_owner, per_day) if budget_owner else per_day
+        remaining = min(per_day - used.total(), owner_budget - used[budget_owner])
+        if remaining <= 0:
+            continue
         if _concept_is_work_tracking(
             store, concept_id, name, definition
         ) or is_work_item_text(context):
@@ -481,6 +549,11 @@ def mint_daily_cards(
             neighbors = _neighbor_names(store, concept_id, mastered_only=False)
             if neighbors:
                 lines.append("RELATED CONCEPTS: " + ", ".join(neighbors))
+            lines.append(
+                f"ANKI CARD BUDGET: {remaining} across all notes. Within each "
+                "note, each distinct cN ordinal uses one card. Put the most "
+                "useful note first and keep every note within the budget."
+            )
             out = client.complete(
                 [
                     {"role": "system", "content": system},
@@ -493,8 +566,16 @@ def mint_daily_cards(
             if submission and skip_reason:
                 skip_reason = "the forge declined the captured term"
         minted: list[int] = []
+        deferred = False
         extra_meta = {"highlight_submission": submission} if submission else {}
         with store.tx() as conn:
+            # Recheck under a transaction lock after model I/O. Concurrent
+            # passes for different concepts must share the same budget.
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_MINT_BUDGET_LOCK,))
+            used = _minted_today(conn, now, cohort=cohort, solo_login=solo_login)
+            remaining = min(per_day - used.total(), owner_budget - used[budget_owner])
+            if remaining <= 0:
+                continue
             state = _current_mint_state(conn, concept_id, owner, submission)
             if state is None:
                 continue
@@ -516,6 +597,10 @@ def mint_daily_cards(
                 extra = str(card.get("back_extra") or "").strip()
                 if extra:
                     text = f"{text}\n---\n{extra}"
+                count = cloze_card_count(_split_extra(text)[0])
+                if count > remaining:
+                    deferred = True
+                    continue
                 try:
                     if is_work_item_text(_strip_cloze(_split_extra(text)[0])):
                         raise ValueError("card is a to-do or gap about our own system")
@@ -534,6 +619,8 @@ def mint_daily_cards(
                             },
                         )
                     )
+                    remaining -= count
+                    used[budget_owner] += count
                 except ValueError as exc:
                     log.info(
                         "cards: dropped card for concept %s: %s",
@@ -551,6 +638,8 @@ def mint_daily_cards(
                         "WHERE concept_id = %s AND owner_login = %s AND submission = %s",
                         (concept_id, owner, submission),
                     )
+            elif deferred:
+                continue
             elif skip_reason and submission:
                 conn.execute(
                     "UPDATE refs SET meta = jsonb_set(meta, %s, 'true'::jsonb) "

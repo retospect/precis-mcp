@@ -246,6 +246,8 @@ notes for the next sync.
 Page selections queue through `precis.reading.asked`. The selected text lives
 in `anki_highlight_context` for the requesting login. Forge publication and
 Undo acquire the same concept row lock.
+The forge counts new Anki cards by cloze ordinal and reduces intake using
+each owner's due-review count from Anki sync.
 
 Anki card creation can snapshot a public image with the ref. The per-owner
 Anki sync worker adds the snapshot to the mirror's media collection, embeds

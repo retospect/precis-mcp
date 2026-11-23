@@ -295,7 +295,6 @@ def _render(
             "undo_entries": known_undo_entries(store, user),
             "return_to": "anki",
             "cap": effective_cards_per_day(store),
-            "cap_key": CARDS_PER_DAY_KEY,
             "dated_key": f"{CARDS_PER_DAY_KEY}:{today.isoformat()}",
             "today": today.isoformat(),
         },
@@ -563,7 +562,7 @@ async def cap(
     except ValueError:
         return _render(request, user=user, error=f"{per_day!r} is not a whole number.")
     if value < 0 or value > 100:
-        return _render(request, user=user, error="concepts per morning must be 0–100.")
+        return _render(request, user=user, error="new cards per day must be 0–100.")
     key = CARDS_PER_DAY_KEY
     if today_only:
         key = f"{CARDS_PER_DAY_KEY}:{datetime.now(UTC).date().isoformat()}"

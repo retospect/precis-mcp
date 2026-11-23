@@ -23,7 +23,10 @@ attachment filename and byte size. The ``Text`` field uses the filename
 returned by Anki, including when Anki renames a file to avoid a collision.
 Soft-deleted refs retire their notes on the next tick, scoped to their
 owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. Decay
-stats read back into ``meta.anki_stats``. Recent graded revlog entries feed
+stats read back into ``meta.anki_stats``. The forge uses the synced count of
+due review and interday learning cards per own note because the note's
+minimum due field can mix schedule days, learning timestamps and new-card
+positions. Recent graded revlog entries feed
 the private learning calendar even for users with no précis-authored cards;
 their timestamps, instead of cumulative card stats, preserve the review day. A ``deck-<topic>`` tag maps to a
 ``Precis::<topic>`` sub-deck. An effective deck retag stamps a revision

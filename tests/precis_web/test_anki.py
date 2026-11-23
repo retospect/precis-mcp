@@ -139,7 +139,7 @@ def test_page_is_behind_the_gate() -> None:
 def test_page_renders_for_the_signed_in_user() -> None:
     r = _client(FakeStore()).get("/anki", headers=_auth())
     assert r.status_code == 200
-    assert "concepts per morning" in r.text
+    assert "new cards per day" in r.text
     assert "term (one per line)" in r.text
 
 

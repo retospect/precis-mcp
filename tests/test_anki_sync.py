@@ -522,6 +522,31 @@ class TestReadBack:
         s = stats[99]
         assert s["cards"] == 2  # two deletions → two cards
         assert s["reps_total"] == 0 and s["unreviewed"] is True
+        assert s["due_reviews"] == 0
+
+    def test_due_reviews_count_only_due_siblings_in_review_or_interday_learning(
+        self, col: Any
+    ) -> None:
+        from precis.anki.sync import _collection_today, read_precis_stats, upsert_notes
+
+        body = "{{c1::a}} {{c2::b}} {{c3::c}} {{c4::d}} {{c5::e}}"
+        upsert_notes(col, _specs((99, {"Text": body})))
+        today = _collection_today(col)
+        nids = col.db.list("select id from notes where guid = ?", guid_for(99))
+        for ordinal, queue, due in [
+            (0, 2, today - 1),
+            (1, 3, today),
+            (2, 2, today + 1),
+            (3, -1, today - 1),
+        ]:
+            col.db.execute(
+                "update cards set queue = ?, due = ? where nid = ? and ord = ?",
+                queue,
+                due,
+                nids[0],
+                ordinal,
+            )
+        assert read_precis_stats(col)[99]["due_reviews"] == 2
 
     def test_read_all_cards_and_tag_filter(self, col) -> None:
         from precis.anki.sync import read_all_cards, upsert_notes

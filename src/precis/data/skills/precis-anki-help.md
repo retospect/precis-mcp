@@ -247,9 +247,20 @@ LLM rewrites the card from your comment, writes it back, and retags it
 `precis-fixed`. precis only ever edits a card **you tagged** — untagged cards are
 never touched. Works on text notetypes (cloze/basic).
 
-## The daily card forge (autonomous)
+## Catch up after a break
 
-Every morning at 01:30 (before the reading brief) the **`card_forge`** job runs
+In Anki, open **Deck Options** for the deck you study, usually the parent
+deck, and set **Maximum reviews/day** to a pace you can sustain. In
+**Display Order → Review Sort Order**, choose **Ascending retrievability**
+with FSRS or **Relative overdueness** with the older scheduler. This serves
+the cards you're most likely to forget first. Keep **New cards ignore review
+limit** off so a full review queue also holds back new cards. Anki carries
+excess reviews into later sessions, including cards you made or imported
+yourself. [Anki Deck Options](https://docs.ankiweb.net/manual/deck-options)
+
+## The card forge (autonomous)
+
+Monday at 01:30, the scheduled **`card_forge`** job runs
 the reading-prep card loop — installed by `precis cast schedule`:
 
 1. **Mastery refresh** — each `concept`'s `represents`-linked cards' `anki_stats`
@@ -261,10 +272,17 @@ the reading-prep card loop — installed by `precis cast schedule`:
    **rewrite** (new card, curve resets — the old one wasn't working anyway).
    Observe-first: with `PRECIS_CARD_FORGE_AUTONOMY=report` (default) it only
    logs what it *would* do; set `act` to let it write.
-3. **Mint** — up to `PRECIS_READING_CARDS_PER_DAY` (5) batches across pending
-   highlights and cardless concepts get 1–3 fresh cloze cards each, linked
-   `concept —represents→ card`, deck
-   `Precis::<cohort>`, riding the next `anki-sync` to your phone.
+3. **Mint** — pending highlights and cardless concepts get fresh cloze notes
+   linked `concept —represents→ card` in `Precis::<cohort>`. Each distinct
+   cloze number per note uses one card of the budget. The default is five
+   new cards. Raise it on `/anki` for a reading that needs more terms, with
+   an optional today-only setting. An operator can set the fallback via
+   `PRECIS_READING_CARDS_PER_DAY`.
+   Each owner's intake budget shrinks as their due reviews increase and
+   pauses at 100 due cards by default. The forge uses the latest successful
+   sync's count of due review and interday learning cards on précis-owned
+   notes. Sync your reviews so the forge can see the load fall. The operator
+   can tune the pause threshold with `PRECIS_READING_DUE_REVIEW_LIMIT`.
 
 Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on
 the next sync — own-guid lookups only, so your hand-made cards are unreachable.

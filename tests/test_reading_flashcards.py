@@ -255,6 +255,68 @@ class TestMint:
         again = mint_daily_cards(store, client=client, per_day=1, cohort=co)
         assert again.minted == []  # today's cap already spent
 
+    def test_budget_counts_distinct_clozes_per_note_on_rerun(self, store: Any) -> None:
+        co = f"mint-{uuid.uuid4().hex[:8]}"
+        _concept(store, cohort=co)
+        cid = _concept(store, cohort=co)
+        client = _FakeClient(
+            {
+                "cards": [
+                    {"text": "{{c1,3::A}} and {{c1::B}}."},
+                    {"text": "{{c1::D}}."},
+                ]
+            }
+        )
+        report = mint_daily_cards(store, client=client, per_day=2, cohort=co)
+        [(minted_concept, [note])] = report.minted
+        assert minted_concept == cid
+        assert store.get_ref(kind="anki", id=note).meta["minted_card_count"] == 2
+        # The next run must count legacy notes that predate the metadata.
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'minted_card_count' WHERE ref_id = %s",
+                (note,),
+            )
+        assert not mint_daily_cards(store, client=client, per_day=2, cohort=co).minted
+        assert len(client.calls) == 1
+
+    def test_solo_account_backlog_pauses_then_ramps_intake(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.reading import flashcards
+        from precis.users import hash_password
+
+        store.create_web_user(
+            login="forge-owner", abbrev="fg", password=hash_password("pw")
+        )
+        monkeypatch.setattr(flashcards, "anki_logins", lambda _store: ["forge-owner"])
+        monkeypatch.setenv("PRECIS_READING_DUE_REVIEW_LIMIT", "10")
+        review_note = author_card(
+            store,
+            text="Review {{c1::this}}.",
+            concept_id=_concept(store),
+            deck="Precis::other",
+            owner_login="forge-owner",
+        )
+        co = f"mint-{uuid.uuid4().hex[:8]}"
+        for _ in range(7):
+            _concept(store, cohort=co)
+        client = _FakeClient({"cards": [{"text": "{{c1::A}}."}]})
+
+        store.update_ref(review_note, meta_patch={"anki_stats": {"due_reviews": 10}})
+        paused = mint_daily_cards(store, client=client, per_day=5, cohort=co)
+        assert paused.mint_throttled and not paused.minted and not client.calls
+
+        store.update_ref(review_note, meta_patch={"anki_stats": {"due_reviews": 6}})
+        partial = mint_daily_cards(store, client=client, per_day=5, cohort=co)
+        assert partial.mint_throttled and len(partial.minted) == 2
+        assert not mint_daily_cards(store, client=client, per_day=5, cohort=co).minted
+        assert len(client.calls) == 2
+
+        store.update_ref(review_note, meta_patch={"anki_stats": {"due_reviews": 0}})
+        resumed = mint_daily_cards(store, client=client, per_day=7, cohort=co)
+        assert not resumed.mint_throttled and len(resumed.minted) == 5
+
     def test_skips_concepts_that_already_have_cards(self, store: Any) -> None:
         co = f"mint-{uuid.uuid4().hex[:8]}"
         cid = _concept(store, cohort=co)
@@ -554,7 +616,7 @@ class TestReportLines:
             skipped=1,
         )
         text = "\n".join(r.lines())
-        assert "minted 1 card(s) for concept cn5" in text
+        assert "minted 1 note(s) for concept cn5" in text
         assert "did rewrite ak9" in text and "→ ak10" in text
         assert "skipped 1" in text
 

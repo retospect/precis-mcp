@@ -33,7 +33,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "per_day": {
             "type": "integer",
             "minimum": 0,
-            "description": "Max concepts to card today (default 5).",
+            "description": "New Anki card budget before review-load reduction (default 5).",
         },
         "min_age_days": {
             "type": "number",

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 
-_OPEN_RE = re.compile(r"\{\{c\d+::")
+_OPEN_RE = re.compile(r"\{\{c(,*[0-9][0-9,]*)::")
 _HINT_WORD_RE = re.compile(r"[^\W\d_]+")
 
 
@@ -122,6 +122,22 @@ def has_cloze(text: str) -> bool:
             return True
         i = m.end()
     return False
+
+
+def cloze_card_count(text: str) -> int:
+    """Count distinct positive cloze ordinals in a note's Text field."""
+    ordinals: set[int] = set()
+    for opening in _OPEN_RE.finditer(text):
+        if _walk(text, opening.start()) is None:
+            continue
+        for index in opening[1].split(","):
+            digits = index.lstrip("0")
+            if not 0 < len(digits) <= 5:
+                continue
+            ordinal = int(digits)
+            if ordinal <= 65535:
+                ordinals.add(ordinal)
+    return len(ordinals)
 
 
 def acronym_hint_leaks(text: str) -> list[str]:

@@ -23,6 +23,11 @@ package holds the concept-graph layer:
   for the Back Extra symbol glossary (``_GLOSSARY_RULE``, ``precis-cloze``
   rule 7) and tell the model to repair a missing line before it replies; no
   code checks the reply for undefined symbols.
+  The mint budget counts Anki card ordinals across fresh notes and today's
+  prior mints. A transaction lock makes the final budget check and publication
+  atomic across forge runs. Synchronized due reviews reduce each owner's
+  allowance across decks. Unowned intake shares that allowance when the
+  sole configured Anki account will claim it.
 - `asked` — the ``twin:asked`` capture queue (what-is grammar, the ``/anki``
   textarea and the page-selection "Card this" chip, gr743234). Every ask
   files a ``meta.asked_submissions`` token — the highlight toast's Undo is

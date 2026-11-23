@@ -223,19 +223,28 @@ def bring_due_today(col: Any, ref_ids: list[int]) -> list[int]:
 
 def read_precis_stats(col: Any) -> dict[int, dict[str, Any]]:
     """Decay signal (interval/ease/reps/lapses/due) for our cards, keyed by
-    ref_id. A cloze note's N cards are folded via `aggregate_stats`."""
+    ref_id. A cloze note's N cards are folded via `aggregate_stats`.
+    Count due reviews and interday learning cards at the sync's Anki day
+    boundary, using the original due for cards temporarily in filtered decks."""
     rows = col.db.all(
-        "select n.guid, c.ivl, c.factor, c.reps, c.lapses, c.due, c.queue "
+        "select n.guid, c.ivl, c.factor, c.reps, c.lapses, c.due, c.queue, c.odue "
         "from notes n join cards c on c.nid = n.id "
         f"where n.guid like '{GUID_PREFIX}%'"
     )
+    today = _collection_today(col)
     by_ref: dict[int, list[tuple[int, int, int, int, int, int]]] = {}
-    for guid, ivl, factor, reps, lapses, due, queue in rows:
+    due_reviews: dict[int, int] = {}
+    for guid, ivl, factor, reps, lapses, due, queue, original_due in rows:
         rid = ref_id_from_guid(guid)
         if rid is None:
             continue
         by_ref.setdefault(rid, []).append((ivl, factor, reps, lapses, due, queue))
-    return {rid: aggregate_stats(cards) for rid, cards in by_ref.items()}
+        if queue in (2, 3) and (original_due or due) <= today:
+            due_reviews[rid] = due_reviews.get(rid, 0) + 1
+    return {
+        rid: {**aggregate_stats(cards), "due_reviews": due_reviews.get(rid, 0)}
+        for rid, cards in by_ref.items()
+    }
 
 
 @dataclass
