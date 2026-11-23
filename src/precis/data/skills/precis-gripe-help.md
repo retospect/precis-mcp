@@ -491,8 +491,10 @@ todo closed) is read as the ruling — the tick clears `reto:ask` from
 the gripe even when no `Reto <date>:` line ever reaches its chunks,
 and a duplicate ask or re-stamped tag afterwards is a stale marker,
 not a fresh question (td776546). Only new question content — a
-`needs-spec:` park or a different recommendation — re-opens a
-settled gripe.
+`needs-spec:` park or a `recommend:` with different text — re-opens a
+settled gripe; the tick's own `recommend: PRIO:<n>` priority nudge is
+not a question and never does. A gripe already on main
+(`auto_verify`) counts as settled too.
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made {write}
