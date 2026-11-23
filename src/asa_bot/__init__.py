@@ -22,6 +22,11 @@ and, with precis down, spools to a fallback JSONL replayed on recovery.
 Text-prefix slash commands (:mod:`asa_bot.slash`) are intercepted before any
 LLM call.
 
+**Memory edits.** Discord invocation guidance requires a live edit response
+and a body readback before reporting success. This also covers approvals of
+earlier drafts, where conversation history can supply the proposed text but
+the turn still needs to execute and verify the write.
+
 **Repo fixes.** Discord turns have no shell or filesystem editing tools.
 The invocation guidance routes fix requests through a precis gripe so the
 factory can build them. Claude's subagent-start hook gives each child a

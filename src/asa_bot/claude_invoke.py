@@ -162,6 +162,17 @@ _DISCORD_REPO_GUIDANCE = (
     "Before delegating other work, check that the required tools are available."
 )
 
+_MEMORY_EDIT_GUIDANCE = (
+    "When the user asks you to edit a memory, call the precis edit tool on the "
+    "intended memory, including when the request approves an earlier draft. "
+    "Before reporting success, require a successful live edit response and read "
+    "the same memory back with get(kind='memory', id=<memory handle>). Confirm "
+    "that the returned body reflects the requested change. A draft, dry run or "
+    "attempted tool call is insufficient. If the tool is unavailable, the call "
+    "fails or the readback does not confirm the change, report what remains "
+    "unconfirmed. Check the current body before retrying an append."
+)
+
 # Claude starts subagents with their own prompts. Inject this at each start
 # so it reaches the recipient even when the parent omits it from the brief.
 # The command emits fixed JSON and never interprets hook input.
@@ -577,7 +588,9 @@ async def invoke(
     subprocess path: bot.py's per-turn queue consumer has no fallback reply
     if this raised rather than returning a gracefully-errored result.
     """
-    system_prompt = f"{_DISCORD_REPO_GUIDANCE}\n\n{system_prompt}"
+    system_prompt = (
+        f"{_DISCORD_REPO_GUIDANCE}\n\n{_MEMORY_EDIT_GUIDANCE}\n\n{system_prompt}"
+    )
     model = _flag_value(cfg.command, "--model", resolve_model(Tier.FRONTIER))
     max_turns_str = _flag_value(cfg.command, "--max-turns", "100")
     try:

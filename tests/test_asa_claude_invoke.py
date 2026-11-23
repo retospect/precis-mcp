@@ -512,6 +512,8 @@ def test_model_local_routes_via_chain_dispatch(
     assert req.prompt == "hi"
     assert req.system_prompt is not None
     assert "file a precis gripe" in req.system_prompt
+    assert "successful live edit response" in req.system_prompt
+    assert "get(kind='memory', id=<memory handle>)" in req.system_prompt
     assert req.system_prompt.endswith("\n\nsys prompt")
     assert req.mcp_config == cfg.mcp_config_path
     assert req.source == "asa_bot"
