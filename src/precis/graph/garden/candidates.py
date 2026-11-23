@@ -126,7 +126,7 @@ with ``See me<keeper>.``; both spans and both node shas are pinned.
 words and dated snapshots on thread nodes; ``negative_undated`` flags
 absence wording with no date on that line — a deterministic content-word
 proxy, not a verified search; ``notation`` proposes one anchored canon
-fix per memory per pass, skipping quoted spans, code spans and math, with
+fix per memory per pass, skipping quoted spans, DOI entries, code and math, with
 ``formula-ascii-subscript`` never flagged. ``source_drift`` and repo-backed
 ``entity_claim_stale`` evidence record the old and new content SHAs and
 the two Git commits that locate those snapshots. Stored entities can
@@ -1975,7 +1975,7 @@ def notation_candidates(
 ) -> list[GardenCandidate]:
     """Propose one anchored precis-notation-canon fix per memory per pass.
 
-    Flags authored-prose spans — outside quotes, code and math — that break
+    Flags authored-prose spans outside quotes, DOI entries, code and math that break
     the memory notation canon (gr662596), via
     :func:`precis.taproot.notation.lint_authored_notation_spans`; DREAMs and
     memories with no token-anchored hit are skipped. The candidate carries

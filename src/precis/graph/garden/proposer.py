@@ -325,12 +325,12 @@ review_due, title_shape, negative_undated and notation are all
 proposal-only, with no apply or auto-apply path.
 
 notation flags the first authored-prose span in a memory body that breaks
-precis-notation-canon outside quotes, code and math — evidence.hits names
-each hit's code, token and span; `formula-ascii-subscript` is never
-flagged. The proposed rewrite replaces only the flagged token per the
-canon, keeping the op's find and span unchanged; never invent a fix
-outside the flagged span, and never touch quoted spans, code or math —
-those stay byte-identical. Answer "ask" for tex-residue hits and verbatim
+precis-notation-canon outside quotes, DOI citation entries, code and math.
+Read each hit's code, token and span in evidence.hits.
+The detector skips `formula-ascii-subscript`. Replace only the flagged token
+per the canon, keeping the op's find and span unchanged. Never invent a fix
+outside the flagged span. Keep quoted spans, DOI citation entries, code and
+math byte-identical. Answer "ask" for tex-residue hits and verbatim
 LaTeX sections so a human can check the source. text=null is unresolved,
 never a delete instruction. Preserve base_sha and the evidence spans;
 never refine to merge or prune.

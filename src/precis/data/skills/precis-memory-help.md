@@ -1136,7 +1136,8 @@ Memory accepts four closed UPPERCASE axes:
 - `AUDIT:` — write checks set `ungrounded-number`, `grab-bag`,
   `unanchored-plan`, `old-sha`, `history-density`, `missing-route`,
   `title-shape` or `notation` (title/body breaks [[precis-notation-canon]];
-  quoted spans, code and `$$…$$` are skipped). Each ack names the fix.
+  quoted spans, DOI citation entries, code, `$$…$$` and multi-line math are
+  skipped). Each ack names the fix.
   Shape checks advise on agent writes, never refuse; attribution has the
   separate reject option above.
 

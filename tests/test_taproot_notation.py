@@ -1308,6 +1308,33 @@ def test_authored_lint_skips_quotes_code_display_math_paths_dates() -> None:
     assert lint_authored_notation(text) == []
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "10.1038/s41467-019-09793-8 — Atomically defined angstrom-scale all-carbon junctions",
+        "- `10.1038/s41467-019-09793-8` — Atomically defined angstrom-scale all-carbon junctions",
+        "1. https://doi.org/10.1038/s41467-019-09793-8 — Atomically defined angstrom-scale junctions",
+        "- Atomically defined angstrom-scale all-carbon junctions, Nat Commun 2019 "
+        "(10.1038/s41467-019-09793-8)",
+    ],
+)
+def test_authored_lint_skips_doi_entries_and_keeps_prose_offsets(entry: str) -> None:
+    from precis.taproot.notation import lint_authored_notation_spans
+
+    text = f"{entry}\nThe bond length is 2 angstrom."
+    start = text.rindex("angstrom")
+    assert lint_authored_notation_spans(text) == [
+        ("ascii-angstrom", "angstrom", start, start + len("angstrom"))
+    ]
+
+
+def test_authored_lint_keeps_prose_that_mentions_a_doi() -> None:
+    from precis.taproot.notation import lint_authored_notation
+
+    text = "See 10.1038/s41467-019-09793-8 — the bond length is 2 angstrom."
+    assert [code for code, _, _ in lint_authored_notation(text)] == ["ascii-angstrom"]
+
+
 def test_authored_lint_exempts_iso_dates_from_range_detection() -> None:
     # gr688911: a full ISO date is a name, not a range endpoint, and the
     # canon asks for ISO dates -- the detector must never push an agent

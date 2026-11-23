@@ -124,9 +124,9 @@ Proposal evidence and `view='smells'` carry detector names.
   changed on record since the memory's last touch — use the change
   evidence to check whether the claim still holds), `negative_undated`
   ("no X exists" with no date on that line), `notation` (the first
-  authored-prose span breaking [[precis-notation-canon]] — quotes, code
-  and math are skipped), `restated_claim` (a sentence repeating a claim
-  another memory in the same hub already states — the rewrite points
+  authored-prose span breaking [[precis-notation-canon]] — quotes, DOI
+  citation entries, code and math are skipped), `restated_claim` (a sentence
+  repeating a claim another memory in the same hub already states — the rewrite points
   at the keeper), `review_due` (an expired shape, or a stale, missing or
   demoted review stamp), `source_drift` (a `Source:` line or cited docs
   section changed since the memory's last touch — a `cites`-edge
@@ -251,9 +251,9 @@ current. The expiry flag persists until you address the expiry.
 
 An `AUDIT:notation` tag clears differently: fix the flagged span with
 an anchored `edit` — the write path re-lints the body and a clean
-result drops the tag. Keep quoted spans, code spans and `$$…$$` math
-byte-identical; when the canon does not fit the text, file a gripe
-instead of forcing it.
+result drops the tag. Keep quoted spans, DOI citation entries, code spans,
+display math and multi-line math byte-identical. When the canon does not
+fit the text, file a gripe.
 
 ## The grounding line
 

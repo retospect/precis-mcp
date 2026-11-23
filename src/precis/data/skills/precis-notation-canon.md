@@ -183,7 +183,9 @@ Three carve-outs, all of which **outrank the table**:
 *authored* text only — a claim sentence, a memory title or body — never a
 quoted span (text inside quotation marks, a `> ` blockquote, a fenced or
 inline code span). Rewriting a quote to match it fails the mint gate, and
-in a memory it falsifies the source.
+in a memory it falsifies the source. Treat a cited title in a DOI reference
+entry as a verbatim quotation, even without quotation marks. Preserve the
+published title, venue and author names for bibliographic matching.
 
 **One exception for memory text: math that only works as math.** A
 multi-line derivation may stay `$…$` / `$$…$$` KaTeX. A single-line

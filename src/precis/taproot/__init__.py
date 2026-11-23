@@ -144,6 +144,7 @@ Module map (detail lives in each module's own docstring):
 - :mod:`.reground` / :mod:`.repair_evidence` — "no source, no atom": rank a
   source's body chunks against a claim, verify by LLM, then post-validate
   the quote in code (verbatim, unique in the paper).
+- :mod:`.notation` — notation-canon linter and authored-text masker. Preserves DOI titles.
 - :mod:`.repair_cites` — repairs dangling draft cites via recorded successors.
   Finding locks precede draft locks so retirement can rewrite shared drafts.
 - :mod:`.directed` — demand-driven claim minting (``precis taproot

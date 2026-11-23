@@ -827,8 +827,8 @@ fi
 # 16. notation (graph mode, node bodies) — memory text follows the same
 #     notation canon as a claim sentence (precis-notation-canon; Reto ruling
 #     2026-11-13). Detector only, via src/precis/taproot/notation.py::
-#     lint_authored_notation, which skips quoted spans, code, `$$…$$` and
-#     multi-line math. A run prints one summary line, never one per node, and
+#     lint_authored_notation, which skips quoted spans, DOI entries, code,
+#     `$$…$$` and multi-line math. A run prints one summary line, never one per node, and
 #     does not count toward $problems: the backlog is the gardener's, which
 #     normalizes a node by anchored edit (quotes untouched). Writers get the
 #     same finding as an AUDIT:notation tag + ack warning. No importable

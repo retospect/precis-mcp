@@ -1244,6 +1244,16 @@ _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _DISPLAY_MATH_RE = re.compile(r"\$\$.*?\$\$", re.S)
 _MULTILINE_MATH_RE = re.compile(r"\$(?=[^$\n]*\n)[^$]*?\$", re.S)
 _BLOCKQUOTE_RE = re.compile(r"^[ \t]*>.*$", re.M)
+# A DOI at the start of a dash-delimited entry, or after the publication
+# year in a list item, masks the whole entry line, including all text
+# after the dash. A DOI mention in prose does not mark a citation entry.
+_DOI = r"(?:(?:https?://(?:dx\.)?doi\.org/|doi:[ \t]*))?10\.\d{4,9}/[^\s`]+"
+_LIST_MARKER = r"(?:[-+*]|\d+[.)])[ \t]+"
+_DOI_ENTRY_RE = re.compile(
+    rf"^[ \t]*(?:{_LIST_MARKER})?(?:`{_DOI}`|{_DOI})[ \t]+[—–][ \t]+[^\r\n]+"
+    rf"|^[ \t]*{_LIST_MARKER}[^\r\n]+\b\d{{4}}\)?[ \t]+\({_DOI}\)[ \t]*(?=\r?$)",
+    re.M | re.I,
+)
 # Quotes remain verbatim when source prose wraps across lines. Require a
 # closing delimiter so an unfinished quotation cannot hide the remaining text.
 _QUOTED_RE = re.compile(r'"[^"]*"|“[^”]*”')
@@ -1266,7 +1276,7 @@ def _blank(m: re.Match[str]) -> str:
 
 
 def mask_unauthored(text: str) -> str:
-    """Blank quoted spans, code, display and multi-line math, and URLs.
+    """Blank quotes, DOI entries, code, display and multi-line math, and URLs.
 
     A single-line ``$…$`` is *not* masked: canon wants ``sp²``, not
     ``$sp^2$``. Only a derivation that spans lines, or a ``$$…$$`` block,
@@ -1274,6 +1284,7 @@ def mask_unauthored(text: str) -> str:
     """
     for pattern in (
         _FENCE_RE,
+        _DOI_ENTRY_RE,
         _INLINE_CODE_RE,
         _DISPLAY_MATH_RE,
         _MULTILINE_MATH_RE,

@@ -146,7 +146,7 @@ class ShapeAudit:
 def _notation_finding(title: str, body: str) -> ShapeFinding | None:
     """Canon lint over the authored title/body (Reto ruling 2026-11-13).
 
-    Quoted spans, code and ``$$…$$``/multi-line math are skipped by
+    Quoted spans, DOI entries, code and ``$$…$$``/multi-line math are skipped by
     :func:`precis.taproot.notation.mask_unauthored`. Detector-only: the
     message carries the canon's own wording and the gripe route, and
     nothing is ever rewritten.
@@ -155,8 +155,8 @@ def _notation_finding(title: str, body: str) -> ShapeFinding | None:
     if not hits:
         return None
     lines = [
-        f"{len(hits)} spot(s) break precis-notation-canon (quoted spans, code "
-        "and $$…$$ blocks are exempt; fix by anchored edit, quotes untouched):"
+        f"{len(hits)} spot(s) break precis-notation-canon. Quoted spans, cited DOI entries, "
+        "code, $$…$$ blocks and multi-line math are exempt. Fix the flagged spans by anchored edit:"
     ]
     shown: set[str] = set()
     for code, token, message in hits[:_NOTATION_LINES]:
