@@ -1521,7 +1521,11 @@ class LinksMixin:
         return cached
 
     def inverse_relation(
-        self, relation: str | None, *, refresh: bool = False
+        self,
+        relation: str | None,
+        *,
+        refresh: bool = False,
+        conn: Connection | None = None,
     ) -> str | None:
         """The inverse slug of ``relation`` from the ``relations`` table, or None.
 
@@ -1540,8 +1544,12 @@ class LinksMixin:
             return None
         cached = getattr(self, "_inverse_relations_cache", None)
         if cached is None or refresh:
-            with self.pool.connection() as c:
-                rows = c.execute("SELECT slug, inverse_slug FROM relations").fetchall()
+            sql = "SELECT slug, inverse_slug FROM relations"
+            if conn is not None:
+                rows = conn.execute(sql).fetchall()
+            else:
+                with self.pool.connection() as c:
+                    rows = c.execute(sql).fetchall()
             cached = {
                 str(r[0]): (str(r[1]) if r[1] is not None else None) for r in rows
             }
@@ -1549,23 +1557,28 @@ class LinksMixin:
         return cached.get(relation)
 
     def relation_constraints(
-        self, *, refresh: bool = False
+        self, *, refresh: bool = False, conn: Connection | None = None
     ) -> dict[str, RelationConstraint]:
         """Every registered relation's constraint columns (migration 0180),
         keyed by slug — the data :func:`precis.utils.link_tag_ops.
         check_relation_constraints` enforces at the link doors.
 
         One read per store, cached exactly like :meth:`valid_relations`
-        (same ``__dict__`` pattern; ``refresh=True`` re-reads). A slug absent
+        (same ``__dict__`` pattern; ``refresh=True`` re-reads; ``conn`` runs a cold
+        read on the caller's connection). A slug absent
         from the map (registered after the cache loaded) is unconstrained.
         """
         cached = getattr(self, "_relation_constraints_cache", None)
         if cached is None or refresh:
-            with self.pool.connection() as c:
-                rows = c.execute(
-                    "SELECT slug, inverse_slug, description, domain_kinds, "
-                    "range_kinds, functional, transitive, acyclic FROM relations"
-                ).fetchall()
+            sql = (
+                "SELECT slug, inverse_slug, description, domain_kinds, "
+                "range_kinds, functional, transitive, acyclic FROM relations"
+            )
+            if conn is not None:
+                rows = conn.execute(sql).fetchall()
+            else:
+                with self.pool.connection() as c:
+                    rows = c.execute(sql).fetchall()
             cached = {
                 str(r[0]): RelationConstraint(
                     slug=str(r[0]),
@@ -1614,7 +1627,7 @@ class LinksMixin:
         add-mode link on an acyclic relation runs this walk, so its cost
         and the depth cap are the first things to measure there.
         """
-        inverse = self.inverse_relation(relation)
+        inverse = self.inverse_relation(relation, conn=conn)
         sql = """
         WITH RECURSIVE e(src, dst) AS (
           SELECT src_ref_id, dst_ref_id FROM links WHERE relation = %(rel)s
@@ -1656,7 +1669,7 @@ class LinksMixin:
         re-link of the very edge already there through. One query shared by
         the link validator and ``create_draft`` / ``fork_draft``.
         """
-        inverse = self.inverse_relation(relation)
+        inverse = self.inverse_relation(relation, conn=conn)
         sql = """
         SELECT cand FROM (
           SELECT l.src_ref_id AS cand FROM links l

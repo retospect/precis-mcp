@@ -140,6 +140,7 @@ from precis.utils.eye_batch import EyeFocus
 from precis.utils.glyph_health import glyph_caveat
 from precis.utils.link_tag_ops import (
     apply_tag_ops,
+    guard_add_link,
     merge_link_reason,
     resolve_add_link,
 )
@@ -823,6 +824,14 @@ class FindingHandler(AuditedRetirementHandler):
                     "VALUES (%s, %s, %s, %s)",
                     ("pub_id", pub_id, ref.id, "agent"),
                 )
+                if extra_target is not None:
+                    guard_add_link(
+                        self.store,
+                        None,
+                        extra_target,
+                        extra_relation,
+                        src_kind=self.kind,
+                    )
                 # finding_body chunk at ord=0 (Path B: one body
                 # chunk; setup folded into prose).
                 self.store.chunks.insert_chunks(

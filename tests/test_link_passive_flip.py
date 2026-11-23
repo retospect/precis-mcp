@@ -16,6 +16,7 @@ from psycopg.rows import dict_row
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.anki import AnkiHandler
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store
 from precis.utils.link_tag_ops import apply_link_ops
@@ -78,19 +79,29 @@ def test_passive_spelling_stores_active_edge_swapped(
 def test_handler_ack_names_the_stored_edge(
     hub: Hub, store: Store, passive: str, active: str
 ) -> None:
-    h = MemoryHandler(hub=hub)
-    mem = id_of(h.put(text="a memory").body)
-    paper = store.insert_ref(kind="paper", slug="flip2020", title="Flip", meta={}).id
+    h: MemoryHandler | AnkiHandler
+    if passive == "represented-by":
+        # ``represents`` is endpoint-constrained to concept → anki: the
+        # passive spelling is only fileable from a card onto a concept.
+        h = AnkiHandler(hub=hub)
+        src = id_of(h.put(text="The {{c1::Krebs}} cycle.").body)
+        dst = _ref(store, "concept", "the Krebs cycle")
+        target = f"cn{dst}"
+        sense = "anki card"
+    else:
+        h = MemoryHandler(hub=hub)
+        src = id_of(h.put(text="a memory").body)
+        dst = store.insert_ref(kind="paper", slug="flip2020", title="Flip", meta={}).id
+        target = "paper:flip2020"
+        sense = "memory"
 
-    ack = h.link(id=mem, target="paper:flip2020", rel=passive)
-    assert ack.body == f"linked paper:flip2020 {active} memory id={mem}"
-    assert _rows(store, mem, paper) == [(paper, mem, active)]
+    ack = h.link(id=src, target=target, rel=passive)
+    assert ack.body == f"linked {target} {active} {sense} id={src}"
+    assert _rows(store, src, dst) == [(dst, src, active)]
 
-    rm = h.link(id=mem, target="paper:flip2020", rel=passive, mode="remove")
-    assert rm.body == (
-        f"unlinked paper:flip2020 {active} memory id={mem} (1 edge removed)"
-    )
-    assert _rows(store, mem, paper) == []
+    rm = h.link(id=src, target=target, rel=passive, mode="remove")
+    assert rm.body == (f"unlinked {target} {active} {sense} id={src} (1 edge removed)")
+    assert _rows(store, src, dst) == []
 
 
 def test_active_spelling_ack_is_unchanged(hub: Hub, store: Store) -> None:

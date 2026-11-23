@@ -560,7 +560,7 @@ def check_relation_constraints(
             ("source", s_id, rc.domain_kinds, "domain_kinds"),
             ("target", d_id, rc.range_kinds, "range_kinds"),
         ):
-            kind = kinds.get(ref_id)
+            kind = kinds.get(ref_id) if ref_id is not None else src_kind
             if allowed is None or kind is None or kind in allowed:
                 continue
             allowed_s = ", ".join(sorted(allowed))
@@ -576,6 +576,8 @@ def check_relation_constraints(
                     f"id='precis-relations') lists each relation's kinds)"
                 ),
             )
+    if s_id is None or d_id is None:
+        return  # Create-time validation checks only endpoint kinds.
     if s_id == d_id:
         return  # add_link refuses the self-loop with its own message
     if target.pending:

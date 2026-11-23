@@ -169,7 +169,26 @@ Tag `deck-<topic>` to file an authored card under the `Precis::<topic>` sub-deck
 put(kind="anki", text="{{c1::heart}} pumps blood.", tags=["deck-anatomy"])
 tag(kind="anki", id=204, add=["topic:cell-bio"])
 link(kind="anki", id=204, target="pc12", rel="derived-from")
+link(kind="anki", id=204, target="cn42", rel="represented-by")  # card → its concept
 ```
+
+Linking a card to the concept it renders: the stored edge is always
+`concept —represents→ card` (the card forge's direction), so from the
+card side the spelling is `represented-by` — a `represents` out of a card
+refuses (`represents` is domain `concept` → range `anki`). You can wire it
+in one put:
+
+```python
+put(kind="anki", text="{{c1::ATP}} is the cell's energy currency.",
+    link="cn42", rel="represented-by")
+```
+
+The direction matters: the mastery pass folds the linked cards' review
+stats into the concept's `meta.mastery`, and the card-forge's
+cardless-concept scan reads the same edges to find concepts with no card
+yet — both read two stored forms: `concept —represents→ card` (canonical)
+and a legacy `card —represented-by→ concept` row. A backwards
+`card —represents→ concept` row matches neither, so both miss it.
 
 To re-file a card, retag it — add the new `deck-<topic>` tag and remove the
 old one in the same `tag()` call; a set of cards moves in one call with

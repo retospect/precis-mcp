@@ -78,14 +78,18 @@ link(kind="concept", id="cn9", target="cn4", rel="has-prerequisite")  # learn cn
 link(kind="concept", id="cn9", target="cn7", rel="contrasts-with")    # a confusable pair
 link(kind="concept", id="cn9", target="cn8", rel="analogy-of")        # structurally analogous
 link(kind="concept", id="cn9", target="quest:7", rel="serves")        # an objective
+put(kind="anki", text="…{{c1::…}}…", link="cn9", rel="represented-by")  # card renders cn9
 ```
 
 `has-prerequisite` is the learning DAG (`prerequisite-of` reads the
 same edge from the other end); `analogy-of` and `contrasts-with` are
 symmetric. `represents` / `represented-by` binds the concept to the
-anki cards that render it — the mastery pass folds those cards' review
-stats back into `mastery`. `derived-from` points at the paper a
-promoted node was extracted from.
+anki cards that render it — the stored edge is always
+`concept —represents→ card` (the card forge's direction), so from the
+card side spell it `represented-by`; a `represents` out of a card
+refuses. The mastery pass folds those cards' review stats back into
+`mastery`. `derived-from` points at the paper a promoted node was
+extracted from.
 
 ## Where concepts come from — glossary promotion
 

@@ -70,7 +70,11 @@ from precis.store.types import Ref
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo import guards as todo_guards
 from precis.utils import handle_registry
-from precis.utils.link_tag_ops import resolve_add_link, validate_relation
+from precis.utils.link_tag_ops import (
+    guard_add_link,
+    resolve_add_link,
+    validate_relation,
+)
 from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
@@ -4568,6 +4572,14 @@ class JobHandler(NumericRefHandler):
                         ref_id=existing,
                         reused=True,
                     )
+            if target is not None:
+                guard_add_link(
+                    self.store,
+                    None,
+                    target,
+                    relation,
+                    src_kind=self.kind,
+                )
 
             ref = self.store.insert_ref(
                 kind=self.kind,

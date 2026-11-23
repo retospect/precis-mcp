@@ -79,13 +79,14 @@ edge renders: `precis-fisheye-help`.
 | `serves` | `served-by` | A (a slice todo) serves B, the feature node or spec section it implements; acyclic. See `precis-spec-help`. |
 | `plan-of` | `has-plan` | A (a plan root todo) is the reasoning outline of B (its spec root / project); functional — one per target. |
 | `has-prerequisite` | `prerequisite-of` | A (a concept) requires B first — the learning DAG, read B before A; acyclic. |
-| `entails` | `entailed-by` | A (an inference node) logically yields B (its conclusion lemma) — asserted, not proven. Premises attach to the inference with `derived-from`; see "Record a reasoning step" below. |
+| `represented-by` | `represents` | Card A (kind `anki`) renders concept B — stored `concept —represents→ card`; from the card side use this spelling (`represents` out of a card refuses). |
+| `entails` | `entailed-by` | A (an inference node) logically yields B (its conclusion lemma) — asserted, not proven; premises attach with `derived-from`. |
 | `qualifies` | `qualified-by` | A (a caveat node) limits/bounds B (the claim it caveats). Surfaced — never auto-discharged — by `get(view='argument')`. |
 | `cited-in` | (none) | Paper A is woven into and cited by document B (a topic dossier `draft`) — a `citation` exists. |
 | `corroborates` | (none) | Evidence A supports an existing point: either a claim hub (evidence edge) or a point already woven into a dossier, grouped with it. |
 | `superseded-in` | (none) | Paper A is subsumed by a later/review paper already integrated into document B; recorded, not separately woven. |
 | `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
-| `tests` | (none) | Computed pathway A ran hypothesis finding B's pre-registered discriminating experiment. Only the measurement-ruling pass writes this edge, without evidence. |
+| `tests` | (none) | Computed pathway A ran hypothesis finding B's pre-registered discriminating experiment. Only the measurement-ruling pass writes this edge. |
 
 ## How do I link parts, source documents and measurements?
 
@@ -120,16 +121,17 @@ enforce. Every other relation accepts any two refs.
 | `dossier-of` | any | any | yes | - |
 | `establishes` | datasheet, edgar, paper, patent, pathway | finding | - | - |
 | `corroborates` | datasheet, edgar, paper, patent, pathway | draft, finding | - | - |
+| `represents` | concept | anki | - | - |
 | `specialises` | any | any | - | yes |
 | `contains` | any | any | - | yes |
 | `has-prerequisite` | any | any | - | yes |
 | `serves` | any | any | - | yes |
 
-Domain is the kind of the ref you link **from**, range the kind of the
-`target=`. `functional` means a target holds at most one source: a project
-has one `draft-of`, one `plan-of`, one `dossier-of`. `acyclic` means the
-relation, read in either direction (`contains` and `part-of` are one
-tree), may not loop back on itself.
+Domain is the kind you link **from**, range the `target=` kind.
+`functional` means a target holds at most one source — one `draft-of`,
+one `plan-of`, one `dossier-of` per project. `acyclic` means the
+relation, read in either direction (`contains`/`part-of` are one tree),
+may not loop back on itself.
 
 A refusal names the relation, the offending end and what it accepts:
 
@@ -143,14 +145,12 @@ A refusal names the relation, the offending end and what it accepts:
 - `'serves' would form a cycle: quest:3 already reaches quest:7` — the
   target is above the source in the chain; pick one that is not.
 
-Inverse slugs follow the same rule as the relation they mirror
-(`has-draft` is checked as `draft-of`, `part-of` as `contains`).
-
-Inverse slugs are automatic. `cites` reads as `cited-by` from the target.
-`related-to` is symmetric.
-`see-also`, `rejected-after`, `selects`, `rejects`, `considered`,
-`cited-in`, `corroborates`, `superseded-in`, and `off-topic-for` have
-no inverse. Read paper dispositions from the dossier with
+Inverse slugs are automatic and checked as the relation they mirror
+(`has-draft` as `draft-of`, `part-of` as `contains`): `cites` reads as
+`cited-by` from the target; `related-to` is symmetric. `see-also`,
+`rejected-after`, `selects`, `rejects`, `considered`, `cited-in`,
+`corroborates`, `superseded-in` and `off-topic-for` have no inverse.
+Read paper dispositions from the dossier with
 `get(kind='draft', id=<dossier-slug>, view='integration')`.
 
 For part selection, use `link(kind='memory', id=<record>,
@@ -189,12 +189,11 @@ link(kind="memory", id=89, target="pa6", rel="disputes")
 `cites`. `supports` points from evidence to the claim it supports;
 `supported-by` reads the inverse. Agreement with an author's conclusion
 alone does not establish independent evidence. Use `disputes`, never
-`contradicts`, when the source ref
-takes a position *against* the target's findings: `contradicts` is
-adjudication-derived (claim-graph disagreement, unbuilt Part 2) and
-not fileable this way — `disputes` is the free, non-blocking
-equivalent and works between any two ref kinds. (The constraint table
-above lists the one kind pair where `contradicts` is fileable.)
+`contradicts`, when the source ref takes a position *against* the
+target's findings: `contradicts` is adjudication-derived and not
+fileable this way — `disputes` is the free, non-blocking equivalent for
+any two ref kinds (the constraint table above names the one fileable
+`contradicts` pair).
 
 ## Record provenance (A came from B)
 ## How do I link a summary to its source?
@@ -290,9 +289,8 @@ link(kind="memory", id=42, target="pa5", rel="see-also")
 
 `see-also` is asymmetric with **no** inverse. Use for "while reading A,
 you might want B" hints that don't fit `related-to`, `cites`, or any
-evidential edge. (The four `cited-in`/`corroborates`/`superseded-in`/
-`off-topic-for` integration-disposition relations, below, are the same
-shape — no inverse — but a different semantic.)
+evidential edge. (The four dossier-disposition rels below are the same
+shape — no inverse — with a different semantic.)
 
 ## Record a paper's disposition toward a topic dossier
 ## Mark a paper as woven-in / corroborating / superseded / rejected

@@ -73,11 +73,14 @@ from precis.utils import handle_registry
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
+    check_relation_constraints,
     format_link_tag_ack,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
+    validate_relation,
 )
+from precis.utils.link_target import parse_link_target
 from precis.utils.slug_ref import resolve_live_slug_ref
 
 #: A host is ``live`` while its heartbeat is this fresh — the same 600 s
@@ -567,6 +570,21 @@ class MachineHandler(Handler):
                 "'role':…,'gpu':…})",
             )
         facts = {"platform": platform, "role": role, "gpu": gpu}
+        if link is not None:
+            # The endpoint check inside apply_link_ops runs only after
+            # the upsert and tags have written — run the create-time
+            # half up front so a refused 'represents' leaves nothing
+            # behind (gr742966). Every other relation still validates
+            # in apply_link_ops against the live ref.
+            relation = validate_relation(rel, store=self.store)
+            if relation in {"represents", "represented-by"}:
+                check_relation_constraints(
+                    self.store,
+                    relation,
+                    None,
+                    parse_link_target(link, store=self.store),
+                    src_kind=self.kind,
+                )
         ref, created = self._upsert_one(host_for(str(id)), facts=facts)
         n_tags = n_links = 0
         proposals: list = []

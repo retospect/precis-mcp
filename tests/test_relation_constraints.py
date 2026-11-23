@@ -21,8 +21,10 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.anki import AnkiHandler
 from precis.handlers.concept import ConceptHandler
 from precis.handlers.gripe import GripeHandler
+from precis.handlers.machine import MachineHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.quest import QuestHandler
 from precis.store import Store
@@ -32,6 +34,7 @@ from precis.utils import handle_registry
 from precis.utils.link_tag_ops import apply_link_ops
 from precis.utils.relations import validate_relation
 from tests._refs import insert_gripe
+from tests.conftest import id_of
 
 #: Relations with seeded endpoint, cardinality or cycle constraints.
 SEEDED = frozenset(
@@ -45,6 +48,7 @@ SEEDED = frozenset(
         "dossier-of",
         "establishes",
         "corroborates",
+        "represents",
         "specialises",
         "contains",
         "has-prerequisite",
@@ -181,6 +185,9 @@ def test_seeded_values(store: Store) -> None:
         assert c[slug].domain_kinds == frozenset({"memory"})
         assert c[slug].range_kinds == frozenset({"part", "component"})
         assert not c[slug].functional and not c[slug].acyclic
+    # gr742966: the forge's direction is canonical — concept ->represents-> card
+    assert c["represents"].domain_kinds == frozenset({"concept"})
+    assert c["represents"].range_kinds == frozenset({"anki"})
 
 
 # ── AC2: contradicts through both doors ─────────────────────────────
@@ -530,3 +537,140 @@ def test_selection_relations_refuse_non_memory_sources(relation, store: Store):
             store, source, link="component:candidate", unlink=None, rel=relation
         )
     assert _links(store, source) == []
+
+
+# ── represents direction + the put-create door (gr742966) ───────────
+
+
+def _concept(store: Store) -> int:
+    return _ref(store, "concept", "entropy — a measure of disorder")
+
+
+def _card(store: Store) -> int:
+    return _ref(store, "anki", "{{c1::entropy}} measures disorder")
+
+
+class TestRepresents:
+    """``represents`` is concept → card (the card forge's direction); the
+    constraint row makes the doors refuse the backwards spelling and the
+    ``src_kind`` pre-insert path covers ``put(link=)``."""
+
+    def test_concept_to_card_is_the_canonical_edge(self, store: Store) -> None:
+        c, a = _concept(store), _card(store)
+        apply_link_ops(store, c, link=f"anki:{a}", unlink=None, rel="represents")
+        assert (a, "represents") in _links(store, c)
+
+    def test_card_side_represents_refuses_with_the_passive_hint(
+        self, store: Store
+    ) -> None:
+        c, a = _concept(store), _card(store)
+        with pytest.raises(BadInput) as exc:
+            apply_link_ops(store, a, link=f"concept:{c}", unlink=None, rel="represents")
+        assert "domain_kinds = concept" in exc.value.cause
+        # the relation description doubles as the hint: it names the
+        # card-side spelling
+        assert "represented-by" in exc.value.cause
+        assert _links(store, a) == []
+
+    def test_represented_by_stores_the_canonical_edge(self, store: Store) -> None:
+        c, a = _concept(store), _card(store)
+        apply_link_ops(store, a, link=f"concept:{c}", unlink=None, rel="represented-by")
+        assert (c, a, "represents") in _read_as(store, c, "represents")
+
+    def test_non_card_target_refused(self, store: Store, hub: Hub) -> None:
+        c = _concept(store)
+        m = _ref(store, "memory", "not a card")
+        with pytest.raises(BadInput, match="range_kinds = anki"):
+            ConceptHandler(hub=hub).link(id=c, target=f"memory:{m}", rel="represents")
+        assert _links(store, c) == []
+
+    # -- the put-create door (previously unchecked) --------------------
+
+    def test_put_anki_represents_refuses_and_writes_nothing(
+        self, store: Store, hub: Hub
+    ) -> None:
+        c = _concept(store)
+        before = len(store.list_refs(kind="anki", limit=1000))
+        with pytest.raises(BadInput, match="domain_kinds = concept"):
+            AnkiHandler(hub=hub).put(
+                text="{{c1::entropy}} measures disorder",
+                link=f"cn{c}",
+                rel="represents",
+            )
+        assert len(store.list_refs(kind="anki", limit=1000)) == before
+        assert _links(store, c) == []
+
+    def test_put_machine_represents_refuses_before_the_upsert(
+        self, store: Store, hub: Hub
+    ) -> None:
+        # machine.put upserts the ref and applies tags before the link —
+        # the endpoint check must run first or a refused edge leaves a
+        # half-written put behind (review on gr742966).
+        c = _concept(store)
+        before = len(store.list_refs(kind="machine", limit=1000))
+        with pytest.raises(BadInput, match="domain_kinds = concept"):
+            MachineHandler(hub=hub).put(
+                id="buildhost",
+                tags=["role-builder"],
+                link=f"cn{c}",
+                rel="represents",
+            )
+        assert store.get_ref(kind="machine", id="ma_buildhost") is None
+        assert len(store.list_refs(kind="machine", limit=1000)) == before
+        assert _links(store, c) == []
+
+    def test_put_anki_represented_by_stores_concept_to_card(
+        self, store: Store, hub: Hub
+    ) -> None:
+        c = _concept(store)
+        out = AnkiHandler(hub=hub).put(
+            text="{{c1::entropy}} measures disorder",
+            link=f"cn{c}",
+            rel="represented-by",
+        )
+        card_id = id_of(out.body)
+        assert (c, card_id, "represents") in _read_as(store, c, "represents")
+
+    def test_put_concept_represents_to_card_is_the_forge_direction(
+        self, store: Store, hub: Hub
+    ) -> None:
+        a = _card(store)
+        out = ConceptHandler(hub=hub).put(
+            text="entropy — a measure of disorder",
+            link=f"ak{a}",
+            rel="represents",
+        )
+        concept_id = id_of(out.body)
+        assert (concept_id, a, "represents") in _read_as(
+            store, concept_id, "represents"
+        )
+
+
+def test_put_memory_contradicts_paper_is_refused(store: Store, hub: Hub) -> None:
+    # migration 0180: `contradicts` is memory -> memory only; a put to a
+    # paper is refused and the message points at `disputes`.
+    _ref(store, "paper", "prior art", slug="smith2020")
+    with pytest.raises(BadInput, match="contradicts"):
+        MemoryHandler(hub=hub).put(
+            text="rebuts", link="paper:smith2020", rel="contradicts"
+        )
+
+
+@pytest.mark.parametrize("operation", ["ancestors", "functional_conflict"])
+def test_cold_inverse_cache_uses_caller_connection(
+    store: Store, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    owner = _ref(store, "quest", "owner")
+    source = _ref(store, "quest", "source")
+    store.add_link(src_ref_id=source, dst_ref_id=owner, relation="serves")
+    with store.tx() as conn:
+        monkeypatch.setattr(store, "_inverse_relations_cache", None, raising=False)
+
+        def unexpected_checkout() -> None:
+            pytest.fail("attempted a second pool checkout")
+
+        monkeypatch.setattr(store.pool, "connection", unexpected_checkout)
+        if operation == "ancestors":
+            assert store.ancestors("serves", owner, conn=conn) == {source}
+        else:
+            assert store.functional_conflict("serves", owner, conn=conn) == source

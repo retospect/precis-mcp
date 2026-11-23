@@ -22,7 +22,11 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.response import Response
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
-from precis.utils.link_tag_ops import apply_tag_ops, resolve_add_link
+from precis.utils.link_tag_ops import (
+    apply_tag_ops,
+    guard_add_link,
+    resolve_add_link,
+)
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.workers.embed import nudge_fresh_embed
 
@@ -279,6 +283,14 @@ def put_acquiring(
                 "VALUES (%s, %s, %s, %s)",
                 ("pub_id", pub_id, ref.id, "agent"),
             )
+            if extra_target is not None:
+                guard_add_link(
+                    store,
+                    None,
+                    extra_target,
+                    extra_relation,
+                    src_kind=kind,
+                )
             store.chunks.insert_chunks(
                 ref.id,
                 [
