@@ -474,7 +474,13 @@ def enter_rescue(
 # the parent), the coordinator's ``hold:no-dispatch``, the td603849
 # file-overlap sequence (its mint queues; the claim loop skips the job
 # until the blocker lands, gr702610), the free-failure backoff and a
-# ``child-failed:``-latched transient park's ``retry_after``.
+# ``child-failed:``-latched transient park's ``retry_after`` — and a
+# queued job no live host can claim: its placement tokens (a pinned
+# lane's ``<adapter>_bin``, td543917) advertised by no host together, so
+# the claim loop never takes it (gr685082). The judgment reads the live
+# job's own meta. A lane's park, backoff, cap or disabled state is NOT a
+# claim hold: the claim takes that row and submit parks or fails it, so
+# the queue-liveness rule still judges a silent queue it never drains.
 # Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
 # or ``dry_run``) it lists ``would_rescue`` and writes nothing.
@@ -1155,6 +1161,40 @@ def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:
     return str(row[0]) if row else None
 
 
+def _queued_claim_hold(store: Store, j: Any) -> str | None:
+    """Why the claim loop cannot take this queued job right now, or
+    ``None`` when a live host can claim it (the silence is the queue's).
+
+    The one lane-shaped hold a queued job carries is the claim loop's
+    placement gate (td543917, ``_common._placement_ok``): a ``run_slice``
+    pinned to a lane, or stamped with ``meta.adapter`` by a prior submit,
+    needs that adapter's ``<a>_bin`` token, and a job whose tokens no live
+    host advertises together is never claimed. The check reads the LIVE
+    job's own ``meta`` (``job_type``, ``params``, ``adapter``), never the
+    todo's current op or lane: a land stays judged as a land, and a pin
+    the job never carried is not invented.
+
+    A lane's park, backoff, cap or disabled state is NOT a claim hold. The
+    claim takes such a row without reading any of them; the lane's verdict
+    is made at submit (``run_slice.submit`` parks it into ``waiting_time``
+    or fails it). Those queued rows get no exemption, so a silent queue the
+    claim never drains still rescues (gr685082).
+    """
+    from precis.workers.executors import _common
+
+    with store.pool.connection() as conn:
+        advertised = _common.advertised_by_host(conn)
+        lane_adapters = _common.lane_adapter_map(conn)
+    gap = _common.placement_gap(j.meta, advertised, lane_adapters)
+    if not gap:
+        return None
+    pin = (j.meta.get("params") or {}).get("target_node")
+    tokens = ", ".join(sorted(gap))
+    if pin:
+        return f"pinned host {pin} does not advertise all of {tokens}"
+    return f"no live host advertises all of {tokens}"
+
+
 def _stage_for(
     store: Store, now: datetime, plan: Any, n: Any, is_gate: bool
 ) -> tuple[str, str, Any, str] | None:
@@ -1211,6 +1251,17 @@ def _stage_for(
                     "parked",
                     live,
                     f"waiting (job jo{live.id} queued, gated by {gate_tag})",
+                )
+            claim_hold = _queued_claim_hold(store, live)
+            if claim_hold is not None:
+                # The claim loop's placement gate never takes the job: no
+                # live host advertises its tokens, so the silence is the
+                # placement's and the node parks (gr685082).
+                return (
+                    "parked",
+                    "parked",
+                    live,
+                    f"waiting (job jo{live.id} queued, {claim_hold})",
                 )
             return (
                 "stalled",

@@ -26,6 +26,7 @@ from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers import factory_rescue as fr
 from precis.workers._mint import mint_background_job
+from precis.workers.executors import _common
 from precis.workers.executors._common import claim_executor_jobs, park_job_until
 from precis.workers.job_types import get_job_type, known_job_types
 from tests._lane_rows import use_lanes
@@ -128,6 +129,7 @@ def _job(
     *,
     job_type: str = "run_slice",
     status: str = "queued",
+    params: dict[str, Any] | None = None,
     meta_extra: dict[str, Any] | None = None,
 ) -> int:
     with store.tx() as conn:
@@ -137,7 +139,7 @@ def _job(
             job_type=job_type,
             executor="ssh_node",
             title=job_type,
-            params={},
+            params=params or {},
             parent_id=todo,
             status=status,
             meta_extra=meta_extra,
@@ -1991,6 +1993,197 @@ def test_reviewer_judged_when_only_build_vendor_is_enabled(
 
     assert res.rescued == [(review, "stalled", "idle")]
     assert _rescue_tags(store, review) == ["rescue:stalled"]
+
+
+# ── queued jobs and claim holds (gr685082) ───────────────────────
+
+#: Every placement token a run_slice or land_slice declares, plus each
+#: lane adapter's ``<a>_bin`` (td543917, gr676054): the default test host.
+_ALL_PLACEMENT = frozenset(
+    {
+        "repo_checkout",
+        "builder",
+        "git",
+        "gate_image",
+        "uv_bin",
+        "claude_bin",
+        "codex_bin",
+        "kimi_bin",
+        "devin_bin",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _host_advertises_every_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One live host offering every placement token, so a queued job's
+    silence is judged on the queue, not on a binary the fixture lacks.
+    Tests that exercise a placement gap re-patch it."""
+    monkeypatch.setattr(
+        _common, "_advertised_by_host", lambda conn: {"host-a": set(_ALL_PLACEMENT)}
+    )
+
+
+def test_queued_build_on_parked_pinned_lane_is_claimable(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane's park is not a claim hold (gr685082). The real claim loop
+    takes the queued build without reading the lane; ``run_slice.submit``
+    then parks it on the lane, so the parked lane is submit's verdict."""
+    parked = Lane(
+        "build-lane",
+        "devin_tree",
+        "s",
+        1,
+        frozenset({"code"}),
+        parked_reason="quota:window",
+    )
+    use_lanes(monkeypatch, parked)
+    # The claim gate reads the claiming host's own tokens (reserve_host).
+    monkeypatch.setattr(_common, "reserve_host", lambda: "host-a")
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="queued",
+        params={"lane": "build-lane"},
+        meta_extra={"adapter": "devin_tree"},
+    )
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(conn, executor="ssh_node", limit=1)
+        conn.commit()
+
+    assert [r[0] for r in claimed] == [job]
+
+
+def test_queued_build_on_parked_pinned_lane_rescues_when_queue_is_silent(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard against over-holding: a queue the claim never drains still
+    rescues on the plain queued signature, even with its lane parked."""
+    parked = Lane(
+        "build-lane",
+        "devin_tree",
+        "s",
+        1,
+        frozenset({"code"}),
+        parked_reason="quota:window",
+    )
+    use_lanes(monkeypatch, parked)
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="queued",
+        params={"lane": "build-lane"},
+        meta_extra={"adapter": "devin_tree"},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+    (gripe,) = _sig_gripes(store)
+    ref = store.get_ref(kind="gripe", id=gripe)
+    assert ref is not None
+    assert "stage queued silent past its deadline" in str(ref.title)
+
+
+def test_queued_build_no_live_host_advertises_its_adapter_is_a_wait(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim's placement gate never takes a pinned build whose adapter
+    binary no live host advertises, so its silence is the placement's and
+    the node parks (gr685082). The rescue and the claim gate agree."""
+    lane = Lane("build-lane", "devin_tree", "s", 1, frozenset({"code"}))
+    use_lanes(monkeypatch, lane)
+    no_devin = set(_ALL_PLACEMENT - {"devin_bin"})
+    monkeypatch.setattr(
+        _common, "_advertised_by_host", lambda conn: {"host-a": no_devin}
+    )
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="queued",
+        params={"lane": "build-lane"},
+        meta_extra={"adapter": "devin_tree"},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any(
+        "no live host advertises all of" in n and "devin_bin" in n for n in res.notes
+    )
+    assert not _common._placement_ok(
+        _job_meta(store, job), {"host-a": no_devin}, "host-a"
+    )
+
+
+def test_queued_pinned_job_names_its_pinned_host_in_the_wait(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``target_node`` pin narrows the placement search to that host, so
+    the wait reason names it rather than claiming no live host has the
+    tokens when another host does (gr685082)."""
+    lane = Lane("build-lane", "devin_tree", "s", 1, frozenset({"code"}))
+    use_lanes(monkeypatch, lane)
+    no_devin = set(_ALL_PLACEMENT - {"devin_bin"})
+    monkeypatch.setattr(
+        _common,
+        "_advertised_by_host",
+        lambda conn: {"host-a": no_devin, "host-b": set(_ALL_PLACEMENT)},
+    )
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="queued",
+        params={"lane": "build-lane", "target_node": "host-a"},
+        meta_extra={"adapter": "devin_tree"},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any(
+        "pinned host host-a does not advertise all of" in n and "devin_bin" in n
+        for n in res.notes
+    )
+    assert not any("no live host advertises" in n for n in res.notes)
+
+
+def test_queued_land_is_judged_on_its_own_placement(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live job's own job_type decides the placement, not the todo's
+    build op: a queued land waits on the repo checkout it needs, which no
+    live host advertises (gr685082). ``gate_image`` is a rollout token and
+    would not hold it (gr701559)."""
+    no_repo = set(_ALL_PLACEMENT - {"repo_checkout"})
+    monkeypatch.setattr(
+        _common, "_advertised_by_host", lambda conn: {"host-a": no_repo}
+    )
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(store, task, job_type="land_slice", status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("repo_checkout" in n for n in res.notes)
+    assert not _common._placement_ok(
+        _job_meta(store, job), {"host-a": no_repo}, "host-a"
+    )
 
 
 # ── the tick heartbeat (tick-silent) ──────────────────────────────
