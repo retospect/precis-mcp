@@ -58,7 +58,8 @@ whether the worker is dead, blocked, or merely not selecting them.
 ## Expedite one stuck job: prio is ASC — LOWER is more urgent
 
 `src/precis/workers/executors/_common.py` claim ordering is
-`claim_rank ASC, factory_pref ASC, lane_deficit DESC, aged_prio ASC,
+`claim_rank ASC, factory_pref ASC, aged_past_class_age DESC,
+dispatch_score DESC, lane_deficit DESC, aged_prio ASC,
 queued_since ASC, ref_id ASC` (SQL `ORDER BY`; the Python re-rank adds
 scarcity and node-affinity terms). `claim_rank` is the origin class with
 ageing promotion — a prio-1 row ranks `-1`, preempting every class.

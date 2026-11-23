@@ -87,12 +87,15 @@ from precis.workers.executors import (
 )
 from precis.workers.executors._common import (
     _BASE_CLASS_RANK,
+    _BUILD_HOLD_FILTER_SQL,
+    _CLAIM_AGE_BUCKET_SQL,
+    _CLAIM_ORDER_PREFIX_SQL,
     _CLASS_RANK_CASE,
     _DEFAULT_JOB_PRIO,
+    _DISPATCH_SCORE_SQL,
     _EXECUTOR_CAP_DEFAULTS,
     _EXECUTOR_CAP_KEY_PREFIX,
     _EXECUTOR_RESERVE_DEFAULTS,
-    _FACTORY_TYPES_SQL,
     _FOOTPRINT_CPU_FIELD,
     _FOOTPRINT_KEY_PREFIX,
     _MAX_RUNNING_DEFAULTS,
@@ -112,6 +115,7 @@ from precis.workers.executors._common import (
     STATUS_NAMESPACE,
     WAITING,
     _claim_order_sql,
+    _factory_pref_sql,
     _truthy,
     claim_age_step_s,
     claim_class_age_s,
@@ -6093,12 +6097,9 @@ class JobHandler(NumericRefHandler):
         """``queue:`` lines for a ``STATUS:queued`` job: where it stands in
         its executor's claim order and what it waits behind (gr495292: a
         queued ``pcb_route`` showed neither). Read-only, advisory — the
-        order mirrors the rank keys of ``claim_executor_jobs``' claim
-        order — ``(class_rank, factory_pref, aged_prio, queued_since,
-        ref_id)`` (slice 6, D6: origin class first; gr657333: within a
-        class the dark-factory pipeline ops outrank bulk work, then
-        in-class aged prio) — but not its lane-deficit share term
-        (gr595541) or capability-scarcity re-rank. It
+        order uses the fresh-claim SQL rank keys. Host-specific lane
+        deficit, scarcity and model affinity, and the reserved background
+        pick can change the actual claim order. The card
         shows this row's origin class, any class promotion ageing has
         earned it, and the per-class count of rows ahead; the reasons are
         the claim gates visible from the row itself: operator suspension, a
@@ -6120,20 +6121,12 @@ class JobHandler(NumericRefHandler):
         if not executor:
             return [], None, None
         class_rank_on = claim_class_rank_enabled()
+        class_age = claim_class_age_s()
         rank_sql, asql, aparams = _claim_order_sql(
             claim_age_step_s(),
-            claim_class_age_s(),
+            class_age,
             class_rank=class_rank_on,
             release_freeze=True,
-        )
-        # Factory-pipeline sub-priority (gr657333): the position math
-        # ranks a factory op ahead of same-class bulk rows just like the
-        # claim — off under the class-rank kill switch, where the order
-        # is plain (aged, qs, ref_id) and the term must read 0 for all.
-        fpref_sql = (
-            f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
-            if class_rank_on
-            else "0"
         )
         suspended = sorted(suspended_job_types())
         susp_sql = (
@@ -6142,19 +6135,16 @@ class JobHandler(NumericRefHandler):
         susp_params: tuple[list[str], ...] = (suspended,) if suspended else ()
         with self.store.pool.connection() as conn:
             holds = queued_build_hold_reasons(conn) if executor == "ssh_node" else {}
-            hold_sql = (
-                "AND (COALESCE({alias}.meta->>'job_type', '') <> 'run_slice'"
-                " OR {alias}.parent_id IS NULL OR {alias}.parent_id <> ALL(%s))"
-                if holds
-                else ""
-            )
+            hold_sql = _BUILD_HOLD_FILTER_SQL if holds else ""
             hold_params = (sorted(holds),) if holds else ()
             row = conn.execute(
                 f"""
                 WITH q AS (
-                  SELECT r.ref_id, q2.qs AS qs, {rank_sql} AS crank,
-                         {asql} AS aged, b.base_class AS bclass,
-                         {fpref_sql} AS fpref
+                  SELECT r.ref_id, q2.qs AS qs, {rank_sql} AS claim_rank,
+                         {asql} AS aged_prio, b.base_class AS bclass,
+                         {_factory_pref_sql(class_rank_on)} AS factory_pref,
+                         {_CLAIM_AGE_BUCKET_SQL} AS aged_past_class_age,
+                         {_DISPATCH_SCORE_SQL} AS dispatch_score
                     FROM refs r
                     CROSS JOIN LATERAL (
                           SELECT max(rt.created_at) AS qs
@@ -6192,25 +6182,25 @@ class JobHandler(NumericRefHandler):
                                     AND t.namespace = %s AND t.value = ANY(%s))
                      {susp_sql}
                      {hold_sql.format(alias="r")}
+                ), ranked AS (
+                  SELECT q.*, row_number() OVER (
+                      ORDER BY {_CLAIM_ORDER_PREFIX_SQL}, aged_prio, qs, ref_id
+                  ) AS position
+                    FROM q
+                ), target AS (
+                  SELECT * FROM ranked WHERE ref_id = %s
+                ), ahead AS (
+                  SELECT * FROM ranked WHERE position < (SELECT position FROM target)
                 )
-                SELECT count(*),
-                       count(*) FILTER (WHERE (crank, fpref, aged, qs, ref_id) <
-                            (SELECT crank, fpref, aged, qs, ref_id
-                               FROM q WHERE ref_id = %s)),
-                       (SELECT qs FROM q WHERE ref_id = %s),
-                       (SELECT bclass FROM q WHERE ref_id = %s),
-                       (SELECT crank FROM q WHERE ref_id = %s),
+                SELECT (SELECT count(*) FROM ranked),
+                       (SELECT count(*) FROM ahead),
+                       (SELECT qs FROM target),
+                       (SELECT bclass FROM target),
+                       (SELECT claim_rank FROM target),
                        (SELECT jsonb_object_agg(bclass::text, c) FROM (
-                            SELECT bclass, count(*) AS c FROM q
-                             WHERE (crank, fpref, aged, qs, ref_id) <
-                                 (SELECT crank, fpref, aged, qs, ref_id
-                                    FROM q WHERE ref_id = %s)
-                             GROUP BY bclass) s),
-                       count(*) FILTER (
-                            WHERE fpref = 0
-                              AND (crank, fpref, aged, qs, ref_id) <
-                                (SELECT crank, fpref, aged, qs, ref_id
-                                   FROM q WHERE ref_id = %s)),
+                            SELECT bclass, count(*) AS c FROM ahead GROUP BY bclass
+                       ) s),
+                       (SELECT count(*) FROM ahead WHERE factory_pref = 0),
                        (SELECT r2.meta FROM refs r2 WHERE r2.ref_id = %s),
                        (SELECT r2.updated_at FROM refs r2
                          WHERE r2.ref_id = %s),
@@ -6218,10 +6208,10 @@ class JobHandler(NumericRefHandler):
                           JOIN tags t2 ON t2.tag_id = rt2.tag_id
                          WHERE rt2.ref_id = %s AND t2.namespace = %s
                          ORDER BY rt2.created_at DESC LIMIT 1)
-                  FROM q
                 """,
                 (
                     *aparams,
+                    class_age,
                     STATUS_NAMESPACE,
                     list(CLAIMABLE),
                     _DEFAULT_JOB_PRIO,
@@ -6237,11 +6227,6 @@ class JobHandler(NumericRefHandler):
                     list(CLAIMABLE),
                     *susp_params,
                     *hold_params,
-                    ref.id,
-                    ref.id,
-                    ref.id,
-                    ref.id,
-                    ref.id,
                     ref.id,
                     ref.id,
                     ref.id,
@@ -6345,15 +6330,15 @@ class JobHandler(NumericRefHandler):
                     f", aged up to {_CLASS_NAME_BY_RANK.get(float(crank), '?')} rank"
                 )
             order_note = (
-                "claim order is class, then factory-pipeline ops, then "
-                "priority, then time queued"
-                if class_rank_on
-                else "claim order is priority, then time queued"
+                "class, then factory-pipeline ops, then " if class_rank_on else ""
+            ) + (
+                "jobs past the class age threshold, then dispatch score, "
+                "then aged priority, then time queued"
             )
             lines.append(
                 f"queue: position {ahead + 1} of {total} queued for executor "
                 f"{executor!r} — class {cls_name}{aged_note} ({ahead} ahead; "
-                f"{order_note}); "
+                f"claim order estimate is {order_note}); "
                 f"waiting {waited // 60}m{waited % 60:02d}s"
             )
             if ahead and ahead_by_class:

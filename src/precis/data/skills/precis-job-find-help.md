@@ -47,7 +47,8 @@ search(kind="job", tags=["STATUS:queued"])
 
 `get(kind="job", id=N)` on a queued job adds `queue:` lines: its origin
 class, its position in the executor's claim order (class, then
-factory-pipeline ops, then priority, then time queued — advisory; the
+factory-pipeline ops, then jobs past the class age threshold, then
+dispatch score, then aged priority, then time queued — advisory; the
 lane-deficit share term isn't mirrored) with the per-class count of
 rows ahead, what is running on that executor now, and holds it can see
 (operator suspension, a `target_node` pin, a live lease). A queued

@@ -61,9 +61,11 @@ pass. Stop the node: `halt:`/`waiting-for:`, `STATUS:paused`, won't-do.
 
 ## Queue behind interactive work — prio= / origin=
 
-Claim order is **class, then factory-pipeline ops, then the lane
-deficit, then priority, then time queued** — `(class_rank,
-factory_pref, lane_deficit, aged_prio, queued_since, ref_id)`. The
+Claim order is **class, then factory-pipeline ops, then jobs past the
+class age threshold, then dispatch score, then the lane deficit, then
+priority, then time queued** — `(class_rank, factory_pref,
+aged_past_class_age, dispatch_score, lane_deficit, aged_prio,
+queued_since, ref_id)`. The
 `queue:` lines on a queued job report position from the same rank keys
 minus the deficit, so a shown position is advisory. Two mint-time
 knobs (both ride `args=` on the advertised `put` schema):

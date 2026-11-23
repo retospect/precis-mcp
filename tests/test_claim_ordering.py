@@ -40,6 +40,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
     _MAX_RUNNING_DEFAULTS,
+    claim_class_age_s,
     claim_executor_jobs,
 )
 
@@ -136,6 +137,48 @@ def test_dispatch_score_orders_before_fifo_and_preserves_release_band(
     assert _claim_order(store, executor) == [release, high, low]
 
 
+def test_aged_build_beats_fresh_score_in_claim_and_card(store: Store) -> None:
+    """gr736421: the age bucket applies in SQL before LIMIT and on final pick."""
+    from precis.dispatch import Hub
+    from precis.handlers.job import JobHandler
+
+    executor = "aged_score_order_test"
+    _advertise(store, "h1", {"repo_checkout": 1, "builder": 1, "git": 1})
+    low = _queue_job(
+        store,
+        executor=executor,
+        prio=5,
+        job_type="run_slice",
+        extra_meta={"dispatch_score": 1.0},
+    )
+    fresh = [
+        _queue_job(
+            store,
+            executor=executor,
+            prio=5,
+            job_type="run_slice",
+            extra_meta={"dispatch_score": 12.0},
+        )
+        for _ in range(4)
+    ]
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    assert _claim_order(store, executor, reserve_host_id="h1", limit=1) == [fresh[0]]
+    assert "queue: position 5 of 5" in handler.get(id=low).body
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - make_interval(secs => %s) "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (claim_class_age_s() + 60, low),
+        )
+        conn.commit()
+
+    assert _claim_order(store, executor, reserve_host_id="h1", limit=1) == [low]
+    assert "queue: position 1 of 5" in handler.get(id=low).body
+    assert "queue: position 2 of 5" in handler.get(id=fresh[0]).body
+
+
 def test_unstamped_land_floors_above_a_scored_fresh_build(store: Store) -> None:
     """td736734 review of 8d0cd009: the score stamp floors NEW
     ``land_slice`` mints at ``FINISH_FIRST_SCORE``, but a land already
@@ -184,6 +227,8 @@ def test_unstamped_land_stays_in_the_overfetch_window(store: Store) -> None:
 
 def test_claim_skips_overlap_and_takes_unrelated_build(store: Store) -> None:
     """A held prefix longer than overfetch cannot hide unrelated work."""
+    from precis.dispatch import Hub
+    from precis.handlers.job import JobHandler
     from precis.plans import templates
     from precis.workers.executors import _common as common
     from precis.workers.job_types import plan_dispatch as pd
@@ -226,6 +271,11 @@ def test_claim_skips_overlap_and_takes_unrelated_build(store: Store) -> None:
     clean_todo = plan("Edit src/precis/b.py")
     clean = job(clean_todo, 1)
     assert clean_todo not in pd.live_nodes(store, [clean_todo])
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    assert "queue: position 1 of 1" in handler.get(id=clean).body
+    held_body = handler.get(id=held[0]).body
+    assert f"queue: held — files overlap td{holder}" in held_body
+    assert "queue: position" not in held_body
     with store.pool.connection() as conn:
         claimed = claim_executor_jobs(
             conn, executor="ssh_node", limit=1, reserve_host_id=host

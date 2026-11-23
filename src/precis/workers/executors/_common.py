@@ -1952,6 +1952,30 @@ def queued_build_hold_reasons(conn: Connection) -> dict[int, str]:
     }
 
 
+def _factory_pref_sql(class_rank: bool) -> str:
+    if not class_rank:
+        return "0"
+    return f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
+
+
+# Keep pre-stamp lands at the same score as newly minted lands.
+_DISPATCH_SCORE_SQL = (
+    f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8,"
+    f" CASE WHEN r.meta->>'job_type' = 'land_slice'"
+    f" THEN {_dscore.FINISH_FIRST_SCORE} ELSE 0 END)"
+)
+
+_CLAIM_ORDER_PREFIX_SQL = (
+    "claim_rank ASC, factory_pref ASC, aged_past_class_age DESC, dispatch_score DESC"
+)
+_CLAIM_AGE_BUCKET_SQL = "b.age_s > %s"
+
+_BUILD_HOLD_FILTER_SQL = (
+    " AND (COALESCE({alias}.meta->>'job_type', '') <> 'run_slice'"
+    " OR {alias}.parent_id IS NULL OR {alias}.parent_id <> ALL(%s))"
+)
+
+
 def _claim_order_sql(
     age_step_s: float,
     class_age_s: float,
@@ -2187,12 +2211,15 @@ def claim_executor_jobs(
     factory sub-priority 2026-11-13, gr657333; model affinity
     2026-11-13, gr595542; lane deficit, gr595541; dispatch_score,
     gr702610).**
-    ``ORDER BY claim_rank ASC, factory_pref ASC, dispatch_score DESC,
-    lane_deficit DESC, aged_prio ASC, queued_since ASC, ref_id ASC``
-    (``dispatch_score`` = the ``meta.dispatch_score`` stamp, hot-first;
+    ``ORDER BY claim_rank ASC, factory_pref ASC, aged_past_class_age DESC,
+    dispatch_score DESC, lane_deficit DESC, aged_prio ASC, queued_since ASC,
+    ref_id ASC``
+    (the age bucket puts jobs past :func:`claim_class_age_s` ahead of
+    fresher peers in the same class and factory band, gr736421;
+    ``dispatch_score`` = the ``meta.dispatch_score`` stamp, hot-first;
     an unstamped ``land_slice`` floors at
     :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` — see
-    ``score_order_sql`` below; lane deficit = the lane's weighted share — its
+    ``_DISPATCH_SCORE_SQL``; lane deficit = the lane's weighted share — its
     ``claim.share.<lane>``
     weight over the eligible lanes' weights — minus the fraction of the
     sliding window's lane-seconds this host gave it, gr595541; the same
@@ -3121,9 +3148,11 @@ def claim_executor_jobs(
     # are computed once per row by LATERALs — the claim-order expressions
     # read the aliases instead of repeating correlated subqueries.
     class_rank_on = claim_class_rank_enabled()
+    age_step = claim_age_step_s()
+    class_age = claim_class_age_s()
     claim_rank_sql, aged_prio_sql, order_params = _claim_order_sql(
-        claim_age_step_s(),
-        claim_class_age_s(),
+        age_step,
+        class_age,
         class_rank=class_rank_on,
         release_freeze=True,
     )
@@ -3165,6 +3194,19 @@ def claim_executor_jobs(
         *cap_params,
         *reserve_block_params,
     )
+    # Filter existing holds before LIMIT so held builds cannot fill the window.
+    hold_params: tuple[list[int], ...] = ()
+    if executor == "ssh_node":
+        shared = _shared_build_plan()
+        held_builds = (
+            build_overlap_holds(conn, shared=shared)
+            | build_blocked_holds(conn, shared=shared).keys()
+        )
+        if held_builds:
+            hold_params = (sorted(held_builds),)
+    hold_sql = _BUILD_HOLD_FILTER_SQL if hold_params else ""
+    where_sql += hold_sql.format(alias="r")
+    where_params = (*where_params, *hold_params)
     # D4 share half, deficit form (gr595541): inside the winning class the
     # lane (``meta.share_key``, else ``job_type[:pass]`` —
     # :func:`_share_key`) this host has served LEAST of its weighted share
@@ -3206,60 +3248,15 @@ def claim_executor_jobs(
         )
         share_order_sql = "lane_deficit DESC, "
         share_params = (json.dumps(lane_weights), lane_w_total, json.dumps(fracs))
-    # Factory-pipeline sub-priority (gr657333): within a claim class the
-    # dark-factory ops (:data:`FACTORY_PIPELINE_JOB_TYPES`) outrank bulk
-    # seed/drain work — a ``run_slice`` must not FIFO-wait an hour behind
-    # a deep ``autocatpath_seed`` backlog for the same ssh_node slot. The
-    # term sits BETWEEN ``claim_rank`` and the share term: a bulk row
-    # class-promotes only to TIE the top class queued, so on an
-    # all-background lane it never escapes the term — the bounded bulk
-    # progress floor is the reserved oldest-first background share below
-    # (td657493 review), not class promotion. Off under the class-rank
-    # kill switch, like the share term — the pre-slice-2 order stays
-    # verbatim.
-    factory_col_sql = "0"
-    factory_order_sql = ""
-    if class_rank_on:
-        factory_col_sql = (
-            f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
-        )
-        factory_order_sql = "factory_pref ASC, "
-    # Filter existing holds before LIMIT: even a queue longer than the
-    # overfetch window cannot hide an unrelated build behind held jobs.
-    if executor == "ssh_node":
-        shared = _shared_build_plan()
-        held_builds = (
-            build_overlap_holds(conn, shared=shared)
-            | build_blocked_holds(conn, shared=shared).keys()
-        )
-        if held_builds:
-            where_sql += (
-                " AND (r.meta->>'job_type' <> 'run_slice' "
-                "OR r.parent_id IS NULL OR r.parent_id <> ALL(%s))"
-            )
-            where_params = (*where_params, sorted(held_builds))
-    # dispatch_score DESC (gr702610, hot-first), with the unstamped-land
-    # floor (td736734 review of 8d0cd009): the stamp floors NEW
-    # ``land_slice`` mints at ``FINISH_FIRST_SCORE``, but a land already
-    # queued when the stamp shipped — a direct land, a review-released
-    # land, an infrastructure retry — carries no ``dispatch_score`` and
-    # read as 0, so fresh builds with a stamped plan score passed it
-    # while its build's files stayed held. An unstamped land floors at
-    # the same ``FINISH_FIRST_SCORE`` a stamped one carries, so the
-    # rollout leaves already-queued lands exactly where new ones land.
-    # Mirrors :func:`_row_score` in the Python re-rank below.
-    score_order_sql = (
-        f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8,"
-        f" CASE WHEN r.meta->>'job_type' = 'land_slice'"
-        f" THEN {_dscore.FINISH_FIRST_SCORE} ELSE 0 END) DESC, "
-    )
     fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
                {aged_prio_sql} AS aged_prio,
                {share_col_sql} AS lane_deficit,
-               {factory_col_sql} AS factory_pref
+               {_factory_pref_sql(class_rank_on)} AS factory_pref,
+               {_CLAIM_AGE_BUCKET_SQL} AS aged_past_class_age,
+               {_DISPATCH_SCORE_SQL} AS dispatch_score
           FROM refs r
           CROSS JOIN LATERAL (
                 SELECT max(rt.created_at) AS qs
@@ -3285,6 +3282,7 @@ def claim_executor_jobs(
                             AND t3.namespace = %s AND t3.value = ANY(%s)
                        )
                    AND COALESCE(r3.prio, %s)::float8 <> 1
+                   {hold_sql.format(alias="r3")}
               ) t
           {where_sql}@@BG_WHERE@@
          ORDER BY @@ORDER_BY@@
@@ -3294,6 +3292,7 @@ def claim_executor_jobs(
     fresh_params: tuple[Any, ...] = (
         *order_params,
         *share_params,
+        class_age,
         STATUS_NAMESPACE,
         list(CLAIMABLE),
         _DEFAULT_JOB_PRIO,
@@ -3303,12 +3302,13 @@ def claim_executor_jobs(
         STATUS_NAMESPACE,
         list(CLAIMABLE),
         _DEFAULT_JOB_PRIO,
+        *hold_params,
         *where_params,
     )
     rows = conn.execute(
         fresh_sql.replace("@@BG_WHERE@@", "").replace(
             "@@ORDER_BY@@",
-            f"claim_rank ASC, {factory_order_sql}{score_order_sql}{share_order_sql}"
+            f"{_CLAIM_ORDER_PREFIX_SQL}, {share_order_sql}"
             "aged_prio ASC, q.qs ASC, r.ref_id ASC",
         ),
         (*fresh_params, fresh_limit * _CLAIM_OVERFETCH),
@@ -3370,8 +3370,6 @@ def claim_executor_jobs(
     # queued_since, so a class flood can hold a lower class down only
     # for a bounded wait (D3 acceptance: no background row waits more
     # than 3 h on a live lane).
-    age_step = claim_age_step_s()
-    class_age = claim_class_age_s()
     now_utc = datetime.now(UTC)
 
     def _row_base(r: Any) -> float:
@@ -3389,20 +3387,6 @@ def claim_executor_jobs(
 
     def _row_prio(r: Any) -> float:
         return float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
-
-    def _row_score(r: Any) -> float:
-        """The dispatch_score claim key, with the unstamped-land floor —
-        the Python twin of ``score_order_sql`` above (td736734 review of
-        8d0cd009): a ``land_slice`` queued before the score stamp carries
-        no ``dispatch_score``; it floors at the same
-        :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` a stamped
-        land carries, instead of reading as 0 and losing to every fresh
-        build with a stamped plan score."""
-        meta = dict(r[2] or {})
-        raw = meta.get(_dscore.SCORE_META_KEY)
-        if raw is None and str(meta.get("job_type") or "") == "land_slice":
-            return _dscore.FINISH_FIRST_SCORE
-        return float(raw or 0)
 
     top_class = min((_row_base(r) for r in rows if _row_prio(r) != 1.0), default=0)
     # Release-band freeze (gr584136): while a release leg is among the
@@ -3463,7 +3447,7 @@ def claim_executor_jobs(
 
     def _order_key(
         r: Any,
-    ) -> tuple[float, float, float, float, float, float, int, Any, int]:
+    ) -> tuple[float, float, int, int, float, float, float, int, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -3487,16 +3471,6 @@ def claim_executor_jobs(
         # D4 share half: the lane's deficit as it stands NOW (the pick loop
         # charges each claim to its lane), larger deficit first.
         deficit = _lane_deficit(_share_key(dict(r[2] or {}))) if class_rank_on else 0.0
-        # Factory sub-priority (gr657333): sits between class rank and
-        # the share term, exactly like the SQL ORDER BY.
-        factory = (
-            float(
-                str(dict(r[2] or {}).get("job_type") or "")
-                not in FACTORY_PIPELINE_JOB_TYPES
-            )
-            if class_rank_on
-            else 0.0
-        )
         # ``queued_since`` (r[5]) before ``ref_id``: the same FIFO-within-band
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
@@ -3504,8 +3478,9 @@ def claim_executor_jobs(
         return (
             -scarcity,
             rank,
-            factory,
-            -_row_score(r),
+            r[9],  # factory_pref
+            -int(r[10]),  # aged_past_class_age
+            -r[11],  # dispatch_score
             -deficit,
             aged,
             _row_affinity(r),

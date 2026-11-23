@@ -58,8 +58,9 @@ def test_queued_job_shows_position_and_what_runs_ahead(store: Store) -> None:
         "background (1 ahead" in body
     )
     assert (
-        "claim order is class, then factory-pipeline ops, then priority, "
-        "then time queued" in body
+        "claim order estimate is class, then factory-pipeline ops, "
+        "then jobs past the class age threshold, then dispatch score, "
+        "then aged priority, then time queued" in body
     )
     assert "queue: running now on 'job_inproc': 1 (materialize x1)" in body
     assert "queue: position 1 of 2" in _body(store, first)

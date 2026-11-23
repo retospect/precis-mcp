@@ -148,6 +148,10 @@ Converted handles recheck the resolved kind against the same policy before
 dispatch rewrites the kind, so redirects cannot bypass it. Pulls and edits remain
 behind the removed write verbs and the callback's ``agent_ro`` database role.
 
+Fresh claims rank jobs past the class age threshold ahead of fresher
+jobs in the same class and factory band, so a stream of high dispatch
+scores cannot keep an older job behind fresh peers. The job card shares
+the SQL ordering and excludes builds held by overlap or sequencing.
 Fresh run_slice claims probe the same CPU/memory footprint as launch. The CPU
 side is the code default per work class unless the live
 ``claim.footprint.<work>.cpu_milli`` override sizes it, read at claim and at
