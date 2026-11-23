@@ -83,8 +83,9 @@ from precis.pcb import DEFAULT_STACKUP, drc
 from precis.pcb import generators as pcb_generators
 from precis.pcb.capabilities import capability_for
 from precis.pcb.padplace import board_pads
+from precis.pcb.rows import normalize_footprint as _normalize_local_footprint
 from precis.pcb.rules import resolve_net_rules
-from precis.store._pcb_ops import _normalize_local_footprint
+from precis.workers.child_compute import run_in_child
 
 _CAP4 = capability_for("4layer")
 _LAYERS = [str(layer["name"]) for layer in DEFAULT_STACKUP]
@@ -121,7 +122,7 @@ def _ewod_model(
 ) -> tuple[pcb_generators.GeneratorExpansion, dict[str, Any]]:
     """One ``ewod_pad_array`` expansion, placed at the origin, in the
     EXACT board-coordinate geometry a real routed board's ``model`` would
-    carry — pads via the real ``_normalize_local_footprint``/
+    carry — pads via the real ``normalize_footprint``/
     ``board_pads`` production path (electrode BODIES only, pcb-pre-place-
     route-blocks Slice 2), copper via ``expansion.copper`` flattened the
     same way the store does — not a hand-rolled stand-in, so these tests
@@ -440,6 +441,26 @@ def test_plaza_family_via_to_via_clearance_survives_coordinate_rounding():
     assert via_via_errors == [], [f.detail for f in via_via_errors]
 
 
+def _grid_sweep_clearance_errors(grid: list[int], variant: str) -> dict[str, list[str]]:
+    """``run_in_child`` target for the grid sweep below — spawn pickles the
+    target by reference, so it must live at module scope (the
+    ``tests/_child_compute_targets.py`` convention). Returns the
+    error-severity findings' ``where :: detail`` lines for the parent to
+    assert empty."""
+    _, model = _ewod_model(grid=grid, variant=variant)
+    body_errors = [
+        f"{f.where} :: {f.detail}"
+        for f in drc.check_clearance(_electrode_bodies_only(model), _CAP4)
+        if f.rule == "clearance" and f.severity == "error"
+    ]
+    errors = [
+        f"{f.where} :: {f.detail}"
+        for f in drc.check_clearance(model, _CAP4)
+        if f.rule == "clearance" and f.severity == "error"
+    ]
+    return {"body_errors": body_errors, "errors": errors}
+
+
 @pytest.mark.parametrize(
     ("grid", "variant"),
     [
@@ -465,18 +486,30 @@ def test_min_clearance_stays_within_the_known_gap_across_grid_sizes(grid, varian
     **Bodies alone stay fully clean** (round 4's own guarantee, untouched
     by Slice 2); since docs/backlog/pcb-ewod-multitile.md "Rulings
     2026-09-18" item 1, copper-inclusive findings must be empty too — a
-    genuine geometry regression still fails this test."""
-    _, model = _ewod_model(grid=grid, variant=variant)
-    body_errors = [
-        f
-        for f in drc.check_clearance(_electrode_bodies_only(model), _CAP4)
-        if f.rule == "clearance" and f.severity == "error"
-    ]
-    assert body_errors == [], [f.detail for f in body_errors]
+    genuine geometry regression still fails this test.
 
-    findings = drc.check_clearance(model, _CAP4)
-    errors = [f for f in findings if f.rule == "clearance" and f.severity == "error"]
-    _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
+    The whole model+DRC pass runs in a supervised spawned child
+    (:func:`precis.workers.child_compute.run_in_child`) as mitigation for
+    gr778233's SUSPECTED — not established — mechanism. The nightly log
+    shows only ``worker 'gw0' crashed while running`` a merged-pad param
+    on a ~7 GB hosted macOS leg (``-n auto``); it does not show this
+    sweep shared that worker, nor what killed it. The suspicion is
+    retained allocator memory: a local peak-RSS measure puts the 32x32
+    full board's crenellated bodies plus the STRtree pass near half a
+    GB, and pymalloc never hands that back, so an xdist worker would
+    carry the residual into whichever test order schedules next until
+    macOS jetsam kills it. In a child the sweep's peak is transient
+    either way — the OS reclaims it at exit — and even an OOM kill
+    degrades to one ``ChildDied`` test failure, not a dead worker
+    stopping the run (``--max-worker-restart=0``)."""
+    result = run_in_child(
+        _grid_sweep_clearance_errors,
+        (grid, variant),
+        label="ewod-drc-grid-sweep",
+        timeout_s=1500.0,
+    )
+    assert result["body_errors"] == [], result["body_errors"]
+    assert result["errors"] == [], result["errors"]
 
 
 def test_dogfood_sizing_neck_tracks_clear_every_foreign_electrode():
