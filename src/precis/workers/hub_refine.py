@@ -151,8 +151,12 @@ one discover source is verified once.
 
 **Ship dark**: a service, gated by a ``service_config`` prio row
 (``precis service prio <host> hub_refine 1``, live, no redeploy — no env
-flag works post-§L). Enable on exactly **one host**: the rejection memo
-is a read-modify-write on ``meta``.
+flag works post-§L). Enabled on exactly **one host** per the enablement
+runbook; the rejection/seen memo read-modify-writes that motivated the
+rule are row-lock-merged in code now (gr693791 residual 5,
+:func:`_memo_safe_update`), so a second host is no longer a lost-update
+hazard on its own — the runbook's one-host standing procedure stays the
+operator's call.
 
 **Reground** (`gr693791`) grows this same pass
 from additive-only enrichment into full re-grounding — deliberately not a
@@ -184,8 +188,11 @@ claim→discover→verify→write→stamp path:
   edge (docs/backlog/disputes-edge-nonblocking-disagreement.md D3), never
   plain-dropped.
 * **External last resort + retire flagging** (stages 5-6) — each behind
-  its own gate; retire additionally needs a per-hub opt-in tag, and its
-  draft-prose edit is stubbed to a worklist flag (:func:`_flag_retire`).
+  its own gate; retire additionally needs a per-hub opt-in tag. The
+  retire stage itself only flags (worklist tag + proposed reword in
+  ``meta.reground_verdict``); its draft-prose edit — reword-in-place
+  first, the two deleting modes later — lives in
+  :mod:`precis.workers.retire_prose`.
 
 **The unattended reground service loop is dark**:
 :meth:`RegroundConfig.from_env` returns ``None`` unless
@@ -225,7 +232,10 @@ it into ``service prio``. The inbound chase/citer sidecar is the third
 case: an audited ``app_settings`` flag (``inbound_chase.enabled``, DB
 row over the env bootstrap) gates it alongside positive per-host priority
 from ``service_config``. Enable a service producer on **one host** —
-``hub_refine``'s rejection memo is a read-modify-write on ``meta``
+``hub_refine``'s rejection/seen memos were the read-modify-write hazard
+behind that rule; they merge under a row lock in code since gr693791
+residual 5 (:func:`_memo_safe_update`), and the runbook keeps the
+one-host procedure until its owner revisits it
 (``docs/runbooks/taproot-chase-enablement.md``).
 
 - **Forward chase bridge** (``workers/chase.py::_taproot_bridge``) — on a
@@ -1468,6 +1478,72 @@ _REGROUND_OK_SPEC_VALUE = "reground-ok"
 #: :func:`_flag_retire`'s docstring for exactly what is stubbed).
 _REGROUND_RETIRE_NS = "TAPROOT_REGROUND_RETIRE"
 _REGROUND_RETIRE_VALUE = "1"
+
+
+#: Memo keys whose seal/stamp writes are read-modify-writes on ``meta``
+#: and therefore merge under a row lock (:func:`_memo_safe_update`) —
+#: gr693791 residual 5. ``_META_REFINE_FOLLOWUPS`` is deliberately NOT
+#: here: it is per-pass transient retry-state that the runner clears once
+#: drained, so a wholesale (last-writer-wins) write is its contract, and a
+#: lost update there only re-runs idempotent checks.
+_MEMO_MERGE_KEYS = frozenset(
+    {_META_REJECTED, _META_REGROUND_SEEN, _META_CITATION_MISSES, _META_UNRESOLVED}
+)
+
+
+def _memo_safe_update(
+    store: Store,
+    conn: Connection,
+    hub_ref_id: int,
+    patch: dict[str, Any],
+    *,
+    replace: bool,
+) -> None:
+    """Write ``patch`` to the hub's ``meta`` with the memo keys merged
+    under a ``FOR UPDATE`` row lock — the write side of the pass's
+    read-modify-write memos.
+
+    The pass reads the rejection/seen/citation memos once at its start
+    (unlocked — it cannot hold a row lock across the mid-pass boundary
+    commits that release all locks) and mutates them in memory; a plain
+    ``update_ref(meta_patch=patch)`` would then write a snapshot stale
+    under any concurrent pass on the same hub, losing its entries
+    (gr693791 residual 5). Instead, when the patch touches a
+    :data:`_MEMO_MERGE_KEYS` memo, the hub row is locked and the stored
+    value merged with the patch's:
+
+    * dict memos (``taproot_rejected``, ``reground_seen``) union by key,
+      the patch's entry winning a conflict;
+    * list memos (``citation_misses``, ``unresolved_citations``) concat
+      then dedup via :func:`_dedup_records`;
+    * ``replace=True`` (a sha-reopen: the pass's in-memory memo was reset,
+      old-sha entries are stale) — the patch wins wholesale, the clear
+      taking effect exactly as before.
+
+    Keys outside :data:`_MEMO_MERGE_KEYS` pass through untouched. A
+    vanished hub is a silent no-op, matching ``_fetch_hub_info``.
+    """
+    if not any(k in _MEMO_MERGE_KEYS for k in patch):
+        store.update_ref(hub_ref_id, meta_patch=patch, conn=conn)
+        return
+    row = conn.execute(
+        "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
+        (hub_ref_id,),
+    ).fetchone()
+    if row is None:
+        return
+    stored = dict(row[0] or {})
+    merged = dict(patch)
+    if not replace:
+        for key in (k for k in patch if k in _MEMO_MERGE_KEYS):
+            value = patch[key]
+            old = stored.get(key)
+            if isinstance(value, dict) and isinstance(old, dict):
+                merged[key] = {**old, **value}
+            elif isinstance(value, list) and isinstance(old, list):
+                merged[key] = _dedup_records([*old, *value])
+            # Shape mismatch or nothing stored: the fresh value wins.
+    store.update_ref(hub_ref_id, meta_patch=merged, conn=conn)
 
 
 def _env_flag(name: str) -> bool:
@@ -2723,19 +2799,24 @@ def _flag_retire(
     **Built here**: the gate (:func:`_retire_authorized`), the citer
     census (:func:`_inbound_draft_citers`), a durable
     ``meta.reground_verdict`` record carrying the proposed one-sentence
-    groundable reword, the ``TAPROOT_REGROUND_RETIRE`` worklist tag, and a
-    ``reground_log`` entry — everything a reviewer needs to act, and
-    everything reversible.
+    groundable reword, the ``TAPROOT_REGROUND_RETIRE`` worklist tag, and a ``reground_log``
+    entry — everything a reviewer needs to act, and everything
+    reversible.
 
-    **Not built**: the three per-paragraph draft-edit modes themselves
-    (reword-in-place / replace-with-a-supportable-fact / stitch-delete).
-    Those require reading the whole surrounding paragraph, a frontier
-    model, and a reversible draft-diff surface for end-review — a
-    self-contained build of its own. The hub is left standing, its cites
-    intact, on a worklist. Nothing is deleted, so the stub cannot leave a
-    dangling cite; the failure mode of stopping here is a hub that stays
-    ``unverified``, which is the correct resting state for an unsupported
-    claim anyway.
+    **Built since, in the prose pass** (:mod:`precis.workers.retire_prose`):
+    the reword-in-place mode — applied through the draft store's edit
+    primitive behind this same double gate, refusing every cite shape a
+    deterministic splice cannot prove safe.
+
+    **Still not built**: the reword *proposer* (a frontier-model step
+    that writes ``meta.reground_verdict.reword`` — until then a human
+    writes the proposal through the finding-edit door), and the two
+    deleting modes (replace-with-fact / stitch-delete), which wait on a
+    zero-citer census per paragraph plus the reversible end-review
+    surface. The hub is left standing either way; nothing is deleted, so
+    the stub cannot leave a dangling cite; the failure mode of stopping
+    here is a hub that stays ``unverified``, which is the correct resting
+    state for an unsupported claim anyway.
     """
     citers = _inbound_draft_citers(conn, hub_ref_id)
     store.update_ref(
@@ -4111,7 +4192,10 @@ def _refine_one_hub(
             pending_demotions=pending_demotions,
         )
         if patch:
-            store.update_ref(hub_ref_id, meta_patch=patch, conn=c)
+            # The memos are read-modify-writes — merge them into the stored
+            # meta under a row lock, never write the pass-start snapshot
+            # wholesale (gr693791 residual 5).
+            _memo_safe_update(store, c, hub_ref_id, patch, replace=reopened)
 
     plan: RegroundPlan | None = None
     depth_policy = DEPTH_ABSTRACT_OK
@@ -4719,7 +4803,10 @@ def _refine_one_hub(
             }
         if plan_out is not None:
             plan_out.append(plan)
-    store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
+    # The stamp's memo keys merge under a row lock exactly like the
+    # boundary seals (gr693791 residual 5); the scalar stamps
+    # (last_refined_*) pass through wholesale.
+    _memo_safe_update(store, conn, hub_ref_id, meta_patch, replace=reopened)
     if verify_capped and verify_judged:
         # Partial work: the stamp above must not hide the unvisited rest.
         log.info(

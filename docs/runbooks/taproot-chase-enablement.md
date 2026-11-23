@@ -12,9 +12,17 @@ enable blind (the plan's gate); the pipeline has never run at corpus scale.
 LOCKED` locks **before** the per-hub write connection opens
 (`workers/hub_refine.py::run_hub_refine_pass`, the two-phase shape it shares
 with `inbound_chase.py`). Two concurrent instances can both select the same
-never-refined / sha-reopened / backstop hub → duplicate LLM verify + a
-lost-update on the `meta['taproot_rejected']` read-modify-write. It self-heals
-next cadence, but it wastes spend and muddies the memo.
+never-refined / sha-reopened / backstop hub → duplicate LLM verify. The
+memo lost-update this paragraph used to warn about is closed in code since
+gr693791 residual 5 — `taproot_rejected` / `reground_seen` /
+`citation_misses` / `reground_log` writes all merge under a `FOR UPDATE`
+hub-row lock (`hub_refine._memo_safe_update`, `taproot.hub.append_reground_log`,
+`taproot.hub.remove_evidence`'s strand guard), and `remove_evidence`'s
+strand guard serializes on the same lock — so a second instance now costs
+duplicate spend, not a corrupted memo. Single-instance stays the standing
+rule regardless: the duplicate verify spend is real, and multi-host
+enablement of reground additionally waits on the prune rubric gate
+(`PRECIS_TAPROOT_REGROUND_PRUNE`, `hub_refine.PRUNE_INTERLOCK_TOKEN`).
 
 Both passes carry **empty `default_profiles`** (registry.py), so `service_config`
 is the only thing that turns them on. **A `service_config` row scoped to `'*'`

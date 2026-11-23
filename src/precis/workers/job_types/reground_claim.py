@@ -11,7 +11,7 @@ mechanism that improves an existing claim hub; a job_type that started
 judging or writing evidence itself would be the parallel producer it
 forbids.
 
-Two modes:
+Three modes:
 
 * ``mode='reground'`` (default) — run the pass per hub. The ``hub_ids``
   override bypasses the due-set entirely, so a draft's whole hub set can
@@ -21,6 +21,18 @@ Two modes:
   missing adds + 8 stale edges in one wave, none of which any error
   string mentioned). Read-only by default; ``repair=true`` applies the
   delta adds-first. No LLM spend either way.
+* ``mode='retire-prose'`` — the retire flag's draft-prose edit
+  (gr693791 residual 2): reword-in-place applies the
+  ``meta.reground_verdict`` record's proposed reword to the draft
+  sentences citing each retired hub, through the draft store's edit
+  primitive. No LLM, no embedder; the retire double gate
+  (``authorize_retire`` param + the per-hub vetting tag) is checked per
+  hub.
+* ``mode='external-worklist'`` — the mined-unheld-DOI acquisition
+  worklist (gr693791 residual 4): read-only, no scope, no LLM — every
+  live hub's ``reground_external`` report merged into one DOI-per-row
+  list with the draft-citer demand, for batch human approval. DOI
+  acquisition stays record-only; this mode never puts.
 
 Serial and **checkpointed**: each finished hub id is appended to
 ``refs.meta.done_hub_ids``, so a re-claimed job resumes rather than
@@ -57,7 +69,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "hub_ids": {"type": "array", "items": {"type": "integer"}},
         "claim_scope": {"type": "string"},  # a tag, "NS:value"
         "draft_scope": {"type": "string"},  # a draft slug or dc<id>/dr<id>
-        "mode": {"type": "string", "enum": ["reground", "verify"]},
+        "mode": {
+            "type": "string",
+            "enum": ["reground", "verify", "retire-prose", "external-worklist"],
+        },
         # reground-mode stage gates (all default OFF)
         "prune": {"type": "boolean"},
         "external": {"type": "boolean"},
@@ -228,6 +243,76 @@ def _run_verify_mode(
     ctx.set_meta(clean=n_clean, dirty=n_dirty, no_intent=n_no_intent)
 
 
+def _run_retire_prose_mode(ctx: Any, hub_ids: list[int], *, authorized: bool) -> None:
+    """Reword-in-place over the scope (gr693791 residual 2). No embedder,
+    no LLM: this applies the ``meta.reground_verdict`` record the reground
+    pass's retire stage stamped — the proposed reword a human (eventually
+    a proposer) wrote and vetted. The retire double gate is checked inside
+    :func:`~precis.workers.retire_prose.apply_reword_in_place` per hub:
+    this mode's ``authorize_retire`` param is the run-level half, the
+    per-hub vetting tag the other. A refused hub (no verdict, no
+    proposal, no tag, already applied) is a job event, not a job failure.
+    """
+    from precis.errors import BadInput
+    from precis.workers.retire_prose import apply_reword_in_place
+
+    n_reworded = 0
+    n_skipped = 0
+    n_refused = 0
+    for hub_id in hub_ids:
+        # Keep the lease alive over a large scope; lost = superseded, so stop
+        # without a summary or terminal status (gr369528).
+        if ctx.renew_lease is not None and not ctx.renew_lease():
+            ctx.append_chunk(
+                "job_event",
+                "lease lost mid-retire-prose — another worker generation "
+                "reclaimed this job; stopping without a terminal status",
+            )
+            return
+        try:
+            result = apply_reword_in_place(
+                ctx.store, hub_id, authorized=authorized, set_by="reground_claim"
+            )
+        except BadInput as exc:
+            n_refused += 1
+            ctx.append_chunk("job_event", f"fi{hub_id}: refused — {exc}")
+            continue
+        except Exception as exc:
+            n_refused += 1
+            ctx.append_chunk("job_event", f"fi{hub_id}: FAILED — {exc}")
+            continue
+        n_reworded += len(result.reworded)
+        n_skipped += len(result.skipped)
+        if result.reworded or result.skipped:
+            ctx.append_chunk("job_event", str(result.as_dict()))
+    ctx.append_chunk(
+        "job_summary",
+        f"retire-prose — {len(hub_ids)} hub(s): {n_reworded} chunk(s) "
+        f"reworded, {n_skipped} skipped for the frontier pass, "
+        f"{n_refused} refused",
+    )
+    ctx.set_meta(reworded=n_reworded, skipped=n_skipped, refused=n_refused)
+
+
+def _run_external_worklist_mode(ctx: Any) -> None:
+    """The mined-unheld-DOI acquisition worklist (gr693791 residual 4) —
+    read-only, no embedder, no LLM, and no hub scope: it scans every live
+    hub's ``reground_external`` report. Each row is one DOI with the
+    citer demand behind it, so approvals can be batched top-down.
+    """
+    from precis.taproot.reground_worklist import unheld_doi_worklist
+
+    worklist = unheld_doi_worklist(ctx.store)
+    for row in worklist.rows:
+        ctx.append_chunk("job_event", row.format())
+    ctx.append_chunk(
+        "job_summary",
+        f"external-worklist — {len(worklist.rows)} unheld DOI(s) across "
+        f"{worklist.scanned_hubs} reground-external report(s)",
+    )
+    ctx.set_meta(unheld_dois=len(worklist.rows), scanned_hubs=worklist.scanned_hubs)
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``claude_inproc`` for a claimed job.
     ``ctx`` is a :class:`~precis.workers.executors._context.DispatchContext`."""
@@ -241,6 +326,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     params = (ctx.meta or {}).get("params") or {}
     mode = str(params.get("mode") or "reground")
+    if mode == "external-worklist":
+        # Read-only report over ALL live hubs' external records — no hub
+        # scope, no embedder. Runs before the scope resolution that every
+        # scoped mode needs.
+        _run_external_worklist_mode(ctx)
+        return
     try:
         limit = int(params.get("limit") or _DEFAULT_LIMIT)
     except (TypeError, ValueError):
@@ -281,6 +372,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
         _run_verify_mode(
             ctx, todo, repair_requested=repair_requested, repair_apply=repair_apply
+        )
+        return
+
+    if mode == "retire-prose":
+        # The prose edit modes are not prune: no rubric-eval interlock, but
+        # the retire double gate (this param + the per-hub vetting tag,
+        # checked in apply_reword_in_place) stands on this path too.
+        _run_retire_prose_mode(
+            ctx, todo, authorized=bool(params.get("authorize_retire"))
         )
         return
 
@@ -377,7 +477,9 @@ SPEC = JobTypeSpec(
     description=(
         "Reground taproot claim hubs: audit + prune proxy evidence, "
         "re-discover deeper primaries, add-first applier (serial, "
-        "checkpointed). Also mode='verify' for the intent-vs-committed diff."
+        "checkpointed). Also mode='verify' for the intent-vs-committed "
+        "diff and mode='retire-prose' for the retire draft reword, and "
+        "mode='external-worklist' for the mined-unheld DOI view."
     ),
     dispatch=_dispatch,
 )

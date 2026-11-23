@@ -1727,19 +1727,20 @@ def append_reground_log(
     newest :data:`REGROUND_LOG_MAX`.
 
     Read-modify-write on ``meta`` (``update_ref``'s ``meta_patch`` merges
-    only top-level, so the list is rebuilt whole) — same lost-update
-    exposure as ``hub_refine``'s ``taproot_rejected`` memo under concurrent
-    passes on one hub (unresolved, gr693791; run
-    reground on one host per the enablement runbook). A vanished hub is a
-    silent no-op, not a raise — the log is an audit nicety, never worth
-    failing a removal that already happened.
+    only top-level, so the list is rebuilt whole) — the row is therefore
+    locked ``FOR UPDATE`` before the read: two concurrent appends
+    serialize, and the second extends the list the first committed rather
+    than overwriting it (gr693791 residual 5 — the memo races are closed
+    in code now, not just by the one-host enablement rule). A vanished hub
+    is a silent no-op, not a raise — the log is an audit nicety, never
+    worth failing a removal that already happened.
     """
     if not entries:
         return
 
     def _do(c: Any) -> None:
         row = c.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
             (hub_ref_id,),
         ).fetchone()
         if row is None:
@@ -1800,12 +1801,15 @@ def remove_evidence(
     edge after removal, else :class:`WouldStrandHub` raises **inside the
     transaction**.
 
-    Caveat: the strand guard reads live edges with a plain ``SELECT``
-    (:func:`live_evidence_handles`), no row lock — two concurrent removals
-    of *different* edges on the same hub can each pass the check and both
-    commit, stranding the hub. Covered by the same one-host enablement
-    rule as :func:`append_reground_log`'s meta races
-    (``docs/runbooks/taproot-chase-enablement.md``), not fixed here.
+    The strand guard takes the hub's ``refs`` row ``FOR UPDATE`` before
+    counting live edges: two concurrent removals of *different* edges on
+    the same hub serialize, and the second sees the first's committed
+    ``DELETE`` — so the pair can no longer both pass the count and strand
+    the hub (gr693791 residual 5). Each removal runs in its own
+    transaction, so the lock is held only for the guard + delete, never
+    across a slow call; same-transaction callers
+    (:func:`reattach_as_disputes`) already hold the row lock and Postgres
+    grants it re-entrantly.
 
     Then a chunk-id-exact ``DELETE`` (``dst_chunk_id IS NULL`` — every
     :data:`HUB_ROLES` edge lands on the hub itself, never a chunk of it).
@@ -1839,6 +1843,14 @@ def remove_evidence(
                     "pick a TAPROOT:claim finding"
                 ),
             )
+        # Lock the hub row before the strand arithmetic (gr693791 residual
+        # 5): the guard counts live edges, so the count must be serialized
+        # against a concurrent removal committing between our read and our
+        # delete.
+        c.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE",
+            (hub_ref_id,),
+        )
         live = live_evidence_handles(c, hub_ref_id)
         target = EvidenceHandle(
             src_ref_id=src_ref_id, src_chunk_id=src_chunk_id, relation=role

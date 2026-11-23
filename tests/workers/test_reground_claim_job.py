@@ -302,3 +302,58 @@ def test_verify_repair_cannot_route_around_the_eval_interlock(
     assert calls == [{"hub_id": 11, "apply": True}]
     assert not any("interlock is closed" in t for _k, t in ctx2.events)
     assert "repair applied" in ctx2.summary
+
+
+def test_retire_prose_mode_calls_the_prose_pass_and_needs_no_embedder() -> None:
+    """``mode='retire-prose'`` routes to ``retire_prose.apply_reword_in_place``
+    per hub with the job's ``authorize_retire`` as the run-level gate half —
+    no embedder, no LLM, and a refused hub is a job event, not a failure."""
+    from precis.errors import BadInput
+    from precis.workers.retire_prose import RetireProseResult
+
+    ctx = _Ctx(
+        store=object(),
+        params={
+            "hub_ids": [11, 22],
+            "mode": "retire-prose",
+            "authorize_retire": True,
+        },
+    )
+    calls: list[dict[str, Any]] = []
+
+    def _fake_apply(_store: Any, hub: int, **kwargs: Any) -> RetireProseResult:
+        calls.append({"hub": hub, **kwargs})
+        if hub == 11:
+            from precis.workers.retire_prose import RewordPlan
+
+            return RetireProseResult(
+                hub_ref_id=hub,
+                reworded=(
+                    RewordPlan(
+                        chunk_id=1,
+                        handle="dc1",
+                        draft_ref_id=1,
+                        old_text="old",
+                        new_text="new",
+                    ),
+                ),
+            )
+        raise BadInput("no proposed reword")
+
+    with (
+        patch(
+            "precis.workers.job_types.reground_claim._build_embedder",
+            side_effect=AssertionError("retire-prose must not build an embedder"),
+        ),
+        patch(
+            "precis.workers.retire_prose.apply_reword_in_place",
+            side_effect=_fake_apply,
+        ),
+    ):
+        _dispatch(ctx, SPEC)
+
+    assert [c["hub"] for c in calls] == [11, 22]
+    assert all(c["authorized"] is True for c in calls)
+    assert any("fi22: refused" in t for _k, t in ctx.events)
+    assert "1 chunk(s) reworded" in ctx.summary
+    assert ctx.failure is None
