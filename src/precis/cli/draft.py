@@ -349,6 +349,11 @@ def _run_export(args: argparse.Namespace) -> None:
             bib_style=args.bib_style,
             record_override=True,
         )
+        if args.pdf:
+            from precis.draft.lint import verbatim_claim_reuse_advisory
+
+            if advisory := verbatim_claim_reuse_advisory(store, ref.id):
+                print(f"draft export: {advisory}", file=sys.stderr)
     finally:
         store.close()
 

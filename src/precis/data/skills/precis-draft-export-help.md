@@ -39,6 +39,12 @@ kinds: [draft]
 Pull the same lists any time without exporting:
 `get(kind='draft', id=<slug>, view='hygiene')`.
 
+PDF export also warns when a claim hub's canonical sentence appears verbatim
+in this draft and another visible draft. The advisory names the other draft
+and the matching chunks. Look in the queued job's events or on standard error
+from `precis draft export <slug> --pdf`. Vary the phrasing in one manuscript
+and keep the claim-hub citation.
+
 
 ## AI contributions
 

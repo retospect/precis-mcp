@@ -400,6 +400,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     except Exception:  # an advisory must never fail an export
         log.warning("draft_export: conditions advisory failed", exc_info=True)
 
+    try:
+        from precis.draft.lint import verbatim_claim_reuse_advisory
+
+        if advisory := verbatim_claim_reuse_advisory(ctx.store, ref.id):
+            ctx.append_chunk("job_event", advisory)
+    except Exception:  # an advisory must never fail an export
+        log.warning(
+            "draft_export: could not record verbatim-reuse advisory", exc_info=True
+        )
+
     # Serialize the file-writing half per draft (gr592838): two exports
     # of one slug claimed in the same sweep ran latexmk in the same
     # export dir and clobbered each other's aux/log files. The lock

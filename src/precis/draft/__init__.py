@@ -22,4 +22,10 @@
   export defines first use across chunks, so a later authored definition
   can repeat it. Write hints cover newly introduced definitions; the full
   hygiene view also catches existing prose and terms registered later.
+- Self-plagiarism detection is text-level, not cite-level: a claim hub's
+  canonical sentence carried verbatim by this draft AND another live draft
+  is flagged at export (:func:`precis.draft.lint.find_verbatim_claim_reuse`,
+  gr693801). A paraphrasing cite never trips it; an uncited paste does.
+  The advisory uses the same live reading order as export and only names
+  claim hubs and drafts visible to the export's reader.
 """

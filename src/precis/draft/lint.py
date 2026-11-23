@@ -1913,6 +1913,129 @@ def find_condition_gap_cites(store: Store, draft_ref_id: int) -> list[ConditionG
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class VerbatimClaimReuse:
+    """One (hub, other-draft) pair where the hub's canonical sentence sits
+    verbatim in this draft's prose AND in the other draft's — the
+    self-plagiarism surface of gr693801. ``dc`` locates this draft's
+    verbatim passage; ``other_draft``/``other_dc`` name the manuscript to
+    vary phrasing against."""
+
+    dc: str  # this draft's verbatim chunk handle, e.g. "dc4821"
+    chunk_id: int
+    hub_ref_id: int
+    title: str  # the canonical sentence as matched (whitespace-folded)
+    other_draft: str  # the other draft's slug, or its "dr<id>" handle
+    other_dc: str  # a verbatim chunk handle in the other draft
+
+
+def find_verbatim_claim_reuse(
+    store: Store, draft: str | int
+) -> list[VerbatimClaimReuse]:
+    """Every claim hub whose canonical sentence (its ``title``) appears
+    verbatim in ``draft``'s prose AND in at least one OTHER live draft's —
+    verbatim reuse of a claim hub's canonical wording across two of our own
+    manuscripts, a self-plagiarism flag for reviewers (gr693801).
+
+    Detection is by the sentence text, not the ``cites`` edge: the risk is
+    the same printed wording in two papers, so an uncited paste counts and a
+    paraphrasing cite does not. "Verbatim" folds whitespace runs (a chunk
+    whose prose wraps the sentence over a line break still matches) but is
+    otherwise an exact case-sensitive substring of one chunk in the live reading tree — the same
+    sentence split across two chunks isn't a verbatim carry. ``code``
+    chunks are excluded on both sides (their payload is literal source —
+    gr592769's rule that no prose check reads inside them); retired drafts,
+    retired chunks and non-``draft`` chunk owners (a hub's own
+    ``finding_body`` carries the sentence by definition) never count as a
+    second manuscript.
+
+    Advisory only — one row per (hub, other draft), so a hub carried by
+    two other drafts lists both. ``draft`` resolves like
+    :func:`find_drifted_cites` (ref id / numeric string / slug).
+    """
+    ref_id = _resolve_draft_ref_id(store, draft)
+    own = [
+        (c.chunk_id, " ".join(c.text.split()))
+        for c in store.drafts.reading_order(ref_id)
+        if c.text and c.chunk_kind != "code"
+    ]
+    if not own:
+        return []
+    from precis.store._secret_scope import secret_fence
+    from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
+
+    fence = secret_fence(path="draft_verbatim_claim_reuse")
+    with store.pool.connection() as conn:
+        hubs = conn.execute(
+            "SELECT r.ref_id, r.title FROM refs r "
+            "WHERE r.kind = 'finding' AND r.retired_at IS NULL "
+            f"AND r.title IS NOT NULL AND {claim_hub_predicate_sql()} "
+            f"AND {fence} ORDER BY r.ref_id",
+            CLAIM_HUB_PREDICATE_PARAMS,
+        ).fetchall()
+        matches: list[tuple[int, str, int]] = []
+        for hub_ref_id, raw_title in hubs:
+            needle = " ".join(str(raw_title).split())
+            if needle:
+                chunk_id = next((cid for cid, text in own if needle in text), None)
+                if chunk_id is not None:
+                    matches.append((int(hub_ref_id), needle, chunk_id))
+        if not matches:
+            return []
+        drafts = conn.execute(
+            "SELECT r.ref_id, (SELECT ri.id_value FROM ref_identifiers ri "
+            "                   WHERE ri.ref_id = r.ref_id "
+            "                     AND ri.id_kind = 'cite_key') AS slug "
+            "FROM refs r WHERE r.kind = 'draft' AND r.retired_at IS NULL "
+            f"AND r.ref_id <> %s AND {fence} ORDER BY r.ref_id",
+            (ref_id,),
+        ).fetchall()
+
+    out: list[VerbatimClaimReuse] = []
+    for other_ref_id, other_slug in drafts:
+        other = [
+            (c.chunk_id, " ".join(c.text.split()))
+            for c in store.drafts.reading_order(other_ref_id)
+            if c.text and c.chunk_kind != "code"
+        ]
+        for hub_ref_id, needle, chunk_id in matches:
+            other_chunk_id = next((cid for cid, text in other if needle in text), None)
+            if other_chunk_id is not None:
+                out.append(
+                    VerbatimClaimReuse(
+                        dc=handle_registry.format_handle("draft", chunk_id, chunk=True),
+                        chunk_id=chunk_id,
+                        hub_ref_id=hub_ref_id,
+                        title=needle,
+                        other_draft=other_slug or f"dr{other_ref_id}",
+                        other_dc=handle_registry.format_handle(
+                            "draft", other_chunk_id, chunk=True
+                        ),
+                    )
+                )
+    return out
+
+
+def verbatim_claim_reuse_advisory(store: Store, draft_ref_id: int) -> str | None:
+    """Build the best-effort warning shared by queued and CLI PDF exports."""
+    try:
+        reuse = find_verbatim_claim_reuse(store, draft_ref_id)
+    except Exception:
+        log.warning("draft export: verbatim-reuse advisory failed", exc_info=True)
+        return None
+    if not reuse:
+        return None
+    detail = " | ".join(
+        f"fi{r.hub_ref_id} at {r.dc} also appears verbatim in "
+        f"draft '{r.other_draft}' ({r.other_dc})"
+        for r in reuse
+    )
+    return (
+        f"Advisory — possible self-plagiarism. {detail}. "
+        "Vary the phrasing in one manuscript and keep the claim-hub citation."
+    )
+
+
 def _resolve_draft_ref_id(store: Store, draft: str | int) -> int:
     """``draft`` (ref id / numeric string / slug) → live draft ref_id, for
     :func:`find_drifted_cites`. Mirrors the ``isinstance``-then-slug
