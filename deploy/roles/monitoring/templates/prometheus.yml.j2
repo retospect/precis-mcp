@@ -28,6 +28,9 @@ scrape_configs:
       - targets: ['{{ hostvars[host]["ansible_host"] }}:9100']
         labels:
           host: '{{ host }}'
+{% if host in (groups['gateway'] | default([])) %}
+          deploy_overlay_expected: 'true'
+{% endif %}
 {% endfor %}
 {% if monitoring_db_exporters | bool %}
   - job_name: postgres

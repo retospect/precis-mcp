@@ -26,3 +26,9 @@
     launchctl bootout system/com.precis.colima-docker-fs 2>/dev/null || true
     launchctl bootstrap system /Library/LaunchDaemons/com.precis.colima-docker-fs.plist
   become: true
+
+- name: reload deploy overlay metric daemon
+  ansible.builtin.shell: |
+    launchctl bootout system/com.precis.deploy-overlay-metrics 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/com.precis.deploy-overlay-metrics.plist
+  become: true

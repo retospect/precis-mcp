@@ -1,0 +1,29 @@
+---
+- name: Read the deploy helper owner's login
+  ansible.builtin.stat:
+    path: "{{ _overlay_helpers.files[0].path }}"
+  register: _overlay_helper
+
+- name: Require a non-root overlay owner
+  ansible.builtin.assert:
+    that:
+      - _overlay_helper.stat.pw_name is defined
+      - _overlay_helper.stat.uid != 0
+
+- name: Install the deploy overlay metric script
+  ansible.builtin.template:
+    src: deploy-overlay-metrics.sh.j2
+    dest: /usr/local/bin/deploy-overlay-metrics
+    owner: root
+    group: wheel
+    mode: "0755"
+
+- name: Install the deploy overlay metric LaunchDaemon
+  ansible.builtin.template:
+    src: com.precis.deploy-overlay-metrics.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.deploy-overlay-metrics.plist
+    owner: root
+    group: wheel
+    mode: "0644"
+    validate: /usr/bin/plutil -lint %s
+  notify: reload deploy overlay metric daemon

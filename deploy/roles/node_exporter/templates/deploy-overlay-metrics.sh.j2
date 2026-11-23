@@ -1,0 +1,25 @@
+#!/bin/sh
+# Check the helper as its owner. Publish only a state, even when Git fails.
+set -eu
+repo={{ _overlay_helpers.files[0].path | quote }}
+owner={{ _overlay_helper.stat.pw_name | quote }}
+out={{ (node_exporter_textfile_dir + '/deploy_overlay.prom') | quote }}
+
+state=-1
+# An explicit .git prevents Git from walking up into an unrelated checkout.
+if [ -d "$repo/.git" ] &&
+    status=$(/usr/bin/sudo -H -u "$owner" /usr/bin/git --no-optional-locks \
+        --git-dir="$repo/.git" --work-tree="$repo" -c core.fsmonitor=false \
+        status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked 2>/dev/null); then
+    state=0
+    if [ -n "$status" ]; then
+        state=1
+    fi
+fi
+
+# Stage outside the textfile directory, which the Colima probe can write.
+stage=$(mktemp -d /private/var/run/precis-deploy-overlay.XXXXXX)
+trap 'rm -f "$stage/deploy_overlay.prom"; rmdir "$stage"' EXIT
+printf 'precis_deploy_overlay_status %s\n' "$state" > "$stage/deploy_overlay.prom"
+chmod 0644 "$stage/deploy_overlay.prom"
+mv -fh "$stage/deploy_overlay.prom" "$out"

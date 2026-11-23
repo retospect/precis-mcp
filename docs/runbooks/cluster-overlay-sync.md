@@ -102,14 +102,21 @@ sides, parse, and diff **key sets** — never print values. In the incident this
 turned "someone edited secrets, don't touch it" into "the live file is a
 strict subset (truncated to about half the keys), git HEAD and the user's own
 backup agree byte-for-byte, reverting is restorative". Leaving it alone would
-have left ~14 secrets missing indefinitely: every deploy launched **on
-the agent host** in the window rendered without them. If asa / email / Kagi /
-Outlook misbehave after such a window, look here first.
+have left ~14 keys missing indefinitely. Agent-host deploys using that
+overlay could omit them from rendered configuration where referenced.
 
-**Root pattern:** config edited in place on a node diverges from the Mac source
-of truth and *nothing watches*. It surfaces only as a side effect of unrelated
-work. Edit the overlay on the Mac, commit, push (or deploy); never edit on the
-node. The preflight is the watcher that was missing.
+## Agent-host dirty check
+
+Playbook `18-node-exporter.yml` installs a five-minute LaunchDaemon on the
+macOS gateway when it finds one `/Users/*/git_deploy_helper` directory. Run
+`08-monitoring.yml` to load the alert rules. Check
+`precis_deploy_overlay_status` in the gateway's node_exporter metrics after
+installation. It is 0 for clean, 1 for tracked changes, and -1 if the probe
+cannot read the checkout. The probe runs Git as the checkout owner and
+publishes neither filenames nor values. `DeployOverlayDirty` covers staged
+and unstaged tracked changes. `DeployOverlayCheckFailed` covers probe errors,
+stale metric files, and a missing metric on the gateway. The deploy preflight
+still checks branch divergence and untracked Ansible-loadable files.
 
 ## The overlay needs an off-cluster backup
 

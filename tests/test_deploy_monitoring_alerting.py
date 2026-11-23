@@ -98,6 +98,18 @@ def test_rules_that_join_on_instance_are_not_disturbed_by_the_host_label() -> No
         assert "on(instance)" in e and "ignoring" not in e
 
 
+def test_deploy_overlay_is_expected_only_on_gateway_targets() -> None:
+    doc = yaml.safe_load(
+        _render("prometheus.yml.j2", groups={"all": ["pg", "n1"], "gateway": ["n1"]})
+    )
+    (node,) = [job for job in doc["scrape_configs"] if job["job_name"] == "node"]
+    assert node["static_configs"][0]["labels"] == {"host": "pg"}
+    assert node["static_configs"][1]["labels"] == {
+        "host": "n1",
+        "deploy_overlay_expected": "true",
+    }
+
+
 def test_alertmanager_routes_everything_to_the_precis_receiver() -> None:
     doc = yaml.safe_load(_render("alertmanager.yml.j2"))
     assert doc["route"]["receiver"] == "precis"

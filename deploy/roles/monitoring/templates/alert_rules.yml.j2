@@ -52,6 +52,26 @@ groups:
         annotations:
           summary: "{% raw %}Memory usage above 90% on {{ $labels.instance }}{% endraw %}"
 
+      - alert: DeployOverlayDirty
+        expr: precis_deploy_overlay_status == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}Tracked changes in git_deploy_helper on {{ $labels.instance }}. See cluster-overlay-sync.{% endraw %}"
+
+      - alert: DeployOverlayCheckFailed
+        expr: >-
+          precis_deploy_overlay_status == -1
+          or on(instance) time() - node_textfile_mtime_seconds{file=~"(.*/)?deploy_overlay[.]prom"} > 900
+          or on(instance) (up{job="node", deploy_overlay_expected="true"} == 1
+            unless on(instance) precis_deploy_overlay_status)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}Deploy overlay check failed, is stale, or is missing on {{ $labels.instance }}.{% endraw %}"
+
       # The colima VM's /var/lib/docker is a separate disk inside the VM that
       # host node_exporter cannot see (98% -> ENOSPC on every gate, 2026-10-03).
       # Fed by the colima-docker-fs textfile collector (node_exporter role).

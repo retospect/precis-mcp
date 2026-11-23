@@ -57,19 +57,39 @@
          and (_colima_profile_dir.stat.isdir | default(false))
          and (_colima_bin.stat.exists | default(false)) }}
 
+- name: Locate the deploy helper checkout on the agent host
+  when: os_family == "darwin" and 'gateway' in group_names
+  ansible.builtin.find:
+    paths: /Users
+    patterns: git_deploy_helper
+    file_type: directory
+    recurse: true
+    depth: 2
+  register: _overlay_helpers
+
+- name: Require an unambiguous deploy helper
+  ansible.builtin.assert:
+    that: _overlay_helpers.matched <= 1
+    fail_msg: More than one git_deploy_helper was found under /Users.
+  when: _overlay_helpers.matched is defined
+
+- name: Set deploy overlay metric gate
+  ansible.builtin.set_fact:
+    _overlay_metric: "{{ (_overlay_helpers.matched | default(0)) == 1 }}"
+
 - name: Ensure node_exporter textfile directory
-  when: _colima_metric | bool
+  when: (_colima_metric | bool) or (_overlay_metric | bool)
   ansible.builtin.file:
     path: "{{ node_exporter_textfile_dir }}"
     state: directory
-    owner: "{{ node_exporter_colima_user }}"
+    owner: "{{ node_exporter_colima_user if (_colima_metric | bool) else 'root' }}"
     mode: "0755"
   become: true
 
 # brew's service runs `node_exporter $(cat node_exporter.args)`; an absent or
 # empty file means defaults (:9100 on all interfaces), which create: true keeps.
 - name: Point node_exporter at the textfile directory
-  when: _colima_metric | bool
+  when: (_colima_metric | bool) or (_overlay_metric | bool)
   ansible.builtin.lineinfile:
     path: "{{ node_exporter_args_file }}"
     regexp: '^--collector\.textfile\.directory='
@@ -78,6 +98,10 @@
     mode: "0644"
   become: true
   notify: restart node_exporter
+
+- name: Install the deploy overlay probe
+  when: _overlay_metric | bool
+  ansible.builtin.include_tasks: deploy-overlay.yml
 
 - name: Deploy colima docker-fs metric script
   when: _colima_metric | bool
@@ -118,6 +142,13 @@
 
 - name: Apply pending node_exporter / metric-daemon handlers now
   ansible.builtin.meta: flush_handlers
+
+- name: Ensure the deploy overlay metric daemon is loaded
+  when: (_overlay_metric | bool) and not ansible_check_mode
+  ansible.builtin.shell: |
+    launchctl print system/com.precis.deploy-overlay-metrics >/dev/null 2>&1 \
+      || launchctl bootstrap system /Library/LaunchDaemons/com.precis.deploy-overlay-metrics.plist
+  changed_when: false
 
 - name: Wait for node_exporter
   ansible.builtin.wait_for:
