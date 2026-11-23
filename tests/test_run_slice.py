@@ -11954,6 +11954,39 @@ def test_devin_submit_exports_atif(
     assert argv[i + 1] == str(atif)
 
 
+@pytest.mark.parametrize("finished", [True, False])
+def test_poll_devin_review_reads_only_the_final_atif_message(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, finished: bool
+) -> None:
+    store = _Store()
+    store.add_todo(
+        42, "Review it", meta={"generate": {"role": "reviewer", "from": "td7"}}
+    )
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    verdict = "review: FIX — the new path bypasses validation."
+    _atif(
+        Path(handle["atif"]),
+        steps=[
+            {"source": "user", "message": "Review this diff."},
+            {"source": "agent", "message": verdict}
+            if finished
+            else {
+                "source": "agent",
+                "message": "review: LAND",
+                "tool_calls": [{"function_name": "shell"}],
+            },
+        ],
+    )
+    _finish(handle, 0, "Session complete." if finished else "review: LAND")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    handoffs = [c for c in store.comments(42) if c.startswith("handoff:")]
+    assert handoffs == ([f"handoff: {verdict}"] if finished else [])
+    assert seams["lands"] == []
+
+
 def test_poll_devin_stamps_usage_from_atif(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

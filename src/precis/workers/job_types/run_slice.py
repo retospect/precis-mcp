@@ -11213,7 +11213,14 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             f"lane {lane!r} has unknown adapter {adapter_name!r}",
         )
         return True
-    result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
+    result, is_error = adapter.parse_result(
+        log_text,
+        tree,
+        exit_code=exit_code,
+        export_path=Path(handle["atif"]) if handle.get("atif") else None,
+    )
+    if result and pairs:
+        result = _redact(result, pairs)
     stamped_usage = _adapter_usage(ctx, handle, log_text)
     # A session the budget watch stopped (td601426): whatever its exit
     # code reads, the bound's stop is a failed attempt — no outage park

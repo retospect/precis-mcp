@@ -14,6 +14,9 @@ leaves its edits (and ``scratch/commit-msg.txt``) and the worker commits
 and pushes after it exits (:attr:`Adapter.pushes` is ``False``).
 Devin's model allowlist is supplied by the selected lane, never inferred
 from a vendor-wide default: unattended runs must not buy overage.
+Successful Devin runs take their handoff from the terminal ATIF agent
+message because compact stdout can omit the verdict. An export ending
+at a tool call leaves the review pending.
 
 Observed with installed ``codex exec --json`` on 2026-11-04 (a trivial
 ``ADAPTER_OK`` prompt): ``{"type":"item.completed","item":{"id":"item_2",
@@ -422,6 +425,35 @@ def _devin_est_cost_usd(
     return max(prompt - cached, 0.0) * rate[0] + cached * rate[1] + out * rate[2]
 
 
+def _read_devin_atif(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not str(
+        data.get("schema_version") or ""
+    ).startswith("ATIF-"):
+        return None
+    return data
+
+
+def _devin_final_message(data: dict[str, Any]) -> str | None:
+    steps = data.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return None
+    last = steps[-1]
+    if (
+        not isinstance(last, dict)
+        or last.get("source") != "agent"
+        or last.get("tool_calls")
+    ):
+        return None
+    message = last.get("message")
+    return (message.strip() or None) if isinstance(message, str) else None
+
+
 def devin_atif_usage(
     path: Path | None,
     *,
@@ -440,15 +472,8 @@ def devin_atif_usage(
     the spend bound rides (gr628944; a vendor-reported spend figure
     always wins). ``model`` is the launch model the file-level fallback
     prices at."""
-    if path is None:
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not str(
-        data.get("schema_version") or ""
-    ).startswith("ATIF-"):
+    data = _read_devin_atif(path)
+    if data is None:
         return None
     raw_fm = data.get("final_metrics")
     fm = raw_fm if isinstance(raw_fm, dict) else {}
@@ -737,13 +762,24 @@ class Adapter:
         return None if self.name in ("devin_tree", "kimi_tree") else brief_path
 
     def parse_result(
-        self, log_text: str, tree: Path, *, exit_code: int | None = 0
+        self,
+        log_text: str,
+        tree: Path,
+        *,
+        exit_code: int | None = 0,
+        export_path: Path | None = None,
     ) -> tuple[str | None, bool]:
         """Return the final message and vendor error bit; poll also checks
         the process exit code independently for every vendor."""
         if self.name == "claude_p":
             return parse_claude_result(log_text)
         if self.name == "devin_tree":
+            if exit_code == 0:
+                # Low-verbosity stdout is a progress stream and can omit
+                # the handoff. The terminal agent step is the deliverable.
+                data = _read_devin_atif(export_path)
+                if data is not None:
+                    return _devin_final_message(data), False
             return log_text.strip(), exit_code != 0
         if self.name == "kimi_tree":
             return parse_kimi_result(log_text, exit_code=exit_code)
