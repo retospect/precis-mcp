@@ -89,7 +89,11 @@ resolves to a commit) and renames a failing one aside to
 ``<name>.broken-<UTC stamp>`` — never deletes it — before initialising
 afresh; :func:`read_launch_tips` treats an empty or unparseable record
 as absent and sets it aside the same way. Each is logged as a warning
-naming the path and the reason.
+naming the path and the reason. The asides themselves are bounded, not
+immortal (gr762499): ``scripts/reap-factory-mirrors`` (wired into the
+``scripts/reap-worktrees`` sweep) deletes an aside once it is 14 days old —
+a launch's whole mirrored life is minutes to hours, so evidence that old
+names no parked land — and logs each deletion.
 
 A crashed or raced land's unsynced squash lives only in that launch's
 mirror: the next populate of the same launch force-updates the refs from

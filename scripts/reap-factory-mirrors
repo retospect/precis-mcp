@@ -1,0 +1,181 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/reap-factory-mirrors — bound the factory mirror set-aside pile.
+
+    scripts/reap-factory-mirrors [--root <checkout>] [--dry-run] [--for-hook]
+
+Stdlib only (SessionStart lane, like ``scripts/reap-idle-gates``). Wired in
+from ``scripts/reap-worktrees`` (the regular-cleaning sweep), which passes
+its primary checkout as ``--root``; standalone, the root resolves from
+git's common dir, so the sweep works from any worktree.
+
+The leak (gr762499): the gr762423 fix renames a corrupt per-launch mirror or
+launch-tips record ASIDE instead of deleting it — ``<name>.broken-<UTC
+stamp>`` (``factory_git_mirror._set_aside`` / ``read_launch_tips``) and
+``<name>.dropped-<UTC stamp>`` (``factory_git_mirror.drop_launch``) — so the
+wreckage survives for a post-mortem. Nothing removed those set-asides, and a
+mirror aside is a full bare repo: every corruption event parked ~130 MiB
+under ``<main checkout>/scratch/factory-mirror/`` forever.
+
+Retention is a pure age rule: an aside older than
+``PRECIS_FACTORY_ASIDE_MAX_AGE_SECONDS`` (default 14 days) is deleted. That
+is deliberately NOT a keep-newest-per-launch rule: a launch's whole mirrored
+life is minutes (sync deferral) to hours (the blocked cap), so a
+fortnight-old aside names no parked land anyone is still deciding on — and
+per-launch retention cannot bound disk anyway, since every launch has its
+own base name and each new corruption event would keep its aside forever.
+
+The mirror root is same-uid-writable by design (gate code), so a name
+matching the set-aside shape is only ever DELETED here, never read, and a
+path that cannot be stat'ed/unlinked is kept and never aborts the sweep:
+this is a best-effort cleaner, exit 0 either way. ``--dry-run`` reports
+without removing. ``PRECIS_NO_AUTOREAP=1`` makes it a no-op (the hatch
+shared with the other reapers). Under ``--for-hook`` a run that pruned
+nothing prints nothing (gr499042: every byte of SessionStart output is
+carried all session).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DAY_SECONDS = 24 * 3600
+
+#: Default age floor — see the header's retention rationale.
+DEFAULT_MAX_AGE_S = 14 * DAY_SECONDS
+
+#: The set-aside markers ``factory_git_mirror`` stamps (``_stamped_aside``
+#: and ``drop_launch``); a name carrying one is evidence, not state.
+MARKERS = (".broken-", ".dropped-")
+
+MIRROR_PARENT = Path("scratch") / "factory-mirror"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _set_asides(root: Path) -> list[tuple[float, Path]]:
+    """Set-aside entries under the mirror root as ``(mtime, path)``,
+    oldest first. Unstatable paths are skipped — never eligible, never
+    fatal."""
+    out: list[tuple[float, Path]] = []
+    try:
+        entries = sorted((root / MIRROR_PARENT).iterdir())
+    except OSError:
+        return out
+    for path in entries:
+        if not any(marker in path.name for marker in MARKERS):
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        out.append((mtime, path))
+    out.sort(key=lambda item: (item[0], item[1].name))
+    return out
+
+
+def prune_asides(root: Path, *, now: float, max_age_s: int) -> list[tuple[Path, float]]:
+    """The set-asides past retention: ``(path, age_seconds)``, oldest first."""
+    return [
+        (path, now - mtime)
+        for mtime, path in _set_asides(root)
+        if now - mtime >= max_age_s
+    ]
+
+
+def _remove(path: Path) -> bool:
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def _default_root() -> Path | None:
+    """The main checkout of the repo at cwd — the parent of git's common
+    dir — so a standalone run from a worktree still sweeps the right
+    ``scratch/factory-mirror``. ``None`` when git cannot answer."""
+    try:
+        cp = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except OSError:
+        return None
+    common = Path((cp.stdout or "").strip())
+    if cp.returncode != 0 or common.name != ".git":
+        return None
+    return common.parent
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="reap-factory-mirrors")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="the checkout whose scratch/factory-mirror is swept "
+        "(default: the main checkout of the repo at cwd)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what past retention would be pruned, remove nothing",
+    )
+    parser.add_argument(
+        "--for-hook",
+        action="store_true",
+        help="SessionStart lane: print nothing when there is nothing to prune",
+    )
+    args = parser.parse_args(argv)
+
+    if os.environ.get("PRECIS_NO_AUTOREAP"):
+        return 0
+    root = args.root if args.root is not None else _default_root()
+    if root is None:
+        return 0
+    max_age_s = _env_int("PRECIS_FACTORY_ASIDE_MAX_AGE_SECONDS", DEFAULT_MAX_AGE_S)
+
+    eligible = prune_asides(root, now=time.time(), max_age_s=max_age_s)
+    verb = "would prune" if args.dry_run else "pruned"
+    gone: list[str] = []
+    for path, age in eligible:
+        age_d = int(age // DAY_SECONDS)
+        if not args.dry_run and not _remove(path):
+            print(
+                f"reap-factory-mirrors: {path.name} past retention "
+                "but not removed — left alone"
+            )
+            continue
+        gone.append(f"{path.name} ({age_d}d)")
+        if not args.for_hook:
+            print(f"reap-factory-mirrors: {verb} {path.name} (set aside {age_d}d ago)")
+    if gone:
+        print(
+            f"reap-factory-mirrors: {verb} {len(gone)} factory mirror "
+            f"set-aside(s): {', '.join(gone)}"
+        )
+    elif not args.for_hook:
+        print("reap-factory-mirrors: nothing to prune")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -65,6 +65,19 @@
 # report-only by default; nothing here passes its --apply, so the report
 # line is the prompt for a human to run it by hand.
 #
+# Fourth job, same lane: FACTORY MIRROR SET-ASIDES (gr762499). The gr762423
+# fix renames a corrupt per-launch factory mirror or launch-tips record
+# aside instead of deleting it (``<name>.broken-<stamp>``, later
+# ``<name>.dropped-<stamp>``), so the wreckage survives for a post-mortem —
+# and nothing bounded the pile: a mirror aside is a full bare repo, so every
+# corruption event parked ~130 MiB under the main checkout's
+# ``scratch/factory-mirror/`` forever. scripts/reap-factory-mirrors prunes
+# what is past its age retention (default 14 days — see its header; a pure
+# age rule, not keep-newest-per-launch: every launch owns a base name, so
+# per-launch retention could never bound the disk). It runs against the
+# PRIMARY checkout: the mirror root lives under ITS scratch, whatever tree
+# this sweep ran from.
+#
 # Escape hatches: PRECIS_NO_AUTOREAP=1 → no-op. PRECIS_NO_CI_REF_REAP=1 →
 # worktrees still reaped, remote refs left alone (also the switch for a
 # machine that should never touch the remote).
@@ -821,6 +834,16 @@ fi
 
 sweep_ci_refs
 reap_branchless_branches
+# Factory mirror set-asides (gr762499 — see the header's fourth job): best
+# effort, like the sweeps above; --root names the PRIMARY checkout because
+# the mirror root lives under its scratch, never this tree's.
+if [ -x scripts/reap-factory-mirrors ]; then
+    MIRROR_ARGS=()
+    [ "$FOR_HOOK" = 1 ] && MIRROR_ARGS+=(--for-hook)
+    [ "$DRY_RUN" = 1 ] && MIRROR_ARGS+=(--dry-run)
+    [ -n "$PRIMARY" ] && MIRROR_ARGS+=(--root "$PRIMARY")
+    scripts/reap-factory-mirrors "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" 2>/dev/null || true
+fi
 # Kimi Code keeps its own workspace list; drop entries for trees now gone
 # (any removal path, not just this run's). No Kimi install → silent no-op.
 if [ -x scripts/reap-kimi-workspaces ]; then
