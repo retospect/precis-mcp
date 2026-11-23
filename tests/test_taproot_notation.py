@@ -1274,6 +1274,41 @@ def test_authored_lint_skips_quotes_code_display_math_paths_dates() -> None:
     assert lint_authored_notation(text) == []
 
 
+def test_authored_lint_exempts_iso_dates_from_range_detection() -> None:
+    # gr688911: a full ISO date is a name, not a range endpoint, and the
+    # canon asks for ISO dates -- the detector must never push an agent
+    # toward '20 Oct' just to clear AUDIT:notation. The exemption is
+    # _ISO_DATE_RE in mask_unauthored (0a1e7621c); this pins the spec cases.
+    from precis.taproot.notation import lint_authored_notation
+
+    assert lint_authored_notation("Window: 2026-10-20.") == []
+    assert lint_authored_notation("Window: 2026-10-20 to 2026-10-22.") == []
+    # An ISO date range with an en dash separator is already canonical.
+    assert lint_authored_notation("Window: 2026-10-20\u20132026-10-22.") == []
+    # An ISO datetime starts with the date token.
+    assert lint_authored_notation("Stamped 2026-10-20T19:00:00Z at mint.") == []
+
+
+def test_authored_lint_iso_exemption_keeps_real_ranges_flagged() -> None:
+    # gr688911 comment 2: only the \d{4}-\d{2}-\d{2} token is exempt. A
+    # yearless '10-20' and a decimal '0.4-0.5' keep their unit and their
+    # hyphen-range flag, even on the same line as an ISO date.
+    from precis.taproot.notation import lint_authored_notation
+
+    hits = lint_authored_notation("Runs 10-20 nm at RT.")
+    assert [(code, token) for code, token, _ in hits] == [
+        ("hyphen-numeric-range", "10-20")
+    ]
+    hits = lint_authored_notation("Bandgap 0.4-0.5 eV here.")
+    assert [(code, token) for code, token, _ in hits] == [
+        ("hyphen-numeric-range", "0.4-0.5")
+    ]
+    hits = lint_authored_notation("Cutover 2026-10-20, window 10-20 nm.")
+    assert [(code, token) for code, token, _ in hits] == [
+        ("hyphen-numeric-range", "10-20")
+    ]
+
+
 def test_authored_lint_flags_multiline_free_text_but_not_multiline_math() -> None:
     from precis.taproot.notation import lint_authored_notation
 
