@@ -2,7 +2,7 @@
 id: precis-job-observe-help
 family: work
 title: precis — compute job types and the fleet /-views
-summary: the compute-lane job types (struct_relax, pourbaix_bulk, surface_coverage_scan, sandbox_run, pathway/pcb/retrosynth lanes) plus the read-only /… views (/logs, /limits, /delta, /builds, /throughput, /cadence, /settings, /claim) on kind='job'
+summary: the compute-lane job types (struct_relax, pourbaix_bulk, surface_coverage_scan, sandbox_run, pathway/pcb/retrosynth lanes) plus the read-only /… views (/logs, /leases, /limits, /delta, /builds, /throughput, /cadence, /settings, /claim) on kind='job'
 answers:
   - which job types run compute or code, and on which executor?
   - how do I run a relax, a Pourbaix verdict or a coverage scan?
@@ -78,7 +78,29 @@ and a deferred `theta0_check` onto the candidate meta. `U_RHE`/`pH`/
 named-list recipe lives in `precis-pathway-help`.
 
 ## Read raw worker logs
-## What is the cluster actually doing right now?
+
+To check progress without SSH, read INFO completion rows with
+`id='/logs?handler=<pass>&level=INFO&payload=1'`. In SQL, select the pass with
+`worker_logs.payload->>'handler' = '<pass>'`. Compare `duration_ms / claimed`
+when `claimed > 0`, alongside `ok` and `failed`. In gr493236, a completed
+pass claimed 32 jobs over about 3600 s, with a verify p95 of 25 s.
+The completion showed the pass was making progress. Read `llm_call_log`
+for per-call timings (`duration_ms`, `source`, `model`, `errored`).
+
+At the deadline, the runner logs
+`worker: <pass> ref-pass exceeded its <N>s deadline; abandoned (still running detached)`
+(ERROR, `src/precis/workers/runner.py`). The thread can keep running after
+the runner stops waiting. While it is still alive, subsequent cycles skip
+the pass. The first skip logs
+`worker: <pass> still running detached past its deadline; skipping this cycle`
+at INFO. Use `/logs?q=detached` to find those messages.
+
+`get(kind='job', id='/leases')` lists running jobs with lease stamps,
+including the host, process, start time, and recorded lease deadline. Use
+`id='/leases?host=<host>'` to filter by host. The view marks expired and
+missing deadlines so you can spot leases that may need investigation.
+Use `/logs?host=<host>` for the host's log history.
+
 ## Confirm a pass ran / failed without Bash
 
 ```python
@@ -119,7 +141,8 @@ matching`.
 The runner logs one line per pass completion; a long pass is silent:
 completion line is not liveness. Before calling a worker starved, read
 unfiltered recent logs (include INFO, omit handler and message filters),
-check the worker's age or restart, and list jobs leased to that host.
+check the worker's age or restart, and list jobs leased to that host
+(`id='/leases?host=<host>'` above).
 A starvation claim needs a pass with known cadence that stopped meeting
 it, corroborated by a condition alert.
 
@@ -129,6 +152,16 @@ running somewhere: check the deployed sha and enumerate every worker
 
 Executors that reclaim stale running jobs heal an orphan; the
 `coordinator` executor does not reclaim stale running jobs itself.
+The stuck-job sweeper can fail a coordinator orphan once its
+`STATUS:running` tag is older than `PRECIS_STUCK_JOB_HOURS`
+(default 1 h, minimum 0.1 h) and its lease deadline is absent or expired.
+Look for `swept:claim-orphaned`. The sweeper uses the tag timestamp
+(`ref_tags.created_at`), and this pass excludes executors that reclaim
+their own leases (`src/precis/workers/sweeper.py`).
+A worker restart mid-run can leave a coordinator job waiting for this
+sweep. Its `meta.coordinator_state` checkpoint stays on the orphan and
+requeue-from-checkpoint is future work
+(`src/precis/workers/executors/coordinator.py`).
 Do not restart workers mid-coordinator run; if a restart is unavoidable,
 re-mint afterwards once the orphan is terminal.
 

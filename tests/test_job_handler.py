@@ -614,6 +614,114 @@ def test_throughput_rejects_bad_window(jobs: JobHandler) -> None:
         jobs.get(id="/throughput?since=0")
 
 
+# -- '/leases': which jobs hold a lease right now ----------------------
+
+
+def _seed_live_lease(
+    store: Store,
+    *,
+    host: str,
+    status: str = "running",
+    started_hours_ago: float = 0.1,
+    lease_until_hours: float | None = 1.0,
+) -> int:
+    meta: dict[str, Any] = {
+        "job_type": "fake",
+        "executor": "coordinator",
+        "lease_host": host,
+        "lease_process": "precis-worker",
+        "started_at": (
+            datetime.now(UTC) - timedelta(hours=started_hours_ago)
+        ).isoformat(),
+    }
+    if lease_until_hours is not None:
+        meta["lease_until"] = (
+            datetime.now(UTC) + timedelta(hours=lease_until_hours)
+        ).isoformat()
+    ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return ref.id
+
+
+def test_leases_lists_running_leased_jobs(jobs: JobHandler, store: Store) -> None:
+    """The gap this closes (gr766930): 'jobs leased to a host' had no view —
+    /logs?host= is history and /throughput aggregates to counts. Terminal
+    jobs keep their lease stamp (that's how /builds works), so the view must
+    filter to STATUS:running, not just 'has a lease stamp'."""
+    live = _seed_live_lease(store, host="maple")
+    _seed_live_lease(store, host="maple", status="succeeded")
+    _seed_live_lease(store, host="maple", status="failed")
+
+    body = jobs.get(id="/leases").body
+
+    assert f"jo{live} fake coordinator maple precis-worker" in body
+    assert "1 running job(s) with lease stamps on the fleet." in body
+
+
+def test_leases_host_filter_and_unleased_excluded(
+    jobs: JobHandler, store: Store
+) -> None:
+    on_maple = _seed_live_lease(store, host="maple")
+    on_cedar = _seed_live_lease(store, host="cedar")
+
+    body = jobs.get(id="/leases?host=maple").body
+
+    assert f"jo{on_maple}" in body
+    assert f"jo{on_cedar}" not in body
+    assert "1 running job(s) with lease stamps on maple." in body
+
+
+def test_leases_excludes_retired_and_stampless(jobs: JobHandler, store: Store) -> None:
+    live = _seed_live_lease(store, host="maple")
+    retired = _seed_live_lease(store, host="maple")
+    store.retire_ref(retired)
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title="never claimed",
+        meta={"job_type": "fake", "executor": "coordinator"},
+    )
+
+    body = jobs.get(id="/leases").body
+
+    assert f"jo{live}" in body
+    assert f"jo{retired}" not in body
+    assert "never claimed" not in body
+
+
+def test_leases_reports_recorded_deadlines(jobs: JobHandler, store: Store) -> None:
+    expired = _seed_live_lease(store, host="maple", lease_until_hours=-0.1)
+    missing = _seed_live_lease(store, host="maple", lease_until_hours=None)
+    active = _seed_live_lease(
+        store, host="maple", started_hours_ago=3.0, lease_until_hours=1.0
+    )
+
+    lines = jobs.get(id="/leases").body.splitlines()
+
+    assert next(line for line in lines if line.startswith(f"jo{expired} ")).endswith(
+        " (expired)"
+    )
+    assert next(line for line in lines if line.startswith(f"jo{missing} ")).endswith(
+        " lease_until=- (no deadline)"
+    )
+    assert next(line for line in lines if line.startswith(f"jo{active} ")).endswith("Z")
+
+
+def test_leases_says_so_when_nothing_is_leased(jobs: JobHandler) -> None:
+    body = jobs.get(id="/leases").body
+
+    assert "no running jobs carry a lease stamp" in body
+
+
+def test_leases_rejects_unknown_filters(jobs: JobHandler) -> None:
+    with pytest.raises(BadInput):
+        jobs.get(id="/leases?since=24")
+
+
+def test_leases_is_a_supported_list_view(jobs: JobHandler) -> None:
+    assert "leases" in jobs._supported_list_views()
+
+
 def test_logs_is_a_supported_list_view(jobs: JobHandler) -> None:
     assert "logs" in jobs._supported_list_views()
 

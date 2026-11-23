@@ -24,7 +24,7 @@ listings by `link=`/`under=`/`job_type=`/`since=`, facet counts by
 status, and read one job's card and run artifacts. Steering a job
 is [[precis-job-ops-help]]; submitting one is
 [[precis-job-help]]; the deeper fleet views (`/jobs -v`,
-`/logs`, `/limits`, `/delta`, `/builds`, `/throughput`,
+`/logs`, `/leases`, `/limits`, `/delta`, `/builds`, `/throughput`,
 `/settings`, `/claim`, `/cadence`) live in
 [[precis-job-observe-help]].
 

@@ -34,6 +34,16 @@ def test_observe_names_liveness_rules() -> None:
         "does not reclaim stale running jobs itself",
         "Do not restart workers mid-coordinator run",
         "re-mint afterwards once the orphan is terminal",
+        # gr766930: the four gr663858 diagnoses the 2026-11 retire pass
+        # dropped — busy-vs-wedged from the completion payload, the
+        # overrun log line, the /leases view, and the stuck-hours story.
+        "duration_ms / claimed",
+        "llm_call_log",
+        "ref-pass exceeded its <N>s deadline",
+        "still running detached",
+        "id='/leases",
+        "PRECIS_STUCK_JOB_HOURS",
+        "requeue-from-checkpoint is future work",
     ):
         assert phrase in section
 

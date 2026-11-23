@@ -251,7 +251,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-job-release-help` | Release pass / release-fix job types — release_cut, poll, deploy, confirm + merge_back, digest, rerun |
 | `precis-job-ops-help` | Steer a job — cancel, retry, reprioritise, wake, extend; STATUS vocabulary |
 | `precis-job-find-help` | Read the queue + a job card; `under=`/`job_type=` listings |
-| `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /limits, /delta, /builds, /throughput, /cadence, /facts |
+| `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /leases, /limits, /delta, /builds, /throughput, /cadence, /facts |
 | `precis-fix-gripe-help` | reading existing `fix_gripe` jobs (lane OFF since 2026-10-02) |
 | `precis-gripe-loop-help` | The builder-wave loop on the gripe: `edit(mode='fix')` for batch/brief/assign/handoff/verdict/landed, `/queue` + `/batch` views |
 | `precis-factory-submit-help` | Submit code work to the dark factory — plan node shapes, `gripe-fix`/`spec-build` templates, pre-land review, the `wait` arg |

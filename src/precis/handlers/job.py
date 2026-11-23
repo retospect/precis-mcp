@@ -1304,6 +1304,7 @@ class JobHandler(NumericRefHandler):
             "logs",
             "builds",
             "throughput",
+            "leases",
             "cadence",
             "limits",
             "delta",
@@ -1527,6 +1528,9 @@ class JobHandler(NumericRefHandler):
         if view == "throughput" or view.startswith("throughput?"):
             _, _, query_string = view.partition("?")
             return self._render_throughput_view(query_string)
+        if view == "leases" or view.startswith("leases?"):
+            _, _, query_string = view.partition("?")
+            return self._render_leases_view(query_string)
         if view == "cadence" or view.startswith("cadence/"):
             _, _, name = view.partition("/")
             return self._render_cadence_view(name or None)
@@ -3074,6 +3078,76 @@ class JobHandler(NumericRefHandler):
             "Idle beside an empty queue is healthy; idle beside queued work "
             "is the fault. Measurement only: no alert reads this."
         )
+        return Response(body="\n".join(lines))
+
+    def _render_leases_view(self, query_string: str) -> Response:
+        """Show lease stamps on running jobs, optionally filtered by host.
+
+        Lease state describes the recorded deadline. Executors that own their
+        leases can reclaim expired jobs, while coordinator orphans rely on the
+        sweeper, which measures age using the running status tag's timestamp.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        unknown = set(params) - {"host"}
+        if unknown:
+            raise BadInput(
+                f"{sorted(unknown)} don't apply to /leases",
+                next="get(kind='job', id='/leases?host=<db-host>')",
+            )
+        host = (params.get("host") or "").strip() or None
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.ref_id,
+                       COALESCE(r.meta->>'job_type', '?')      AS job_type,
+                       COALESCE(r.meta->>'executor', '?')      AS executor,
+                       COALESCE(r.meta->>'lease_host', '?')    AS host,
+                       COALESCE(r.meta->>'lease_process', '?') AS process,
+                       precis_try_timestamptz(r.meta->>'started_at')    AS started,
+                       precis_try_timestamptz(r.meta->>'lease_until')   AS lease_until
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.retired_at IS NULL
+                   AND r.meta->>'lease_host' IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1 FROM ref_tags rt
+                       JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id
+                         AND t.namespace = 'STATUS' AND t.value = 'running'
+                   )
+                   AND (%(host)s::text IS NULL OR r.meta->>'lease_host' = %(host)s)
+                 ORDER BY 4, 1
+                """,
+                {"host": host},
+            ).fetchall()
+
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        now = datetime.now(UTC)
+        lines = ["# lease stamps on STATUS:running jobs"]
+        for ref_id, job_type, executor, row_host, process, started, lease_until in rows:
+            started_s = as_utc(started)
+            until_s = as_utc(lease_until)
+            ran_s = ""
+            if started_s is not None:
+                ran = now - started_s
+                ran_s = f" ran={int(ran.total_seconds() // 3600)}h{int(ran.total_seconds() % 3600 // 60):02d}m"
+            lease_state = ""
+            if until_s is None:
+                lease_state = " (no deadline)"
+            elif until_s < now:
+                lease_state = " (expired)"
+            lines.append(
+                f"jo{ref_id} {job_type} {executor} {row_host} {process}"
+                f" started={(started_s.strftime(fmt) if started_s else '-')}"
+                f"{ran_s}"
+                f" lease_until={(until_s.strftime(fmt) if until_s else '-')}"
+                f"{lease_state}"
+            )
+        if not rows:
+            lines.append("no running jobs carry a lease stamp")
+        scope = host or "the fleet"
+        lines.extend(("", f"{len(rows)} running job(s) with lease stamps on {scope}."))
         return Response(body="\n".join(lines))
 
     def _render_builds_view(
