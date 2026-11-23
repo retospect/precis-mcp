@@ -90,8 +90,9 @@ disagrees with the alert.
    well-populated; the pass's job is to put *measurements* on those items,
    not to mint more of them.
 1. **Mine.** `scripts/mine-sessions/run.sh --since <window> --prod --random 36`.
-   Scripts only, zero model. Produces `out/scoreboard.{md,json}`,
-   `out/candidates.json`, `out/cards/**`.
+   Scripts only, zero model. Output lands in
+   `${XDG_CACHE_HOME:-~/.cache}/precis-mine-sessions/<worktree>/` (`out/` below):
+   `out/scoreboard.{md,json}`, `out/candidates.json`, `out/cards/**`.
 
    **Size the random arm at 30–40, not the default 10.** Pass #1 ran 12 and
    the arm still produced the pass's most valuable finding — but it could

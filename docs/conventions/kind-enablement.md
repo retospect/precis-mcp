@@ -144,5 +144,3 @@ operator workflow.
   banner renderer.
 - `src/precis/protocol.py:KindSpec.requires_env` —
   declarative env-var requirement.
-- `docs/backlog/mcp-cold-start-token-budget.md` Phase 4 — the
-  broader design context.

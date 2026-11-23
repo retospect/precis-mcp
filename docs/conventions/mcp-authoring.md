@@ -95,8 +95,7 @@ inherits its parent's.
 | annotations | `tests/test_tool_annotations.py`: the registered verb → hint table above, and no hint on the mixed verbs. |
 
 Whether an agent *plans* the right calls from a skill is a separate,
-advisory check: `skill-evals.md` (`scripts/skill-eval`). There is no live
-end-to-end eval of the tool surface yet: `docs/backlog/skill-eval-executed-runner.md`.
+advisory check: `skill-evals.md` (`scripts/skill-eval`).
 
 ## Adding a hint to a pinned raise
 

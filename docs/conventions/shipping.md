@@ -324,7 +324,7 @@ sees only the ✖ lines, a conflict's file list, the landed sha and any
 `SHIP_STATUS:`/`REBASE_STATUS:` token. `--verbose` (or
 `PRECIS_SHIP_VERBOSE=1`) restores the old full stream. `scripts/branch-audit
 [BRANCH...]` prints each branch's landed/unlanded/partial verdict; the same
-`scripts/lib/branch_audit.py` test drives `fleet-wave close`'s refusal.
+`scripts/branch_audit.py` test drives `fleet-wave close`'s refusal.
 
 An editing subagent's work enters your branch only by fast-forward:
 `scripts/take-agent <agent-tree>` rebases the agent branch onto yours and
