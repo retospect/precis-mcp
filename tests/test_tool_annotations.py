@@ -1,4 +1,4 @@
-"""MCP tool annotations for the typed tools/list response (gr772874)."""
+"""MCP annotations and metadata on the typed tools/list response."""
 
 from __future__ import annotations
 
@@ -23,4 +23,22 @@ def test_tools_list_annotations() -> None:
         "delete": destructive,
         "tag": additive,
         "link": additive,
+    }
+
+
+def test_tools_list_requests_eager_loading_for_every_verb() -> None:
+    from precis import server
+
+    result = ListToolsResult(tools=asyncio.run(server.mcp.list_tools()))
+    wire = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert {
+        tool["name"]: tool["_meta"]["anthropic/alwaysLoad"] for tool in wire["tools"]
+    } == {
+        "get": True,
+        "search": True,
+        "put": True,
+        "edit": True,
+        "delete": True,
+        "tag": True,
+        "link": True,
     }

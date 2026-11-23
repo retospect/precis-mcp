@@ -48,6 +48,9 @@ plugins and bridges sharing the repo:
   verbs the ``--read-only`` serve keeps), the additive write verbs
   non-destructive, and ``delete`` destructive. See
   ``docs/conventions/mcp-authoring.md`` for the permission hints.
+  The seven verbs publish ``anthropic/alwaysLoad`` in their MCP tool metadata
+  so clients that honor the hint keep their schemas available across calls
+  without repeated tool discovery (gr778763).
 - *Storage.* ``store/`` (psycopg3 pool, forward-only ``Migrator``, composed
   sub-stores) over ``migrations/``; ``settings.py`` / ``secrets.py`` are the
   DB-resident config and vault layers.

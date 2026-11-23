@@ -1639,6 +1639,7 @@ def _register_tools_from_registry() -> None:
         mcp.tool(
             description=_verb_description(func),
             annotations=_VERB_ANNOTATIONS.get(tool_name),
+            meta={"anthropic/alwaysLoad": True},
             **_TOOL_KW,
         )(_offload_sync(func))
         registered = mcp._tool_manager.get_tool(tool_name)
