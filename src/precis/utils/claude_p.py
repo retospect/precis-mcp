@@ -54,6 +54,10 @@ over the *router's* tier default when set, but this module's own ``0.10``
 constant is only reachable from a direct, non-router caller. See
 gr255847.
 
+The router supplies a tier-aware wall-clock cap via
+:func:`~precis.utils.llm.router._claude_p_timeout_s`. The 120 s default
+below applies to direct calls without an explicit or environment override.
+
 Concurrency: each call is a separate subprocess; no shared state.
 Thread-safe by construction.
 """
@@ -91,8 +95,7 @@ _DEFAULT_MODEL = "claude-haiku-5-5"
 # a few KB of context, narrow enough that a runaway loop is bounded.
 _DEFAULT_MAX_USD = 0.10
 
-# Default wall-clock timeout. Haiku turns ≤ 30 s in practice; the
-# extra headroom absorbs container-cold-start + retry latency.
+# Default wall-clock timeout for direct callers.
 _DEFAULT_TIMEOUT_S = 120
 
 #: The schema handed to the one structured-output retry (gr622034): an

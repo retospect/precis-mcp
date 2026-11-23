@@ -141,14 +141,12 @@ on a claude-OAuth rung stamps ``claude_quota_snapshot`` at once
 (``budget.quota.stamp_exhausted``) so the gate pauses the next claude call
 without a subprocess.
 
-A transport exception is classified
-(``router._is_unavailability``) — timeout / connection / 5xx / 429 →
-``paused`` (skip-not-fail: the caller retries next cycle, never parks);
-other 4xx stays ``error``. A claude wall-clock timeout counts as
-unavailability via ``ClaudeProcessError.timed_out``. Every transport
-carries a wall-clock timeout (claude 600 s; local/openai 120 s; a SMALL
-local judge is capped at 30 s so a flapping loopback fails fast into the
-failover ladder).
+Timeouts (including ``ClaudeProcessError.timed_out``), connection errors,
+5xx and 429 pause for retry. Other 4xx stay errors
+(``router._is_unavailability``). Defaults are 600 s for ``claude_agent``
+and 120 s for local/openai, with SMALL local capped at 30 s for fast
+failover. The tiered ``claude_p`` caps mitigate MEDIUM timeouts pending
+live verification (gr696218, ``router._claude_p_timeout_s``).
 
 Gen-params: per-tier ``(thinking, temperature)`` defaults (``SMALL`` =
 thinking off + temp 0.0 — a reasoning model on that rung otherwise burns

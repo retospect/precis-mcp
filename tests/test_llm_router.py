@@ -1475,6 +1475,89 @@ def test_claude_p_tier_max_usd_table_is_total() -> None:
     }
 
 
+# ── gr696218: claude_p rung 0 tier-aware default timeout ───────────────
+
+
+def _fake_claude_p_capturing_timeout(
+    calls: dict[str, object],
+) -> Callable[..., ClaudePResult]:
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        calls["timeout_s"] = kwargs.get("timeout_s")
+        return ClaudePResult(
+            data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.02
+        )
+
+    return fake_p
+
+
+def test_claude_p_medium_tier_defaults_to_300s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A MEDIUM request without overrides passes 300 s to the subprocess adapter."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        router, "call_claude_p", _fake_claude_p_capturing_timeout(calls)
+    )
+    monkeypatch.delenv("PRECIS_CLAUDE_TIMEOUT_S", raising=False)
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", tools_needed=False))
+
+    assert out.error is None
+    assert calls["timeout_s"] == 300.0
+
+
+def test_claude_p_env_timeout_wins_over_tier_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRECIS_CLAUDE_TIMEOUT_S must still win over the router's tier
+    default — the env knob cannot go dead just because the router now
+    always supplies a non-None timeout."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        router, "call_claude_p", _fake_claude_p_capturing_timeout(calls)
+    )
+    monkeypatch.setenv("PRECIS_CLAUDE_TIMEOUT_S", "45")
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", tools_needed=False))
+
+    assert out.error is None
+    assert calls["timeout_s"] == 45.0
+
+
+def test_claude_p_explicit_timeout_wins_over_env_and_tier_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit LlmRequest.timeout_s beats both the env override and
+    the tier default — the strongest signal in the precedence chain (a
+    chain rung's stamped ``timeout_s`` rides this slot too)."""
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        router, "call_claude_p", _fake_claude_p_capturing_timeout(calls)
+    )
+    monkeypatch.setenv("PRECIS_CLAUDE_TIMEOUT_S", "45")
+
+    out = route(
+        LlmRequest(
+            tier=Tier.MEDIUM, prompt="judge this", tools_needed=False, timeout_s=7.0
+        )
+    )
+
+    assert out.error is None
+    assert calls["timeout_s"] == 7.0
+
+
+def test_claude_p_tier_timeout_table_is_total() -> None:
+    """Every :class:`Tier` must have a row — an added tier without one is a
+    load-time failure via the module's own totality assert, but pin the
+    values here too so a silent edit is caught at test time."""
+    assert router._CLAUDE_P_TIER_TIMEOUT_S == {
+        Tier.SMALL: 120.0,
+        Tier.MEDIUM: 300.0,
+        Tier.BIG: 600.0,
+        Tier.FRONTIER: 600.0,
+    }
+
+
 def test_dispatch_local(monkeypatch: pytest.MonkeyPatch) -> None:
     # Patch the lazily-imported LlmClient so no proxy is hit.
     import precis.workers.llm_summarize as summ

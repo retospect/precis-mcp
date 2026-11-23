@@ -23,6 +23,11 @@ Four pieces:
   :mod:`precis.utils.claude_p` itself has no notion of tier. Precedence:
   ``LlmRequest.max_usd`` (explicit) > ``PRECIS_CLAUDE_MAX_USD`` (env) >
   :data:`_CLAUDE_P_TIER_MAX_USD` (tier default) — see gr255847.
+* :func:`_claude_p_timeout_s` — the same tier-aware treatment for the
+  ``claude_p`` rung's wall-clock cap. Precedence: ``LlmRequest.timeout_s``
+  (explicit — including one a chain rung stamped) >
+  ``PRECIS_CLAUDE_TIMEOUT_S`` (env) > :data:`_CLAUDE_P_TIER_TIMEOUT_S`
+  (tier default) — see gr696218.
 * named provider profiles (:class:`ProviderProfile`, the ``llm.profiles``
   config row read via :mod:`precis.utils.llm.live_config`) — a rung's
   ``profile`` key pins its own hosted endpoint + credential reference, so
@@ -402,6 +407,46 @@ def _claude_p_max_usd(req: LlmRequest) -> float:
     if env_usd:
         return float(env_usd)
     return _CLAUDE_P_TIER_MAX_USD[req.tier]
+
+
+#: Default wall-clock caps for router-dispatched ``claude -p`` calls.
+#: gr696218 recorded repeated MEDIUM timeouts at 120 s; 300 s gives that
+#: rung more time before failover. The roughly 150 s completion was on
+#: the separate ``claude_agent`` fallback. Live verification of the new cap
+#: on ``claude -p`` is pending.
+#: SMALL retains 120 s. BIG and FRONTIER use the agent transport's
+#: 600 s default for the larger models.
+_CLAUDE_P_TIER_TIMEOUT_S: dict[Tier, float] = {
+    Tier.SMALL: 120.0,
+    Tier.MEDIUM: 300.0,
+    Tier.BIG: 600.0,
+    Tier.FRONTIER: 600.0,
+}
+
+# Import-time totality guard, mirroring _TIER_MODEL's above.
+assert set(_CLAUDE_P_TIER_TIMEOUT_S) == set(Tier), (
+    "_CLAUDE_P_TIER_TIMEOUT_S: tier table is not total"
+)
+
+
+def _claude_p_timeout_s(req: LlmRequest) -> float:
+    """Resolve the wall-clock timeout for one :data:`Transport.CLAUDE_P`
+    call: ``req.timeout_s`` (explicit per-call override — including one a
+    chain rung's ``timeout_s`` stamped in :meth:`FailoverProvider._walk`) >
+    ``PRECIS_CLAUDE_TIMEOUT_S`` (operator env override) >
+    :data:`_CLAUDE_P_TIER_TIMEOUT_S` (tier-aware default). Resolving the
+    env var here — not letting it fall through to
+    :func:`~precis.utils.claude_p.call_claude_p`'s own ``timeout_s is None``
+    check — is required: once this function always returns a float, the
+    router never again passes ``None`` down, so ``call_claude_p``'s env
+    fallback would otherwise never fire.
+    """
+    if req.timeout_s is not None:
+        return req.timeout_s
+    env_s = os.environ.get("PRECIS_CLAUDE_TIMEOUT_S")
+    if env_s:
+        return float(env_s)
+    return _CLAUDE_P_TIER_TIMEOUT_S[req.tier]
 
 
 def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
@@ -1798,7 +1843,7 @@ class ClaudePProvider:
                 req.prompt,
                 model=model,
                 max_usd=_claude_p_max_usd(req),
-                timeout_s=req.timeout_s,
+                timeout_s=_claude_p_timeout_s(req),
                 extra_args=req.extra_args,
                 bare=self._bare,
                 images=req.images,
