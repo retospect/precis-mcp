@@ -8478,11 +8478,18 @@ def submit(ctx: Any, spec: Any) -> Any:
 
 def _attempt_log(attempt_dir: Path | None, latest: Path) -> Path:
     """Keep the stable log path for rescue while each handle reads its own log."""
-    if attempt_dir is None:
-        # A retry launched from poll has no submit intent. Start a new
-        # stable log without truncating the previous attempt's evidence.
-        if latest.is_symlink():
+    # A retry reuses the stable path. A regular file left by the earlier
+    # run is renamed to ``<name>.<n>`` first, never truncated or replaced
+    # by the latest-log symlink (gr570142); a symlink is just dropped.
+    if latest.is_symlink():
+        if attempt_dir is None:
             latest.unlink()
+    elif latest.is_file() and latest.stat().st_size:
+        n = 1
+        while latest.with_name(f"{latest.name}.{n}").exists():
+            n += 1
+        latest.rename(latest.with_name(f"{latest.name}.{n}"))
+    if attempt_dir is None:
         return latest
     path = (attempt_dir / "log").absolute()
     link = latest.with_name(f".{latest.name}.{attempt_dir.name}")

@@ -4146,3 +4146,36 @@ def test_a_ps_that_failed_at_the_acceptance_launch_leaves_no_none_identity_key(
     assert "ps_identity" not in test_handle
     seams["alive"] = True
     assert run_slice._session_alive(test_handle) is True  # the pid answers
+
+
+def test_attempt_log_retry_keeps_the_previous_log(tmp_path: Path) -> None:
+    """gr570142: a poll-launched retry rotates the earlier log, never truncates it."""
+    rs = run_slice
+    latest = tmp_path / "land_slice.log"
+    latest.write_text("crash evidence", encoding="utf-8")
+    assert rs._attempt_log(None, latest) == latest
+    assert (tmp_path / "land_slice.log.1").read_text(encoding="utf-8") == (
+        "crash evidence"
+    )
+    assert not latest.exists()
+    latest.write_text("second", encoding="utf-8")
+    rs._attempt_log(None, latest)
+    assert (tmp_path / "land_slice.log.2").read_text(encoding="utf-8") == "second"
+    assert (tmp_path / "land_slice.log.1").exists()
+
+
+def test_attempt_log_with_attempt_dir_keeps_the_previous_regular_log(
+    tmp_path: Path,
+) -> None:
+    """gr570142: a carry relaunch (attempt dir) rotates a regular log too."""
+    rs = run_slice
+    latest = tmp_path / "land_slice.log"
+    latest.write_text("crash evidence", encoding="utf-8")
+    attempt = tmp_path / "attempt-2"
+    attempt.mkdir()
+    path = rs._attempt_log(attempt, latest)
+    assert path == (attempt / "log").absolute()
+    assert latest.is_symlink()
+    assert (tmp_path / "land_slice.log.1").read_text(encoding="utf-8") == (
+        "crash evidence"
+    )
