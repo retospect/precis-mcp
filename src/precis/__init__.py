@@ -42,6 +42,8 @@ plugins and bridges sharing the repo:
   so the instructions are reachable with the credential that received them.
   The live voice skill pointer also rides both surfaces because some
   connectors hide initialize instructions and any connection can carry voice.
+  The shared initialize hook adds the server display title to the SDK's
+  reply because FastMCP 1.x has no constructor option for it.
   Typed MCP annotations mark ``get``/``search`` read-only (the same two
   verbs the ``--read-only`` serve keeps), the additive write verbs
   non-destructive, and ``delete`` destructive. See

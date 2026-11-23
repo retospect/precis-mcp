@@ -359,6 +359,10 @@ def _install_protocol_payload_filters() -> None:
 _install_protocol_payload_filters()
 
 
+_MCP_NAME = "precis-mcp"
+_MCP_TITLE = "Precis"
+
+
 def _install_once_per_connection_instructions() -> None:
     """Send ``serverInfo.instructions`` only on a session's first ``initialize``.
 
@@ -375,7 +379,7 @@ def _install_once_per_connection_instructions() -> None:
     new connection still gets the banner once.
     """
     from mcp.server.session import ServerSession
-    from mcp.types import InitializeRequest
+    from mcp.types import InitializeRequest, InitializeResult, ServerResult
 
     if getattr(ServerSession._received_request, "_precis_instructions_once", False):
         return
@@ -392,7 +396,25 @@ def _install_once_per_connection_instructions() -> None:
                 self._init_options.instructions = _authenticated_instructions(
                     user, self._init_options.instructions
                 )
-        await original(self, responder)
+        if self._init_options.server_name == _MCP_NAME:
+            respond = responder.respond
+
+            async def respond_with_title(response: ServerResult | ErrorData) -> None:
+                if isinstance(response, ServerResult) and isinstance(
+                    response.root, InitializeResult
+                ):
+                    response.root.serverInfo.title = _MCP_TITLE
+                await respond(response)
+
+            # The SDK builds serverInfo inside this handler on every transport.
+            # Decorate its reply so the SDK still owns initialization.
+            responder.respond = respond_with_title
+            try:
+                await original(self, responder)
+            finally:
+                del responder.respond
+        else:
+            await original(self, responder)
         self._precis_initialized = True
         self._init_options.instructions = None
 
@@ -1292,10 +1314,6 @@ def _shutdown_runtime() -> None:
 log = logging.getLogger(__name__)
 # Server name is ``precis-mcp`` so log lines and serverInfo unambiguously
 # point at this package (the bare ``precis`` collides with other tooling).
-# MCP 2025-06-18 §initialize recommends a human-facing ``serverInfo.title``
-# too; FastMCP 1.x doesn't expose it through the constructor and the
-# attribute path has changed between revisions. Leave unset until the
-# upstream library grows a stable API for it. (Critic MINOR-C A1.)
 #: ``serverInfo.icons`` (gr633600): the precis mark, else connector UIs
 #: fall back to the infrastructure host's icon (Tailscale). Mutable at
 #: module scope so :func:`serve` can prepend the fetchable https URL once
@@ -1330,7 +1348,7 @@ def _stateless_http_enabled() -> bool:
 
 
 mcp: FastMCP = FastMCP(
-    "precis-mcp",
+    _MCP_NAME,
     instructions=_INSTRUCTIONS,
     session_idle_timeout=_SESSION_IDLE_TIMEOUT_S,
     website_url=icons.WEBSITE_URL,

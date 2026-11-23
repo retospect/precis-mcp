@@ -60,6 +60,14 @@ async def _init_results(mcp: FastMCP, inits: int) -> list[types.InitializeResult
         return [await session.initialize() for _ in range(inits)]
 
 
+def test_serverinfo_carries_title() -> None:
+    first, second = anyio.run(_init_results, server.mcp, 2)
+
+    for result in (first, second):
+        assert result.serverInfo.name == "precis-mcp"
+        assert result.serverInfo.title == "Precis"
+
+
 def test_reinitialize_on_one_connection_drops_the_banner() -> None:
     """The mid-session sighting: the second ``initialize`` on a live
     connection must not re-send the block — that is what rode along on
@@ -70,6 +78,7 @@ def test_reinitialize_on_one_connection_drops_the_banner() -> None:
 
     assert first.instructions == _BANNER
     assert second.instructions is None
+    assert first.serverInfo.title is None
 
 
 def test_a_fresh_connection_still_gets_the_banner() -> None:
