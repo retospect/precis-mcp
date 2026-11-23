@@ -5999,6 +5999,22 @@ def _open_attempt(
                 url = _hub_url(root, profile)
                 if url and _slice_ws.import_legacy(hub, url, todo_id):
                     start = _slice_ws.resolve_start(hub, todo_id)
+            parked = tmeta.get(_slice_park.PARKED_KEY)
+            if (
+                isinstance(parked, dict)
+                and "worktree" in parked
+                and floor is None
+                and recorded is None
+                and (start is None or start.ref == _slice_ws.build_ref(todo_id, 0))
+                and (start is None or start.sha != parked.get("head"))
+            ):
+                # Legacy parks could retain a newer, unpublished snapshot
+                # on the saving host. An older remote tip cannot replace it.
+                raise _slice_ws.WorkspaceError(
+                    f"legacy parked snapshot {parked.get('head')} is unavailable; "
+                    f"next: recover it from the old worktree on {parked.get('host')} "
+                    "into an attempt ref in the hub, or explicitly start over"
+                )
     sha = _slice_ws.cut(
         hub,
         tree,

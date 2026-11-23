@@ -1629,6 +1629,14 @@ attempt-free (`workspace`) with the reflog command in its message: put
 the ref back, or clear `meta.build_ref`. It never falls back to the
 base.
 
+For a pre-cutover park, `meta.parked.worktree` names the old worktree
+and `meta.parked.head` names the snapshot. If the legacy ref is missing
+or points to an older commit, the launch ends attempt-free
+(`workspace`). Recover and inspect the snapshot on the saving host,
+then publish the recovered work to a current attempt ref in the next
+build host's hub using the worker push described below. An explicit `start over`
+answer discards the park and starts at the base.
+
 **A kept folder.** On the build host, read it (`git status`, `git log
 origin/<base>..`). To keep its work, push it from the folder with the
 worker's flag; the hub's hook refuses a push with no session or worker
@@ -1701,7 +1709,9 @@ Cutover checklist (the deploy that brings this in):
   deploy.
 - Survey, then remove, the old `slice-td<id>` worktrees and local
   `slice/<id>` branches on the build host. One with a large unsaved
-  change goes to Reto first. A launch imports a task's work from
+  change goes to Reto first. Recover any recorded parked snapshots that
+  exist only on the saving host before removing their worktrees or refs.
+  A launch imports a task's work from
   GitHub's `refs/factory/slice/<id>` once, so only work that never left
   the host is at stake; a land minted before the switch (no `ref`) also
   reads the local `slice/<id>`, so keep that branch until it landed.

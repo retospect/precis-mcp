@@ -496,6 +496,39 @@ def test_start_over_deletes_the_attempts_and_starts_at_the_base(rig: _Rig) -> No
     assert meta["build_ref"] is None and meta["start_over"] is None
 
 
+@pytest.mark.parametrize("legacy_tip", ["absent", "older", "saved"])
+def test_legacy_park_requires_its_saved_head_or_start_over(
+    rig: _Rig, legacy_tip: str
+) -> None:
+    _g(rig.root, "checkout", "-qb", "slice/42")
+    saved = _commit(rig.root, "widget.py", msg="wip: parked awaiting answer (td42)")
+    _g(rig.root, "checkout", "-q", "main")
+    if legacy_tip != "absent":
+        tip = saved if legacy_tip == "saved" else rig.main
+        _g(rig.root, "push", "-q", "origin", f"{tip}:{_slice_ws.legacy_ref(42)}")
+    meta = rig.store.refs[42].meta
+    meta["parked"] = {"head": saved, "host": "maple", "worktree": "slice-td42"}
+
+    ctx, handle = rig.submit()
+    if legacy_tip == "saved":
+        assert handle is not None, ctx.failure
+        assert _g(rig.tree(), "rev-parse", "HEAD") == saved
+        return
+
+    assert handle is None
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "workspace"
+    assert saved in str(ctx.failure) and "maple" in str(ctx.failure)
+    assert not rig.seams["launch"] and not rig.tree().exists()
+    assert "attempt:1" not in rig.store.tag_strings(42)
+    assert meta["parked"]["head"] == saved
+
+    meta["start_over"] = 77
+    restarted, handle = rig.submit(job=901)
+    assert handle is not None, restarted.failure
+    assert _g(rig.tree(901), "rev-parse", "HEAD") == rig.main
+    assert rig.store.refs[42].meta["parked"] is None
+
+
 def test_a_recorded_ref_that_moved_ends_the_job_attempt_free(rig: _Rig) -> None:
     ctx, handle = rig.submit()
     tree = rig.tree()

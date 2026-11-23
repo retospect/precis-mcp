@@ -84,14 +84,13 @@ repository, one ref ``refs/factory/build/<todo>/<job>`` per attempt) and no
 job enters a folder another job made. The builder pushes its ref before it
 exits; the worker's finalize pushes for a builder that did not, a
 ``wip:`` snapshot of uncommitted work included, and the hub's hook scans
-every pushed commit because even credentials deleted at the tip become
-fetchable when history is pushed. A folder is dropped once the hub holds
-its head; the next attempt, the review and the land start from the hub on
-the host named by ``meta.build_ref.host`` (a start-over answer deletes the
-task's attempts). After checkout and any rebase, precis code builders
-sync the host checkout's locked paper and web extras into their clone's
-venv for the mypy and pytest gates. Repository review, PR analysis and
-land use the shared clone setup, which only copies the host venv.
+every pushed commit because deleted credentials remain fetchable in history.
+Once the hub holds the head, the worker drops the folder. Builds, reviews and
+lands resume on ``meta.build_ref.host``. Start-over deletes the task's attempts.
+Clone setup copies the host venv. After checkout and any rebase, precis code
+builders sync locked paper and web extras for mypy and pytest.
+With only a legacy ref or the base available, a legacy park needs its saved
+head to preserve unpublished work. A missing head returns the lease attempt-free.
 
 ``_slice_adapters`` owns CLI argv, stdin and output parsing.
 Codex's terminal missing-credentials 401 parks the lane attempt-free.
