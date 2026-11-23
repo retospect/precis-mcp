@@ -376,6 +376,9 @@ Most work lands at one of these. Each has a convention that bites:
   in `meta.journal`. The worker repairs old papers and refreshes every 30 days;
   substantive name disagreements create deduplicated review todos. Citation
   exporters prefer that journal over a provider's raw `meta.venue`.
+- **Clerical paper review** → `ingest/paper_review.py` maintains one open
+  table todo per review type. The paper reconcile pass folds older open
+  title and stub-identity todos into those tables.
 - **Mutate chunk text** → DELETE + INSERT, never UPDATE (cascade).
 - **Ingest needs worker-side follow-up** → `precis.ingest` may not
   import `precis.workers` (import-linter contract), so an ingest path

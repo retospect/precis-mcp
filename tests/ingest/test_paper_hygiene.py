@@ -1290,8 +1290,9 @@ class TestRaiseJunkTitlePapers:
         with store.pool.connection() as conn:
             return conn.execute(
                 "SELECT ref_id, title FROM refs WHERE kind='todo' "
-                "AND meta->>'paper_ref_id' = %s",
-                (str(paper_id),),
+                "AND (meta->>'paper_ref_id' = %s OR (meta->'review_rows') ? %s) "
+                "ORDER BY ref_id",
+                (str(paper_id), str(paper_id)),
             ).fetchall()
 
     def _stamp(self, store: Store, paper_id: int) -> None:
@@ -1314,14 +1315,48 @@ class TestRaiseJunkTitlePapers:
         self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=False) == [rid]
         (todo,) = self._todos(store, rid)
-        assert "anon24d" in todo[1] and "'__'" in todo[1]
+        body = store.chunks.list_chunks_for_ref(todo[0])[0].text
+        assert "anon24d" in body and "'__'" in body
         rendered = {str(t) for t in store.tags_for(todo[0])}
         assert any("paper-title-fix" in r for r in rendered), rendered
-        # gr508499: owner_login NULL → the deployment-owner default
-        # (``load_config().owner``, ``"reto"``), not the old "owner"
-        # placeholder nobody claimed.
-        assert "waiting-for:reto" in rendered, rendered
+        assert "waiting-for:reto" not in rendered, rendered
         assert any("open" in r for r in rendered), rendered
+
+    def test_batch_combines_legacy_and_new_rows(self, store: Store) -> None:
+        from precis.ingest.paper_review import (
+            TITLE_REVIEW,
+            consolidate_legacy_paper_reviews,
+        )
+
+        old = self._old(store, slug="anon00old", title="__")
+        new = self._old(store, slug="anon00new", title="__")
+        self._stamp(store, old)
+        self._stamp(store, new)
+        legacy = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="Fix title",
+            meta={"source": TITLE_REVIEW.source, "paper_ref_id": old},
+        )
+        store.add_tag(legacy.id, Tag.open("waiting-for:reto"), set_by="system")
+
+        assert raise_junk_title_papers(store, dry_run=False) == [new]
+        consolidate_legacy_paper_reviews(store)
+        consolidate_legacy_paper_reviews(store)
+
+        (batch,) = self._todos(store, new)
+        assert [todo[0] for todo in self._todos(store, old)] == [legacy.id, batch[0]]
+        legacy_tags = {str(tag) for tag in store.tags_for(legacy.id)}
+        assert "STATUS:done" in legacy_tags
+        assert "waiting-for:reto" not in legacy_tags
+        body = store.chunks.list_chunks_for_ref(batch[0])[0].text
+        assert "anon00old" in body and "anon00new" in body
+
+        store.update_paper_fields(old, title="A Corrected Title")
+        assert close_resolved_title_fix_todos(store, dry_run=False) == [old]
+        body = store.chunks.list_chunks_for_ref(batch[0])[0].text
+        assert "anon00old" not in body and "anon00new" in body
+        assert "STATUS:open" in {str(tag) for tag in store.tags_for(batch[0])}
 
     def test_not_refiled_while_open(self, store: Store) -> None:
         rid = self._old(store, slug="anon24f", title="-")
@@ -1387,8 +1422,9 @@ class TestRaiseJunkTitlePapers:
         self._stamp(store, wontdo)
         open_p = self._old(store, slug="open26a", title="__")
         self._stamp(store, open_p)
-        assert raise_junk_title_papers(store, dry_run=False) == [wontdo, open_p]
+        assert raise_junk_title_papers(store, dry_run=False, limit=1) == [wontdo]
         self._close(store, wontdo, "won't-do")
+        assert raise_junk_title_papers(store, dry_run=False) == [open_p]
         for rid in (wontdo, open_p):
             store.update_paper_fields(rid, title="A Real Title")
         # The won't-do todo sorts first (lower paper ref_id) yet must not
@@ -1656,8 +1692,9 @@ class TestRepairJunkTitlePapers:
         with store.pool.connection() as conn:
             return conn.execute(
                 "SELECT ref_id, title FROM refs WHERE kind='todo' "
-                "AND meta->>'paper_ref_id' = %s",
-                (str(paper_id),),
+                "AND (meta->>'paper_ref_id' = %s OR (meta->'review_rows') ? %s) "
+                "ORDER BY ref_id",
+                (str(paper_id), str(paper_id)),
             ).fetchall()
 
     def _todo_status(self, store: Store, todo_id: int) -> str | None:
@@ -2291,6 +2328,65 @@ class TestRepairJunkTitlePapers:
                 (rid,),
             ).fetchone()
         assert ev is not None and ev[0]["how"] == "front-matter"
+
+    def test_opening_scan_recovers_title_from_chunk_five(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="anon00late", title="")
+        store.stamp_ref_meta(rid, {"title_repair_v": 3})
+        for ord_ in range(5):
+            _kind_chunk(store, rid, ord_, "Publisher cover information.")
+        _kind_chunk(
+            store,
+            rid,
+            5,
+            "## Varieties of Helmholtz Machine\nGeoffrey Hinton and Peter Dayan",
+        )
+        out = repair_junk_title_papers(
+            store, dry_run=False, s2_fn=lambda *_a, **_k: None
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert (
+            store.fetch_refs_by_ids([rid])[rid].title
+            == "Varieties of Helmholtz Machine"
+        )
+
+    def test_supplement_notice_does_not_adopt_parent_title(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="anon00si", title="__", doi="10.1234/item")
+        _kind_chunk(
+            store, rid, 0, "Supporting information to https://doi.org/10.1234/item"
+        )
+        out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
+        assert [(o.ref_id, o.detail) for o in out] == [
+            (rid, "terminal:supplement-to:10.1234/item")
+        ]
+        assert store.fetch_refs_by_ids([rid])[rid].title == "__"
+
+    def test_publisher_citation_can_corroborate_registry_title(
+        self, store: Store
+    ) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._old(store, slug="anon00cite", title="")
+        title = "Spectral learning for adaptive signal detection"
+        _kind_chunk(
+            store,
+            rid,
+            0,
+            f"To cite this article: J. Doe. {title}. https://doi.org/10.1234/article",
+        )
+
+        def crossref(doi: str, _mailto: str) -> dict[str, str]:
+            assert doi == "10.1234/article"
+            return {"title": title, "doi": doi}
+
+        out = repair_junk_title_papers(
+            store, dry_run=False, **(self._no_net() | {"crossref_fn": crossref})
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert store.fetch_refs_by_ids([rid])[rid].title == title
 
     def test_front_matter_leg_needs_the_byline(self, store: Store) -> None:
         """The signature is a title head *followed by a multi-name
@@ -2928,8 +3024,10 @@ class TestBodySplitRouting:
         with store.pool.connection() as conn:
             return conn.execute(
                 "SELECT ref_id, title, meta->>'source' AS source FROM refs "
-                "WHERE kind='todo' AND meta->>'paper_ref_id' = %s",
-                (str(paper_id),),
+                "WHERE kind='todo' "
+                "AND (meta->>'paper_ref_id' = %s OR (meta->'review_rows') ? %s) "
+                "ORDER BY ref_id",
+                (str(paper_id), str(paper_id)),
             ).fetchall()
 
     def test_repair_diverts_before_any_registry_lookup(self, store: Store) -> None:
@@ -3007,7 +3105,7 @@ class TestBodySplitRouting:
         self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=False) == [rid]
         (todo,) = self._todos(store, rid)
-        assert todo[2] == "paper_hygiene:title_fix"
+        assert todo[2] == "paper_hygiene:title_fix:batch"
         rendered = {str(t) for t in store.tags_for(todo[0])}
         assert "paper-title-fix" in rendered, rendered
 
@@ -3281,8 +3379,9 @@ class TestRaiseRoutesSplicedIssues:
         with store.pool.connection() as conn:
             return conn.execute(
                 "SELECT ref_id, title, meta FROM refs WHERE kind='todo' "
-                "AND meta->>'paper_ref_id' = %s",
-                (str(paper_id),),
+                "AND (meta->>'paper_ref_id' = %s OR (meta->'review_rows') ? %s) "
+                "ORDER BY ref_id",
+                (str(paper_id), str(paper_id)),
             ).fetchall()
 
     def _todo_status(self, store: Store, todo_id: int) -> str | None:

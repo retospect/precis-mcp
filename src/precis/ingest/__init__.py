@@ -36,6 +36,14 @@ cluster.
 Title-token overlap is available on core installs for these checks.
 Only fuzzy PDF verification loads the optional RapidFuzz dependency.
 
+Paper title failures and refused stub reconciles share rolling review
+todos (``paper_review.py``). A row key identifies the paper or stub pair so
+retries leave one entry. The batch body is a generated table, and clerical
+reviews carry no decision tag. Reconcile folds older open todos into the
+table and drains title rows after repair. PDF ingest falls back to Marker's
+title block when bibliographic metadata is junk because the body deliberately
+omits that block.
+
 Draft DOI recovery (``doi_fetch.py``) requires a persistent non-DOI
 identifier. Lookup misses and write refusals share an attempt stamp so
 capped batches can advance. Transport failures remain eligible for retry.

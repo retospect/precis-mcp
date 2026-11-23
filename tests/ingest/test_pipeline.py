@@ -623,6 +623,27 @@ class TestExtractPaper:
         assert paper.meta["abstract"] == "We present a new approach."
         assert paper.meta["journal"] == "Nature Physics"
 
+    def test_metadata_poor_pdf_keeps_marker_title(self, tmp_path: Path) -> None:
+        pdf = tmp_path / "unknown.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        title = "Varieties of Helmholtz Machine"
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=PdfMetadata(pdf_path=pdf),
+            ),
+            patch(
+                "precis.ingest.pipeline.extract_blocks_marker",
+                return_value=[{"type": "title", "text": title, "page": 0}],
+            ),
+        ):
+            paper = extract_paper(pdf)
+        assert paper.title == title
+        assert paper.cite_key_prefix == "varietiesofhelmholtz00"
+        assert any(
+            c.chunk_kind == "card_title" and c.text == title for c in paper.chunks
+        )
+
     def test_no_metadata_still_yields_card_combined(self, tmp_path: Path):
         """Empty metadata + zero blocks must still produce one card_combined
         so the worker queue has *something* to embed."""

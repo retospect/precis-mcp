@@ -20,8 +20,8 @@ the system worker at a low cadence so the corpus self-heals:
   diverting OCR-concatenated multi-article bodies (gr658650) to the
   body-split route before any registry lookup;
   :func:`~precis.ingest.paper_hygiene.raise_junk_title_papers` then files
-  an owner todo only for papers carrying that stamp — a title-fix todo,
-  or a ``paper-needs-split`` todo when the body is a spliced scanned
+  a title-review batch row only for papers carrying that stamp, or a
+  ``paper-needs-split`` todo when the body is a spliced scanned
   issue (gr658690, journaled by
   :func:`~precis.ingest.paper_hygiene.flag_spliced_issue_papers`) or
   reads as 2+ OCR-concatenated articles (gr658650, detected by the
@@ -154,6 +154,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 repair_junk_title_papers,
                 requeue_stranded_fetches,
             )
+            from precis.ingest.paper_review import consolidate_legacy_paper_reviews
             from precis.secrets import get_secret
 
             healed_cards = heal_drifted_cards(store, dry_run=False, limit=limit)
@@ -254,6 +255,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             )
             if raised:
                 log.info("paper_reconcile: raised %d junk-title paper(s)", len(raised))
+            consolidate_legacy_paper_reviews(store)
             # Papers the cascade already concluded on (title repaired or
             # stamped failed) still carry ingest's guessed year/byline —
             # mine them off the same chunk-0 front matter the title came

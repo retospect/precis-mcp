@@ -75,7 +75,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from precis.utils.title_body import is_placeholder_title, title_body_score
 from precis.utils.title_views import title_plain
@@ -1117,15 +1117,34 @@ def _storable_title(line: str) -> str:
     return title_plain(s)
 
 
-def front_matter_title(chunks: Sequence[Any], *, start_ord: int = 0) -> str | None:
+def _opens_with_full_names(body: Sequence[Any], index: int) -> bool:
+    """A styled title above two full names also identifies an opening."""
+    from precis.ingest.front_matter import _byline_names
+
+    lines = _head_lines(body[index].text)
+    head = lines[0]
+    if _header_kind(head) != "title" or not (
+        head.startswith("#") or _WRAP_EMPH_RE.fullmatch(head)
+    ):
+        return False
+    byline = lines[1:2]
+    if not byline and index + 1 < len(body):
+        byline = _head_lines(body[index + 1].text)[:1]
+    return bool(byline and len(_byline_names(_clean(byline[0])) or []) >= 2)
+
+
+def front_matter_title(
+    chunks: Sequence[Any], *, start_ord: int = 0, scan_ords: int | None = None
+) -> str | None:
     """The title a paper's own front matter states, or ``None`` (gr658887).
 
     The test is the article-opening signature the restart signal and the
-    structural boundary share (:func:`_opens_article`): the first body
-    chunk at or past ``start_ord`` must open on a non-standard title head
+    structural boundary share (:func:`_opens_article`): a body chunk in the
+    bounded opening window must open on a non-standard title head
     immediately followed by a multi-name byline. Only that pairing makes
     the head line a *title* — alone it could be a running head, a
-    furniture line or a section label.
+    furniture line or a section label. A styled head above multiple full
+    names also qualifies in a bounded scan. Conflicting candidates decline.
 
     ``start_ord`` is the established article boundary
     (``refs.meta['article_start_ord']``, or the structural
@@ -1145,9 +1164,61 @@ def front_matter_title(chunks: Sequence[Any], *, start_ord: int = 0) -> str | No
         if int(getattr(c, "ord", 0) or 0) >= start_ord
         and (getattr(c, "text", "") or "").strip()
     ]
-    if not body or not _opens_article(body, 0):
-        return None
-    return _storable_title(_head_lines(getattr(body[0], "text", "") or "")[0]) or None
+    if scan_ords is None:
+        return (
+            _storable_title(_head_lines(body[0].text)[0]) or None
+            if body and _opens_article(body, 0)
+            else None
+        )
+    titles = {
+        _storable_title(_head_lines(chunk.text)[0])
+        for index, chunk in enumerate(body)
+        if chunk.ord < start_ord + scan_ords
+        and getattr(chunk, "chunk_kind", None) != "references"
+        and (_opens_article(body, index) or _opens_with_full_names(body, index))
+    }
+    return (next(iter(titles)) or None) if len(titles) == 1 else None
+
+
+@dataclasses.dataclass(frozen=True)
+class PublisherTitleNotice:
+    kind: Literal["citation", "supplement"]
+    doi: str
+    text: str
+
+
+_CITE_NOTICE_RE = re.compile(r"^to cite this article\b", re.IGNORECASE)
+_SUPPLEMENT_NOTICE_RE = re.compile(
+    r"^(?:electronic )?supporting information (?:to|for)\b", re.IGNORECASE
+)
+
+
+def publisher_title_notice(
+    chunks: Sequence[Any], *, start_ord: int = 0
+) -> PublisherTitleNotice | None:
+    """Read explicit citation or supplement labels in the opening six chunks."""
+    lines = [
+        line
+        for chunk in chunks
+        if start_ord <= chunk.ord < start_ord + 6
+        and getattr(chunk, "chunk_kind", None) != "references"
+        for line in _head_lines(chunk.text)
+    ]
+    citations: dict[str, PublisherTitleNotice] = {}
+    for i, raw in enumerate(lines):
+        line = raw.lstrip("# *")
+        if _SUPPLEMENT_NOTICE_RE.match(line):
+            text = " ".join([line, *lines[i + 1 : i + 2]])
+            doi = _DOI_RE.search(text)
+            if doi:
+                return PublisherTitleNotice("supplement", _norm_doi(doi[0]), text)
+        elif _CITE_NOTICE_RE.match(line):
+            text = " ".join([line, *lines[i + 1 : i + 3]])
+            dois = {_norm_doi(doi) for doi in _DOI_RE.findall(text)}
+            if len(dois) == 1:
+                key = next(iter(dois))
+                citations[key] = PublisherTitleNotice("citation", key, text)
+    return next(iter(citations.values())) if len(citations) == 1 else None
 
 
 def note_issue_splice(

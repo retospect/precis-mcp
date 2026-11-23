@@ -1502,7 +1502,6 @@ def _stub_identity_refusal(
     return None
 
 
-_STUB_REVIEW_SOURCE = "ingest:stub-reconcile-review"
 _STUB_IDENTITY_REVIEW_TAG = "paper-stub-identity-review"
 
 
@@ -1605,59 +1604,12 @@ def _raise_stub_identity_review(
     reason: str,
     conn: Any,
 ) -> None:
-    """File a ``STATUS:open`` review todo for a refused stub reconcile.
+    """Add a refused pair to the rolling review within the ingest transaction."""
+    from precis.ingest.paper_review import add_stub_identity_review
 
-    Deduped on ``(source, stub, survivor)`` like
-    ``dedup._raise_doi_case_review``: a standing todo already covering
-    the pair is not re-filed, so a re-fetch loop can't re-raise it each
-    pass. Runs on the caller's connection so the todo commits or rolls
-    back with the rest of the ingest.
-    """
-    from precis.config import load_config
-    from precis.utils.handle_registry import format_handle
-
-    standing = conn.execute(
-        "SELECT 1 FROM refs t "
-        "WHERE t.kind = 'todo' AND t.retired_at IS NULL "
-        "  AND t.meta->>'source' = %s AND t.meta->>'stub_ref_id' = %s "
-        "  AND t.meta->>'survivor_ref_id' = %s "
-        "  AND NOT EXISTS (SELECT 1 FROM ref_tags rt "
-        "    JOIN tags tg USING (tag_id) "
-        "    WHERE rt.ref_id = t.ref_id "
-        "      AND tg.namespace = 'STATUS' AND tg.value = 'done')",
-        (_STUB_REVIEW_SOURCE, str(stub_id), str(survivor_ref_id)),
-    ).fetchone()
-    if standing is not None:
-        return
-    todo_ref = store.insert_ref(
-        kind="todo",
-        slug=None,
-        title=(
-            f"Review refused stub reconcile "
-            f"{format_handle('paper', stub_id)} vs "
-            f"{format_handle('paper', survivor_ref_id)}: the PDF dropped "
-            f"as {file_stem!r} failed the stub identity check ({reason}). "
-            "The stub keeps its identifiers and stays live; merge by "
-            "hand only if they really are the same paper (gr512169)."
-        ),
-        meta={
-            "source": _STUB_REVIEW_SOURCE,
-            "stub_ref_id": stub_id,
-            "survivor_ref_id": survivor_ref_id,
-            "file_stem": file_stem,
-            "reason": reason,
-        },
-        conn=conn,
+    add_stub_identity_review(
+        store, stub_id, survivor_ref_id, file_stem, reason, conn=conn
     )
-    store.add_tag(
-        todo_ref.id,
-        Tag.closed("STATUS", "open"),
-        set_by="system",
-        replace_prefix=True,
-        conn=conn,
-    )
-    for tag in (_STUB_IDENTITY_REVIEW_TAG, f"waiting-for:{load_config().owner}"):
-        store.add_tag(todo_ref.id, Tag.parse_strict(tag), set_by="system", conn=conn)
 
 
 def _stub_identity_verdict(

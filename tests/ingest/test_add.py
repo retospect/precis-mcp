@@ -949,9 +949,9 @@ class TestStubIdentityGate:
             ).fetchone()
             todo = conn.execute(
                 "SELECT 1 FROM refs WHERE kind='todo' AND retired_at IS NULL "
-                "AND meta->>'source'='ingest:stub-reconcile-review' "
-                "AND meta->>'stub_ref_id'=%s",
-                (str(stub.id),),
+                "AND meta->>'source'='ingest:stub-reconcile-review:batch' "
+                "AND (meta->'review_rows') ? %s",
+                (f"{stub.id}:{survivor.id}",),
             ).fetchone()
         # Stub untouched: live, keeps its DOI, no supersede edge.
         assert stub_row is not None and stub_row[0] is None

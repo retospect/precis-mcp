@@ -101,6 +101,7 @@ from precis.corpus_layout import resolve_local_pdf
 from precis.identity import PLACEHOLDER_TITLE, is_placeholder_title
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.db_writer import PaperToWrite, register_aliases_and_maybe_upgrade
+from precis.ingest.paper_review import TITLE_REVIEW, title_row
 from precis.ingest.pdf_identity import identity_verdict, read_leading_pages
 from precis.ingest.pdf_sidecar import (
     export_name_query,
@@ -2097,8 +2098,8 @@ def _body_split_verdict(store: Store, ref_id: int) -> BodySplitVerdict | None:
 
 
 #: Tag + ``meta.source`` marking a "fix this paper's title" human todo.
-TITLE_FIX_TAG = "paper-title-fix"
-TITLE_FIX_SOURCE = "paper_hygiene:title_fix"
+TITLE_FIX_TAG = TITLE_REVIEW.tag
+TITLE_FIX_SOURCE = TITLE_REVIEW.source
 #: A junk-titled paper younger than this is left to ingest/enrich first.
 _TITLE_FIX_GRACE_DAYS = 3
 
@@ -2116,7 +2117,8 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: existed, and the bump is what re-arms those papers for exactly one
 #: fresh attempt — a stale stamp must not exclude them from the only leg
 #: that can fix them.
-_TITLE_REPAIR_VERSION = 3
+#: v4 scans later opening chunks and reads publisher citation and SI notices.
+_TITLE_REPAIR_VERSION = 4
 
 #: ``meta.front_matter_v`` stamp written once :func:`_apply_front_matter`
 #: has mined a paper's chunk-0 byline/date at the current parser version —
@@ -2198,7 +2200,7 @@ def _close_title_fix_todos(
 ) -> int:
     """Resolve this paper's open title-fix todos — the repair just did what
     they asked. Returns how many were closed."""
-    closed = 0
+    closed = int(TITLE_REVIEW.remove(store, str(ref_id), conn=conn))
     for todo_id in _open_title_fix_todo_ids(store, ref_id, conn=conn):
         store.add_tag(
             todo_id,
@@ -2246,15 +2248,15 @@ def close_resolved_title_fix_todos(
             "       (r.retired_at IS NOT NULL OR r.human_verified_at IS NOT NULL) "
             "  FROM refs t "
             "  JOIN refs r ON r.kind = 'paper' "
-            "             AND r.ref_id::text = t.meta->>'paper_ref_id' "
+            "             AND ((t.meta->>'source' = %s AND r.ref_id::text = t.meta->>'paper_ref_id') "
+            "               OR (t.meta->>'source' = %s AND (t.meta->'review_rows') ? r.ref_id::text)) "
             " WHERE t.kind = 'todo' AND t.retired_at IS NULL "
-            "   AND t.meta->>'source' = %s "
             "   AND NOT EXISTS ("
             "        SELECT 1 FROM ref_tags rt JOIN tags tg USING (tag_id) "
             "         WHERE rt.ref_id = t.ref_id AND tg.namespace = 'STATUS' "
             f"           AND tg.value IN {terminal_todo_sql()}) "
             " ORDER BY r.ref_id",
-            (TITLE_FIX_SOURCE,),
+            (TITLE_FIX_SOURCE, TITLE_REVIEW.batch_source),
         ).fetchall()
     resolved: list[tuple[int, str]] = []
     for ref_id, title, settled in rows:
@@ -2511,7 +2513,16 @@ def _resolve_openalex(
     return _guard_registry_mismatch(store, res)
 
 
-def _front_matter_title(store: Store, ref: Any) -> str | None:
+def _opening_chunks(store: Store, ref_id: int) -> tuple[list[Any], int]:
+    from precis.ingest.article_spread import article_start_ord, foreign_tail_ord
+
+    chunks = store.chunks.list_chunks_for_ref(ref_id)
+    return chunks, article_start_ord(store, ref_id) or foreign_tail_ord(chunks) or 0
+
+
+def _front_matter_title(
+    store: Store, ref: Any, *, opening: tuple[list[Any], int] | None = None
+) -> str | None:
     """The title the paper's own body already states, when its opening is
     unambiguous — the last leg of the junk-title cascade (gr658887).
 
@@ -2530,18 +2541,15 @@ def _front_matter_title(store: Store, ref: Any) -> str | None:
     filters) before it may write.
     """
     from precis.ingest.article_spread import (
-        article_start_ord,
         detect_issue_splice,
-        foreign_tail_ord,
         front_matter_title,
     )
     from precis.ingest.metadata_resolve import _is_title_like
 
-    chunks = store.chunks.list_chunks_for_ref(ref.id)
-    start = article_start_ord(store, ref.id) or foreign_tail_ord(chunks) or 0
+    chunks, start = opening if opening is not None else _opening_chunks(store, ref.id)
     if detect_issue_splice(chunks, start_ord=start) is not None:
         return None
-    title = front_matter_title(chunks, start_ord=start)
+    title = front_matter_title(chunks, start_ord=start, scan_ords=6)
     return title if title and _is_title_like(title) else None
 
 
@@ -2564,11 +2572,22 @@ def repair_junk_title_papers(
     Companion to :func:`raise_junk_title_papers` (gr500372): that pass used
     to file a ``waiting-for:`` todo for every junk title, but most of the
     backlog was recoverable — export-name titles still have a DOI or a
-    first page to resolve against. The cascade per paper, cheapest first:
+    first page to resolve against. Before the cascade, the opening chunks
+    are read for explicit publisher labels (:func:`publisher_title_notice`
+    — the "Supporting information to <doi>" / "To cite this article"
+    lines): a supplement label is a terminal verdict on its own, the
+    record is an SI PDF rather than an article, so it terminal-stamps
+    ``supplement-to:<doi>`` and returns before any registry leg. The
+    cascade per paper, cheapest first:
 
     * **crossref** — stored DOI → Crossref (``_resolve_by_doi`` — edition +
       zero-overlap guards included).
     * **openalex** — same DOI at OpenAlex, on a Crossref miss.
+    * **publisher-citation** — DOI-less papers only, between the DOI legs
+      and the title leg: a "To cite this article" label names one DOI, so
+      ``notice.doi`` is resolved at Crossref and the registry title is
+      applied when it overlaps the label's text. The label alone never
+      vouches — a bare DOI on a cover can still name a different work.
     * **title** — S2 title search (``_resolve_by_title``) over the stripped
       export name plus first-page body-chunk candidates, under the usual
       similarity/year/formula gates.
@@ -2594,8 +2613,10 @@ def repair_junk_title_papers(
     repaired through :func:`repair_front_matter_metadata`, which the
     ``paper_reconcile`` pass runs right after this one.
 
-    A successful leg also closes the paper's open ``paper-title-fix``
-    todos — the repair is exactly what they asked for. Terminal outcomes —
+    A successful leg also clears the paper's title-fix review — its row
+    in the rolling batch todo plus any legacy per-paper todos
+    (:func:`_close_title_fix_todos`) — the repair is exactly what they
+    asked for. Terminal outcomes —
     miss and parked alike — stamp ``meta.title_repair_v`` so tomorrow's
     pass doesn't re-attempt (a parked ref already sits in the mismatch
     review queue; re-hitting it daily just re-burns the same lookups);
@@ -2887,7 +2908,21 @@ def _repair_one(
             return TitleRepairOutcome(rid, "parked", detail=res.reason)
         return None
 
-    # Leg 2 — stored DOI at Crossref, then OpenAlex on a miss.
+    from precis.ingest.article_spread import publisher_title_notice
+
+    opening = _opening_chunks(store, rid)
+    chunks, start = opening
+    # Pre-cascade notice check: a supplement label ("Supporting
+    # information to <doi>") means this record is an SI PDF, not an
+    # article — terminal-stamp it before any registry leg.
+    notice = publisher_title_notice(chunks, start_ord=start)
+    if notice and notice.kind == "supplement":
+        reason = f"supplement-to:{notice.doi}"
+        if not dry_run:
+            _stamp_title_repair_failed(store, rid, reasons=[reason])
+        return TitleRepairOutcome(rid, "failed", detail=f"terminal:{reason}")
+
+    # Leg 1 — stored DOI at Crossref, then OpenAlex on a miss.
     if doi:
         out = _verdict_outcome(
             _resolve_by_doi(
@@ -2916,7 +2951,34 @@ def _repair_one(
         if out is not None:
             return out
 
-    # Leg 3 — title search over the stripped export name + first-page lines.
+    # Publisher-citation leg (DOI-less papers only) — a "To cite this
+    # article" label names one DOI; resolve it and let it vouch only
+    # when the registry title overlaps the label's text.
+    if not doi and notice and notice.kind == "citation":
+        from precis.ingest.verify_metadata import content_tokens, title_overlap
+
+        citation = _resolve_by_doi(
+            store,
+            ref,
+            notice.doi,
+            mailto=mailto,
+            crossref_fn=crossref_fn,
+            call_timeout=call_timeout,
+        )
+        reasons.append(citation.reason)
+        # The citation is independent evidence only when it prints the
+        # title too. A bare DOI on a cover can still name a different work.
+        if citation.verdict == "auto" and title_overlap(
+            citation.title, notice.text
+        ) >= max(3, len(content_tokens(citation.title))):
+            return _apply_resolution(
+                Resolution(
+                    rid, "auto", "-", "publisher-citation", title=citation.title
+                ),
+                "front-matter",
+            )
+
+    # Leg 2 — title search over the stripped export name + first-page lines.
     out = _verdict_outcome(
         _resolve_by_title(
             store,
@@ -2932,7 +2994,7 @@ def _repair_one(
     if out is not None:
         return out
 
-    # Leg 4 — the paper's own front matter (gr658887): every registry
+    # Leg 3 — the paper's own front matter (gr658887): every registry
     # leg missed, but the body's opening chunk may still state the title
     # unambiguously — a title head immediately followed by a multi-name
     # byline, the article-opening signature the spread detectors test.
@@ -2940,7 +3002,7 @@ def _repair_one(
     # persist it instead of stamping a failure the owner queue then
     # fixes by hand. Parked conflicts never reach here — they return
     # above, so a local write can't mask a registry mismatch.
-    derived = _front_matter_title(store, ref)
+    derived = _front_matter_title(store, ref, opening=opening)
     if derived:
         return _apply_resolution(
             Resolution(rid, "auto", "-", "front-matter", title=derived),
@@ -3081,7 +3143,7 @@ def raise_junk_title_papers(
     limit: int | None = None,
     grace_days: int = _TITLE_FIX_GRACE_DAYS,
 ) -> list[int]:
-    """File a ``waiting-for:<login>`` todo per junk-titled paper automation failed.
+    """Queue terminal junk-title failures in the rolling paper-title review.
 
     A paper whose stored title is junk (``"__"``, a filename, PII, blank,
     or the no-title sentinel) still resolves in citations, so an untitled
@@ -3098,11 +3160,8 @@ def raise_junk_title_papers(
     Automation that *can* still fix a paper (a placeholder with a DOI is
     re-armed by :func:`requeue_placeholder_title_papers`; the cascade
     retries transient misses unstamped) is left alone; the rest is raised
-    to the paper's owner
-    (``refs.owner_login``, else the deployment owner ``PRECIS_OWNER``)
-    as a todo tagged ``waiting-for:<login>`` + ``paper-title-fix``. One
-    todo per paper: a multi-cite_key ref (pa344 × 3) must not fan out into
-    per-cite_key duplicates.
+    in one clerical batch, keyed by paper ref so cite-key aliases
+    cannot duplicate review rows.
 
     One routed variant (gr658650): before a title-fix todo is filed, the
     paper's body is checked for the OCR-concatenation signature — chunk
@@ -3140,13 +3199,15 @@ def raise_junk_title_papers(
     auto-resolved (``how='issue_splice'``) so the queue never holds both
     asks at once.
 
-    Idempotent: ``meta.source``/``meta.paper_ref_id`` identify the todo,
-    and a paper with an open todo of the kind this pass would file, or one
+    Idempotent: paper ref IDs identify rows in a batch and legacy todos.
+    A paper with an open review of the kind this pass would file, or one
     closed with any status other than ``STATUS:done`` (``wontfix``: a
     human chose to leave it), is never re-filed. When every prior todo is
     ``STATUS:done`` and the title is still junk, the fix did not take, so
-    one new todo is filed (and holds until it is closed in turn). Returns
-    the paper ref_ids a todo was (or, dry-run, would be) filed for.
+    the paper is appended as a row to the rolling batch todo
+    (:data:`TITLE_REVIEW`), which holds until the batch itself is closed.
+    Returns the paper ref_ids a batch row was (or, dry-run, would be)
+    filed for.
     """
     from precis.config import load_config
     from precis.ingest.add import ARTICLE_SPREAD_SOURCE
@@ -3167,9 +3228,11 @@ def raise_junk_title_papers(
                             WHERE e.ref_id = r.ref_id
                               AND e.source = %s AND e.event = %s) AS spliced,
                    EXISTS (SELECT 1 FROM refs t
-                            WHERE t.kind = 'todo'
-                              AND t.meta->>'source' = %s
-                              AND t.meta->>'paper_ref_id' = r.ref_id::text
+                            WHERE t.kind = 'todo' AND t.retired_at IS NULL
+                              AND ((t.meta->>'source' = %s
+                                    AND t.meta->>'paper_ref_id' = r.ref_id::text)
+                                OR (t.meta->>'source' = %s
+                                    AND (t.meta->'review_rows') ? r.ref_id::text))
                               AND NOT EXISTS (
                                     SELECT 1 FROM ref_tags rt
                                       JOIN tags tg USING (tag_id)
@@ -3206,6 +3269,7 @@ def raise_junk_title_papers(
                 ARTICLE_SPREAD_SOURCE,
                 ISSUE_SPLICE_EVENT,
                 TITLE_FIX_SOURCE,
+                TITLE_REVIEW.batch_source,
                 SPLIT_FIX_SOURCE,
                 grace_days,
                 ARTICLE_SPREAD_SOURCE,
@@ -3284,8 +3348,18 @@ def raise_junk_title_papers(
     if dry_run:
         return [t[0] for t in todo]
 
+    title_rows = {
+        str(ref_id): title_row(ref_id, cite_key, t)
+        for ref_id, t, _, cite_key, kind, _, _ in todo
+        if kind == "title"
+    }
+    if title_rows:
+        with store.tx() as conn:
+            TITLE_REVIEW.add(store, title_rows, conn=conn)
     default_owner = load_config().owner
     for ref_id, t, owner, cite_key, kind, had_title_todo, verdict in todo:
+        if kind == "title":
+            continue
         login = owner or default_owner
         handle = f"paper:{format_handle('paper', ref_id)}"
         if kind == "spliced":
@@ -3298,7 +3372,7 @@ def raise_junk_title_papers(
                 "one paper record per article."
             )
             fix_tag = SPLIT_FIX_TAG
-        elif kind == "split":
+        else:
             assert verdict is not None
             source = SPLIT_FIX_SOURCE
             text = (
@@ -3318,15 +3392,6 @@ def raise_junk_title_papers(
                 "flagged body:needs_split."
             )
             fix_tag = SPLIT_FIX_TAG
-        else:
-            source = TITLE_FIX_SOURCE
-            text = (
-                f"Fix title/metadata of {handle} (cite_key {cite_key or '?'}): "
-                f"stored title {t!r} is junk and automation could not repair it. "
-                "Set the real title (and authors/year) on the paper; until then "
-                "citations resolve to an untitled paper."
-            )
-            fix_tag = TITLE_FIX_TAG
         with store.tx() as conn:
             if kind == "split":
                 assert verdict is not None
@@ -3381,7 +3446,7 @@ def raise_junk_title_papers(
                 )
     if todo:
         log.info(
-            "raise_junk_title_papers: filed %d todo(s) (%d split)",
+            "raise_junk_title_papers: queued %d paper(s) (%d split)",
             len(todo),
             sum(1 for t in todo if t[4] != "title"),
         )

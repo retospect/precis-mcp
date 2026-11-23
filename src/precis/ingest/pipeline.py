@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.identity import (
+    is_placeholder_title,
     make_cite_key,
     make_content_hash,
     make_paper_id,
@@ -44,6 +45,7 @@ from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.lookup import lookup_doi
 from precis.ingest.marker import extract_blocks_marker, ocr_context
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
+from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.ingest.semantic_scholar import get_paper_by_id
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.authors import normalize_authors
@@ -424,8 +426,7 @@ class BodyExtraction:
     """What one Marker (or fitz-fallback) run over a PDF produced.
 
     ``chunks`` are the ``ord >= 0`` body rows; ``blocks`` the raw merged
-    blocks they came from (``extract_paper`` reads a title off them for
-    offline kinds); ``meta`` the body-owned ``refs.meta`` keys
+    blocks they came from (``extract_paper`` can recover a missing title from them); ``meta`` the body-owned ``refs.meta`` keys
     (``glyph_health`` when suspected, ``extract_used_fallback`` /
     ``extract_fallback_reason`` / ``extract_fallback_empty`` when the fitz
     fallback ran — see :func:`extract_body`). ``spread`` is the
@@ -650,7 +651,23 @@ def extract_paper(
             kind=kind,
         )
         blocks = body.blocks
-        if not metadata.title and not online:
+        if kind == "paper" and (
+            is_placeholder_title(metadata.title)
+            or is_garbage_title(metadata.title)
+            or is_pii(metadata.title)
+        ):
+            # Marker removes this block from the body. Preserve it on the
+            # ref when the metadata cascade didn't find a usable title.
+            extracted_title = _first_title_block(blocks)
+            if not (
+                is_placeholder_title(extracted_title)
+                or is_garbage_title(extracted_title)
+                or is_pii(extracted_title)
+            ):
+                metadata.title = extracted_title
+                if not authors_dict:
+                    cite_key_prefix = _title_cite_key(extracted_title, metadata.year)
+        elif not metadata.title and not online:
             metadata.title = _first_title_block(blocks)
             if metadata.title and not authors_dict:
                 cite_key_prefix = _title_cite_key(metadata.title, metadata.year)
