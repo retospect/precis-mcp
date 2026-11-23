@@ -31,6 +31,7 @@ from precis._result_budget import result_context_cap
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.response import Response
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -251,13 +252,43 @@ def _summarise(
     bounded preview of the payload.
     """
     preview = {k: _preview_value(v, k) for k, v in payload.items()}
-    if source == "chase":
+    if event == "job-minted" and "job_id" in preview:
+        # gr769707: the bare ``job_id=753644`` rendering taught callers to
+        # paste the number into ``get(kind='todo', id=753644)`` (a live job
+        # ref, NotFound). The handle is the safe form to copy — it only
+        # reads as the job kind.
+        summary = _summarise_job_minted(preview)
+    elif source == "chase":
         summary = _summarise_chase(event, preview)
     elif source.startswith("fetcher:"):
         summary = _summarise_fetcher(event, preview, cost_usd)
     else:
         summary = _generic_payload(preview)
     return _one_line(summary)
+
+
+def _summarise_job_minted(payload: dict[str, Any]) -> str:
+    """``job-minted`` payload → the child job's handle, never a bare id.
+
+    Both minters (``source='minter'``, legacy ``'dispatch'``, and
+    ``'plan_dispatch'``) write ``{'job_id': <int>, 'job_type': …,
+    'executor': …}``; the id is a *job* ref id, and rendering it bare
+    invited exactly the wrong read the log surfaces on a todo
+    (gr769707)."""
+    raw_id = payload.get("job_id")
+    handle = None
+    # ``isascii()`` too: ``²``.isdigit() is True but ``int('²')`` raises —
+    # a Unicode digit id must fall back to the raw form, not fail the log.
+    if isinstance(raw_id, int) or (
+        isinstance(raw_id, str) and raw_id.isascii() and raw_id.isdigit()
+    ):
+        handle = handle_registry.try_format("job", int(raw_id))
+    parts = [handle or f"job_id={raw_id!r}"]
+    if payload.get("job_type"):
+        parts.append(str(payload["job_type"]))
+    if payload.get("executor"):
+        parts.append(f"executor={payload['executor']}")
+    return " ".join(parts)
 
 
 def _summarise_chase(event: str, payload: dict[str, Any]) -> str:
