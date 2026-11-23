@@ -19,6 +19,11 @@ Modules, in the order a run uses them:
 * :mod:`.driver` - plan and task creation, ticks, waits, assertions.
 * :mod:`.scenarios` - the registry of named scenarios.
 
+The worker explicitly selects its ops directory's uv cache for slice syncs
+and sessions. Each world links that cache to the caller's uv cache, with a
+persistent checkout-local fallback, so run cleanup leaves cached wheels
+available to the next rehearsal.
+
 Nothing here is imported by ``src/precis``; the harness never touches
 production (see :func:`.safety.assert_scratch_dsn`).
 """

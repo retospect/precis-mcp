@@ -84,7 +84,6 @@ def build_env(
     uv_offline: bool = False,
 ) -> dict[str, str]:
     """The worker environment (see the module docstring)."""
-    uv_cache = launch.run(["uv", "cache", "dir"], timeout=60).stdout.strip()
     uv_python = launch.run(["uv", "python", "dir"], timeout=60).stdout.strip()
     own: dict[str, str] = {
         "PATH": _path(world),
@@ -128,7 +127,7 @@ def build_env(
         # ``tests/test_ship_*`` use): the command the gate would have run
         # arrives in PRECIS_SHIP_TEST_GATE_ARG and is run in the land folder.
         "PRECIS_SHIP_TEST_GATE_CMD": 'eval "$PRECIS_SHIP_TEST_GATE_ARG"',
-        "UV_CACHE_DIR": uv_cache or str(world.run_dir / "uv-cache"),
+        "UV_CACHE_DIR": str(world.ops / "uv-cache"),
         **({"UV_PYTHON_INSTALL_DIR": uv_python} if uv_python else {}),
         **({"UV_OFFLINE": "1"} if uv_offline else {}),
     }

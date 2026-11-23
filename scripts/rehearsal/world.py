@@ -131,6 +131,17 @@ class World:
     def ops(self) -> Path:
         return self.run_dir / "ops"
 
+    def link_uv_cache(self) -> None:
+        """Give the slice worker's usual ops cache a persistent backing directory."""
+        result = launch.run(["uv", "cache", "dir"], cwd=self.repo_root, timeout=60)
+        cache_dir = result.stdout.strip()
+        if result.returncode == 0 and cache_dir:
+            target = (self.repo_root / cache_dir).resolve()
+        else:
+            target = self.repo_root / "scratch" / "rehearsal" / "uv-cache"
+        target.mkdir(parents=True, exist_ok=True)
+        (self.ops / "uv-cache").symlink_to(target, target_is_directory=True)
+
     @property
     def tmp(self) -> Path:
         return self.run_dir / "tmp"
@@ -472,6 +483,7 @@ def build_world(
         world.logs,
     ):
         d.mkdir(parents=True, exist_ok=True)
+    world.link_uv_cache()
     sha = seed_remote(
         world, seed_ref, world.repo_root / "scratch" / "rehearsal" / "cache"
     )

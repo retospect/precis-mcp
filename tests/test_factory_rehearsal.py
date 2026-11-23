@@ -389,10 +389,51 @@ def test_build_env_is_scratch_only(
     assert not [p for p in parts if p.startswith("/Users/")]
     assert env["PRECIS_SLICE_ROOT"] == str(w.host)
     assert env["PRECIS_FACTORY_ORIGIN_URL"] == rworld.FAKE_ORIGIN
+    assert env["UV_CACHE_DIR"] == str(w.ops / "uv-cache")
     assert env["DOCKER_HOST"].endswith("rehearsal.sock")
     assert env["PRECIS_SLICE_STACK_SWEEP"] == "off"
     for lane in ("CLAUDE", "DEVIN", "KIMI", "CODEX"):
         assert env[f"PRECIS_{lane}_BIN"] == str(w.bin / lane.lower())
+
+
+@pytest.mark.parametrize(
+    ("cache_dir", "returncode", "expected"),
+    [
+        ("caller-cache\n", 0, "caller-cache"),
+        ("", 0, "scratch/rehearsal/uv-cache"),
+        ("unusable-cache\n", 1, "scratch/rehearsal/uv-cache"),
+    ],
+)
+def test_slice_uv_cache_survives_rehearsal_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cache_dir: str,
+    returncode: int,
+    expected: str,
+) -> None:
+    from precis.workers.job_types.run_slice import uv_cache_dir
+
+    def probe(
+        argv: list[str], *, cwd: Path, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        assert argv == ["uv", "cache", "dir"]
+        assert cwd == tmp_path
+        return subprocess.CompletedProcess(argv, returncode, stdout=cache_dir)
+
+    monkeypatch.setattr(rworld.launch, "run", probe)
+    for n in (1, 2):
+        world = rworld.World(run_dir=tmp_path / f"run-{n}", repo_root=tmp_path)
+        world.ops.mkdir(parents=True)
+        world.link_uv_cache()
+        monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(world.ops))
+        cache = uv_cache_dir()
+        assert cache.resolve() == tmp_path / expected
+        wheel = cache / "wheel"
+        if n == 1:
+            wheel.touch()
+        else:
+            assert wheel.is_file()
+        shutil.rmtree(world.run_dir)
 
 
 def test_worker_refuses_to_start_on_a_foreign_dsn(tmp_path: Path) -> None:
