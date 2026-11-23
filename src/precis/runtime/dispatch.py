@@ -1214,10 +1214,25 @@ def _disabled_kind_next(kind: str, reason: str, *, all_files_off: bool) -> list[
     skill that only said the env was the operator's to fix). Any other
     reason on a file kind is an instruction from whoever disabled it (the
     inline ``kind:reason`` hint a draft tick sets) and already says what to
-    do, so it keeps the pointer alone. The lead line claims the host reads
+    do, so it keeps the pointer alone. ``python`` with a ``missing ...``
+    reason (no ``PRECIS_PYTHON_ROOTS``, gr753020) gets its own do-not-retry
+    lead: read the code with the caller's own file tools, or the project's
+    memories, then the pointer. The lead line claims the host reads
     no workspace files only when ``all_files_off`` (every kind in
     ``_FILE_KINDS`` is gated out); with a sibling file kind live it names
     the one kind."""
+    if kind == "python" and reason.startswith("missing "):
+        # gr753020: 14 calls from 12 sessions retried search(kind='python')
+        # on a host with no PRECIS_PYTHON_ROOTS. The kind stays off for the
+        # life of the process, so say do-not-retry and name the reads that do
+        # work here: the caller's own file tools on its checkout.
+        return [
+            "kind 'python' is off on this host (no Python repo is configured); "
+            "do not retry — read the code with your own file and search tools, "
+            "or read the project's memories:",
+            "search(kind='memory', tags=['project:<project>'])",
+            _KINDS_DISABLED_POINTER,
+        ]
     if kind not in _FILE_KINDS or not (
         reason == "prohibited" or reason.startswith("missing ")
     ):
@@ -6713,7 +6728,9 @@ class DispatchMixin(RuntimeShape):
         named neither the id's kind nor the way out. The cause says the
         kind is disabled on this host (with the boot-time reason); the
         breadcrumb is :func:`_disabled_kind_next` (the disabled-kinds
-        skill, plus a worker's two actions for a file kind), or — when
+        skill, plus a worker's two actions for a file kind, or the
+        do-not-retry Python guidance for ``python`` without
+        ``PRECIS_PYTHON_ROOTS``), or — when
         the deployment serves the kind from another node — that node's
         role (never its hostname, gr681314)
         and the skill, without the worker's actions: the role is the

@@ -353,3 +353,25 @@ class TestDisabledFileKindWorkerNext:
         assert "file kinds (tex) are not live in this build" in kindless
         assert "do not retry" in kindless
         assert "workspace files" not in kindless
+
+
+class TestDisabledPythonKindNext:
+    """gr753020: 14 calls from 12 sessions retried ``search(kind='python')``
+    on a host with no PRECIS_PYTHON_ROOTS. The refusal now says not to
+    retry, names the caller's own file tools as the way to read code, and
+    offers the memory search; it no longer sends the caller to a skill
+    that only explains the env var."""
+
+    def test_python_refusal_says_do_not_retry(self, runtime: PrecisRuntime) -> None:
+        assert "python" not in runtime.hub.kinds  # no PRECIS_PYTHON_ROOTS here
+        out = runtime.dispatch("search", {"kind": "python", "q": "fix_gripe"})
+        assert "[error:Unsupported]" in out
+        assert "missing PRECIS_PYTHON_ROOTS" in out
+        assert "kind 'python' is off on this host" in out
+        assert "do not retry" in out
+        assert "your own file and search tools" in out
+        assert _next_calls(out, "search") == [
+            "search(kind='memory', tags=['project:<project>'])"
+        ]
+        assert not _next_calls(out, "tag")
+        assert "precis-kinds-disabled-help" in out
