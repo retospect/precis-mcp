@@ -28,7 +28,7 @@ instead of relying on the (still-supported, optional) seed handles. It gates on
 ``PRECIS_MCP_CONFIG`` being present — where the precis MCP tools are unreachable
 it degrades to the single-shot web fn (``_default_claude``) — and honours an
 explicit ``PRECIS_DIAGRAM_AGENTIC=0/1`` override. Either way the call routes
-through the LLM router, so ``PRECIS_LLM_BACKEND`` switches it and a
+through the LLM router, where the resolved model selects the wire and a
 model failure degrades to a chat-only turn (the loop's ``_safe_call``), never a
 crash.
 """

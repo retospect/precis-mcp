@@ -1,12 +1,8 @@
 """plan_tick OSS-branch tier selection + turn-cap helpers.
 
-The transport is the router's decision: the ANTHROPIC backend routes the tick
-to ``claude -p`` (``CLAUDE_AGENT`` — covered by ``test_plan_tick_claude``); a
-tools-capable OSS backend routes it to the in-process ``tools=`` loop. On the
-OSS branch :func:`plan_tick._resolve_oss_tier` keeps the ``LLM:<tag>`` capability
-tier when the router would route it to the OSS loop, else falls to ``BIG``
-(a served OSS model). DB-free: pure env / router reads, no store, no ``claude``
-binary.
+The in-process harness keeps the tag's tier when its resolved model uses
+OPENAI_TOOLS and falls back to BIG for Claude models. These checks read
+router configuration without a store or Claude subprocess.
 """
 
 from __future__ import annotations
@@ -16,7 +12,7 @@ import pytest
 from precis.utils.llm.router import Tier
 from precis.workers.job_types import plan_tick as pt
 
-# ── _resolve_oss_tier: tag → served tier, backend-aware ────────────────
+# ── _resolve_oss_tier: tag → tier by resolved transport ────────────────
 
 _TAG_TIER = {
     "opus": Tier.FRONTIER,
@@ -29,41 +25,36 @@ _TAG_TIER = {
 def test_resolve_oss_tier_honours_tag_under_tools_capable_cloud(
     alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Under a tools-capable cloud backend (``openai``) the router routes the
-    tag's cloud tier to the OSS loop, so ``_resolve_oss_tier`` keeps it."""
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    """The tag keeps its tier when its model uses the OSS tools loop."""
+    monkeypatch.setenv(
+        "PRECIS_LLM_MODEL_" + _TAG_TIER[alias].value.upper(), "qwen-test"
+    )
     assert pt._resolve_oss_tier(alias) is _TAG_TIER[alias]
 
 
 @pytest.mark.parametrize("alias", ["opus", "sonnet", "haiku"])
-def test_resolve_oss_tier_falls_to_big_under_anthropic(
+def test_resolve_oss_tier_falls_to_big_for_claude_model(
     alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default ANTHROPIC backend routes tool-using cloud tiers to ``claude -p``
-    (not the OSS loop), so the tick falls to the served ``BIG`` tier."""
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "anthropic")
+    """A Claude model makes the in-process harness fall back to BIG."""
+    monkeypatch.setenv("PRECIS_LLM_MODEL_" + _TAG_TIER[alias].value.upper(), "sonnet")
     assert pt._resolve_oss_tier(alias) is Tier.BIG
 
 
-@pytest.mark.parametrize("backend", ["openai", "anthropic"])
+@pytest.mark.parametrize("model", ["qwen-test", "sonnet"])
 def test_resolve_oss_tier_local_always_runs_big(
-    backend: str, monkeypatch: pytest.MonkeyPatch
+    model: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The ``local`` alias now names ``BIG`` directly (retired the location-coupled ``LOCAL_BIG`` tier this used to pin) — a
-    served OSS model still backs it under either backend: tag_tier is
-    already BIG under ``openai`` (routes OPENAI_TOOLS) and the ``_resolve_
-    oss_tier`` fallback is also BIG under ``anthropic`` (routes claude_agent
-    instead, so the fallback branch fires) — either way the result is BIG."""
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", backend)
+    """The local alias and the in-process fallback both resolve to BIG."""
+    monkeypatch.setenv("PRECIS_LLM_MODEL_BIG", model)
     assert pt._resolve_oss_tier("local") is Tier.BIG
 
 
 def test_resolve_oss_tier_unknown_tag_defaults_to_frontier_family(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unrecognized tag maps to the frontier family, then subject to the
-    same backend gate."""
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    """An unrecognized tag uses FRONTIER when its model supports OSS tools."""
+    monkeypatch.setenv("PRECIS_LLM_MODEL_FRONTIER", "qwen-test")
     assert pt._resolve_oss_tier("no-such-tier") is Tier.FRONTIER
 
 

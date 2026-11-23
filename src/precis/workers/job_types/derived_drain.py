@@ -253,26 +253,21 @@ def _local_rung_resources(pass_name: str) -> set[str]:
     chain ahead of the tier chain."""
     from precis.utils.llm import operations
     from precis.utils.llm.router import (
-        Backend,
         Tier,
         _rung_is_cloud,
-        resolve_backend,
         resolve_chain,
         resolve_model,
     )
 
-    backend = resolve_backend()
-    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
-        backend = Backend.ANTHROPIC
     op = operations.resolve_op(pass_name)
     tier = op[0] if op is not None else Tier.SMALL
     if op is not None:
-        model = op[1] or resolve_model(tier, backend=backend)
+        model = op[1] or resolve_model(tier)
     else:
-        model = _request_model(pass_name) or resolve_model(tier, backend=backend)
-    rungs = operations.resolve_op_chain(
-        pass_name, tools_needed=False, backend=backend
-    ) or resolve_chain(tier, tools_needed=False, backend=backend)
+        model = _request_model(pass_name) or resolve_model(tier)
+    rungs = operations.resolve_op_chain(pass_name, tools_needed=False) or resolve_chain(
+        tier, tools_needed=False, model=model
+    )
     return {f"llm:{rung.model or model}" for rung in rungs if not _rung_is_cloud(rung)}
 
 

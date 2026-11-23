@@ -741,9 +741,8 @@ def test_cli_unavailable_chain_defers_batch(
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
     monkeypatch.delenv("PRECIS_CLAUDE_BIN", raising=False)
-    # Force the ANTHROPIC backend so BIG resolves the claude_p rung.
+    # Pin a Claude model so BIG resolves the claude_p rung.
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     client = DispatchClient(tier=Tier.BIG)
     with caplog.at_level(logging.WARNING, logger="precis.workers.card_describe"):

@@ -30,7 +30,6 @@ def test_decide_cli_json_and_legacy(
     )
     monkeypatch.setattr(recipes, "lookup", lambda _s: None)
     monkeypatch.setattr(operations, "resolve_op_chain", lambda *a, **kw: None)
-    monkeypatch.setattr(router, "resolve_backend", lambda: router.Backend.ANTHROPIC)
     monkeypatch.setattr(router, "resolve_model", lambda *a, **kw: "test-model")
     monkeypatch.setattr(
         router,

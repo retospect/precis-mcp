@@ -73,11 +73,9 @@ before any chunk-level axis is swept corpus-wide (tracked in OPEN-ITEMS).
 **Pre-claim viability guard** (:func:`_llm_lane_viable`, gr243945): before
 claiming anything, :func:`run_axis_pass` cheaply (no network call) checks
 whether ``dispatch``'s tier can reach an LLM at all via the router's own
-``resolve_backend``/``resolve_chain`` seam. A worker whose config pins the
-``openai`` backend but is missing ``PRECIS_LLM_BASE_URL`` (a copied env
-template minus its endpoint — the ``openai_compat`` transport's one hard
-requirement) would otherwise still win the claim race every sweep and fail
-every item, starving a cluster worker that could actually serve it. On that
+``resolve_chain`` seam. A hosted completion chain with no endpoint or viable
+fallback would otherwise win the claim race every sweep and fail every
+item, starving a cluster worker that could serve it. On that
 one known-dead config shape the pass logs once and returns without claiming;
 any other viability-probe outcome (including a probe error) falls through to
 claim as before — fail-open, so this guard can never itself idle a healthy
@@ -102,7 +100,7 @@ import yaml
 
 from precis.store.types import Tag
 from precis.utils.llm.json_reply import extract_json_object
-from precis.utils.llm.router import Backend, Transport, resolve_backend, resolve_chain
+from precis.utils.llm.router import Transport, resolve_chain
 from precis.workers import ref_lease
 from precis.workers._claim import (
     NOT_REVIEW_NOTE_SQL,
@@ -1032,24 +1030,11 @@ def _enrich_ref(conn: Any, rows: list[dict[str, Any]]) -> None:
 
 
 def _llm_lane_viable(dispatch: Any) -> bool:
-    """Cheap, no-network check: can ``dispatch`` actually reach an LLM at
-    all, or is this worker's config the known-dead-on-arrival shape (backend
-    pinned to ``openai`` — an operator config/env intent — with
-    ``PRECIS_LLM_BASE_URL`` unset, e.g. a compose stack that copied the
-    backend flag but not the endpoint url)?
+    """Recognize a completion chain that needs a missing hosted endpoint.
 
-    Reuses the router's own :func:`~precis.utils.llm.router.resolve_backend`
-    + :func:`~precis.utils.llm.router.resolve_chain` — the exact seam
-    ``route()`` walks — rather than re-deriving env logic here. Returns
-    ``False`` only when the resolved chain is empty, or when *every* rung in
-    it is :data:`~precis.utils.llm.router.Transport.OPENAI_COMPAT` with no
-    base url configured (the one transport that hard-needs it — an
-    ``OPENAI_TOOLS`` rung can still serve locally via a ``served_by`` slot,
-    and any surviving claude-fallback rung means the lane is NOT dead). A
-    tier that never reaches ``OPENAI_COMPAT`` (the default ``ANTHROPIC``
-    backend routes ``SMALL`` to the local loopback) is always viable here —
-    this guard targets the one config-only, always-reproducible dead state,
-    not every way a transport might transiently fail.
+    Inspect the resolved model and chain without calling a provider. A named
+    profile can supply its own endpoint, and a Claude fallback keeps the chain
+    viable even if the hosted primary is missing its endpoint.
 
     ``dispatch`` with no ``tier`` attribute (a bare test double, or a future
     caller passing something other than
@@ -1063,12 +1048,16 @@ def _llm_lane_viable(dispatch: Any) -> bool:
         return True
     try:
         tools_needed = bool(getattr(dispatch, "tools_needed", False))
-        backend = resolve_backend()
-        chain = resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+        chain = resolve_chain(
+            tier, tools_needed=tools_needed, model=getattr(dispatch, "model", None)
+        )
         if not chain:
             return False
-        if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
-            if all(rung.transport is Transport.OPENAI_COMPAT for rung in chain):
+        if not os.environ.get("PRECIS_LLM_BASE_URL"):
+            if all(
+                rung.transport is Transport.OPENAI_COMPAT and rung.profile is None
+                for rung in chain
+            ):
                 return False
         return True
     except Exception:

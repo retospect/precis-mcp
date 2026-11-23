@@ -686,33 +686,23 @@ class TestValidateSubmit:
         assert err is None
 
 
-# ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
-#
-# fix_gripe.run()'s agent runs `claude -p` (via the call_claude_agent
-# chokepoint) whose --model comes from resolve_model(Tier.FRONTIER) —
-# under backend=openai that's an OSS slug the claude CLI can't run. The
-# gate must skip cleanly *before* any subprocess is spawned (indeed,
-# before the gripe/repo are even resolved) rather than let claude -p 400.
+# A model the Claude CLI cannot run must skip before store access or launch.
 
 
-class TestBackendFlipGate:
+class TestClaudeModelGate:
     @staticmethod
-    def _cfg() -> FixGripeConfig:
+    def _cfg(model: str = "claude-opus-5-5") -> FixGripeConfig:
         return FixGripeConfig(
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
             claude_bin="claude",
-            claude_model="z-ai/glm-5.2",
+            claude_model=model,
             timeout_seconds=1800,
         )
 
-    def test_skips_under_openai_backend_without_touching_store_or_subprocess(
+    def test_skips_non_claude_model_before_store_access_or_launch(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from precis.utils.llm.router import Backend
-
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.OPENAI)
-
         class _BoomStore:
             """Any DB access past the gate is a test failure."""
 
@@ -725,23 +715,20 @@ class TestBackendFlipGate:
         )
 
         outcome = fix_gripe.run(
-            store=_BoomStore(), job_id=1, gripe_id=42, config=self._cfg()
+            store=_BoomStore(), job_id=1, gripe_id=42, config=self._cfg("z-ai/glm-5.2")
         )
 
         assert isinstance(outcome, RunOutcome)
         assert outcome.status == "skipped"
-        assert "openai" in outcome.summary_text
-        assert "openai" in outcome.gripe_comment_text
+        assert "z-ai/glm-5.2" in outcome.summary_text
+        assert "z-ai/glm-5.2" in outcome.gripe_comment_text
         assert outcome.branch is None
         assert outcome.sha is None
         assert spawn_calls == []
 
-    def test_proceeds_past_gate_under_default_anthropic_backend(
+    def test_claude_model_proceeds_past_gate(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from precis.utils.llm.router import Backend
-
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         # Ack the unsandboxed-agent gate (gr179498) so we reach store.get_ref.
         monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
 
@@ -765,7 +752,7 @@ class TestUnsandboxedAckGate:
     it. A containerized run needs no ack (new rule, §H cycle a)."""
 
     @staticmethod
-    def _cfg() -> FixGripeConfig:
+    def _cfg(model: str = "claude-opus-5-5") -> FixGripeConfig:
         return FixGripeConfig(
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
@@ -777,9 +764,6 @@ class TestUnsandboxedAckGate:
     def test_skips_when_no_container_and_no_ack_without_touching_store(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from precis.utils.llm.router import Backend
-
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
         monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
 
@@ -805,10 +789,8 @@ class TestUnsandboxedAckGate:
         """New rule (§H cycle a): a containerized run needs no operator ack —
         the pre-check must NOT skip just because the ack env var is unset, as
         long as the host can actually run the container."""
-        from precis.utils.llm.router import Backend
         from precis.workers.executors import agent_container as ac
 
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
         monkeypatch.setattr(ac, "container_agent_enabled", lambda: True)
         monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)
@@ -889,7 +871,7 @@ class TestSpawnClaudeCallShape:
     trusted-side push after ``call_claude_agent`` returns."""
 
     @staticmethod
-    def _cfg() -> FixGripeConfig:
+    def _cfg(model: str = "claude-opus-5-5") -> FixGripeConfig:
         return FixGripeConfig(
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
@@ -1086,10 +1068,7 @@ class TestRunExceptionMapping:
         tmp_path: Path,
         spawn_effect,
     ) -> RunOutcome:
-        from precis.utils.llm.router import Backend
-
         repo = self._make_repo(tmp_path)
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
         monkeypatch.setattr(fix_gripe, "_spawn_claude", spawn_effect)
         return fix_gripe.run(
@@ -1248,7 +1227,7 @@ def test_prompt_names_the_already_fixed_marker() -> None:
 
 class TestTerminalGripeSkip:
     @staticmethod
-    def _cfg() -> FixGripeConfig:
+    def _cfg(model: str = "claude-opus-5-5") -> FixGripeConfig:
         return FixGripeConfig(
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
@@ -1385,10 +1364,7 @@ class TestRunPerformsTrustedSidePush:
     ) -> None:
         import subprocess
 
-        from precis.utils.llm.router import Backend
-
         repo = self._make_repo(tmp_path)
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
 
         # run() computes this same path internally: work_dir/clones/gripe_<id>.
@@ -1564,9 +1540,6 @@ class TestDeliveryIsDecidedByTheRemote:
         ).stdout.strip()
 
     def _arm(self, monkeypatch: pytest.MonkeyPatch, spawn: Any) -> None:
-        from precis.utils.llm.router import Backend
-
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
         monkeypatch.setattr(fix_gripe, "_spawn_claude", spawn)
 
@@ -1834,11 +1807,8 @@ class TestDeliveryIsDecidedByTheRemote:
         recording an attempt would be the same kind of false statement the rest
         of this class exists to prevent — just in the other direction.
         """
-        from precis.utils.llm.router import Backend
-
         repo = self._make_repo(tmp_path)
         self._run_git(repo, "remote", "add", "origin", str(tmp_path / "nope.git"))
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
 
         spawned: list[object] = []
@@ -1871,11 +1841,8 @@ class TestDeliveryIsDecidedByTheRemote:
         gripe, because the clone happened before the pre-flight and only the
         next attempt for the *same* gripe ever removed it. A skip now costs no
         clone, and reclaims one an earlier attempt left."""
-        from precis.utils.llm.router import Backend
-
         repo = self._make_repo(tmp_path)
         self._run_git(repo, "remote", "add", "origin", str(tmp_path / "nope.git"))
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
         cloned: list[object] = []
         monkeypatch.setattr(

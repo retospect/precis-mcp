@@ -45,7 +45,6 @@ def test_judge_refuses_subscription_before_provider(
         router.Transport(transport),
         profile="subscription" if transport == "openai_compat" else None,
     )
-    monkeypatch.setattr(router, "resolve_backend", lambda: router.Backend.ANTHROPIC)
     monkeypatch.setattr(router, "resolve_model", lambda *a, **kw: "fallback")
     monkeypatch.setattr(router._keyword_route, "match_request", lambda req: None)
     monkeypatch.setattr(operations, "resolve_op", lambda source: None)
@@ -94,7 +93,6 @@ def test_judge_operation_chain_local_then_cloud(
             router.Transport.OPENAI_COMPAT, model="z-ai/glm-4.7-flash", label="cloud"
         ),
     ]
-    monkeypatch.setattr(router, "resolve_backend", lambda: router.Backend.ANTHROPIC)
     monkeypatch.setattr(router, "resolve_model", lambda *a, **kw: "unused")
     monkeypatch.setattr(operations, "resolve_op", lambda source: None)
     monkeypatch.setattr(operations, "resolve_op_chain", lambda *a, **kw: chain)
@@ -148,7 +146,6 @@ def _judge_chain(monkeypatch: pytest.MonkeyPatch, chain: list[Any]) -> None:
     alone: it skips ``llm:requirement-judge`` itself."""
     from precis.utils.llm import operations, router
 
-    monkeypatch.setattr(router, "resolve_backend", lambda: router.Backend.ANTHROPIC)
     monkeypatch.setattr(router, "resolve_model", lambda *a, **kw: "unused")
     monkeypatch.setattr(operations, "resolve_op", lambda source: None)
     monkeypatch.setattr(operations, "resolve_op_chain", lambda *a, **kw: chain)

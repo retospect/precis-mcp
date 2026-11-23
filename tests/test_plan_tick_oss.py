@@ -1,8 +1,7 @@
-"""plan_tick's in-process OSS ``tools=`` loop branch (the OpenAI backend).
+"""plan_tick's in-process OSS ``tools=`` loop harness.
 
-Under a tools-capable OSS backend (``PRECIS_LLM_BACKEND=openai``) the tick runs
-in-process over the OSS ``tools=`` loop rather than as ``claude -p`` (the
-ANTHROPIC-backend branch, covered by ``test_plan_tick_claude``).
+With an OpenAI-compatible model the tick runs
+in-process over the OSS ``tools=`` loop.
 The tick goes *through* ``router.route`` (so it gains the breaker gate +
 route-log), which runs the OSS loop synchronously in-thread; the tick binds its
 runtime context (parent todo / workspace / model / agentlog / the draft
@@ -11,8 +10,6 @@ These tests cover: the context override + thread isolation, the per-tick
 kind-gate honored by the runtime, the ``LlmResult`` → ``PlanTickOutcome``
 mapping (pause / stop / max_turns / error), the executor honoring the explicit
 ``resume_reason``, and ``run()`` binding the context around the loop.
-The backend is set to ``openai`` here only to pin the tag's cloud tier so the
-resolved model id is deterministic.
 
 DB-free: ``run()``'s planner-prompt / workspace / agentlog helpers are stubbed
 and the OSS loop is a scripted fake, so no ``claude`` binary and no store.
@@ -187,7 +184,7 @@ def _run_oss(
     draft: tuple[str, str, str] | None = None,
     params: dict[str, Any] | None = None,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
-    """Drive ``plan_tick.run`` under the OpenAI backend with the OSS loop
+    """Drive ``plan_tick.run`` on the in-process harness with the OSS loop
     scripted; returns the outcome plus what the loop observed. ``dispatch`` is
     NOT stubbed — the real router runs, calling the stubbed ``run_oss_tool_loop``
     — so the breaker/admission/slot path is exercised (dark without a store)."""
@@ -211,12 +208,10 @@ def _run_oss(
             stop_reason=stop_reason,
         )
 
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://oss.example/v1")
     # Non-empty so the tick advertises precis tools (tool_less=False).
     monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
-    for var in ("PRECIS_MODEL_OPUS", "PRECIS_MODEL_SONNET", "PRECIS_MODEL_HAIKU"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
     )
@@ -255,7 +250,7 @@ def test_run_oss_binds_context_and_maps_clean(monkeypatch: pytest.MonkeyPatch) -
     # `meta.llm_tier` alias becomes advisory. In prod this id is itself
     # superseded by rung 0 of `llm.chain.big` (local qwen3-235b), which pins its
     # own model; it only surfaces here because no chain override is configured.
-    assert seen["model_id"] == "claude-sonnet-5-5"
+    assert seen["model_id"] == "qwen-test"
     # The alias still reaches the tick's *context* — it is what the planner
     # prompt sees and what `ctx.model` records — it just no longer picks placement.
     assert ctx.model == "opus"
@@ -342,7 +337,7 @@ def test_run_oss_breaker_pause_is_resumable(monkeypatch: pytest.MonkeyPatch) -> 
     from precis.utils.llm import router
     from precis.utils.llm.router import LlmResult, Tier
 
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://oss.example/v1")
     monkeypatch.setattr(
         planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()

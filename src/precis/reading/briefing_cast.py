@@ -1191,9 +1191,7 @@ def build_reading_briefing(
     # The rationale: Sonnet 5 is amply capable for this prose composition, and
     # pinning an explicit claude id both cuts consumption ~⅕ (so the *unified*
     # subscription quota lasts far longer under a crunch — the 07-24→30
-    # outage's original trigger) AND forces claude_agent regardless of the
-    # live llm.chain / backend, so a fleet llm.backend flip can't silently
-    # hijack this cast onto an OpenRouter OSS model (gripe 171782).
+    # outage's original trigger). The model pin supplies the default transport.
     #
     # The tier below is the *request* tier; `resolve_op("reading_brief")` remaps
     # it from the registry before dispatch reads it, so the registry is what

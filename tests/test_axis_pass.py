@@ -576,14 +576,14 @@ def test_dispatch_raise_on_ref_level_axis_is_not_reclaimed_next_sweep(
 def test_misconfigured_openai_compat_env_skips_claim(
     store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The Mac-compose-stack shape: PRECIS_LLM_BACKEND=openai but no
+    """A hosted SMALL model with no
     PRECIS_LLM_BASE_URL — SMALL's only rung is openai_compat, dead on
     arrival. The pass must skip the claim entirely (zero DB claim attempts)
     and log exactly one clear line, instead of claiming + failing the row
     every sweep."""
     ref_id = seed_ref(store, title="A study of Pd catalysts")
     seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_SUMMARIZE_MODEL", "qwen-test")
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
     client = _TieredFakeClient("chemistry")
@@ -606,12 +606,9 @@ def test_misconfigured_openai_compat_env_skips_claim(
 def test_healthy_env_claims_proceed_as_before(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Companion positive: the default (ANTHROPIC) backend routes SMALL to
-    the local loopback transport, not openai_compat — the guard must not
-    engage, and the claim proceeds exactly as it did before gr243945."""
+    """The default SMALL model uses local loopback and clears the claim guard."""
     ref_id = seed_ref(store, title="A study of Pd catalysts")
     seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
     client = _TieredFakeClient("chemistry")
@@ -634,13 +631,13 @@ def test_viability_probe_exception_fails_open_and_claims(
     seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
 
     def _boom(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError("resolve_backend blew up")
+        raise RuntimeError("resolve_chain blew up")
 
-    # axis_pass imports `resolve_backend` by name (`from ... import
-    # resolve_backend`), so the patch target is axis_pass's own binding, not
-    # the router module's — patching `router.resolve_backend` would silently
+    # axis_pass imports `resolve_chain` by name (`from ... import
+    # resolve_chain`), so the patch target is axis_pass's own binding, not
+    # the router module's — patching `router.resolve_chain` would silently
     # miss it.
-    monkeypatch.setattr("precis.workers.axis_pass.resolve_backend", _boom)
+    monkeypatch.setattr("precis.workers.axis_pass.resolve_chain", _boom)
 
     client = _TieredFakeClient("chemistry")
     result = run_axis_pass(

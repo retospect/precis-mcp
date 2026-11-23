@@ -258,7 +258,7 @@ def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     # Bind the process store the way ``cli/worker.py`` and ``runtime/factory.py``
     # do at boot. Without it ``budget.meter.active_store()`` is None, and every
-    # override ``live_config`` reads through it — ``llm.backend``,
+    # override ``live_config`` reads through it — ``llm.model.<tier>``,
     # ``llm.chain.<tier>``, ``llm.op.<source>`` — degrades to "no override"
     # *silently*, because that layer is deliberately failure-tolerant (a missing
     # table must not dark a tier). A manual ``precis cast run`` therefore ignored

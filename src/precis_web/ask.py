@@ -210,7 +210,7 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
     route defers the call), :class:`ClaudeAgentError` on any other.
     """
     req = build_request(prompt, store=store, conv_ref_id=conv_ref_id)
-    # Routed through the LLM seam so PRECIS_LLM_BACKEND can
+    # Routed through the LLM seam so the resolved model can
     # switch the follow-up onto an OSS model. The AgentResult-returning /
     # ClaudeAgentError-raising contract is preserved so the route is untouched:
     # route folds failures into res.error, which we re-raise.

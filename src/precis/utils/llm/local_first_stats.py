@@ -67,10 +67,9 @@ def _configured_paid_model(op: str) -> tuple[str, str] | None:
     if resolved is None:
         return None
     tier, model = resolved
-    backend = router.resolve_backend()
-    chain = resolve_op_chain(op, tools_needed=False, backend=backend)
+    chain = resolve_op_chain(op, tools_needed=False)
     if chain is None:
-        chain = router.resolve_chain(tier, tools_needed=False, backend=backend)
+        chain = router.resolve_chain(tier, tools_needed=False, model=model)
     for rung in chain:
         if router._rung_is_cloud(rung):
             return rung.model or model or router.resolve_model(

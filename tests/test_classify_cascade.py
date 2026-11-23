@@ -1172,7 +1172,13 @@ def test_inflight_cap_follows_the_shared_bucket_rate(
             super().__init__(max_workers=max_workers, **kw)
 
     monkeypatch.setattr(classify_mod, "ThreadPoolExecutor", _SpyExecutor)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    monkeypatch.setenv(
+        live_config.chain_env_var(Tier.SMALL),
+        '[{"model":"qwen-test","transport":"openai_compat"}]',
+    )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     rates: dict[str, float | None] = {"host:openrouter.ai": 2.4}
     monkeypatch.setattr(
@@ -1194,7 +1200,7 @@ def test_inflight_cap_follows_the_shared_bucket_rate(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://10.0.0.5:8080/v1")
     assert classify_mod._limiter_provider() is None
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "anthropic")
+    monkeypatch.delenv(live_config.chain_env_var(Tier.SMALL))
     assert classify_mod._limiter_provider() is None  # SMALL runs local
 
 

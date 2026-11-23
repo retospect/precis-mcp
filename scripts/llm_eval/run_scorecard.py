@@ -7,7 +7,7 @@ writes. Emits a per-tier scorecard (ordinal + raw mean + n per axis), the
 cost-per-task, and flags the cheapest OSS model that matches-or-beats the tier's
 claude incumbent on every wired axis.
 
-Env (OpenRouter): PRECIS_LLM_BACKEND=openai, PRECIS_LLM_BASE_URL, PRECIS_LLM_API_KEY.
+Env (OpenRouter): PRECIS_LLM_BASE_URL, PRECIS_LLM_API_KEY.
 """
 
 from __future__ import annotations

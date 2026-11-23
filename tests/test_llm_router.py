@@ -30,12 +30,10 @@ from precis.utils.claude_agent import AgentResult, stream_terminal_reason
 from precis.utils.claude_p import ClaudePResult
 from precis.utils.llm import kimi, router
 from precis.utils.llm.router import (
-    Backend,
     LlmRequest,
     LlmResult,
     Tier,
     Transport,
-    resolve_backend,
     resolve_model,
     result_from_agent,
     result_from_claude_p,
@@ -1727,7 +1725,6 @@ def test_dispatch_claude_p_forwards_explicit_thinking_not_temperature(
         return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
 
     monkeypatch.setattr(router, "call_claude_p", fake_p)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     out = route(
         LlmRequest(tier=Tier.FRONTIER, prompt="x", thinking=False, temperature=0.9)
@@ -1755,7 +1752,6 @@ def test_dispatch_claude_p_tier_default_thinking_stays_off_the_wire(
         return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
 
     monkeypatch.setattr(router, "call_claude_p", fake_p)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     # select_transport never sends SMALL to claude_p, so force the rung the
     # way prod does — a chain override (an llm.op.<source> / llm.chain.<tier>
     # row lands here identically).
@@ -2019,15 +2015,10 @@ def test_drain_refusal_names_the_served_rung_not_the_tier_alias(
     )
 
 
-def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
+def test_dispatch_big_oss_model_routes_to_tools_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BIG + tools_needed under the OPENAI backend runs the OSS tools loop —
-    the in-process litellm tool loop, not a NotImplementedError. (retired
-    the LOCAL_BIG tier, which pinned this transport unconditionally
-    regardless of backend; BIG now takes this path only when the backend/
-    chain routes it there — see the backend-routing table below for the
-    ANTHROPIC-default case, which stays on claude_agent.)"""
+    """A tool-using BIG request with an OSS model runs the tools loop."""
     seen: dict[str, object] = {}
 
     def fake_tools(req: LlmRequest, model: str) -> LlmResult:
@@ -2038,15 +2029,14 @@ def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
         )
 
     monkeypatch.setattr(router, "_dispatch_openai_tools", fake_tools)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "looped"
     assert out.turns_used == 2
-    assert seen["model"] == "claude-sonnet-5-5"  # resolved from the tier table
+    assert seen["model"] == "qwen-test"  # resolved from the tier table
 
 
 def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2156,9 +2146,8 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
 def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """The OPENAI_TOOLS transport threads the loop's definitive tool-call count
     into LlmResult.tool_calls — so the review seam's empty-result assertion works
-    on the local/OSS backend, not just the claude_agent path. A `0` here must be
-    a real 0 (not None), or a silent-empty pass on a backend-switched reviewer
-    would go undetected."""
+    on the OSS tools loop. A zero count must stay zero so reviewers can
+    detect an empty pass."""
     from precis.utils.llm.openai_tools import AgentLoopResult
     from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
 
@@ -2508,7 +2497,7 @@ def test_dispatch_openai_tools_cost_reaches_route_log(
     monkeypatch.setattr(route_log, "enabled", lambda: True)
     recorded: list[route_log.LlmCallRecord] = []
     monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
@@ -3250,33 +3239,13 @@ def test_dispatch_explicit_model_override(monkeypatch: pytest.MonkeyPatch) -> No
             tier=Tier.FRONTIER,
             prompt="x",
             tools_needed=True,
-            model="pinned-override",
+            model="claude-pinned-override",
         )
     )
-    assert calls["model"] == "pinned-override"
+    assert calls["model"] == "claude-pinned-override"
 
 
-# ── OpenAI-compatible backend (LLM independence, ships dark) ───────────
-
-
-@pytest.mark.parametrize(
-    ("env", "expected"),
-    [
-        (None, Backend.ANTHROPIC),  # unset default
-        ("anthropic", Backend.ANTHROPIC),
-        ("openai", Backend.OPENAI),
-        ("OpenAI", Backend.OPENAI),  # case-insensitive
-        ("bogus", Backend.ANTHROPIC),  # unknown degrades, never darks
-    ],
-)
-def test_resolve_backend(
-    env: str | None, expected: Backend, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    if env is None:
-        monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
-    else:
-        monkeypatch.setenv("PRECIS_LLM_BACKEND", env)
-    assert resolve_backend() is expected
+# ── OpenAI-compatible model routing ───────────
 
 
 @pytest.mark.parametrize(
@@ -3288,15 +3257,14 @@ def test_resolve_backend(
         # …and tool-using cloud diverts to the OSS tools loop.
         (Tier.FRONTIER, True, Transport.OPENAI_TOOLS),
         (Tier.BIG, True, Transport.OPENAI_TOOLS),
-        # SMALL mirrors the cloud split (OPENAI_COMPAT under the openai
-        # backend — the OpenRouter-bypass hosted-small remap).
+        # A hosted SMALL model uses the OpenAI-compatible completion wire.
         (Tier.SMALL, False, Transport.OPENAI_COMPAT),
     ],
 )
-def test_select_transport_openai_backend(
+def test_select_transport_oss_model(
     tier: Tier, tools_needed: bool, expected: Transport
 ) -> None:
-    got = select_transport(tier, tools_needed=tools_needed, backend=Backend.OPENAI)
+    got = select_transport(tier, tools_needed=tools_needed, model="qwen-test")
     assert got is expected
 
 
@@ -3306,8 +3274,7 @@ def test_provider_registry_is_total() -> None:
 
 
 def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PRECIS_LLM_BACKEND=openai + a base url routes a tool-less cloud call to
-    the hosted OSS backend, keyed from the vault, at the resolved model."""
+    """A hosted model and a Claude model use different wires in one process."""
     import precis.secrets as secrets
     import precis.workers.llm_summarize as summ
 
@@ -3325,7 +3292,6 @@ def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")  # OSS id via the tier table
 
@@ -3338,6 +3304,19 @@ def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["api_key"] == "sk-vault-key"
     assert seen["model"] == "qwen-small"
     assert seen["messages"] == [{"role": "user", "content": "judge this"}]
+
+    def fake_claude(prompt: str, **kwargs: object) -> ClaudePResult:
+        assert kwargs["model"] == "claude-sonnet-test"
+        return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
+
+    monkeypatch.setattr(router, "call_claude_p", fake_claude)
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "claude-sonnet-test")
+    assert route(LlmRequest(tier=Tier.BIG, prompt="x")).error is None
+
+    # An unregistered source can override the tier's default on this call.
+    explicit = route(LlmRequest(tier=Tier.BIG, prompt="x", model="qwen-explicit"))
+    assert explicit.error is None
+    assert seen["model"] == "qwen-explicit"
 
 
 def _openai_compat_with_body(
@@ -3642,7 +3621,7 @@ def test_dispatch_openai_compat_thinking_off_disables_reasoning(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_SUMMARIZE_MODEL", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     out = route(LlmRequest(tier=Tier.SMALL, prompt="classify this"))
@@ -3677,7 +3656,6 @@ def test_dispatch_openai_compat_thinking_on_omits_reasoning_disable(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")
 
@@ -3710,7 +3688,6 @@ def test_dispatch_openai_compat_explicit_thinking_false_overrides_big_tier_defau
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-mid")
 
@@ -3722,11 +3699,10 @@ def test_dispatch_openai_compat_explicit_thinking_false_overrides_big_tier_defau
     assert extra_body["reasoning"] == {"enabled": False}
 
 
-def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
+def test_claude_model_runs_without_openai_base_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Backend on but no base url → cloud calls fall back to claude rather than
-    POST to a phantom endpoint (ships-dark safety)."""
+    """A Claude ID runs without an OpenAI endpoint."""
     calls: dict[str, object] = {}
 
     def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
@@ -3734,7 +3710,6 @@ def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
         return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
 
     monkeypatch.setattr(router, "call_claude_p", fake_p)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
 
@@ -3746,9 +3721,7 @@ def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
 
 # ── _dispatch_openai_compat: PRECIS_LLM_BASE_URL validation (gr259631) ──
 #
-# route()'s Backend.OPENAI-without-a-base-url guard (the test above) never
-# runs when a chain override pins an openai_compat rung directly — see the
-# resolve_chain guard tests below for that half. This half covers the
+# The chain parser checks explicit hosted completion rungs. This covers the
 # transport's own defense: even reached with an unset/malformed base url (a
 # rung built any other way — a future call site, a test double), it must
 # fail with a named config error instead of letting `LlmConfig.url` become a
@@ -3806,11 +3779,10 @@ def test_dispatch_openai_compat_valid_base_url_still_dispatches(
     assert seen["url"] == "https://openrouter.ai/api/v1"
 
 
-def test_dispatch_openai_backend_tools_routes_to_loop(
+def test_dispatch_frontier_oss_model_routes_to_tools_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On the OpenAI backend, a tool-using cloud call routes to the OSS tools
-    loop (not claude_agent) — the LLM-independence path for agentic work."""
+    """A tool-using FRONTIER request with an OSS model runs the tools loop."""
     called: dict[str, object] = {}
 
     def fake_tools(req: LlmRequest, model: str) -> LlmResult:
@@ -3821,7 +3793,6 @@ def test_dispatch_openai_backend_tools_routes_to_loop(
         )
 
     monkeypatch.setattr(router, "_dispatch_openai_tools", fake_tools)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "deepseek-v3")
 
@@ -3831,11 +3802,10 @@ def test_dispatch_openai_backend_tools_routes_to_loop(
     assert out.text == "ok"
 
 
-def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
+def test_dispatch_frontier_claude_model_uses_claude_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default (anthropic) backend: tool-using cloud calls stay on
-    claude_agent — the OSS path engages only when opted in."""
+    """The default FRONTIER Claude model uses the Claude agent for tools."""
     calls: dict[str, object] = {}
 
     def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
@@ -3843,7 +3813,6 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
         return AgentResult(final_text="a", cost_usd=None, duration_s=0.0, turns_used=1)
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
     assert calls.get("ran") is True
@@ -3852,15 +3821,13 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
 # ── Part 1: transparent hosted-small remap ──────────────────────────────
 # ``glm-fleet-flip-safety`` (git-only) Part 1 — the 395-error class:
 # classify/summarize pin model="summarizer" (a local-only alias),
-# which 400s when it reaches a hosted OSS endpoint under the flip.
+# which a hosted OSS endpoint rejects.
 
 
-def test_dispatch_local_small_remaps_to_hosted_under_openai_flip(
+def test_dispatch_local_small_remaps_on_explicit_hosted_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SMALL pinning model="summarizer" under backend=openai + a hosted
-    base url routes OPENAI_COMPAT with the HOSTED small-model id, not the dead
-    local alias (acceptance criterion 1)."""
+    """An explicit hosted rung remaps the local summarizer alias."""
     seen: dict[str, object] = {}
 
     def fake_compat(req: LlmRequest, *, model: str) -> LlmResult:
@@ -3870,7 +3837,10 @@ def test_dispatch_local_small_remaps_to_hosted_under_openai_flip(
         )
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: [{"model": "summarizer", "transport": "openai_compat"}],
+    )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", raising=False)
 
@@ -3894,7 +3864,9 @@ def test_dispatch_local_small_remap_env_override(
         )
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setattr(
+        router, "resolve_chain", lambda *a, **kw: [Rung(Transport.OPENAI_COMPAT)]
+    )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "some/other-small")
 
@@ -3903,13 +3875,10 @@ def test_dispatch_local_small_remap_env_override(
     assert seen["model"] == "some/other-small"
 
 
-def test_dispatch_local_small_no_remap_under_default_anthropic(
+def test_dispatch_local_small_preserves_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Under the default (anthropic) backend SMALL still resolves to
-    Transport.LOCAL — no hosted-OSS transport, so the remap is a hard no-op
-    and `summarizer` reaches the loopback proxy unchanged (acceptance
-    criterion 1 + 5: byte-identical to today)."""
+    """The local completion adapter forwards the summarizer alias."""
     import precis.workers.llm_summarize as summ
 
     seen: dict[str, object] = {}
@@ -3922,7 +3891,6 @@ def test_dispatch_local_small_no_remap_under_default_anthropic(
             return _FakeOpenAI(text="local gloss", total_tokens=3)
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
@@ -3931,12 +3899,10 @@ def test_dispatch_local_small_no_remap_under_default_anthropic(
     assert out.model == "summarizer"
 
 
-def test_dispatch_local_small_no_remap_when_base_url_unset_even_under_openai(
+def test_dispatch_local_small_stays_local_with_hosted_endpoint_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """backend=openai but PRECIS_LLM_BASE_URL absent → the existing
-    ships-dark demotion already forces ANTHROPIC/LOCAL before the remap
-    helper ever sees a hosted transport — still `summarizer` unchanged."""
+    """A hosted endpoint can coexist with the local summarizer alias."""
     import precis.workers.llm_summarize as summ
 
     seen: dict[str, object] = {}
@@ -3949,8 +3915,7 @@ def test_dispatch_local_small_no_remap_when_base_url_unset_even_under_openai(
             return _FakeOpenAI(text="x", total_tokens=1)
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
-    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
@@ -3990,7 +3955,7 @@ def test_dispatch_served_by_slot_is_never_remapped(
         )
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(fake_tools))
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
@@ -4026,7 +3991,9 @@ def test_dispatch_saturated_slot_escape_also_remaps(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setattr(
+        router, "resolve_chain", lambda *a, **kw: [Rung(Transport.OPENAI_COMPAT)]
+    )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
@@ -4227,7 +4194,7 @@ def test_failover_ladder_oss_tools_has_claude_fallback(
 ) -> None:
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
     ladder = router._failover_ladder(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, model="qwen-test"
     )
     assert [r.transport for r in ladder] == [
         Transport.OPENAI_TOOLS,
@@ -4238,9 +4205,7 @@ def test_failover_ladder_oss_tools_has_claude_fallback(
 
 
 def test_failover_ladder_oss_judge_has_claude_p_fallback() -> None:
-    ladder = router._failover_ladder(
-        Tier.MEDIUM, tools_needed=False, backend=Backend.OPENAI
-    )
+    ladder = router._failover_ladder(Tier.MEDIUM, tools_needed=False, model="qwen-test")
     assert [r.transport for r in ladder] == [
         Transport.OPENAI_COMPAT,
         Transport.CLAUDE_P,
@@ -4248,9 +4213,7 @@ def test_failover_ladder_oss_judge_has_claude_p_fallback() -> None:
 
 
 def test_failover_ladder_anthropic_has_no_fallback() -> None:
-    ladder = router._failover_ladder(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.ANTHROPIC
-    )
+    ladder = router._failover_ladder(Tier.FRONTIER, tools_needed=True)
     # a claude primary has nothing to fall back to.
     assert [r.transport for r in ladder] == [Transport.CLAUDE_AGENT]
 
@@ -4273,10 +4236,8 @@ def test_failover_ladder_small_has_no_claude_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Per the roster ("small" skips Anthropic entirely), SMALL's
-    ladder never grows a claude-fallback rung, even under backend=openai."""
-    ladder = router._failover_ladder(
-        Tier.SMALL, tools_needed=False, backend=Backend.OPENAI
-    )
+    ladder stays on the OpenAI-compatible transport for a hosted OSS model."""
+    ladder = router._failover_ladder(Tier.SMALL, tools_needed=False, model="qwen-test")
     assert [r.transport for r in ladder] == [Transport.OPENAI_COMPAT]
 
 
@@ -4292,8 +4253,8 @@ def test_claude_default_ignores_model_override(
 def test_dispatch_failover_flag_falls_back_to_claude(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End to end: backend=openai + failover on, OSS tool loop errors → the
-    claude agent runs instead (with the claude model, not the OSS one)."""
+    """With failover enabled, an OSS tool loop error falls back to the
+    Claude agent using the tier's default Claude model."""
     oss = _FakeProv(_err("oss unreachable"))
     calls: dict[str, object] = {}
 
@@ -4305,10 +4266,9 @@ def test_dispatch_failover_flag_falls_back_to_claude(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    monkeypatch.setenv("PRECIS_MODEL_OPUS", "qwen-test")
 
     out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
@@ -4339,7 +4299,7 @@ def test_dispatch_failover_all_rungs_timeout_is_paused(
             raise TimeoutError("timed out after 120.0s")
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_SUMMARIZE_MODEL", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
@@ -4369,7 +4329,7 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
             raise HTTPError("http://x", 401, "Unauthorized", Message(), None)
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_SUMMARIZE_MODEL", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
@@ -4388,20 +4348,20 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
 # flag (the Phase B unlock — see test_dispatch_chain_override_honored_flag_off).
 
 _LADDER_CASES = [
-    (Tier.FRONTIER, True, Backend.OPENAI),
-    (Tier.MEDIUM, False, Backend.OPENAI),
-    (Tier.FRONTIER, True, Backend.ANTHROPIC),
-    (Tier.BIG, True, Backend.ANTHROPIC),
-    (Tier.SMALL, False, Backend.OPENAI),
+    (Tier.FRONTIER, True, "qwen-test"),
+    (Tier.MEDIUM, False, "qwen-test"),
+    (Tier.FRONTIER, True, None),
+    (Tier.BIG, True, None),
+    (Tier.SMALL, False, "qwen-test"),
 ]
 
 
-@pytest.mark.parametrize(("tier", "tools_needed", "backend"), _LADDER_CASES)
+@pytest.mark.parametrize(("tier", "tools_needed", "model"), _LADDER_CASES)
 def test_resolve_chain_no_override_flag_off_is_single_primary_rung(
     monkeypatch: pytest.MonkeyPatch,
     tier: Tier,
     tools_needed: bool,
-    backend: Backend,
+    model: str | None,
 ) -> None:
     """Phase B default: no override + failover flag off → a single primary rung
     (``select_transport``), byte-for-byte the pre-Phase-B non-failover path —
@@ -4411,18 +4371,18 @@ def test_resolve_chain_no_override_flag_off_is_single_primary_rung(
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
 
-    chain = router.resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+    chain = router.resolve_chain(tier, tools_needed=tools_needed, model=model)
 
-    primary = router.select_transport(tier, tools_needed=tools_needed, backend=backend)
+    primary = router.select_transport(tier, tools_needed=tools_needed, model=model)
     assert chain == [Rung(primary, label="primary")]
 
 
-@pytest.mark.parametrize(("tier", "tools_needed", "backend"), _LADDER_CASES)
+@pytest.mark.parametrize(("tier", "tools_needed", "model"), _LADDER_CASES)
 def test_resolve_chain_no_override_flag_on_matches_failover_ladder(
     monkeypatch: pytest.MonkeyPatch,
     tier: Tier,
     tools_needed: bool,
-    backend: Backend,
+    model: str | None,
 ) -> None:
     """With PRECIS_LLM_FAILOVER on, no override falls to the built-in
     auto-failover ladder — byte-for-byte the legacy failover-on behaviour."""
@@ -4433,8 +4393,8 @@ def test_resolve_chain_no_override_flag_on_matches_failover_ladder(
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    default = router._failover_ladder(tier, tools_needed=tools_needed, backend=backend)
-    chain = router.resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+    default = router._failover_ladder(tier, tools_needed=tools_needed, model=model)
+    chain = router.resolve_chain(tier, tools_needed=tools_needed, model=model)
 
     assert chain == default
 
@@ -4462,9 +4422,7 @@ def test_resolve_chain_valid_override_maps_rungs_in_order(
         ),
     )
 
-    chain = router.resolve_chain(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
-    )
+    chain = router.resolve_chain(Tier.FRONTIER, tools_needed=True, model="qwen-test")
 
     assert chain == [
         Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="cloud"),
@@ -4482,9 +4440,7 @@ def test_resolve_chain_parses_bare_opt_in(monkeypatch: pytest.MonkeyPatch) -> No
         ],
     )
 
-    chain = router.resolve_chain(
-        Tier.BIG, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    chain = router.resolve_chain(Tier.BIG, tools_needed=False)
 
     assert chain == [
         Rung(Transport.CLAUDE_P, model="claude-sonnet-5-5", label="chain", bare=True),
@@ -4504,13 +4460,9 @@ def test_resolve_chain_non_boolean_bare_degrades_whole_chain(
         ],
     )
 
-    chain = router.resolve_chain(
-        Tier.BIG, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    chain = router.resolve_chain(Tier.BIG, tools_needed=False)
 
-    assert chain == router._default_chain(
-        Tier.BIG, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    assert chain == router._default_chain(Tier.BIG, tools_needed=False)
     assert all(not r.bare for r in chain)
 
 
@@ -4569,9 +4521,7 @@ def test_resolve_chain_override_placement_missing_labels_chain(
         "precis.utils.llm.live_config.chain_override",
         lambda _tier: [{"model": "z-ai/glm-5.2", "transport": "openai_tools"}],
     )
-    chain = router.resolve_chain(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
-    )
+    chain = router.resolve_chain(Tier.FRONTIER, tools_needed=True, model="qwen-test")
     assert chain == [Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="chain")]
 
 
@@ -4600,12 +4550,10 @@ def test_resolve_chain_malformed_override_falls_back_to_ladder(
 
     with caplog.at_level("WARNING"):
         chain = router.resolve_chain(
-            Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
+            Tier.FRONTIER, tools_needed=True, model="qwen-test"
         )
 
-    default = router._default_chain(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
-    )
+    default = router._default_chain(Tier.FRONTIER, tools_needed=True, model="qwen-test")
     assert chain == default
     assert any("llm-chain" in rec.message for rec in caplog.records)
 
@@ -4618,23 +4566,15 @@ def test_resolve_chain_empty_override_falls_back_to_default(
     monkeypatch.setattr("precis.utils.llm.live_config.chain_override", lambda _tier: [])
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
 
-    chain = router.resolve_chain(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
-    )
-    default = router._default_chain(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
-    )
+    chain = router.resolve_chain(Tier.FRONTIER, tools_needed=True, model="qwen-test")
+    default = router._default_chain(Tier.FRONTIER, tools_needed=True, model="qwen-test")
     assert chain == default
 
 
 # ── resolve_chain: an openai_compat rung needs PRECIS_LLM_BASE_URL (gr259631) ──
 #
-# route()'s Backend.OPENAI-without-a-base-url guard flips the backend to
-# ANTHROPIC *before* resolve_chain runs — but that guard only sees the
-# auto-resolved backend. An operator ``llm.chain.<tier>`` override pins its
-# rungs' transports directly, bypassing it: a chain that pins openai_compat
-# with no base url set would build a rung that urlopens a bare
-# '/chat/completions' path on every single call. resolve_chain must degrade
+# An explicit OpenAI-compatible rung still needs a configured endpoint.
+# Without one, resolve_chain must degrade
 # it the same way route()'s guard degrades the auto path — fall back to the
 # default chain — rather than handing FailoverProvider a rung doomed to fail.
 
@@ -4657,13 +4597,9 @@ def test_resolve_chain_override_openai_compat_without_base_url_falls_back_to_def
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
 
     with caplog.at_level("WARNING"):
-        chain = router.resolve_chain(
-            Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
-        )
+        chain = router.resolve_chain(Tier.FRONTIER, tools_needed=False)
 
-    default = router._default_chain(
-        Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    default = router._default_chain(Tier.FRONTIER, tools_needed=False)
     assert chain == default
     assert Transport.OPENAI_COMPAT not in [r.transport for r in chain]
     assert any("llm-chain" in rec.message for rec in caplog.records)
@@ -4686,9 +4622,7 @@ def test_resolve_chain_override_openai_compat_with_base_url_is_honored(
     )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    chain = router.resolve_chain(
-        Tier.FRONTIER, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    chain = router.resolve_chain(Tier.FRONTIER, tools_needed=False)
 
     assert chain == [Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-5.2", label="cloud")]
 
@@ -4708,7 +4642,6 @@ def test_dispatch_chain_override_openai_compat_without_base_url_falls_back_to_cl
             }
         ],
     )
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
 
@@ -4754,13 +4687,9 @@ def test_resolve_chain_tool_less_rung_dropped_for_tool_using_call(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     with caplog.at_level("WARNING"):
-        chain = router.resolve_chain(
-            Tier.MEDIUM, tools_needed=True, backend=Backend.ANTHROPIC
-        )
+        chain = router.resolve_chain(Tier.MEDIUM, tools_needed=True)
 
-    assert chain == router._default_chain(
-        Tier.MEDIUM, tools_needed=True, backend=Backend.ANTHROPIC
-    )
+    assert chain == router._default_chain(Tier.MEDIUM, tools_needed=True)
     assert all(r.transport.carries_tools for r in chain)
     assert any("tool-less rung" in rec.message for rec in caplog.records)
 
@@ -4778,9 +4707,7 @@ def test_resolve_chain_tool_less_rung_kept_for_completion_call(
     )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    chain = router.resolve_chain(
-        Tier.MEDIUM, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    chain = router.resolve_chain(Tier.MEDIUM, tools_needed=False)
 
     assert chain == [Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-4.7", label="cloud")]
 
@@ -4808,9 +4735,7 @@ def test_resolve_chain_mixed_override_keeps_only_tool_carrying_rungs(
         ],
     )
 
-    chain = router.resolve_chain(
-        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
-    )
+    chain = router.resolve_chain(Tier.FRONTIER, tools_needed=True, model="qwen-test")
 
     assert chain == [
         Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="cloud"),
@@ -4826,8 +4751,10 @@ def test_carries_tools_matches_the_two_agentic_wires(transport: Transport) -> No
 
 
 @pytest.mark.parametrize("tier", list(Tier))
-@pytest.mark.parametrize("backend", list(Backend))
-def test_select_transport_and_carries_tools_agree(tier: Tier, backend: Backend) -> None:
+@pytest.mark.parametrize("model", ["claude-sonnet-test", "qwen-test"])
+def test_select_transport_and_carries_tools_agree(
+    tier: Tier, model: str | None
+) -> None:
     """``carries_tools`` is the invariant ``select_transport`` was written
     around; pinning them together stops the two drifting apart.
 
@@ -4835,7 +4762,7 @@ def test_select_transport_and_carries_tools_agree(tier: Tier, backend: Backend) 
     routes to a completion wire whatever ``tools_needed`` says, so a
     tool-using call on that tier is a caller error rather than a routing one.
     """
-    chosen = router.select_transport(tier, tools_needed=True, backend=backend)
+    chosen = router.select_transport(tier, tools_needed=True, model=model)
     assert chosen.carries_tools is (tier is not Tier.SMALL)
 
 
@@ -5171,8 +5098,7 @@ def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
     """A saturated (paused) local slot serving BIG, with failover on, retries
     rung 0 unmodified — no ``local_url`` override — so it lands on the hosted
     OSS endpoint (OpenRouter) instead of returning the paused error
-    immediately. BIG only takes the OPENAI_TOOLS transport when the backend
-    routes it there (here: backend=openai)."""
+    immediately. The hosted OSS model uses the OPENAI_TOOLS transport."""
     from precis.utils.llm import local_serving as ls
 
     monkeypatch.setattr(
@@ -5194,9 +5120,8 @@ def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(fake_tools))
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
@@ -5204,7 +5129,7 @@ def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
     assert out.error is None
     assert out.paused is False
     assert seen["local_url"] is None  # rung 0 retried WITHOUT the busy endpoint
-    assert seen["model"] == "claude-sonnet-5-5"
+    assert seen["model"] == "qwen-test"
 
 
 def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
@@ -5236,9 +5161,8 @@ def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
@@ -5248,10 +5172,10 @@ def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
     assert calls["model"] == "claude-sonnet-5-5"
 
 
-def test_dispatch_paused_local_slot_small_default_backend_still_paused(
+def test_dispatch_paused_local_slot_small_local_transport_stays_paused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SMALL under the default (anthropic) backend resolves to
+    """The default SMALL model resolves to
     Transport.LOCAL, which has no hosted mode — it always reads the local
     loopback proxy (``LlmConfig.from_env()``), never ``PRECIS_LLM_BASE_URL``.
     A paused slot must NOT retry through it (that would just re-hit the same
@@ -5275,7 +5199,6 @@ def test_dispatch_paused_local_slot_small_default_backend_still_paused(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _RunFn(_boom))
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
 
@@ -5283,10 +5206,10 @@ def test_dispatch_paused_local_slot_small_default_backend_still_paused(
     assert "busy" in (out.error or "")
 
 
-def test_dispatch_paused_local_slot_small_openai_backend_falls_to_hosted(
+def test_dispatch_paused_local_slot_small_hosted_model_falls_to_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SMALL under backend=openai resolves to Transport.OPENAI_COMPAT,
+    """A hosted SMALL model resolves to Transport.OPENAI_COMPAT,
     which DOES have a hosted mode — a paused slot should retry rung 0
     unmodified and land on the hosted endpoint, same as BIG."""
     from precis.utils.llm import local_serving as ls
@@ -5310,7 +5233,7 @@ def test_dispatch_paused_local_slot_small_openai_backend_falls_to_hosted(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_SUMMARIZE_MODEL", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
@@ -5341,7 +5264,7 @@ def test_dispatch_paused_local_slot_without_failover_still_returns_paused(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(_boom))
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
@@ -5402,7 +5325,6 @@ def test_dispatch_draining_local_slot_defers_never_escapes(
         ),
     )
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
     out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
@@ -5995,7 +5917,7 @@ def test_cloud_aliases_and_local_alias_resolve_to_capability_tiers() -> None:
     """Capability tiers + placement chains Phase C: the three cloud legacy aliases (opus/sonnet/haiku)
     resolve through the capability tiers, and `local` now pins BIG directly —
     the location-coupled LOCAL_BIG tier this alias used to pin is retired; a
-    served OSS model still backs BIG when the backend/chain routes there."""
+    served OSS model still backs BIG when its chain routes there."""
     assert router.PLANNER_TIER_BY_ALIAS["opus"] is Tier.FRONTIER
     assert router.PLANNER_TIER_BY_ALIAS["sonnet"] is Tier.BIG
     assert router.PLANNER_TIER_BY_ALIAS["haiku"] is Tier.MEDIUM
@@ -6291,7 +6213,6 @@ def test_dispatch_placement_local_on_cloud_only_chain_is_error(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     called = _FakeProv(_ok("should not run"))
     monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, called)
 
@@ -6375,7 +6296,6 @@ def test_require_transport_keeps_only_matching_rungs(
     the claude rung — the fenced fall-through the pin exists to close:
     the OSS provider never runs, so the tick can't land unboxed."""
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     oss = _FakeProv(_ok("must not run"))
     claude = _FakeProv(_ok("boxed run"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
@@ -6408,7 +6328,6 @@ def test_require_transport_emptied_chain_is_error_not_fallback(
     an *error* result — not paused, and never a degrade onto the OSS
     rung (which would run the fenced tick unboxed)."""
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     oss = _FakeProv(_ok("must not run"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
     monkeypatch.setattr(
@@ -6439,7 +6358,6 @@ def test_require_transport_empty_gate_logs_the_fenced_out_rung(
     fenced *out* of — ``ladder[0]`` captured before filtering — not the
     required transport the chain lacked."""
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setitem(
         router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("must not run"))
     )
@@ -6690,7 +6608,6 @@ def test_resolve_selection_happy_path_shape(monkeypatch: pytest.MonkeyPatch) -> 
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
 
     row = router.resolve_selection("sonnet")
@@ -6725,7 +6642,6 @@ def test_resolve_selection_strict_local_empty_is_error(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     row = router.resolve_selection("sonnet", placement="local")
 
@@ -6741,7 +6657,6 @@ def test_resolve_selection_temperature_warning_on_claude_rung(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
 
     row = router.resolve_selection("sonnet", temperature=0.7)
@@ -6759,7 +6674,6 @@ def test_resolve_selection_reasoning_ignored_warning_on_claude_rung(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
 
     row = router.resolve_selection("sonnet", reasoning="off")
@@ -6770,7 +6684,7 @@ def test_resolve_selection_reasoning_ignored_warning_on_claude_rung(
 def test_resolve_selection_temp_default_small_is_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``small`` resolves (default config, ANTHROPIC backend) to the local
+    """``small`` resolves with its default model to the local
     transport, which honors temperature — so ``temp_default`` falls through
     to the tier default (:data:`_TIER_GEN_DEFAULTS`'s ``0.0`` for SMALL)."""
     router._card_cache.clear()
@@ -6778,7 +6692,6 @@ def test_resolve_selection_temp_default_small_is_zero(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
 
     row = router.resolve_selection("small")
@@ -6798,7 +6711,6 @@ def test_resolve_selection_temp_default_none_on_claude_rung(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
 
     row = router.resolve_selection("sonnet")
@@ -6817,7 +6729,6 @@ def test_resolve_selection_temp_default_card_override(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr(
         router,
         "_catalog_card_meta",
@@ -6838,7 +6749,6 @@ def test_resolve_selection_temp_default_card_override_out_of_range_falls_back(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setattr(
         router, "_catalog_card_meta", lambda model: {"gen_defaults": {"temperature": 5}}
     )
@@ -6859,7 +6769,7 @@ def test_resolve_selection_reasoning_level_not_supported_warning(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
 
@@ -6887,7 +6797,6 @@ def test_dispatch_async_placement_parity_with_sync_dispatch(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     async def fake_agent_async(prompt: str, **kwargs: object) -> AgentResult:
         raise AssertionError("should not be called — placement filter must fire first")

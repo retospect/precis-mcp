@@ -99,7 +99,7 @@ from precis.utils.container_limits import (
     container_size_mb,
     memory_cap_killed,
 )
-from precis.utils.llm.router import Backend, resolve_backend
+from precis.utils.llm.router import is_claude_model
 from precis.workers.executors import (
     _sandbox_harvest,
     _sandbox_inputs,
@@ -888,29 +888,12 @@ def _launch_build(
 ) -> None:
     """Stage ``/work`` with ``PROMPT.md``, launch a detached claude
     container, record its handle (``mode:build``)."""
-    # GLM/OpenRouter fleet-flip safety gate: the container spawns a raw `claude` CLI, which
-    # assumes Claude model semantics — under backend=openai,
-    # resolve_sandbox_model() (-> resolve_model(Tier.FRONTIER)) returns an OSS
-    # slug that `claude` can't run (HTTP 400). Skip cleanly rather than
-    # launch a doomed container: STATUS:cancelled, no failure bubble (this
-    # is a config mismatch, not a job failure), so a re-claim after the
-    # backend reverts to anthropic just launches normally. Build-mode only
-    # — mode:run spawns no claude CLI, so the backend flip doesn't apply.
-    if resolve_backend() is Backend.OPENAI:
-        log.info(
-            "claude_docker: llm.backend=openai — skipping sandbox_run job "
-            "%d (the container spawns a raw `claude` CLI that assumes "
-            "Claude model semantics, unsupported under the OSS/OpenRouter "
-            "backend)",
-            ref_id,
-        )
+    model = params.get("model") or _sandbox_run.resolve_sandbox_model()
+    if not is_claude_model(model):
         _skip(
             store,
             ref_id,
-            "sandbox_run: llm.backend=openai is not supported — the "
-            "container spawns a raw `claude` CLI (Claude model semantics "
-            "only); skipped cleanly, re-attempt once the backend reverts "
-            "to anthropic",
+            f"sandbox_run: Claude harness requires a Claude model, got {model!r}",
         )
         return
 
@@ -935,7 +918,6 @@ def _launch_build(
 
     wall_seconds = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     image = params.get("image") or _sandbox_run.default_image()
-    model = params.get("model") or _sandbox_run.resolve_sandbox_model()
     name = container_name(ref_id)
 
     # Stage the /work run dir with PROMPT.md (the harvest contract). A
@@ -1915,7 +1897,7 @@ def _fail(store: Store, ref_id: int, reason: str) -> None:
 
 def _skip(store: Store, ref_id: int, reason: str) -> None:
     """Cleanly terminate a job before/without a container — a config-
-    mismatch no-op, not a failure (e.g. the backend-flip safety gate).
+    mismatch such as a model the Claude CLI cannot run.
     Event chunk + STATUS:cancelled, **no** failure bubble — mirrors the
     cooperative-cancel treatment ``claude_inproc`` gives a pre-run cancel
     request, so a downstream parent todo isn't tagged ``child-failed`` for

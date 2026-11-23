@@ -22,7 +22,6 @@ from precis.errors import BadInput
 from precis.utils.llm import live_config, router
 from precis.utils.llm import local_serving as ls
 from precis.utils.llm.router import (
-    Backend,
     LlmRequest,
     LlmResult,
     Rung,
@@ -131,23 +130,19 @@ def test_bad_rung_in_env_chain_raises_not_default(
         "PRECIS_LLM_CHAIN_SMALL", '[{"model": "m", "transport": "warp-drive"}]'
     )
     with pytest.raises(BadInput, match="PRECIS_LLM_CHAIN_SMALL rung 0"):
-        router.resolve_chain(Tier.SMALL, tools_needed=False, backend=Backend.ANTHROPIC)
+        router.resolve_chain(Tier.SMALL, tools_needed=False)
 
 
 def test_bad_rung_in_db_chain_still_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, {"llm.chain.small": '[{"model": "m", "transport": "nope"}]'})
-    chain = router.resolve_chain(
-        Tier.SMALL, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    chain = router.resolve_chain(Tier.SMALL, tools_needed=False)
     assert chain  # fell back to the default chain, no raise
 
 
 def test_env_chain_resolves_to_local_rung(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, {"llm.chain.small": _DB_CHAIN})
     monkeypatch.setenv("PRECIS_LLM_CHAIN_SMALL", _QWEN_CHAIN)
-    chain = router.resolve_chain(
-        Tier.SMALL, tools_needed=False, backend=Backend.ANTHROPIC
-    )
+    chain = router.resolve_chain(Tier.SMALL, tools_needed=False)
     assert chain == [Rung(Transport.LOCAL, model=_QWEN_ID, label="local")]
 
 

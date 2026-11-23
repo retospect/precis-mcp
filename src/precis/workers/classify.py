@@ -75,12 +75,11 @@ from precis.utils import rate_limit
 from precis.utils.http import is_internal_host, netloc_provider
 from precis.utils.llm.json_reply import extract_json_object
 from precis.utils.llm.router import (
-    Backend,
     DispatchError,
     Tier,
     Transport,
-    resolve_backend,
-    select_transport,
+    resolve_chain,
+    resolve_profile,
 )
 from precis.utils.rate_limit import RateLimited
 from precis.workers._claim import (
@@ -160,23 +159,27 @@ def _max_concurrency() -> int:
 
 def _limiter_provider() -> str | None:
     """The limiter row classify's hosted SMALL calls take, or ``None`` when
-    the lane runs local/internal (no shared bucket). Mirrors the router's
-    SMALL transport pick (``select_transport`` → ``OPENAI_COMPAT`` under the
-    OpenAI backend at ``PRECIS_LLM_BASE_URL``) and ``openai_tools._polite``'s
-    internal-host exemption; a served-local rung 0 under an operator chain
-    is not seen here, so the clamp then applies to local work too — a
-    bounded over-pacing (the LLM host row is wide), never under-pacing."""
-    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
-    if not base_url or is_internal_host(base_url):
+    the primary rung runs local/internal."""
+    from precis.utils.llm import operations
+
+    resolved = operations.resolve_op("classify")
+    tier, model = resolved if resolved is not None else (Tier.SMALL, None)
+    chain = operations.resolve_op_chain(
+        "classify", tools_needed=False
+    ) or resolve_chain(tier, tools_needed=False, model=model)
+    rung = chain[0]
+    if rung.transport is not Transport.OPENAI_COMPAT:
         return None
-    backend = resolve_backend()
-    if backend is not Backend.OPENAI:
-        return None
-    if select_transport(Tier.SMALL, tools_needed=False, backend=backend) is not (
-        Transport.OPENAI_COMPAT
-    ):
-        return None
-    return netloc_provider(base_url)
+    if rung.profile:
+        profile = resolve_profile(rung.profile)
+        base_url = profile.base_url if profile else ""
+    else:
+        base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    return (
+        netloc_provider(base_url)
+        if base_url and not is_internal_host(base_url)
+        else None
+    )
 
 
 def _inflight_cap() -> int | None:

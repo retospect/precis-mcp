@@ -546,7 +546,6 @@ def test_registry_defaults_are_dark_and_register_local_arms() -> None:
 
 
 def _router_without_external_reads(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(router, "resolve_backend", lambda: router.Backend.ANTHROPIC)
     monkeypatch.setattr(router, "resolve_model", lambda *args, **kwargs: "local-model")
     monkeypatch.setattr(router._keyword_route, "match_request", lambda req: None)
     monkeypatch.setattr(

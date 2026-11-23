@@ -586,8 +586,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # Routed through the LLM seam: tool-less agent call on FRONTIER (module
     # docstring — chemistry fragment CHOICE is a judgment call, closer to
     # cad_propose's whole-design authoring than structure_propose's
-    # mechanical op translation). PRECIS_LLM_BACKEND still switches
-    # transport; PRECIS_SE_PROPOSE_ATOMIC_MODEL overrides the model id.
+    # mechanical op translation). PRECIS_SE_PROPOSE_ATOMIC_MODEL overrides the
+    # routing model.
     try:
         res = route(
             LlmRequest(

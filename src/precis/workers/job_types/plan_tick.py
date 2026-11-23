@@ -14,8 +14,7 @@ the effective tier's placement chain (:func:`_tick_transport`):
 
 The effective tier comes from the operations registry
 (:mod:`precis.utils.llm.operations`), so an ``llm.op.plan_tick`` override
-retunes it live — unlike ``select_transport`` alone, which under the
-default ANTHROPIC backend always answers ``CLAUDE_AGENT``.
+can change the tier, model, or chain used to pick the harness.
 
 What the planner does during the tick (mint children, yield to user, halt,
 or finish) is its own call; the runner doesn't interpret the output — it
@@ -50,7 +49,6 @@ from precis.utils.llm.router import (
     Tier,
     Transport,
     _apply_placement,
-    resolve_backend,
     resolve_chain,
     select_transport,
 )
@@ -131,7 +129,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": list(PLANNER_MODEL_ALIASES),
             "description": "Which capability tier to run (the router maps it to "
-            "a claude or served OSS model per the active backend). Synthesized "
+            "a model and selects its transport). Synthesized "
             "from the parent's meta.llm_tier at dispatch time.",
         },
         "timeout_s": {
@@ -186,11 +184,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
 COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"claude_inproc"})
 
 
-#: Under the ANTHROPIC backend the tick spawns ``claude -p`` (needs
-#: ``claude_bin``) with an MCP config so the agent can call back via the precis
-#: tools (needs ``mcp_config``); both are provided by the ``claude_inproc``
-#: executor. The OSS-backend path uses neither (the loopback litellm proxy),
-#: but requiring them is harmless — the executor provides them regardless.
+#: The ``claude_inproc`` executor supplies ``claude_bin`` for the Claude
+#: harness and ``mcp_config`` to advertise precis tools on both harnesses.
 REQUIRES: frozenset[str] = frozenset({"claude_bin", "mcp_config"})
 
 
@@ -347,12 +342,8 @@ def run(
 
     The runner builds the prompts via
     :func:`precis.workers.planner_prompt.build_planner_prompts`, then
-    drives the precis verbs in-process over the OSS ``tools=`` loop
-    (:func:`_run_oss_tick`). The transport + model are the router's
-    decision (:func:`~precis.utils.llm.router.select_transport` +
-    :func:`~precis.utils.llm.router.resolve_backend`): a served OSS
-    model on the ``BIG`` tier by default, or the tag's capability tier when
-    the backend is flipped to a tools-capable cloud.
+    runs the harness selected from the first eligible rung of the router's
+    resolved placement chain.
     """
     from precis.workers.planner_prompt import build_planner_prompts
 
@@ -591,7 +582,7 @@ def _run_oss_tick(
     # Tools are advertised iff mcp_config is non-None (router contract); the OSS
     # loop drives the verbs in-process so it never reads the file, but the tick
     # needs precis tools to act. PRECIS_MCP_CONFIG is a claude_inproc executor
-    # capability present in the worker env under either backend.
+    # capability present in the worker environment.
     mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
     if not mcp_config:
         log.warning(
@@ -723,11 +714,9 @@ def _run_claude_tick(
 ) -> PlanTickOutcome:
     """Run one planner tick as a ``claude -p`` agent through the router.
 
-    Selected under the ANTHROPIC backend (:func:`~precis.utils.llm.router.select_transport`
-    → ``CLAUDE_AGENT``): the real Claude Code agent, MCP tools enabled, authed
-    off the OAuth Max subscription. It goes *through* ``router.route`` — so it
-    gains the breaker gate + route-log — rather than hand-building a ``claude``
-    command.
+    A ``CLAUDE_AGENT`` rung uses Claude Code with MCP tools and OAuth Max.
+    Routing through ``router.route`` applies the breaker gate and records
+    the route.
 
     The spawned subprocess can't read the in-process ContextVar the OSS loop
     binds, so the tick's runtime context (parent todo / model / workspace /
@@ -1169,15 +1158,7 @@ def _load_parent_workspace(store: Store, parent_ref_id: int):
 def _tick_transport(model: str, placement: str | None = None) -> Transport:
     """Which harness runs this tick: the Claude Code agent, or the OSS tools loop.
 
-    This used to be ``select_transport(tier, tools_needed=True, backend)``, which
-    under the default ``ANTHROPIC`` backend *always* answers ``CLAUDE_AGENT``. So
-    the only lever that could move a tick off the Max subscription was the
-    **global** backend flip — which moves every call site at once. That left
-    ``plan_tick``, the fleet's single largest LLM line item, effectively
-    unsteerable: an ``llm.op.plan_tick`` tier override reached ``dispatch()`` but
-    not this branch, so the tick still took the claude harness.
-
-    Now the branch is read off rung 0 of the *resolved placement chain* — the
+    The harness follows rung 0 of the resolved placement chain, the
     same ladder ``route()`` walks for ``source='plan_tick'``: the op row's own
     ``chain`` when ``llm.op.plan_tick`` carries one
     (:func:`~precis.utils.llm.operations.resolve_op_chain`), else the effective
@@ -1188,8 +1169,8 @@ def _tick_transport(model: str, placement: str | None = None) -> Transport:
     :func:`_run_claude_tick`, the "claude subprocess with an OSS model id"
     mismatch (al514787). The request's ``placement`` pin then filters the
     ladder exactly as ``route()`` does
-    (:func:`~precis.utils.llm.router._apply_placement`), so a local rung lands
-    on :func:`_run_oss_tick` and a cloud rung on :func:`_run_claude_tick`.
+    (:func:`~precis.utils.llm.router._apply_placement`), so the first eligible rung's
+    transport determines the harness.
 
     A ``placement`` filter that empties the ladder is the refusal ``route()``
     reports downstream ("has no local rung") before dispatching anything — the
@@ -1203,9 +1184,8 @@ def _tick_transport(model: str, placement: str | None = None) -> Transport:
     id, the ``dream`` ``api_error`` class.
 
     With no ``llm.op.plan_tick`` ``chain`` and no ``llm.chain.<tier>``
-    override configured, :func:`resolve_chain` returns the default single rung
-    built from :func:`select_transport`, so an unconfigured fleet routes
-    byte-for-byte as it did before.
+    override configured, :func:`resolve_chain` derives its primary rung
+    from the resolved model through :func:`select_transport`.
     """
     from precis.utils.llm import operations
 
@@ -1213,32 +1193,23 @@ def _tick_transport(model: str, placement: str | None = None) -> Transport:
     op = operations.resolve_op("plan_tick")
     if op is not None:
         tier = op[0]
-    backend = resolve_backend()
     ladder = operations.resolve_op_chain(
-        "plan_tick", tools_needed=True, backend=backend
-    ) or resolve_chain(tier, tools_needed=True, backend=backend)
+        "plan_tick", tools_needed=True
+    ) or resolve_chain(tier, tools_needed=True, model=op[1] if op else None)
     placed = _apply_placement(ladder, placement) or ladder
     if not placed:  # pragma: no cover — resolve_chain never returns empty
-        return select_transport(tier, tools_needed=True, backend=backend)
+        return select_transport(tier, tools_needed=True, model=op[1] if op else None)
     return placed[0].transport
 
 
 def _resolve_oss_tier(model: str) -> Tier:
     """Pick the capability tier the in-process tools loop runs on.
 
-    ``meta.llm_tier`` maps to a capability tier (:data:`_TIER_BY_ALIAS`); that
-    tier is used only when the router would actually route it to the OSS
-    ``tools=`` loop under the active backend (a tools-capable cloud such as
-    OpenRouter). Otherwise — the default ``ANTHROPIC`` backend, whose cloud
-    tiers route to ``claude -p`` — fall to ``BIG``, whose chain
-    (``llm.chain.big``, an ``openai_tools`` cloud rung — see
-    :mod:`precis.utils.llm.live_config`) drives a served local model through
-    the in-process tools loop, so the tick runs on the capability the cluster
-    actually has. Model selection stays in the LLM routing seam resolver; the
-    tools-loop guarantee is chain-carried through :func:`~precis.utils.llm.router.route`.
+    A planner alias picks a tier whose resolved model can carry OSS tools.
+    Claude models fall back to the BIG chain for the in-process harness.
     """
     tag_tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
-    transport = select_transport(tag_tier, tools_needed=True, backend=resolve_backend())
+    transport = select_transport(tag_tier, tools_needed=True)
     return tag_tier if transport is Transport.OPENAI_TOOLS else Tier.BIG
 
 

@@ -210,12 +210,7 @@ def test_classify_default_with_no_override(
     exactly the pre-registration call-site resolution."""
     _bind(monkeypatch, {})
     assert operations.resolve_op("classify") == (Tier.SMALL, None)
-    assert (
-        operations.resolve_op_chain(
-            "classify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
-        )
-        is None
-    )
+    assert operations.resolve_op_chain("classify", tools_needed=False) is None
 
 
 def test_classify_model_pin_via_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,9 +237,7 @@ def test_classify_op_chain_can_pin_cedar_local_rung(
         }
     ]
     _set_op_override(monkeypatch, "classify", {"chain": chain})
-    rungs = operations.resolve_op_chain(
-        "classify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
-    )
+    rungs = operations.resolve_op_chain("classify", tools_needed=False)
     assert rungs is not None and len(rungs) == 1
     assert rungs[0].transport is llm_router.Transport.LOCAL
     assert rungs[0].model == "openai/gpt-oss-120b"
@@ -549,12 +542,7 @@ def test_llm_summarize_default_with_no_override(
     route() resolves resolve_model(SMALL) exactly as before), no op chain."""
     _bind(monkeypatch, {})
     assert operations.resolve_op("llm_summarize") == (Tier.SMALL, None)
-    assert (
-        operations.resolve_op_chain(
-            "llm_summarize", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
-        )
-        is None
-    )
+    assert operations.resolve_op_chain("llm_summarize", tools_needed=False) is None
 
 
 def test_resolve_op_chain_parses_and_filters_tools(
@@ -566,15 +554,10 @@ def test_resolve_op_chain_parses_and_filters_tools(
         {"transport": "openai_tools", "model": "b", "placement": "cloud"},
     ]
     _set_op_override(monkeypatch, "llm_summarize", {"chain": chain})
-    backend = llm_router.Backend.ANTHROPIC
-    rungs = operations.resolve_op_chain(
-        "llm_summarize", tools_needed=False, backend=backend
-    )
+    rungs = operations.resolve_op_chain("llm_summarize", tools_needed=False)
     assert rungs is not None and [r.model for r in rungs] == ["a", "b"]
     assert rungs[0].label == "local"
-    tooled = operations.resolve_op_chain(
-        "llm_summarize", tools_needed=True, backend=backend
-    )
+    tooled = operations.resolve_op_chain("llm_summarize", tools_needed=True)
     assert tooled is not None and [r.model for r in tooled] == ["b"]
 
 
@@ -592,9 +575,7 @@ def test_chase_verify_op_chain_can_pin_cedar_local_rung(
         }
     ]
     _set_op_override(monkeypatch, "chase:verify", {"chain": chain})
-    rungs = operations.resolve_op_chain(
-        "chase:verify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
-    )
+    rungs = operations.resolve_op_chain("chase:verify", tools_needed=False)
     assert rungs is not None and len(rungs) == 1
     assert rungs[0].transport is llm_router.Transport.LOCAL
     assert rungs[0].model == "openai/gpt-oss-120b"
@@ -609,12 +590,7 @@ def test_resolve_op_chain_non_registered_is_none(
         "classify_topics",
         {"chain": [{"transport": "openai_compat", "model": "a"}]},
     )
-    assert (
-        operations.resolve_op_chain(
-            "classify_topics", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
-        )
-        is None
-    )
+    assert operations.resolve_op_chain("classify_topics", tools_needed=False) is None
 
 
 # ── taproot:dedup quota fallback (gr639347) ─────────────────────────────

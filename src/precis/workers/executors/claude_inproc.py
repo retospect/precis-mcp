@@ -1784,7 +1784,7 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             if _current_status(conn, gripe_id) not in _NO_DOWNGRADE_GRIPE_STATUSES:
                 _set_status(store, gripe_id, "in_review", conn=conn)
         elif outcome.status == "skipped":
-            # GLM/OpenRouter fleet-flip safety gate (backend=openai), the
+            # A model the Claude CLI cannot run, the
             # container-unavailable fail-closed gate, or a gr451170
             # already-terminal gripe — a clean no-op, not a failure: no
             # bubble. A retryable skip leaves the gripe open for a

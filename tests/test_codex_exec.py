@@ -468,7 +468,5 @@ def test_codex_exec_filtered_from_tool_calls(
     """A tool-using call on a codex-only chain falls back to the default
     chain — the completion wire can't carry precis verbs."""
     _codex_chain(monkeypatch)
-    rungs = router.resolve_chain(
-        Tier.BIG, tools_needed=True, backend=router.Backend.ANTHROPIC
-    )
+    rungs = router.resolve_chain(Tier.BIG, tools_needed=True)
     assert all(r.transport.carries_tools for r in rungs)

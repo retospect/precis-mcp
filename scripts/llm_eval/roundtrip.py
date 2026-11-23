@@ -15,7 +15,6 @@ DB-free: the build half is ``apply_ops`` in memory; nothing touches Postgres.
 
 Run (needs ASE, the [dft] extra, for the slab generator):
 
-    PRECIS_LLM_BACKEND=openai \
     PRECIS_LLM_BASE_URL=https://openrouter.ai/api/v1 \
     PRECIS_LLM_API_KEY=$(cat ~/.secrets/pw/openrouter_api_key) \
     uv run --extra dft python scripts/llm_eval/roundtrip.py

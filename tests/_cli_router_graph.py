@@ -20,13 +20,12 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 
-#: The model router: resolving a model, a backend or a chain, or dispatching,
+#: The model router: resolving a model or a chain, or dispatching,
 #: reads ``live_config`` overrides through ``budget.meter.active_store()``.
 ROUTER_SINKS = frozenset(
     {
         "precis.utils.llm.router.route",
         "precis.utils.llm.router.resolve_model",
-        "precis.utils.llm.router.resolve_backend",
         "precis.utils.llm.router.resolve_chain",
         "precis.utils.llm.router.resolve_selection",
         "precis.utils.llm.router.DispatchClient",

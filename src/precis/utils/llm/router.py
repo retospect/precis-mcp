@@ -7,8 +7,7 @@ Four pieces:
   ``app_settings`` override (the ``/factory`` live switch,
   :mod:`precis.utils.llm.live_config`) → env var → compiled default; no
   override row resolves byte-for-byte to the model in use today.
-  :func:`resolve_backend` layers the same DB tier over ``PRECIS_LLM_BACKEND``.
-* :func:`select_transport` — pure ``(tier, tools) → transport``.
+* :func:`select_transport` — the default transport inferred from model and tools.
 * :class:`LlmProvider` + the adapter classes + :func:`route` — the port.
   Every backend implements ``run(req, *, model) -> LlmResult``; ``route``
   resolves the model, looks up the provider in the :data:`Transport`-keyed
@@ -47,12 +46,11 @@ Four pieces:
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
 ``claude_p``/local; an ``AGENT`` (tools, multi-turn) profile rides
 ``BIG``/``FRONTIER`` on ``claude_agent`` (or a served OSS model on ``BIG``
-when the backend routes there).
+when the chain routes there).
 
 :data:`Transport.OPENAI_TOOLS` is an OSS model driving the precis verbs over
 the OpenAI ``tools=`` wire (:class:`OpenAIToolsProvider`), in-process. It
-serves a local model on ``BIG`` and, under ``PRECIS_LLM_BACKEND=openai``,
-the tool-using cloud tiers.
+serves tool-using OpenAI-compatible models, both local and hosted.
 """
 
 from __future__ import annotations
@@ -131,7 +129,7 @@ class Tier(StrEnum):
       ``claude_agent`` default.
     * ``BIG`` — general agentic workhorse (sonnet-class): planner, tex-fix,
       weave; also the tools-capable rung a served OSS model (local
-      ``qwen-heavy``-class) runs on when the backend routes there.
+      ``qwen-heavy``-class) runs on when the chain routes there.
     * ``MEDIUM`` — one-shot JSON judge / cheap triage (haiku-class): the
       chase-verifier shape.
     * ``SMALL`` — categorizer/classifier rung (``summarizer`` alias):
@@ -194,7 +192,7 @@ class Transport(StrEnum):
     * ``OPENAI_TOOLS`` — an OSS model driving the precis verbs over the
       OpenAI ``tools=`` wire, in-process (:mod:`precis.utils.llm.openai_tools`
       + :mod:`precis.utils.llm.precis_tools`). Serves both a served local
-      model backing ``BIG`` and the ``OPENAI`` backend's tool-using cloud
+      model backing ``BIG`` and tool-using hosted
       calls — same wire, different base url.
     * ``CODEX_EXEC`` — :func:`precis.utils.codex_exec.call_codex_exec`
       (one-shot ``codex exec`` on the ChatGPT subscription, tool-less,
@@ -224,22 +222,6 @@ class Transport(StrEnum):
         return self in (Transport.CLAUDE_AGENT, Transport.OPENAI_TOOLS)
 
 
-class Backend(StrEnum):
-    """Vendor family a cloud request routes to. Resolved once per
-    :func:`route` from ``PRECIS_LLM_BACKEND`` (:func:`resolve_backend`)
-    and passed to :func:`select_transport`.
-
-    Default ``ANTHROPIC`` keeps the ``claude -p`` transports; the
-    OpenAI-compatible path ships dark, engaging only when a deployment sets
-    the backend *and* ``PRECIS_LLM_BASE_URL``. ``OPENAI`` routes tool-less
-    calls to :data:`Transport.OPENAI_COMPAT` and tool-using calls to
-    :data:`Transport.OPENAI_TOOLS`.
-    """
-
-    ANTHROPIC = "anthropic"
-    OPENAI = "openai"
-
-
 # ── the tier → model table (the ONE consolidation point) ───────────────
 #
 # Each row is ``tier: (env_var, default)``. The cloud triad
@@ -260,12 +242,6 @@ _TIER_MODEL: dict[Tier, tuple[str, str]] = {
 # adding a tier without a model is a load-time failure, not a KeyError
 # at dispatch (mirrors the TodoView totality assert in handlers/todo.py).
 assert set(_TIER_MODEL) == set(Tier), "resolve_model: tier table is not total"
-
-#: Tiers that route to a *claude* transport under the ANTHROPIC backend — the
-#: only ones an OSS model override is incoherent for (:func:`resolve_model`'s
-#: coherence check). ``SMALL`` always routes local/hosted-OSS
-#: (:func:`select_transport`), so it is excluded.
-_CLOUD_TIERS: frozenset[Tier] = frozenset({Tier.FRONTIER, Tier.BIG, Tier.MEDIUM})
 
 #: Purposes a ``kind='subscription'`` provider-profile rung refuses
 #: (:func:`_subscription_refusal`) — matched against the call's
@@ -300,7 +276,7 @@ _SUBSCRIPTION_BULK_WORK: frozenset[str] = frozenset(
 )
 
 
-def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
+def resolve_model(tier: Tier) -> str:
     """The concrete model id for ``tier`` — the ONE place model selection
     lives.
 
@@ -310,24 +286,11 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     compiled default in :data:`_TIER_MODEL`. No override row (or no store
     bound) ⇒ no-op, byte-for-byte the model in use today.
 
-    ``backend`` (default ``None`` ⇒ no coherence check) is the *effective*,
-    already-demoted backend the dispatch call is about to run on. When it is
-    :data:`Backend.ANTHROPIC` and the override resolves to a non-claude slug
-    (doesn't start with ``"claude"``), it's incoherent with the claude
-    transport it would land on — drop it, fall through to env var/default.
-    This stops a half-applied backend demotion (``PRECIS_LLM_BASE_URL``
-    missing, but an OSS model override still set) from handing an OSS model
-    id to a claude transport. :func:`route` passes its post-demotion
-    ``backend``; every other caller leaves it ``None`` and is unaffected.
     """
     from precis.utils.llm import live_config
 
     override = live_config.model_override(tier)
-    # The coherence drop applies only to the cloud tiers, the ones that route
-    # to a claude transport under ANTHROPIC. SMALL never touches a claude
-    # transport, so its (always-non-claude) override is always honored.
-    claude_bound = backend is Backend.ANTHROPIC and tier in _CLOUD_TIERS
-    if override and not (claude_bound and not override.startswith("claude")):
+    if override:
         return override
     env_var, default = _TIER_MODEL[tier]
     return os.environ.get(env_var, default)
@@ -541,17 +504,12 @@ def planner_model_choices() -> list[dict[str, Any]]:
     context: None}`` rather than raising, so one bad tier can't blank the
     whole dropdown.
     """
-    try:
-        backend = resolve_backend()
-    except Exception:
-        backend = Backend.ANTHROPIC
-
     rows: list[dict[str, Any]] = []
     for alias, tier in PLANNER_TIER_BY_ALIAS.items():
         try:
             tools_needed = tier is not Tier.SMALL
-            chain = resolve_chain(tier, tools_needed=tools_needed, backend=backend)
             default_model = resolve_model(tier)
+            chain = resolve_chain(tier, tools_needed=tools_needed, model=default_model)
             if chain:
                 rung0 = chain[0]
                 model = rung0.model or default_model
@@ -767,14 +725,10 @@ def resolve_selection(
 
     degraded["tier"] = tier.value
 
-    try:
-        backend = resolve_backend()
-    except Exception:
-        backend = Backend.ANTHROPIC
-
     tools_needed = tier is not Tier.SMALL
     try:
-        chain = resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+        default_model = resolve_model(tier)
+        chain = resolve_chain(tier, tools_needed=tools_needed, model=default_model)
     except Exception:
         log.warning(
             "router: resolve_selection failed resolving chain for alias %r",
@@ -788,11 +742,6 @@ def resolve_selection(
     if chain and not placed:
         degraded["error"] = f"no {placement} rung for tier {tier.value}"
         return degraded
-
-    try:
-        default_model = resolve_model(tier)
-    except Exception:
-        default_model = alias
 
     if not placed:
         degraded["model"] = default_model
@@ -925,54 +874,31 @@ def llm_select_from_payload(
 # ── transport selection ────────────────────────────────────────────────
 
 
-def resolve_backend() -> Backend:
-    """The cloud backend family for this process.
-
-    Resolution order: a web-set ``app_settings`` override
-    (:func:`precis.utils.llm.live_config.backend_override`) →
-    ``PRECIS_LLM_BACKEND`` (default ``anthropic``). An unknown value at
-    either tier degrades to ``anthropic``. The OpenAI-compatible path also
-    needs ``PRECIS_LLM_BASE_URL`` (checked at dispatch); with the backend on
-    but no base url, cloud calls fall back to ``claude`` rather than hit a
-    phantom endpoint. No override row ⇒ byte-identical to the env-only read.
-    """
-    from precis.utils.llm import live_config
-
-    override = live_config.backend_override()
-    if override is not None:
-        return Backend.OPENAI if override == Backend.OPENAI else Backend.ANTHROPIC
-    raw = os.environ.get("PRECIS_LLM_BACKEND", Backend.ANTHROPIC).strip().lower()
-    return Backend.OPENAI if raw == Backend.OPENAI else Backend.ANTHROPIC
+def is_claude_model(model: str) -> bool:
+    """Identify native Claude IDs and the CLI's short model aliases."""
+    return model.startswith("claude-") or model in {"opus", "sonnet", "haiku"}
 
 
 def select_transport(
-    tier: Tier, *, tools_needed: bool, backend: Backend = Backend.ANTHROPIC
+    tier: Tier, *, tools_needed: bool, model: str | None = None
 ) -> Transport:
-    """Pick the transport for ``(tier, tools_needed, backend)`` — pure.
+    """Infer the default wire from the resolved model and tool requirement.
 
-    ``SMALL`` is tool-less by construction and routes local/hosted-OSS
-    regardless of ``tools_needed``: :data:`Transport.LOCAL` under
-    ``ANTHROPIC``, :data:`Transport.OPENAI_COMPAT` under ``OPENAI`` (no local
-    hardware fallback of its own).
-
-    ``MEDIUM``/``BIG``/``FRONTIER`` split on ``tools_needed``, mirroring the
-    ``AGENT``/``HELPER`` :class:`~precis.utils.prompt.model.Profile` split:
-    tools ⇒ ``claude_agent``, no tools ⇒ ``claude_p``. ``backend=OPENAI``
-    routes cloud work to OSS instead: tool-less → ``OPENAI_COMPAT``,
-    tool-using → ``OPENAI_TOOLS`` (also how a served local model backs
-    ``BIG``). Under ``ANTHROPIC`` both stay on the ``claude`` transports.
+    Explicit chains own their transport. For inferred routes, local aliases
+    and advertised models use local serving. Other non-Claude IDs use the
+    OpenAI-compatible wire and go through its endpoint availability check.
     """
-    if tier is Tier.SMALL:
-        return Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LOCAL
+    from precis.utils.llm import local_serving
+
+    model = model or resolve_model(tier)
+    tools_needed = tools_needed and tier is not Tier.SMALL
+    if is_claude_model(model):
+        return Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P
     if tools_needed:
-        return (
-            Transport.OPENAI_TOOLS
-            if backend is Backend.OPENAI
-            else Transport.CLAUDE_AGENT
-        )
-    if backend is Backend.OPENAI:
-        return Transport.OPENAI_COMPAT
-    return Transport.CLAUDE_P
+        return Transport.OPENAI_TOOLS
+    if model in _LOCAL_ONLY_MODEL_ALIASES or local_serving.served_locally(model):
+        return Transport.LOCAL
+    return Transport.OPENAI_COMPAT
 
 
 def transport_for_profile(profile: Profile, tier: Tier) -> Transport:
@@ -1943,7 +1869,7 @@ class OpenAIToolsProvider:
     local OSS backend (``PRECIS_LLM_BASE_URL``, vault key) through a
     tool-calling conversation, executing each call in-process via
     ``runtime.dispatch`` — no MCP socket round-trip. Serves both a served
-    local model backing ``BIG`` and the ``OPENAI`` backend's tool-using
+    local model backing ``BIG`` and hosted OpenAI-compatible
     cloud calls.
     """
 
@@ -2830,15 +2756,17 @@ def _failover_enabled() -> bool:
     }
 
 
-def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
-    """The default OSS→claude ladder: the backend's primary transport, then
+def _failover_ladder(
+    tier: Tier, *, tools_needed: bool, model: str | None = None
+) -> list[Rung]:
+    """The default OSS→claude ladder: the model's primary transport, then
     the claude equivalent as a safety net (only when the primary is OSS — a
     claude/local primary has nothing to fall back to).
 
     ``SMALL`` never falls back to claude (low-stakes/high-volume dispatch
     traffic stays on the OSS rung regardless of this call's resolution).
     """
-    primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
+    primary = select_transport(tier, tools_needed=tools_needed, model=model)
     if primary in (Transport.OPENAI_TOOLS, Transport.OPENAI_COMPAT):
         if tier is Tier.SMALL:
             return [Rung(primary, label="oss")]
@@ -2850,7 +2778,9 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
     return [Rung(primary, label="primary")]
 
 
-def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
+def _default_chain(
+    tier: Tier, *, tools_needed: bool, model: str | None = None
+) -> list[Rung]:
     """The rung list for a tier with **no operator chain override**.
 
     ``PRECIS_LLM_FAILOVER`` is the dark switch for the built-in OSS→claude
@@ -2859,12 +2789,14 @@ def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[
     (``select_transport`` → one provider). On: the full auto-failover ladder.
     """
     if _failover_enabled():
-        return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
-    primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
+        return _failover_ladder(tier, tools_needed=tools_needed, model=model)
+    primary = select_transport(tier, tools_needed=tools_needed, model=model)
     return [Rung(primary, label="primary")]
 
 
-def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
+def resolve_chain(
+    tier: Tier, *, tools_needed: bool, model: str | None = None
+) -> list[Rung]:
     """The rung list :func:`route` / :func:`dispatch_async` actually walk:
     an operator-owned ``app_settings`` chain override layered in front of the
     compiled default (:func:`_default_chain`).
@@ -2899,7 +2831,7 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
 
     override = live_config.chain_override(tier)
     if not override:
-        return _default_chain(tier, tools_needed=tools_needed, backend=backend)
+        return _default_chain(tier, tools_needed=tools_needed, model=model)
 
     def _fallback(reason: str, i: int, detail: object) -> list[Rung]:
         if live_config.chain_env_active(tier):
@@ -2919,7 +2851,7 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
             reason,
             detail,
         )
-        return _default_chain(tier, tools_needed=tools_needed, backend=backend)
+        return _default_chain(tier, tools_needed=tools_needed, model=model)
 
     rungs, bad = parse_chain_rungs(override)
     if bad is not None:
@@ -2927,7 +2859,7 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
 
     if tools_needed:
         keep = filter_tool_rungs(rungs, live_config.chain_key(tier))
-        return keep or _default_chain(tier, tools_needed=True, backend=backend)
+        return keep or _default_chain(tier, tools_needed=True, model=model)
 
     return rungs
 
@@ -2966,13 +2898,7 @@ def parse_chain_rungs(
             and prof_raw is None
             and not os.environ.get("PRECIS_LLM_BASE_URL")
         ):
-            # Mirrors `route()`'s Backend.OPENAI-without-a-base-url guard
-            # (falls back to ANTHROPIC before ever reaching a chain) for the
-            # one path that guard can't see: an operator override that pins
-            # openai_compat explicitly, regardless of the resolved backend.
-            # Left unguarded, this rung would urlopen a bare
-            # '/chat/completions' path on every call (gr259631) instead of
-            # degrading once, here, at chain-resolution time.
+            # An explicitly hosted completion rung needs an endpoint.
             return [], (
                 "pins openai_compat with PRECIS_LLM_BASE_URL unset",
                 i,
@@ -3052,8 +2978,7 @@ def planner_rung0_model(model_alias: str, job_type: str | None = None) -> str | 
     op = operations.resolve_op(job_type) if job_type else None
     if op is not None:
         tier = op[0]
-    backend = resolve_backend()
-    ladder = resolve_chain(tier, tools_needed=True, backend=backend)
+    ladder = resolve_chain(tier, tools_needed=True)
     if not ladder:
         return None
     rung0 = ladder[0]
@@ -3222,7 +3147,7 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
 
     Which tiers survive depends on their chain, not their name: ``FRONTIER``
     is cloud-only by construction, so it always pauses. Under the default
-    backend with no operator chain, only ``SMALL`` has a standing local rung
+    models with no operator chain, only ``SMALL`` has a standing local rung
     (:func:`select_transport`) — ``BIG``/``MEDIUM`` also pause under throttle
     until an operator chain gives them a ``placement: "local"`` rung; this
     function doesn't manufacture one a chain doesn't have.
@@ -3321,7 +3246,7 @@ _LOCAL_FIRST_REFUSAL = (
 )
 
 
-def _local_first_chain(req: LlmRequest, *, backend: Backend) -> list[Rung] | None:
+def _local_first_chain(req: LlmRequest) -> list[Rung] | None:
     """Dedicated local arm: ``None`` for other sources, empty on refusal.
 
     Shared by preflight and dispatch so a missing row cannot pass preview by
@@ -3335,9 +3260,7 @@ def _local_first_chain(req: LlmRequest, *, backend: Backend) -> list[Rung] | Non
         or req.source.removesuffix(":local") not in operations.LOCAL_FIRST_OPS
     ):
         return None
-    chain = operations.resolve_op_chain(
-        req.source, tools_needed=req.tools_needed, backend=backend
-    )
+    chain = operations.resolve_op_chain(req.source, tools_needed=req.tools_needed)
     return [
         rung
         for rung in _apply_placement(chain or [], "local")
@@ -3353,7 +3276,7 @@ def placement_refusal(req: LlmRequest) -> str | None:
 
     Dedicated local-first sources share :func:`_local_first_chain` with
     dispatch and never fall back to a tier chain. Other sources mirror the
-    resolution prefix of :func:`route`: backend → the op's
+    resolution prefix of :func:`route`: the op's
     tier remap and ``chain`` override for a registered ``req.source`` →
     the tier chain → :func:`_apply_placement` with the
     :func:`_served_local_rung` escape — so the reason it returns is the
@@ -3362,27 +3285,23 @@ def placement_refusal(req: LlmRequest) -> str | None:
     chain-resolution raise (a malformed ``PRECIS_LLM_CHAIN_*`` env var)
     returns its message — also a refusal reason.
     """
-    backend = resolve_backend()
-    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
-        backend = Backend.ANTHROPIC
     from precis.utils.llm import operations as _operations
 
     op = _operations.resolve_op(req.source) if req.source else None
-    local_chain = _local_first_chain(req, backend=backend)
+    local_chain = _local_first_chain(req)
     if local_chain is not None:
         return None if local_chain else _LOCAL_FIRST_REFUSAL
     if op is not None:
         req = _replace(req, tier=op[0])
     op_chain = (
-        _operations.resolve_op_chain(
-            req.source, tools_needed=req.tools_needed, backend=backend
-        )
+        _operations.resolve_op_chain(req.source, tools_needed=req.tools_needed)
         if req.source
         else None
     )
     try:
+        model = (op[1] if op is not None else req.model) or resolve_model(req.tier)
         ladder = op_chain or resolve_chain(
-            req.tier, tools_needed=req.tools_needed, backend=backend
+            req.tier, tools_needed=req.tools_needed, model=model
         )
     except Exception as exc:
         return str(exc)
@@ -3602,7 +3521,7 @@ def _drop_unavailable_rungs(
 #: to) — POSTing either to a hosted OSS backend 400s, since the hosted side
 #: has never heard of them. See :func:`_hosted_small_remap`. Deliberately
 #: scoped to ``SMALL``-only aliases: a served local model backing ``BIG`` is
-#: NOT here — it always routes ``OPENAI_TOOLS`` regardless of backend, so
+#: NOT here — it always routes ``OPENAI_TOOLS`` on tool-using calls, so
 #: remapping it would silently downgrade a big call to a small hosted model.
 _LOCAL_ONLY_MODEL_ALIASES = frozenset({"summarizer", "rake-lemma"})
 
@@ -3642,9 +3561,7 @@ def _hosted_small_remap(
     resolvable rung ``profile``), the call isn't already pinned to a local
     ``served_by`` slot (``has_local_slot`` — that slot's own model name is
     already correct), and ``model`` is one of
-    :data:`_LOCAL_ONLY_MODEL_ALIASES`. Under the default ``ANTHROPIC``
-    backend ``SMALL`` resolves to :data:`Transport.LOCAL`, so this is a no-op
-    whenever the OSS flip is off.
+    :data:`_LOCAL_ONLY_MODEL_ALIASES`.
     """
     if has_local_slot:
         return model
@@ -4207,35 +4124,8 @@ def _dispatch_provider(ladder: list[Rung], accept: AcceptFn | None) -> LlmProvid
     return _provider_for_ladder(ladder)
 
 
-def _keyword_model_rung(model: str, *, tools_needed: bool) -> Rung:
-    """The single rung for a bare-model keyword target — the transport the
-    model id implies: a ``claude*`` id rides the claude wire, a model served
-    on this host the local wire, anything else the hosted-OSS wire
-    (:func:`_rung_unavailable` then drops the rung when that wire isn't
-    configured here)."""
-    if model.startswith("claude"):
-        return Rung(
-            Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P,
-            model=model,
-            label="keyword",
-        )
-    from precis.utils.llm import local_serving as _local
-
-    if _local.served_locally(model):
-        return Rung(
-            Transport.OPENAI_TOOLS if tools_needed else Transport.LOCAL,
-            model=model,
-            label="keyword",
-        )
-    return Rung(
-        Transport.OPENAI_TOOLS if tools_needed else Transport.OPENAI_COMPAT,
-        model=model,
-        label="keyword",
-    )
-
-
 def _keyword_plan(
-    rule: _keyword_route.KeywordRule, req: LlmRequest, *, backend: Backend
+    rule: _keyword_route.KeywordRule, req: LlmRequest
 ) -> tuple[list[Rung], str, Tier] | str:
     """Resolve a matched keyword ``rule`` to its ``(ladder, model, tier)``
     plan, or a one-line reason it can't run — the caller falls back to the
@@ -4244,7 +4134,7 @@ def _keyword_plan(
     The target reuses the ``llm.op.*`` override grammar:
     ``{"tier"}`` remaps onto that tier's chain, ``{"chain"}`` carries the
     full rung grammar, and ``{"model"}`` alone synthesizes a single rung
-    (:func:`_keyword_model_rung`). The candidate ladder runs the **same**
+    (:func:`select_transport`). The candidate ladder runs the **same**
     filters the normal ladder faces — the placement pin, the cloud
     throttle, the host-availability drop, a non-tallying limiter probe and
     window admission — so a rule never bypasses a gate, and a target that
@@ -4258,7 +4148,8 @@ def _keyword_plan(
             tier = Tier(str(raw_tier))
         except ValueError:
             return f"target tier {raw_tier!r} is not a capability tier"
-    model = target.get("model")
+    model = str(target["model"]) if target.get("model") else None
+    default_model = None
     raw_chain = target.get("chain")
     if raw_chain is not None:
         rungs, bad = parse_chain_rungs(raw_chain)
@@ -4271,20 +4162,23 @@ def _keyword_plan(
                 return "its chain has no tool-carrying rung for a tools-needed call"
         ladder = rungs
     elif model:
-        ladder = [_keyword_model_rung(str(model), tools_needed=req.tools_needed)]
+        ladder = [
+            Rung(
+                select_transport(tier, tools_needed=req.tools_needed, model=model),
+                model=model,
+                label="keyword",
+            )
+        ]
     else:
-        ladder = resolve_chain(tier, tools_needed=req.tools_needed, backend=backend)
+        default_model = resolve_model(tier)
+        ladder = resolve_chain(tier, tools_needed=req.tools_needed, model=default_model)
     ladder = _apply_placement(ladder, req.placement)
     if not ladder:
         return f"no {req.placement} rung under the call's placement pin"
     ladder = _apply_cloud_throttle(ladder)
     if not ladder:
         return "cloud is disabled and its chain has no local rung"
-    kw_model = (
-        str(model)
-        if model
-        else (ladder[0].model or resolve_model(tier, backend=backend))
-    )
+    kw_model = model or ladder[0].model or default_model or resolve_model(tier)
     ladder = _skip_unserved_local_rung(ladder, kw_model)
     ladder, dropped = _drop_unavailable_rungs(ladder, kw_model)
     if not ladder:
@@ -4359,16 +4253,12 @@ def route(req: LlmRequest) -> LlmResult:
     """Route ``req`` to its provider and return a normalized
     :class:`LlmResult`.
 
-    Resolve the backend + model, pick the transport (pure), look up the
+    Resolve the model, pick its transport, look up the
     provider, and delegate. Each provider wraps its existing helper and
     folds a caught :class:`~precis.utils._claude_subprocess.ClaudeProcessError`
     (or a local-transport ``RuntimeError``) into :attr:`LlmResult.error`
     rather than raising, so every path returns one shape. A programming
     error (an unwired local-tools path) still raises.
-
-    The ``OPENAI`` backend needs ``PRECIS_LLM_BASE_URL``; on but with no base
-    url, cloud calls fall back to ``claude`` rather than POST to a phantom
-    endpoint.
 
     Routing walks a per-tier chain (:func:`resolve_chain`, always-on): an
     operator ``llm.chain.<tier>`` override, else the default (a single
@@ -4835,9 +4725,6 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     """The routing body behind :func:`route` (autoskill wraps it there)."""
 
     entered = time.monotonic()
-    backend = resolve_backend()
-    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
-        backend = Backend.ANTHROPIC
     # Per-operation routing (the operation rung, `utils/llm/operations.py`):
     # a *registered* (allow-listed) source has its effective tier + model owned
     # by the registry default + any live `llm.op.<source>` override — the
@@ -4847,7 +4734,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     from precis.utils.llm import operations as _operations
 
     _op = _operations.resolve_op(req.source) if req.source else None
-    local_chain = _local_first_chain(req, backend=backend)
+    local_chain = _local_first_chain(req)
     _local_first = local_chain is not None
     if _local_first:
         # A local-first source must never inherit a tier/keyword chain or buy
@@ -4873,9 +4760,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
         _op_tier, _op_model = _op
         if _op_tier != req.tier:
             req = _replace(req, tier=_op_tier)
-        model = _op_model or resolve_model(req.tier, backend=backend)
+        model = _op_model or resolve_model(req.tier)
     else:
-        model = req.model or resolve_model(req.tier, backend=backend)
+        model = req.model or resolve_model(req.tier)
     # Keyword routing (:mod:`precis.utils.llm.keyword_route`): a matched rule
     # retargets the call to its own (tier, model, ladder), outranking the
     # op override — committed only when _keyword_plan's probe-gates pass,
@@ -4891,7 +4778,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     )
     if _kw_rule is not None:
         try:
-            _kw_plan = _keyword_plan(_kw_rule, req, backend=backend)
+            _kw_plan = _keyword_plan(_kw_rule, req)
         except Exception as exc:
             _kw_plan = f"plan fault: {exc}"
         if isinstance(_kw_plan, str):
@@ -4937,9 +4824,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
         local_chain
         if _local_first
         else (
-            _operations.resolve_op_chain(
-                req.source, tools_needed=req.tools_needed, backend=backend
-            )
+            _operations.resolve_op_chain(req.source, tools_needed=req.tools_needed)
             if req.source and _kw_ladder is None
             else None
         )
@@ -4947,7 +4832,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     ladder = (
         _kw_ladder
         or _op_chain
-        or resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+        or resolve_chain(req.tier, tools_needed=req.tools_needed, model=model)
     )
     _chain_name = (
         f"keyword rule {_kw_rule.rule_id}"
@@ -5600,7 +5485,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
 async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     """The body of :func:`dispatch_async` under its run scope.
 
-    Mirrors :func:`route`'s gate sequence (backend fallback, transport
+    Mirrors :func:`route`'s gate sequence (transport
     resolution, budget breaker, window admission, local-serving slot) inline
     and synchronously — all fast in-memory/DB checks. When the resolved
     transport is :data:`Transport.CLAUDE_AGENT` **and** ``req.on_event`` is
@@ -5622,17 +5507,24 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     returns a single rung anyway.
     """
     entered = time.monotonic()
-    backend = resolve_backend()
-    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
-        backend = Backend.ANTHROPIC
+    from precis.utils.llm import operations
+
     # Keyword parity with route(): a matched rule delegates to the sync
     # path — the retargeted call gives up the on_event stream but keeps
     # every gate (and, on an unusable target, the normal resolution).
     if req.model is None and _keyword_route.match_request(req) is not None:
         return route(req)
-    model = req.model or resolve_model(req.tier, backend=backend)
+    if _local_first_chain(req) is not None:
+        return route(req)
+    original_request = req
+    op = operations.resolve_op(req.source) if req.source else None
+    if op is not None:
+        req = _replace(req, tier=op[0])
+    model = (op[1] if op is not None else req.model) or resolve_model(req.tier)
     # Resolve the primary transport through the always-on chain, same as sync route() — the streaming decision keys on rung 0.
-    ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    ladder = operations.resolve_op_chain(
+        req.source, tools_needed=req.tools_needed
+    ) or resolve_chain(req.tier, tools_needed=req.tools_needed, model=model)
     # Structured placement filter — strict parity with sync route(): an
     # emptied nonempty chain is an explicit error result, not a silent
     # paused/degrade. No-op when req.placement is None/unrecognized.
@@ -5663,7 +5555,7 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     if req.require_transport is not None:
         ladder = [r for r in ladder if r.transport is req.require_transport]
         if not ladder:
-            return route(req)
+            return route(original_request)
     # Cloud-throttle parity with sync route(): prune cloud rungs when disabled.
     # An empty result (a cloud-only tier under throttle) is delegated to the
     # sync route() below, which returns the paused result — so the streaming
@@ -5676,7 +5568,7 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     transport = ladder[0].transport if ladder else None
 
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
-        return route(req)
+        return route(original_request)
 
     decision = _shadow_decision(req, ladder, model, _unavail)
 
@@ -5710,7 +5602,7 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
         # owns the fallback walk (the call gives up its on_event stream —
         # the same trade a keyword retarget already makes).
         if fallback_ladder is not None:
-            return route(req)
+            return route(original_request)
         return _gate_result(
             req,
             _classified(
@@ -5735,6 +5627,7 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
 
     from precis.utils.llm import admit as _admit
 
+    model = ladder[0].model or model
     refusal = _admit.check_dispatch(req, model=model, transport=transport)
     if refusal is not None:
         return _gate_result(
@@ -6940,7 +6833,7 @@ def _openrouter_spend_tally(base_url: str, cost_usd: float | None) -> None:
 
 
 def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
-    """Drive a hosted OpenAI-compatible OSS backend (the ``OPENAI`` backend).
+    """Drive a hosted OpenAI-compatible OSS backend.
 
     Same OpenAI ``/v1/chat/completions`` client as :func:`_dispatch_local`,
     pointed at ``PRECIS_LLM_BASE_URL`` and authed with a vault-resolved key
@@ -6989,15 +6882,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     base_url = _req_base_url(req, profile)
     parsed_base_url = urlparse(base_url)
     if not parsed_base_url.scheme or not parsed_base_url.netloc:
-        # An empty/malformed PRECIS_LLM_BASE_URL (or an unresolvable rung
-        # profile) reaches here whenever this rung runs without going
-        # through route()'s Backend.OPENAI-without-a-base-url guard first —
-        # a chain override that pins openai_compat directly (resolve_chain
-        # has its own matching guard, but a rung built any other way still
-        # lands here). Without this check, LlmClient.complete concatenates
-        # it into a bare '/chat/completions' path and urlopen raises
-        # "unknown url type" once per call (gr259631) instead of one clear,
-        # named config error.
+        # Refuse an invalid endpoint before constructing the completion URL.
         return LlmResult(
             text="",
             cost_usd=None,
@@ -7701,7 +7586,6 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
 __all__ = [
     "AcceptFn",
     "AgentResult",
-    "Backend",
     "ClaudePResult",
     "DispatchClient",
     "DispatchError",
@@ -7711,9 +7595,9 @@ __all__ = [
     "Tier",
     "Transport",
     "dispatch_async",
+    "is_claude_model",
     "openrouter_routing",
     "provider_for",
-    "resolve_backend",
     "resolve_model",
     "result_from_agent",
     "result_from_claude_p",

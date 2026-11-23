@@ -1770,27 +1770,22 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
         from precis.budget import meter
         from precis.utils.llm import live_config
         from precis.utils.llm.router import (
-            Backend,
             Rung,
             Tier,
             _rung_is_cloud,
             parse_chain_rungs,
-            resolve_backend,
             resolve_chain,
             resolve_model,
         )
 
         meter.bind_store(store)
-        try:
-            backend = resolve_backend()
-        except Exception:
-            backend = Backend.ANTHROPIC
 
         rows: list[dict[str, Any]] = []
         for tier in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL):
             try:
                 override = live_config.chain_override(tier)
                 has_override = bool(override)
+                primary = resolve_model(tier)
                 # An operator chain is shown AS CONFIGURED, tool filter off:
                 # ``filter_tool_rungs`` is a per-call filter (a tier serves
                 # agentic AND completion traffic), so resolving BIG/FRONTIER
@@ -1809,9 +1804,8 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
                     ladder = resolve_chain(
                         tier,
                         tools_needed=_TIER_TOOLS.get(tier.value, False),
-                        backend=backend,
+                        model=primary,
                     )
-                primary = resolve_model(tier)
                 rungs = [
                     {
                         # A rung with ``model=None`` inherits the tier's resolved
@@ -1846,10 +1840,10 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
                     "rungs": rungs,
                 }
             )
-        return {"active_routing": rows, "active_backend": backend.value}
+        return {"active_routing": rows}
     except Exception:
         log.warning("status: _active_routing_ctx failed", exc_info=True)
-        return {"active_routing": [], "active_backend": "—"}
+        return {"active_routing": []}
 
 
 # `Any`, not `Store`: same `_FakeStore` (list_refs-only) as
@@ -1878,19 +1872,13 @@ def _llm_op_pins_ctx(store: Any) -> dict[str, Any]:
         from precis.budget import meter
         from precis.utils.llm import live_config, operations
         from precis.utils.llm.router import (
-            Backend,
             Transport,
             _rung_is_cloud,
-            resolve_backend,
             resolve_chain,
             resolve_model,
         )
 
         meter.bind_store(store)
-        try:
-            backend = resolve_backend()
-        except Exception:
-            backend = Backend.ANTHROPIC
 
         pins: list[dict[str, Any]] = []
         for source in sorted(operations.LLM_OPERATIONS):
@@ -1920,9 +1908,7 @@ def _llm_op_pins_ctx(store: Any) -> dict[str, Any]:
                 # chain instead). The tier fallback keeps the tier card's
                 # representative flag so the two agree when no op chain
                 # is set.
-                own = operations.resolve_op_chain(
-                    source, tools_needed=False, backend=backend
-                )
+                own = operations.resolve_op_chain(source, tools_needed=False)
                 tools = _TIER_TOOLS.get(op_tier.value, False)
                 if local_first:
                     # The dedicated local arm refuses rather than inherit a
@@ -1931,7 +1917,7 @@ def _llm_op_pins_ctx(store: Any) -> dict[str, Any]:
                     chain_name = "local-first chain"
                 else:
                     ladder = own or resolve_chain(
-                        op_tier, tools_needed=tools, backend=backend
+                        op_tier, tools_needed=tools, model=op_model
                     )
                     chain_name = "op chain" if own else f"{op_tier.value} chain"
                 primary = op_model or resolve_model(op_tier)

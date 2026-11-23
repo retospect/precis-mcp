@@ -351,7 +351,6 @@ def test_dispatch_lite_when_log_blobs_false(store: Any, monkeypatch: Any) -> Non
         return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
 
     monkeypatch.setattr(router, "call_claude_p", fake_p)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
 
     route_log.bind_store(store)
@@ -667,7 +666,6 @@ def test_dispatch_logs_reason_class_column(store: Any, monkeypatch: Any) -> None
         return ClaudePResult(data={}, raw_stdout=notice, cost_usd=0.0, text=notice)
 
     monkeypatch.setattr(router, "call_claude_p", fake_p)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
 
     route_log.bind_store(store)
@@ -750,7 +748,6 @@ def test_dispatch_records_the_full_call(store: Any, monkeypatch: Any) -> None:
         )
 
     monkeypatch.setattr(router, "call_claude_p", fake_p)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
 
     route_log.bind_store(store)
@@ -808,7 +805,6 @@ def test_dispatch_records_placement_and_token_counts(
         )
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
 
     route_log.bind_store(store)

@@ -49,7 +49,7 @@ from precis.llm_eval.pinned import pinned_dispatch
 if TYPE_CHECKING:
     from precis.llm_eval.tasks import GoldTask
     from precis.store import Store
-    from precis.utils.llm.router import Backend, LlmRequest, LlmResult, Rung, Tier
+    from precis.utils.llm.router import LlmRequest, LlmResult, Rung, Tier
 
 log = logging.getLogger(__name__)
 
@@ -86,18 +86,7 @@ def _env_f(name: str, default: float) -> float:
         return default
 
 
-def _ladder_backend() -> Backend:
-    """The effective cloud backend, demoted exactly as ``route()`` does:
-    ``OPENAI`` without ``PRECIS_LLM_BASE_URL`` falls back to ``ANTHROPIC``."""
-    from precis.utils.llm.router import Backend, resolve_backend
-
-    backend = resolve_backend()
-    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
-        backend = Backend.ANTHROPIC
-    return backend
-
-
-def ladder_rungs(backend: Backend | None = None) -> list[tuple[Tier, Rung]]:
+def ladder_rungs() -> list[tuple[Tier, Rung]]:
     """Every offering in the ladder, in tier order.
 
     ``resolve_chain(tier, tools_needed=False)`` returns the tier's rung
@@ -109,13 +98,9 @@ def ladder_rungs(backend: Backend | None = None) -> list[tuple[Tier, Rung]]:
     """
     from precis.utils.llm.router import Tier, resolve_chain
 
-    backend = backend or _ladder_backend()
     out: list[tuple[Tier, Rung]] = []
     for tier in Tier:
-        out.extend(
-            (tier, rung)
-            for rung in resolve_chain(tier, tools_needed=False, backend=backend)
-        )
+        out.extend((tier, rung) for rung in resolve_chain(tier, tools_needed=False))
     return out
 
 

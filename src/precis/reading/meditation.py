@@ -388,9 +388,7 @@ def build_meditation(
         #
         # This used to pin claude-sonnet-5 inside FRONTIER: a nidra is prose
         # composition (Sonnet is amply capable), the explicit claude id cut
-        # unified-subscription consumption ~⅕, and it forced ``claude_agent`` so
-        # a fleet ``llm.backend`` flip couldn't hijack the cast onto an OSS
-        # model (gripe 171782). What that reasoning missed is that the OAuth
+        # unified-subscription consumption ~⅕. The OAuth
         # lane fails *closed*: on 2026-08-05 an exhausted quota window didn't
         # make the meditation cheaper, it made the job fail — and the resulting
         # `child-failed` tag then blocked every later nidra tick via

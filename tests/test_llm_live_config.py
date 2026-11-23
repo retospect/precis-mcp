@@ -1,11 +1,9 @@
-"""The LLM routing seam unit-4b piece ① — the ``/factory`` live LLM switch (read side).
+"""Live configuration reads for the LLM router.
 
-``resolve_backend`` / ``resolve_model`` layer an ``app_settings`` DB override
-over the env default, so an operator flips the fleet's backend or a per-tier
-model without a redeploy. Dark by construction: with no store bound or no row
-written, every read is ``None`` and the router falls back to env — byte-
-identical to before. Covered here: the reader (dark path, override, validation,
-TTL cache) and the two resolvers honoring / falling back through the DB tier.
+``resolve_model`` reads per-tier model overrides from ``app_settings``, so
+operators can change a tier's model without redeploying. With no store or
+setting row, resolution falls back to environment and compiled defaults.
+These tests cover override validation, TTL caching, and transport selection.
 
 DB-free: the store is faked and ``budget.settings.get_setting`` is stubbed, so
 no real ``app_settings`` table is touched.
@@ -20,7 +18,7 @@ import pytest
 from precis.budget import meter
 from precis.budget import settings as budget_settings
 from precis.utils.llm import live_config, router
-from precis.utils.llm.router import Backend, Tier
+from precis.utils.llm.router import Tier
 
 
 @pytest.fixture(autouse=True)
@@ -62,37 +60,15 @@ def _bind(
 
 def test_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, None)
-    assert live_config.backend_override() is None
     assert live_config.model_override(Tier.FRONTIER) is None
 
 
 def test_dark_with_store_but_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, {})
-    assert live_config.backend_override() is None
     assert live_config.model_override(Tier.BIG) is None
 
 
 # ── reader: overrides + validation ─────────────────────────────────────
-
-
-def test_backend_override_openai(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.backend": "openai"})
-    assert live_config.backend_override() == "openai"
-
-
-def test_backend_override_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.backend": "OpenAI"})
-    assert live_config.backend_override() == "openai"
-
-
-def test_backend_override_unknown_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.backend": "gpt-5"})
-    assert live_config.backend_override() is None
-
-
-def test_backend_override_blank_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.backend": "   "})
-    assert live_config.backend_override() is None
 
 
 def test_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,43 +162,16 @@ def test_chain_override_non_list_json_is_none(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_reads_are_cached_until_busted(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _bind(monkeypatch, {"llm.backend": "openai"})
-    assert live_config.backend_override() == "openai"
-    assert live_config.backend_override() == "openai"
+    calls = _bind(monkeypatch, {"llm.model.big": "qwen-mid"})
+    assert live_config.model_override(Tier.BIG) == "qwen-mid"
+    assert live_config.model_override(Tier.BIG) == "qwen-mid"
     assert calls["n"] == 1  # second read served from cache
     live_config.bust_cache()
-    assert live_config.backend_override() == "openai"
+    assert live_config.model_override(Tier.BIG) == "qwen-mid"
     assert calls["n"] == 2  # re-queried after the bust
 
 
 # ── resolvers: DB tier over env ────────────────────────────────────────
-
-
-def test_resolve_backend_override_wins_over_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Env says anthropic (unset), DB says openai → openai.
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
-    _bind(monkeypatch, {"llm.backend": "openai"})
-    assert router.resolve_backend() is Backend.OPENAI
-
-
-def test_resolve_backend_db_anthropic_overrides_env_openai(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Env says openai, DB says anthropic → DB wins (the live "switch back").
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
-    _bind(monkeypatch, {"llm.backend": "anthropic"})
-    assert router.resolve_backend() is Backend.ANTHROPIC
-
-
-def test_resolve_backend_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {})  # store bound, no row
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
-    assert router.resolve_backend() is Backend.OPENAI
-    live_config.bust_cache()
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
-    assert router.resolve_backend() is Backend.ANTHROPIC
 
 
 def test_resolve_model_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -251,143 +200,28 @@ def test_resolve_model_dark_without_store_is_env(
     assert router.resolve_model(Tier.BIG) == "claude-sonnet-5-5"
 
 
-# ── Part 3: resolve_model backend-coherence ─────────────────────────────
-# ``glm-fleet-flip-safety`` (git-only) Part 3 — the 4 `dream` api_errors:
-# a half-applied flip demotes the backend to ANTHROPIC (no PRECIS_LLM_BASE_URL)
-# but the app_settings model override still names an OSS slug, handing a
-# claude transport a model it can't run.
+# Live model overrides determine the transport, which validates its endpoint.
 
 
-def test_resolve_model_drops_oss_override_under_anthropic_backend(
+def test_oss_override_without_endpoint_reports_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An OSS app_settings override is INCOHERENT with backend=ANTHROPIC —
-    drop it and fall through to env/compiled default (never an OSS slug on a
-    claude transport)."""
-    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
     _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
-    assert (
-        router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
-        == "claude-opus-5-5"
-    )
-
-
-def test_resolve_model_drops_oss_override_falls_through_to_env_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Dropping the incoherent override falls through to the env var (not
-    straight to the compiled default) — same order resolve_model always uses."""
-    monkeypatch.setenv("PRECIS_MODEL_OPUS", "claude-pinned-env")
-    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
-    assert (
-        router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
-        == "claude-pinned-env"
-    )
-
-
-def test_resolve_model_keeps_claude_override_under_anthropic_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A claude-family override is coherent with ANTHROPIC — kept, not dropped."""
-    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    _bind(monkeypatch, {"llm.model.frontier": "claude-opus-5-5-preview"})
-    assert (
-        router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
-        == "claude-opus-5-5-preview"
-    )
-
-
-def test_resolve_model_keeps_oss_override_under_openai_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Under backend=OPENAI the OSS override IS coherent — kept unchanged."""
-    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
-    assert router.resolve_model(Tier.FRONTIER, backend=Backend.OPENAI) == "z-ai/glm-5.2"
-
-
-def test_resolve_model_keeps_small_override_under_anthropic_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The coherence drop is CLOUD-tier only. SMALL (→LOCAL/OPENAI_COMPAT)
-    never routes to a claude transport, so its (always-non-claude) override
-    is legitimate and must be HONORED even under the default ANTHROPIC
-    backend — dropping it would silently ignore a live `llm.model.small` row,
-    incl. the one Part 1's remap reads (reviewer finding #1)."""
-    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
-    _bind(monkeypatch, {"llm.model.small": "z-ai/glm-4.7-flash"})
-    assert (
-        router.resolve_model(Tier.SMALL, backend=Backend.ANTHROPIC)
-        == "z-ai/glm-4.7-flash"
-    )
-
-
-def test_resolve_model_big_override_is_cloud_bound_and_dropped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Capability tiers + placement chains Phase C: BIG joined the cloud-bound tier set — it no longer
-    has a location-coupled LOCAL_BIG analogue whose override was always
-    non-claude and thus always honored. An OSS `llm.model.big` override under
-    the default ANTHROPIC backend is now INCOHERENT and gets dropped, exactly
-    like FRONTIER/MEDIUM — not honored unconditionally as the retired
-    LOCAL_BIG tier's override was."""
-    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
-    _bind(monkeypatch, {"llm.model.big": "qwen/qwen3.7-max"})
-    assert (
-        router.resolve_model(Tier.BIG, backend=Backend.ANTHROPIC) == "claude-sonnet-5-5"
-    )
-
-
-def test_resolve_model_no_backend_arg_keeps_override_unchanged(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every caller that never passes ``backend=`` (every call site but
-    route/dispatch_async) sees the pre-Part-3 behavior byte-for-byte —
-    the coherence check is opt-in via the parameter, not a global change."""
-    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
-    assert router.resolve_model(Tier.FRONTIER) == "z-ai/glm-5.2"
-
-
-def test_dispatch_openai_override_no_base_url_resolves_claude_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The end-to-end desync fix (acceptance criterion 3): route with
-    backend=openai + an OSS model-override row set, but NO
-    PRECIS_LLM_BASE_URL, resolves a CLAUDE model on claude_agent — never the
-    OSS slug landing on the claude transport (the `dream` api_error class)."""
-    from precis.utils.llm.router import LlmRequest, route
-    from precis.utils.llm.router import Tier as _Tier
-
-    _bind(
-        monkeypatch,
-        {"llm.backend": "openai", "llm.model.frontier": "z-ai/glm-5.2"},
-    )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
 
-    calls: dict[str, object] = {}
+    result = router.route(
+        router.LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True)
+    )
 
-    def fake_agent(prompt: str, **kwargs: object) -> object:
-        from precis.utils.claude_agent import AgentResult
-
-        calls["model"] = kwargs.get("model")
-        return AgentResult(
-            final_text="claude ran", cost_usd=None, duration_s=0.0, turns_used=1
-        )
-
-    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
-
-    out = route(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
-
-    assert calls["model"] == "claude-opus-5-5"  # NOT "z-ai/glm-5.2"
-    assert out.text == "claude ran"
+    assert result.model == "z-ai/glm-5.2"
+    assert "PRECIS_LLM_BASE_URL" in (result.error or "")
 
 
 def test_dispatch_openai_override_with_base_url_routes_oss_slug(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The other half of the invariant: WITH PRECIS_LLM_BASE_URL set, the same
-    override is coherent (backend stays OPENAI) and routes OPENAI_TOOLS
-    carrying the OSS slug — the flip working as intended."""
+    """A live model override selects its wire despite an obsolete backend row."""
     from precis.utils.llm.router import (
         LlmRequest,
         LlmResult,
@@ -400,7 +234,7 @@ def test_dispatch_openai_override_with_base_url_routes_oss_slug(
 
     _bind(
         monkeypatch,
-        {"llm.backend": "openai", "llm.model.frontier": "z-ai/glm-5.2"},
+        {"llm.model.frontier": "z-ai/glm-5.2", "llm.backend": "anthropic"},
     )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 

@@ -39,7 +39,6 @@ import os
 from dataclasses import dataclass
 
 from precis.utils.llm.router import (
-    Backend,
     Rung,
     Tier,
     filter_tool_rungs,
@@ -665,9 +664,7 @@ def _warn_once(source: str, reason: str, msg: str, *args: object) -> None:
     log.warning(msg, *args)
 
 
-def resolve_op_chain(
-    source: str | None, *, tools_needed: bool, backend: Backend
-) -> list[Rung] | None:
+def resolve_op_chain(source: str | None, *, tools_needed: bool) -> list[Rung] | None:
     """The per-operation rung list from ``llm.op.<source>``'s ``chain`` key, or
     ``None`` (→ the caller uses the tier chain).
 

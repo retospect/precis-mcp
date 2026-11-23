@@ -293,13 +293,11 @@ def test_dispatch_fails_when_clone_fails(
 # ── safety gates (reused from fix_gripe) ────────────────────────
 
 
-def test_dispatch_skips_under_openai_backend(
+def test_dispatch_skips_non_claude_model(
     store: Store, work_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from precis.utils.llm.router import Backend
-
-    monkeypatch.setattr(dg, "resolve_backend", lambda: Backend.OPENAI)
-    gid = _open_gripe(store, "backend flip skip")
+    monkeypatch.setenv("PRECIS_DIAGNOSE_CLAUDE_MODEL", "qwen-test")
+    gid = _open_gripe(store, "non-Claude model skip")
     ctx = _FakeCtx(store, 4, {"gripe_id": gid})
     dg._dispatch(ctx, dg.SPEC)
     assert ctx.status == "cancelled"

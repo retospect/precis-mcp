@@ -40,7 +40,6 @@ from precis.utils.llm.router import (
     LlmRequest,
     Tier,
     _keyword_plan,
-    resolve_backend,
     resolve_selection,
 )
 from precis_web.deps import get_store, templates
@@ -343,7 +342,7 @@ async def keyword_route_preview(
     except ValueError:
         req_tier = Tier.BIG
     req = LlmRequest(tier=req_tier, prompt=text, source=source)
-    plan = await asyncio.to_thread(_keyword_plan, rule, req, backend=resolve_backend())
+    plan = await asyncio.to_thread(_keyword_plan, rule, req)
     if isinstance(plan, str):
         row["fallback"] = plan
     else:

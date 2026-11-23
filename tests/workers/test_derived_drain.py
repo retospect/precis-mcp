@@ -191,7 +191,6 @@ def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin every input chain/model resolution can read, so a dev shell's env
     (or a bound store's app_settings rows) can't leak into these tests."""
     for var in (
-        "PRECIS_LLM_BACKEND",
         "PRECIS_LLM_BASE_URL",
         "PRECIS_LLM_FAILOVER",
         "PRECIS_LLM_CHAIN_SMALL",

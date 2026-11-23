@@ -325,7 +325,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     timeout_s = float(os.environ.get("PRECIS_CAD_PROPOSE_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
     # Routed through the LLM seam: tool-less agent call
-    # (mcp_config=None) on FRONTIER, so PRECIS_LLM_BACKEND can switch it.
+    # (mcp_config=None) on FRONTIER.
     # The broad except is kept and the folded res.error is checked too.
     try:
         res = route(

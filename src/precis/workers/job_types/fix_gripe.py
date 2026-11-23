@@ -58,7 +58,7 @@ from typing import Any
 from precis.errors import BadInput
 from precis.utils import claude_oauth as _oauth
 from precis.utils.claude_agent import ClaudeAgentError, ContainerRequiredError
-from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
+from precis.utils.llm.router import Tier, is_claude_model, resolve_model
 
 log = logging.getLogger(__name__)
 
@@ -494,39 +494,15 @@ def run(
     t0 = time.perf_counter()
     cfg = config or load_config_from_env()
 
-    # GLM/OpenRouter fleet-flip safety gate: fix_gripe's agent runs claude -p (via the
-    # call_claude_agent chokepoint), which assumes Claude model semantics —
-    # under backend=openai, resolve_model(FRONTIER) returns an OSS slug that
-    # `claude -p` can't run (HTTP 400). Skip cleanly rather than spawn a
-    # doomed call; the gripe stays open for a re-attempt once the backend
-    # reverts to anthropic (recommended: skip-clean, per the proposal's
-    # Part 3).
-    if resolve_backend() is Backend.OPENAI:
-        wall = time.perf_counter() - t0
-        log.warning(
-            "fix_gripe: llm.backend=openai — skipping gripe:%d fix attempt "
-            "(claude -p assumes Claude model semantics, unsupported under "
-            "the OSS/OpenRouter backend)",
-            gripe_id,
-        )
+    if not is_claude_model(cfg.claude_model):
+        reason = f"Claude harness requires a Claude model, got {cfg.claude_model!r}"
         return RunOutcome(
             status="skipped",
-            summary_text=(
-                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: "
-                "llm.backend=openai — fix_gripe's agent runs `claude -p`, "
-                "which assumes Claude model semantics, so it does not run "
-                "under the OSS/OpenRouter backend. Re-attempt once the "
-                "backend reverts to anthropic."
-            ),
-            gripe_comment_text=(
-                f"[worker:job:{job_id}] fix attempt skipped: "
-                "llm.backend=openai is not supported by fix_gripe "
-                "(`claude -p`). Will need a re-attempt once the "
-                "backend is anthropic again."
-            ),
+            summary_text=f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: {reason}",
+            gripe_comment_text=f"[worker:job:{job_id}] fix attempt skipped: {reason}",
             branch=None,
             sha=None,
-            wall_seconds=wall,
+            wall_seconds=time.perf_counter() - t0,
         )
 
     # Fail-closed safety catch (gr179498): fix_gripe's agent gets full

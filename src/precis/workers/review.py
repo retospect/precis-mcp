@@ -184,8 +184,7 @@ class Reviewer:
     gate_env: str
     meta_prefix: str
     #: The capability tier the call routes through; the
-    #: model resolves from it at dispatch time so ``PRECIS_LLM_BACKEND`` /
-    #: ``PRECIS_MODEL_*`` can switch it. ``model`` is the pre-resolved id
+    #: model resolves from it at dispatch time so ``PRECIS_MODEL_*`` can switch it. ``model`` is the pre-resolved id
     #: used only for prompt assembly (token budgeting).
     tier: Tier
     model: str
@@ -246,7 +245,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         prompt=prompt,
     )
     # Routed through the LLM seam: the reviewer's tier
-    # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
+    # resolves the model at dispatch time, so PRECIS_MODEL_*
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
     # tier default, which equals the old reviewer.model). Errors fold into
     # res.error rather than raising.

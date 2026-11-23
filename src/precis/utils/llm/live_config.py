@@ -1,11 +1,9 @@
-"""Web-editable runtime overrides for LLM backend + model selection.
+"""Web-editable runtime overrides for LLM model selection and chains.
 
 The ``/factory`` console can write ``app_settings`` rows that override the
-``PRECIS_LLM_BACKEND`` / ``PRECIS_MODEL_*`` env defaults **live — no redeploy**,
-so an operator flips the whole fleet's LLM backend, or a per-tier model, from
+``PRECIS_MODEL_*`` env defaults, so an operator can change a tier’s model from
 the browser (or, until the console write side lands, a single SQL ``INSERT``).
 This module is the **read** side: a small TTL-cached layer the router's
-:func:`~precis.utils.llm.router.resolve_backend` /
 :func:`~precis.utils.llm.router.resolve_model` /
 :func:`~precis.utils.llm.router.resolve_chain` consult *before* env (or, for
 the chain, before the compiled failover ladder — capability tiers + placement chains, Phase A).
@@ -40,8 +38,6 @@ from precis.utils.llm.router import Tier
 
 log = logging.getLogger(__name__)
 
-#: app_settings key for the backend family — ``"anthropic"`` | ``"openai"``.
-BACKEND_KEY = "llm.backend"
 #: app_settings key prefix for a per-tier model override: ``llm.model.<tier>``
 #: (e.g. ``llm.model.frontier``). The suffix is the ``Tier`` string value,
 #: so the console writes the same tier vocabulary the resolver keys on.
@@ -172,22 +168,6 @@ def _warn_env_once(var: str, message: str) -> None:
 
 def _warn_env_override(what: str, tier: Tier, var: str) -> None:
     _warn_env_once(var, f"llm {what} for {tier.value} overridden by {var}")
-
-
-def backend_override() -> str | None:
-    """The web-set backend family (``"anthropic"`` / ``"openai"``), or ``None``.
-
-    ``None`` = no row / no store / an unrecognized value → the router keeps its
-    env default. An unknown string is dropped (a typo can't dark the fleet).
-    """
-    raw = _cached_setting(BACKEND_KEY)
-    if raw is None:
-        return None
-    low = raw.lower()
-    if low in ("anthropic", "openai"):
-        return low
-    log.warning("live_config: ignoring unknown %s=%r", BACKEND_KEY, raw)
-    return None
 
 
 def model_override(tier: Tier) -> str | None:
@@ -451,7 +431,6 @@ def _read_setting(key: str) -> str | None:
 
 
 __all__ = [
-    "BACKEND_KEY",
     "CHAIN_KEY_PREFIX",
     "CLOUD_ENABLED_KEY",
     "CODEX_EXEC_KEY",
@@ -463,7 +442,6 @@ __all__ = [
     "MODEL_KEY_PREFIX",
     "OP_KEY_PREFIX",
     "PROFILES_KEY",
-    "backend_override",
     "bust_cache",
     "chain_env_active",
     "chain_env_var",

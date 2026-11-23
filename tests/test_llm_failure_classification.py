@@ -241,7 +241,6 @@ def test_route_local_429_is_rate_class(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.setenv("PRECIS_LLM_RETRY_ATTEMPTS", "1")
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
     assert out.error is not None and out.paused
     assert out.reason_class == "rate"
@@ -271,14 +270,13 @@ def test_breaker_trip_is_classified_by_gate_kind(
         "gate_tier",
         lambda *a, **k: "budget: claude subscription quota reached",
     )
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     out = route(LlmRequest(tier=Tier.FRONTIER, prompt="x"))
     assert out.paused and out.reason_class == "quota"
     assert out.retry_at is not None
     monkeypatch.setattr(
         breaker, "gate_tier", lambda *a, **k: "budget: hourly cap reached"
     )
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-test")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
     assert out.paused and out.reason_class == "budget"
@@ -306,7 +304,6 @@ def _flaky_client(monkeypatch: pytest.MonkeyPatch, outcomes: list[Any]) -> list[
             return out
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_RETRY_ATTEMPTS", raising=False)
     return calls
 
@@ -467,7 +464,6 @@ def _medium_ladder(
     # The openai_compat rung only parses with a hosted endpoint configured.
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     claude, paid = _Prov(rung0), _Prov(rung1)
     monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_P, claude)
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, paid)

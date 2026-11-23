@@ -26,9 +26,8 @@ write to it, commit, branch, or push — the only write-back is one
 The agent here still runs on VERBATIM, agent-filable gripe text with a
 full-tool box (same threat shape as ``fix_gripe``'s gr179498 concern), so
 this module reuses ``fix_gripe``'s fail-closed container-required gate
-(``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK``) and its GLM/OpenRouter backend-flip
-skip verbatim rather than re-deriving either — same risk register, same
-mitigation.
+(``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK``) and its check that the configured
+model is a Claude model.
 
 **Auto-promotion bridge, shipped dark.** When ``PRECIS_DIAGNOSE_AUTOPROMOTE=1``
 and the model's self-reported confidence is >= 0.8, the gripe gets tagged
@@ -59,7 +58,7 @@ from precis.utils.claude_agent import (
     ClaudeAgentError,
     ContainerRequiredError,
 )
-from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
+from precis.utils.llm.router import Tier, is_claude_model, resolve_model
 from precis.workers.executors._common import append_chunk as _append_chunk
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types.fix_gripe import (
@@ -376,7 +375,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     * malformed params / gripe not found / no repo config / empty body /
       clone failure / agent failure / empty reply → ``ctx.record_failure``
       (``STATUS:failed``).
-    * llm.backend=openai (claude -p can't run an OSS slug) or the
+    * a non-Claude model selected for the Claude harness or the
       gr179498 fail-closed container gate → ``STATUS:cancelled`` (a clean
       skip, not a failure — same disposition ``fix_gripe.run`` uses for
       both).
@@ -390,21 +389,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"diagnose_gripe: malformed params ({exc})")
         return
 
-    # Same fleet-flip safety gate as fix_gripe.run(): claude -p assumes
-    # Claude model semantics; under backend=openai, resolve_model(BIG)
-    # would hand it an OSS slug it can't run (HTTP 400).
-    if resolve_backend() is Backend.OPENAI:
-        log.warning(
-            "diagnose_gripe: llm.backend=openai — skipping gripe:%d diagnosis "
-            "(claude -p assumes Claude model semantics, unsupported under "
-            "the OSS/OpenRouter backend)",
-            gripe_id,
-        )
+    model = os.environ.get("PRECIS_DIAGNOSE_CLAUDE_MODEL") or resolve_model(Tier.BIG)
+    if not is_claude_model(model):
         ctx.append_chunk(
             "job_event",
-            "diagnose_gripe skipped: llm.backend=openai — claude -p does not "
-            "run under the OSS/OpenRouter backend. Re-attempt once the "
-            "backend reverts to anthropic.",
+            f"diagnose_gripe skipped: Claude harness requires a Claude model, got {model!r}",
         )
         ctx.set_status("cancelled")
         return
@@ -471,7 +460,6 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"diagnose_gripe: clone failed: {exc.stderr or exc}")
         return
 
-    model = os.environ.get("PRECIS_DIAGNOSE_CLAUDE_MODEL") or resolve_model(Tier.BIG)
     timeout_s = float(os.environ.get("PRECIS_DIAGNOSE_TIMEOUT_SECONDS", "900"))
 
     try:

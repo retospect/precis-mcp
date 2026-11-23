@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -347,7 +348,7 @@ def test_route_keyword_never_bypasses_tools(
 
 
 def test_route_keyword_does_not_steal_model_pin(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, kw_rules
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kw_rules: Any
 ) -> None:
     """A call-site ``req.model`` pin is a correctness constraint — a
     matching rule must not retarget it."""
@@ -356,10 +357,12 @@ def test_route_keyword_does_not_steal_model_pin(
     calls: dict[str, Any] = {}
     monkeypatch.setattr(router, "call_claude_p", _fake_p(calls))
 
-    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="ask opus", model="pinned-model"))
+    out = route(
+        LlmRequest(tier=Tier.MEDIUM, prompt="ask opus", model="claude-pinned-model")
+    )
 
     assert out.error is None
-    assert calls["model"] == "pinned-model"
+    assert calls["model"] == "claude-pinned-model"
 
 
 def test_route_features_stamp_keyword_rule() -> None:

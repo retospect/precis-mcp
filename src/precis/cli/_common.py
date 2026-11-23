@@ -55,7 +55,7 @@ def bind_process_store(store: Store) -> None:
 
     Call it right after ``Store.connect`` in any command that reaches the
     router. Unbound, ``budget.meter.active_store()`` is None and every
-    ``live_config`` override (``llm.backend``, ``llm.chain.<tier>``,
+    ``live_config`` override (``llm.chain.<tier>``,
     ``llm.op.<source>``) silently reads as "no override", because that layer
     is failure-tolerant by design. ``tests/test_cli_binds_store.py`` holds
     every command to it.

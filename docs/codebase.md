@@ -314,7 +314,9 @@ behind semantic Tailwind classes, dark following the browser), the
 **Discord bridge** (`src/asa_bot/`, `[asa]` extra, stdio to the server), and
 the **Slack bridge** (`src/asa_slack/`, `[asa-slack]` extra) — a sibling that
 routes chat turns through the ADR-0046 `dispatch()` seam (forced `Tier.BIG` +
-a hard per-turn kind-allowlist). Both bridges now route through
+a hard per-turn kind-allowlist). The router infers its default transport
+from the resolved model and the call’s tool requirement. Explicit operation
+and tier chains carry their own transports. Both bridges route through
 the router seam: Discord's `claude_invoke.invoke()` has two lanes picked by
 the effective `--model` — the `local` sentinel (deployed default) walks the
 BIG placement chain via sync `dispatch()` in a worker thread (no event

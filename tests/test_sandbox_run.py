@@ -877,20 +877,13 @@ def test_launch_podman_nonzero_exit_fails_job_with_stderr_tail(
     assert any("RunRoot not writable" in t for t in events)
 
 
-# ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
-#
-# claude_docker._launch spawns a raw `claude` CLI in the container whose
-# --model comes from resolve_sandbox_model() (-> resolve_model(Tier.FRONTIER))
-# — under backend=openai that's an OSS slug the claude CLI can't run. The
-# gate must skip *before* `podman run` (no container, no subprocess).
+# The sandbox requires a Claude model and checks it before running podman.
 
 
-def test_launch_skips_under_openai_backend(
+def test_launch_skips_non_claude_model(
     store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from precis.utils.llm.router import Backend
-
-    monkeypatch.setattr(claude_docker, "resolve_backend", lambda: Backend.OPENAI)
+    monkeypatch.setenv("PRECIS_SANDBOX_MODEL", "qwen-test")
     parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
     jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)
     claude_docker.run_claude_docker_pass(store, limit=4)
@@ -904,15 +897,8 @@ def test_launch_skips_under_openai_backend(
     assert not any(t.startswith("child-failed:") for t in _tags(store, parent.id))
 
 
-def test_launch_proceeds_under_default_anthropic_backend(
-    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Bookend of the skip test above: with the gate explicitly resolved to
-    the default Anthropic backend, launch proceeds exactly as before the
-    gate existed (mirrors test_launch_records_container_and_deadline)."""
-    from precis.utils.llm.router import Backend
-
-    monkeypatch.setattr(claude_docker, "resolve_backend", lambda: Backend.ANTHROPIC)
+def test_launch_proceeds_with_claude_model(store: Store, sandbox_env: Path) -> None:
+    """The sandbox fixture's Claude model clears the launch gate."""
     jid = _mk_queued_job(store, params=_valid_params())
     claude_docker.run_claude_docker_pass(store, limit=4)
     meta = _meta(store, jid)

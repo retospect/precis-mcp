@@ -1034,7 +1034,7 @@ _SEED_PROSE: dict[str, str] = {
 #: (telemetry) and ``record_eval`` (golden sets) overwrite them with higher-trust
 #: numbers once these models actually run. All route via the OSS backend
 #: (``openai_compat`` transport → OpenRouter), so switching to one is env-only
-#: (``PRECIS_LLM_BACKEND`` + ``PRECIS_LLM_BASE_URL``).
+#: (``PRECIS_LLM_BASE_URL``).
 #:
 #: Each row: (model_id, tier_floor, max_input, price_in, price_out, capability).
 _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] = (

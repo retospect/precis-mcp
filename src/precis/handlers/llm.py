@@ -1723,11 +1723,10 @@ class LlmHandler(NumericRefHandler):
                 "the routing ledger could not be read; no preview",
                 next="retry in a minute: " + example,
             )
-        backend = router.resolve_backend()
-        ladder = operations.resolve_op_chain(
-            source, tools_needed=req.tools_needed, backend=backend
-        ) or router.resolve_chain(tier, tools_needed=req.tools_needed, backend=backend)
         model = (op[1] if op else None) or router.resolve_model(tier)
+        ladder = operations.resolve_op_chain(
+            source, tools_needed=req.tools_needed
+        ) or router.resolve_chain(tier, tools_needed=req.tools_needed, model=model)
         if ladder:
             # The tie-break the router applies: a dead-even pick lands on
             # the lane the legacy ladder runs first.

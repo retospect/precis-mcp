@@ -8,8 +8,7 @@
   <strong>Cloud</strong> rungs bill per-token through a provider;
   <strong>Local</strong> rungs are served on the fleet
   {% if serving_hosts %}(<span class="font-mono">{{ ', '.join(serving_hosts) }}</span>){% endif %}
-  over llama-swap — free, but capped by each host's parallel slots. The live
-  backend flip + per-service model picks live on the
+  over llama-swap — free, but capped by each host's parallel slots. Manage per-service model picks on the
   <a href="/status?tab=services" class="text-success-strong hover:underline">Services</a> tab.
 </p>
 
@@ -24,8 +23,7 @@
   <div class="flex items-baseline gap-2 mb-3">
     <h2 class="text-sm font-semibold">Active routing</h2>
     <span class="text-xs text-fg-faint">
-      what each capability tier dispatches to right now · cloud backend
-      <span class="font-mono">{{ active_backend }}</span>
+      what each capability tier dispatches to right now
     </span>
   </div>
   <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

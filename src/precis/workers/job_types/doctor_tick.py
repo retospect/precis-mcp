@@ -91,7 +91,7 @@ REQUIRES: frozenset[str] = frozenset({"claude_bin", "mcp_config"})
 
 #: Local-first tier (spine constitution law 8) — the same tier the
 #: structural/deep reviewers dispatch at, so the same
-#: ``PRECIS_LLM_BACKEND``/``PRECIS_MODEL_*`` knobs retune it.
+#: ``PRECIS_MODEL_*`` knobs retune it.
 _TIER = Tier.BIG
 
 #: A tick gathers from several surfaces, reasons across them, dedups

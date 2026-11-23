@@ -3,7 +3,7 @@
 
 DRY by construction: every candidate is exercised via
 :func:`precis.utils.llm.router.route` — the same switchable ``openai_compat``
-lane production uses when ``PRECIS_LLM_BACKEND=openai`` — so this eval also
+lane production uses for model IDs using the OpenAI wire — so this eval also
 validates the switch itself. We do not open a second HTTP client; we wrap
 ``dispatch`` only to tally cost/tokens (which the harness's per-task score drops).
 
@@ -31,9 +31,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# The eval drives the OpenRouter-hosted OSS/claude lane; set the switch *before*
-# importing the router so LlmConfig.from_env() (read at dispatch time) sees it.
-os.environ.setdefault("PRECIS_LLM_BACKEND", "openai")
+# Hosted model IDs in the matrix use OpenRouter by default.
 os.environ.setdefault("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 os.environ.setdefault("PRECIS_SUMMARIZE_MAX_TOKENS", "4096")  # reasoning headroom
 if not os.environ.get("PRECIS_LLM_API_KEY"):

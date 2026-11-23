@@ -277,7 +277,6 @@ def test_active_routing_ctx_resolves_default_chain_per_tier() -> None:
     ctx = _active_routing_ctx(_FakeStore([]))
     rows = ctx["active_routing"]
     assert [r["tier"] for r in rows] == ["frontier", "big", "medium", "small"]
-    assert ctx["active_backend"] in ("anthropic", "openai")
     for r in rows:
         assert r["source"] == "default"  # no override reachable
         assert r["active_model"] and r["active_model"] != "—"

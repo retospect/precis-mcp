@@ -1,6 +1,6 @@
 """plan_tick's ``claude -p`` transport, restored as a router-selectable option.
 
-Under the default ANTHROPIC backend ``select_transport`` routes the tick to
+With the default Claude model the router directs the tick to
 ``CLAUDE_AGENT`` — the real Claude Code agent (MCP tools, OAuth) — and plan_tick
 drives it *through* ``router.route`` (:func:`plan_tick._run_claude_tick`)
 rather than hand-building a ``claude`` command. These tests cover: the request
@@ -76,7 +76,7 @@ def _run_claude(
     params: dict[str, Any] | None = None,
     apply_n: int = 0,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
-    """Drive ``plan_tick.run`` on the ANTHROPIC backend with ``route``
+    """Drive ``plan_tick.run`` on the Claude harness with ``route``
     scripted; returns the outcome plus the captured ``LlmRequest``."""
     import precis.workers.planner_prompt as planner_prompt
 
@@ -86,9 +86,6 @@ def _run_claude(
         seen["req"] = req
         return result
 
-    # ANTHROPIC backend → CLAUDE_AGENT transport (the default; be explicit so a
-    # stray env in the runner can't flip us onto the OSS branch).
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     if mcp_config is None:
         monkeypatch.delenv("PRECIS_MCP_CONFIG", raising=False)
     else:
@@ -440,7 +437,6 @@ def test_run_claude_envelope_on_oss_transport_refuses(
     running there would run the tick unboxed."""
     import precis.workers.planner_prompt as planner_prompt
 
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
     monkeypatch.setattr(
         planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()
@@ -481,7 +477,6 @@ def test_run_oss_transport_without_envelope_still_routes(
     unfenced tick on the same resolved transport dispatches normally."""
     import precis.workers.planner_prompt as planner_prompt
 
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
     monkeypatch.setattr(
         planner_prompt, "build_planner_prompts", lambda *a, **k: _FakePrompts()

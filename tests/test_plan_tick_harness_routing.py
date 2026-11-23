@@ -1,17 +1,8 @@
-"""``plan_tick`` picks its harness from the placement chain, not the backend.
+"""Planner harness selection follows the chain the router will dispatch.
 
-Before 2026-08-07 the branch was ``select_transport(tier, tools_needed=True,
-backend)``, which under the default ANTHROPIC backend *always* answers
-``CLAUDE_AGENT``. An ``llm.op.plan_tick`` tier override reached ``route()``
-but not the branch, so the tick still took the claude harness — leaving the
-fleet's largest LLM line item steerable only by the global backend flip, which
-moves every call site at once.
-
-The second half (al514787 / td510493): the chooser also read only the *tier*
-chain — an ``llm.op.plan_tick`` row's own ``chain`` and the request's
-``placement`` pin reached ``route()`` but not the harness branch, so a local
-rung could be handed to ``_run_claude_tick``. The chooser now resolves the
-same ladder ``route()`` walks: op chain → tier chain → placement filter.
+The operation's explicit chain takes precedence over its effective tier's
+chain. The placement filter then selects the first eligible rung, so a
+local OSS model reaches the in-process harness (al514787 / td510493).
 """
 
 from __future__ import annotations
@@ -183,7 +174,6 @@ def test_local_placement_with_no_local_rung_still_refuses(monkeypatch):
         user = "USR"
 
     _op_row(monkeypatch, {"chain": [_CLOUD_CLAUDE_RUNG]})
-    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     monkeypatch.setenv("PRECIS_MCP_CONFIG", "mcp.json")
     monkeypatch.setattr(

@@ -278,7 +278,6 @@ def test_logged_row_carries_requested_and_observed(
         summ, "LlmClient", lambda cfg: real(cfg, transport=_WireTransport(body))
     )
     monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk")
-    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)

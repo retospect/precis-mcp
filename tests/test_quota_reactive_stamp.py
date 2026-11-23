@@ -142,7 +142,6 @@ def test_route_quota_result_stamps_snapshot_and_next_call_pauses_without_dispatc
     try:
         prov = _QuotaProv()
         monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_P, prov)
-        monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
         monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
         first = route(LlmRequest(tier=Tier.BIG, prompt="x"))
         assert first.reason_class == "quota" and prov.calls == 1

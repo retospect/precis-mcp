@@ -65,7 +65,6 @@ def routing(monkeypatch: pytest.MonkeyPatch) -> None:
         operations.OpDefault(router.Tier.MEDIUM, None, "preview", "preview test op"),
     )
     monkeypatch.setattr(operations, "resolve_op_chain", lambda *a, **kw: None)
-    monkeypatch.setattr(router, "resolve_backend", lambda: router.Backend.ANTHROPIC)
     monkeypatch.setattr(router, "resolve_model", lambda *a, **kw: "legacy-model")
     monkeypatch.setattr(
         router,

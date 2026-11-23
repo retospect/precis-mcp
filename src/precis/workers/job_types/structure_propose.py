@@ -179,8 +179,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # mechanical describe→build step at ~½ the cost — so the *build* runs mid-tier
     # while catalyst *reasoning* (quest ticks, reviewers) stays FRONTIER=opus.
     # Override the model with PRECIS_STRUCTURE_PROPOSE_MODEL (e.g. back to an opus
-    # id to revert without a redeploy); PRECIS_LLM_BACKEND still switches the
-    # transport. Broad except kept + the folded res.error checked.
+    # id to revert without a redeploy). The resolved model selects the transport. Broad except kept + the folded res.error checked.
     try:
         res = route(
             LlmRequest(

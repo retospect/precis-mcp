@@ -11,8 +11,6 @@ Public surface:
 
 * :class:`Tier` — capability tiers (frontier / big / medium / small).
 * :class:`Transport` — the transports + the OpenAI-tools extension point.
-* :class:`Backend` / :func:`resolve_backend` — the anthropic↔openai switch
-  (LLM independence); ``PRECIS_LLM_BACKEND`` selects, ships dark by default.
 * :func:`resolve_model` — the ONE tier→model table.
 * :func:`select_transport` / :func:`transport_for_profile` — routing.
 * :class:`LlmProvider` / :func:`provider_for` — the swappable backend port
@@ -38,10 +36,7 @@ guards, asa's ``/model``, and the web model pickers key on;
 
 Resolution, per dispatch (in order)
 -----------------------------------
-1. **Backend** — app_settings ``llm.backend`` → ``PRECIS_LLM_BACKEND``
-   (default ``anthropic``); ``openai`` without ``PRECIS_LLM_BASE_URL``
-   demotes to ``anthropic`` rather than POST to a phantom endpoint.
-2. **Operation** — a ``req.source`` registered in
+1. **Operation** — a ``req.source`` registered in
    :mod:`~precis.utils.llm.operations`' opt-in allow-list
    (``LLM_OPERATIONS``: ``reading_brief`` / ``meditation`` / ``briefing`` /
    ``plan_tick`` / …) has its tier + model owned by the registry default + a
@@ -54,13 +49,16 @@ Resolution, per dispatch (in order)
    (the ``/status`` models panel, ``planner_rung0_model``) show the tier chain.
    A saturated local op rung 0 advances to the next rung. Exclusions: functional pins
    (``classify_topics``→``summarizer``, ``classify:escalate``→its Tier-2
-   re-judge model) and router-bypassers (``fix_gripe``).
-3. **Model** — :func:`resolve_model`: ``llm.model.<tier>`` DB override →
-   ``PRECIS_MODEL_*`` env → compiled default. Backend-aware: under an
-   effective ANTHROPIC backend, an OSS override on a claude-bound tier
-   (FRONTIER/BIG/MEDIUM) is dropped, so a half-applied flip never hands an
-   OSS slug to a claude transport; ``SMALL``'s override is always honored.
-4. **Chain** — ``router.resolve_chain``: an operator ``llm.chain.<tier>``
+   re-judge model) and the dedicated Claude build harnesses.
+2. **Model** — for a registered operation, its model pin or the resolved tier
+   model. Other calls use the request pin or :func:`resolve_model`, which
+   reads the process override, then ``llm.model.<tier>``, then the tier’s
+   environment default and compiled fallback. The model and tool requirement
+   select the default transport together so each tier can switch providers
+   independently. Native Claude IDs and CLI aliases use the Claude wire.
+   Local aliases and advertised models can use local completion, and other
+   models use the OpenAI-compatible adapters.
+3. **Chain** — ``router.resolve_chain``: an operator ``llm.chain.<tier>``
    override is read *regardless of* ``PRECIS_LLM_FAILOVER``; with none, a
    single primary rung (``select_transport``), or — flag on — the built-in
    OSS→claude failover ladder (claude rung pinned to the compiled tier
@@ -76,14 +74,14 @@ Resolution, per dispatch (in order)
    billing switch must not flip on a typo); inert + warned on a non-claude
    transport. ⚠ ``meter.spent_usd`` does not yet count bare spend —
    `me690531`.
-5. **Chain filters** — per-request ``LlmRequest.placement``
+4. **Chain filters** — per-request ``LlmRequest.placement``
    (``'local'``/``'cloud'``, strict: emptying a nonempty chain is an
    *error* — the caller asked for a rung the chain lacks); the cloud
    throttle (``llm.cloud_enabled`` off prunes cloud rungs; a tier left
    rungless returns ``paused``, skip-not-fail, never a silent local
    degrade); a serving-aware skip of a loopback ``LOCAL`` rung whose model
    this host doesn't serve, and a cooldown for refused local endpoints.
-6. **Gates** — the budget breaker (keyed on the resolved rung's resource:
+5. **Gates** — the budget breaker (keyed on the resolved rung's resource:
    OAuth quota vs dollars vs free local) and the catalog window admission —
    both fold refusals into the normalized result, never raise. An
    ``OpDefault.quota_fallback`` op escapes a ``quota`` pause onto the
@@ -107,7 +105,7 @@ captured during tool execution, so run-end metadata arrives too late.
 
 Route-log placement: ``llm_call_log.placement`` is the rung that ran
 (landed; the dollar caps exclude ``local``); ``placement_routed`` (0179) is
-rung 0 after the step-5 intent filters, before the serving skip, saturated
+rung 0 after the step-4 intent filters, before the serving skip, saturated
 retry and failover walk — ``local`` whenever a ``served_by`` slot exists.
 ``routed='local' AND placement='cloud'`` = fell back to cloud.
 ``SMALL``'s local-only aliases remap to a hosted small model
@@ -156,10 +154,8 @@ placement/thinking/effort/temperature onto its ticks.
 
 All switches are live: ``live_config`` layers app_settings rows (written by
 ``/status?tab=services``) over env, TTL-cached ~15 s, dark when unset —
-no row ⇒ byte-identical to env-only routing. Two call sites whose
-``--model`` assumes claude semantics — ``fix_gripe`` and
-``sandbox_run``/``claude_docker`` — read :func:`resolve_backend` and skip
-clean under ``backend=openai`` instead of folding through :func:`route`.
+the operator can change each tier independently. Dedicated Claude build
+and diagnosis harnesses validate the model they will pass to their CLI.
 
 ``local_first.run`` is an opt-in acceptance seam
 (``operations.LOCAL_FIRST_OPS``), unused by product call sites; its knobs are
@@ -190,14 +186,12 @@ byte-identical to routing without a catalog.
 from __future__ import annotations
 
 from precis.utils.llm.router import (
-    Backend,
     LlmProvider,
     LlmRequest,
     LlmResult,
     Tier,
     Transport,
     provider_for,
-    resolve_backend,
     resolve_model,
     result_from_agent,
     result_from_claude_p,
@@ -209,14 +203,12 @@ from precis.utils.llm.router import (
 )
 
 __all__ = [
-    "Backend",
     "LlmProvider",
     "LlmRequest",
     "LlmResult",
     "Tier",
     "Transport",
     "provider_for",
-    "resolve_backend",
     "resolve_model",
     "result_from_agent",
     "result_from_claude_p",

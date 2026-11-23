@@ -3,13 +3,11 @@
 Authoritative cost is always the number a provider *returns* (claude reports
 ``total_cost_usd``; newer perplexity returns a ``cost`` block). This module is
 the **fallback** for the one path that reports tokens but not dollars: the
-OpenAI-compatible / OpenRouter backend driven through
+OpenAI-compatible transport driven through
 :func:`precis.utils.llm.router.result_from_openai`.
 
 The table is list prices in **USD per 1M tokens**, ``(input, output)``. It is
-deliberately small — the ``ANTHROPIC`` backend (the default) reports real
-dollars, so this only matters when a deployment flips
-``PRECIS_LLM_BACKEND=openai`` at a hosted OSS endpoint. Unknown models return
+limited to hosted models that may omit dollar costs. Unknown models return
 ``None`` (priced as free / unknown rather than guessed). Prefer OpenRouter's
 own returned ``cost`` field where present; this table covers models that
 don't report one.

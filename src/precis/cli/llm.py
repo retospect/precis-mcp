@@ -562,15 +562,12 @@ def _cmd_decide(store: Store, args: argparse.Namespace) -> None:
         )
     result = decide.decide(req, decide.requirement_for(req), ledger, "shadow")
     print(json.dumps(result.explain(), indent=2))
-    backend = router.resolve_backend()
-    ladder = operations.resolve_op_chain(
-        req.source, tools_needed=req.tools_needed, backend=backend
-    )
+    op = operations.resolve_op(req.source)
+    tier, pinned_model = op if op else (req.tier, req.model)
+    model = pinned_model or router.resolve_model(tier)
+    ladder = operations.resolve_op_chain(req.source, tools_needed=req.tools_needed)
     if ladder is None:
-        ladder = router.resolve_chain(
-            req.tier, tools_needed=req.tools_needed, backend=backend
-        )
-    model = router.resolve_model(req.tier)
+        ladder = router.resolve_chain(tier, tools_needed=req.tools_needed, model=model)
     print("legacy: " + ", ".join(decide.rung_key(rung, model) for rung in ladder))
 
 
