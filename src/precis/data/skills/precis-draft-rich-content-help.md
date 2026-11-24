@@ -51,8 +51,10 @@ any other prose: `edit(kind='draft', id='dc<id>', text='…')`.
 A figure's **medium** is separate from `origin`: a static **blob**
 (`image=` above), a data-driven **graph** (`own_graph` + a render recipe,
 below), or an editable SVG canvas (`has-figure` edge). Clearance is
-medium-aware — no blob and no canvas = **uncleared**. On export a raster
-blob embeds directly; an SVG (blob or canvas) rasterises to PNG.
+medium-aware — no blob and no canvas = **uncleared**. Raster blobs embed
+directly. Static SVG blobs rasterise to PNG. An editable canvas supplies
+its current PNG, rendered on demand after an edit. See
+[[precis-figure-help]] to attach a canvas at a draft figure chunk.
 
 **Graph** (`origin='own_graph'`): give it **`render=`** (the Python that
 draws it) instead of `image=`, and **`plots=[dc<id>]`** (the data/table

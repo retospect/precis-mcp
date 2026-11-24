@@ -31,6 +31,7 @@ import hashlib
 import io
 import logging
 import re
+import struct
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -3023,7 +3024,53 @@ class DraftStore(_AbbrevMixin):
                         kind=kind,
                     )
                 )
+            if kind == "figure" and chunk_kind == "figure_node":
+                for chunk in out:
+                    self._sync_figure_elements(conn, ref_id, chunk.chunk_id, chunk.text)
             return out
+
+    def _sync_figure_elements(
+        self, conn: psycopg.Connection, ref_id: int, source_id: int, svg: str
+    ) -> None:
+        from precis.figure.svg import top_level_elements
+
+        elements = top_level_elements(svg)
+        rows = conn.execute(
+            """SELECT meta->>'element_key', chunk_id, handle, text, pos
+                 FROM chunks WHERE parent_chunk_id = %s
+                  AND chunk_kind = 'figure_element' AND retired_at IS NULL""",
+            (source_id,),
+        ).fetchall()
+        existing = {row[0]: row[1:] for row in rows}
+        event = {"reason": "figure-elements", "derived": True}
+        positions = n_keys_between(None, None, len(elements))
+        for (key, fragment), pos in zip(elements, positions, strict=True):
+            prior = existing.pop(key, None)
+            if prior is None:
+                self._insert_draft_chunk(
+                    conn,
+                    ref_id=ref_id,
+                    chunk_kind="figure_element",
+                    text=fragment,
+                    parent_chunk_id=source_id,
+                    pos=pos,
+                    meta={"no_index": "true", "element_key": key},
+                    source=event,
+                    kind="figure",
+                )
+                continue
+            chunk_id, handle, text, old_pos = prior
+            if text != fragment:
+                self.edit_text_in_tx(conn, handle, fragment, source=event)
+            if old_pos != pos:
+                conn.execute(
+                    "UPDATE chunks SET pos = %s WHERE chunk_id = %s", (pos, chunk_id)
+                )
+        for chunk_id, *_ in existing.values():
+            conn.execute(
+                "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s", (chunk_id,)
+            )
+            self._log(conn, chunk_id, "retired", event, None)
 
     def _insert_list_tree(
         self,
@@ -3131,6 +3178,50 @@ class DraftStore(_AbbrevMixin):
             return None
         return bytes(row[0]), row[1]
 
+    def figure_png(self, ref_id: int) -> tuple[bytes, str, int, int] | None:
+        """Read or materialize the live canvas source's PNG asset.
+
+        Serialize with source edits and other renders. The source revision and
+        its cached blob change in the same transaction, so an old render
+        cannot be published after a newer edit.
+        """
+        from precis.figure.raster import render_png
+
+        with self.tx() as conn:
+            source = conn.execute(
+                """SELECT c.chunk_id, c.text FROM chunks c JOIN refs r USING (ref_id)
+                    WHERE c.ref_id = %s AND c.chunk_kind = 'figure_node'
+                      AND c.retired_at IS NULL AND r.kind = 'figure'
+                      AND r.retired_at IS NULL AND """
+                + secret_fence("r", path="draft_reading_order")
+                + " ORDER BY c.ord LIMIT 1 FOR UPDATE OF c",
+                (ref_id,),
+            ).fetchone()
+            if source is None:
+                return None
+            chunk_id, svg = source
+            cached = conn.execute(
+                """SELECT bytes, sha256, width, height FROM chunk_blobs
+                    WHERE chunk_id = %s AND mime = 'image/png'
+                      AND width IS NOT NULL AND height IS NOT NULL""",
+                (chunk_id,),
+            ).fetchone()
+            if cached is not None:
+                data, sha, width, height = cached
+                return bytes(data), str(sha), int(width), int(height)
+            png = render_png(svg)
+            if png is None:
+                return None
+            # A legacy canvas gets its child handles on its first successful
+            # render, even if nobody has rewritten the SVG since the upgrade.
+            self._sync_figure_elements(conn, ref_id, chunk_id, svg)
+            # The resvg PNG's IHDR carries its dimensions without Pillow.
+            width, height = struct.unpack_from(">II", png, 16)
+            self.upsert_chunk_blob(
+                chunk_id, png, "image/png", conn=conn, dimensions=(width, height)
+            )
+            return png, hashlib.sha256(png).hexdigest(), width, height
+
     def chunk_blob_version(self, chunk_id: int) -> str | None:
         """Cheap existence check *and* cache-busting discriminator for a
         chunk's blob — ``SELECT sha256`` only, never de-TOASTs ``bytes``.
@@ -3154,14 +3245,16 @@ class DraftStore(_AbbrevMixin):
         mime: str,
         *,
         conn: psycopg.Connection | None = None,
+        dimensions: tuple[int, int] | None = None,
     ) -> None:
         """Insert or **replace** a chunk's blob (`chunk_blobs` row). Unlike
         :meth:`add_figure` (insert-only, at creation), this is the render
         path: a computed figure's image is *regenerable*, so re-rendering
         overwrites bytes in place keyed on ``chunk_id``. Re-derives
-        ``sha256``/``size``/dims from the bytes."""
+        ``sha256``/``size`` from the bytes and probes dimensions unless the
+        caller already obtained them from the image header."""
         sha = hashlib.sha256(image).hexdigest()
-        width, height = _image_dims(image)
+        width, height = dimensions if dimensions is not None else _image_dims(image)
 
         def _do(c: psycopg.Connection) -> None:
             c.execute(
@@ -3422,20 +3515,46 @@ class DraftStore(_AbbrevMixin):
         """Wire a draft figure chunk → a ``kind='figure'`` canvas via a
         ``has-figure`` link (the ``canvas`` medium). Chunk→ref edge:
         the source is the figure *chunk*, the target the whole figure *ref*.
-        Idempotent (``add_link`` dedups on the endpoint tuple)."""
+        The outgoing ``figure-in`` edge exposes the same anchor from the
+        canvas. Both writes are idempotent and share one transaction."""
         with self.tx() as conn:
             row = conn.execute(
-                "SELECT ref_id, ord FROM chunks WHERE chunk_id = %s",
+                """SELECT c.ref_id, c.ord FROM chunks c JOIN refs r USING (ref_id)
+                    WHERE c.chunk_id = %s AND c.chunk_kind = 'figure'
+                      AND c.retired_at IS NULL AND r.kind = 'draft'
+                      AND r.retired_at IS NULL
+                    FOR UPDATE OF c""",
                 (figure_chunk_id,),
             ).fetchone()
             if row is None:
-                raise NotFound(f"no chunk {figure_chunk_id}")
+                raise NotFound(
+                    f"no live draft figure chunk {figure_chunk_id}",
+                    next="get(kind='draft', id='<draft>') for a figure anchor",
+                )
             fig_ref, fig_ord = int(row[0]), int(row[1])
+            existing = conn.execute(
+                """SELECT l.dst_ref_id FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id
+                    WHERE l.src_chunk_id = %s AND l.relation = 'has-figure'
+                      AND r.kind = 'figure' AND r.retired_at IS NULL""",
+                (figure_chunk_id,),
+            ).fetchall()
+            if any(r[0] != canvas_ref_id for r in existing):
+                raise BadInput(
+                    "this draft figure already has a canvas",
+                    next="open the linked canvas and edit its source",
+                )
             self._host.add_link(
                 src_ref_id=fig_ref,
                 src_pos=fig_ord,
-                dst_ref_id=canvas_ref_id,  # ref-level dst (dst_pos=None)
+                dst_ref_id=canvas_ref_id,
                 relation="has-figure",
+                conn=conn,
+            )
+            self._host.add_link(
+                src_ref_id=canvas_ref_id,
+                dst_ref_id=fig_ref,
+                dst_pos=fig_ord,
+                relation="figure-in",
                 conn=conn,
             )
 
@@ -4175,6 +4294,11 @@ class DraftStore(_AbbrevMixin):
                VALUES (%s, 'edited', %s, %s, %s)""",
             (row[0], sha, row[5], _event_source(source)),
         )
+
+        if row[2] == "figure_node":
+            self._sync_figure_elements(conn, row[1], row[0], text)
+            if row[5] != text:
+                conn.execute("DELETE FROM chunk_blobs WHERE chunk_id = %s", (row[0],))
 
     @_write_retried
     def replace_block_content(

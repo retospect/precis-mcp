@@ -136,20 +136,16 @@ def _svg_to_png(svg: str) -> bytes | None:
 
 
 def figure_export_asset(store: Store, chunk: Any) -> tuple[bytes, str] | None:
-    """``(bytes, ext)`` for embedding a figure in an export, or ``None`` when the figure has no usable asset.
+    """Return export-ready bytes and extension for a draft figure.
 
-    Raster blobs pass through as-is; an SVG — whether a ``blob``-SVG (already
-    sanitized at ingest, slice 3) or a linked **canvas** (sanitized at write) —
-    rasterises to PNG so it embeds in both LaTeX (``\\includegraphics``) and
-    docx (``add_picture``), neither of which consumes raw SVG."""
+    A live canvas shares the persisted PNG produced by the figure render
+    job. Export can materialize it immediately after an edit. Static SVG
+    blobs still rasterize on demand and raster blobs pass through.
+    """
     canvas_ref_id = store.drafts.figure_canvas_ref(chunk.chunk_id)
     if canvas_ref_id is not None:
-        svg = _canvas_source(store, canvas_ref_id)
-        if not _svg_has_content(svg):
-            return None
-        assert svg is not None
-        png = _svg_to_png(svg)
-        return (png, "png") if png is not None else None
+        asset = store.drafts.figure_png(canvas_ref_id)
+        return (asset[0], "png") if asset is not None else None
 
     blob = store.drafts.get_chunk_blob(chunk.handle)
     if blob is not None:

@@ -298,6 +298,26 @@ def lint_svg(
     return findings
 
 
+def top_level_elements(svg: str) -> list[tuple[str, str]]:
+    """Project each direct child. Named elements keep identity across reorders.
+
+    Anonymous elements use their ordinal among anonymous siblings of the same
+    tag. Repeated IDs use occurrence order, so malformed duplicate IDs cannot
+    cause two elements to share a handle.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    out = []
+    for child in _parse(svg):
+        eid = child.get("id")
+        identity = ("id", eid) if eid else ("tag", child.tag)
+        occurrence = counts.get(identity, 0)
+        counts[identity] = occurrence + 1
+        key = f"{identity[0]}:{occurrence}:{identity[1]}"
+        fragment = ET.tostring(child, encoding="unicode").strip()
+        out.append((key, fragment))
+    return out
+
+
 def elements(svg: str) -> list[Element]:
     """Every element carrying a stable ``id=`` — the bindable anchors of the
     figure. Returns ``[]`` on an unparseable document (the caller

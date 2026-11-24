@@ -25,8 +25,14 @@ chunk-level ``depicts`` links.
 The handler (:mod:`precis.handlers.figure`) is the MCP surface (get/put/
 edit/delete/link); the web editor (:mod:`precis_web.routes.figure`) is the
 3-pane canvas + chat that drives the turn loop (SVG rendered as a
-script-safe ``<img>``). Slice 1 is SVG 2D, browser-rendered; raster/3D
-export and per-node chunk split are deferred.
+script-safe ``<img>``). The source remains authoritative for SVG-wide CSS,
+definitions and bindings. Each top-level element has an addressable child chunk
+updated with its parent source, using explicit SVG IDs for stable identity.
+
+The source chunk owns a regenerable PNG in ``chunk_blobs``. Source edits
+invalidate it transactionally. The ``figure_render`` job, PNG download and
+both draft exporters share the same cache. A ``figure-in`` edge points to
+the draft figure chunk that sets the caption and position.
 """
 
 from __future__ import annotations

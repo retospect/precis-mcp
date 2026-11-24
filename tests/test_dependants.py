@@ -37,6 +37,35 @@ def _spec_chain(store: Store) -> tuple[int, int, int]:
 
 
 class TestDirection:
+    def test_figure_in_reports_embedding_draft(self, store: Store) -> None:
+        canvas = _mk_ref(store, "figure", "Editable canvas")
+        draft = store.insert_ref(
+            kind="draft", slug="embeddingdraft", title="Draft with canvas"
+        ).id
+        anchor = store.drafts.add_chunks(
+            ref_id=draft, chunk_kind="figure", text="Caption", split=False
+        )[0]
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ord FROM chunks WHERE chunk_id = %s", (anchor.chunk_id,)
+            ).fetchone()
+        assert row is not None
+        store.add_link(
+            src_ref_id=canvas,
+            dst_ref_id=draft,
+            dst_pos=int(row[0]),
+            relation="figure-in",
+        )
+        page = store.dependants(canvas, depth=1)
+        assert [(row.ref_id, row.relation) for row in page.rows] == [
+            (draft, "figure-in")
+        ]
+        assert store.dependants(draft).rows == ()
+
+        store.drafts.link_figure_canvas(anchor.chunk_id, canvas)
+        assert [row.ref_id for row in store.dependants(canvas).rows] == [draft]
+        assert store.dependants(draft).rows == ()
+
     def test_spec_chain_depth_two(self, store: Store) -> None:
         """dependants(P, depth=2) → H at depth 1, D at depth 2."""
         p, h, d = _spec_chain(store)

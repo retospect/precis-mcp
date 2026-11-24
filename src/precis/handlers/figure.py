@@ -4,12 +4,9 @@ A ``figure`` is the **SVG instance** of the shared diagram core: a
 slug-addressed ref on the ``draft`` chunk-tree substrate (the DraftStore ops,
 reached as ``store.drafts``, parameterised ``kind='figure'``), never exported
 (``corpus_role='none'``). The
-whole MCP surface (get / put / edit / delete / link, incl. the element→chunk
-binding) lives in :class:`precis.diagram.handler.DiagramHandler`; this class is
-the thin binding — it sets ``LANG = SVG_LANG`` (which carries the SVG mechanics
-+ the figure handle scheme + the viewBox axis) and its ``KindSpec``. The
-interactive draw-with-me turn loop is the shared :func:`precis.diagram.turn.run_turn`
-driven by the ``/figure`` web editor.
+shared MCP surface lives in :class:`precis.diagram.handler.DiagramHandler`.
+This class adds draft attachment and binds the SVG language, handle scheme
+and viewBox to the shared core. The ``/figure`` editor drives the turn loop.
 """
 
 from __future__ import annotations
@@ -17,8 +14,9 @@ from __future__ import annotations
 from typing import ClassVar
 
 from precis.diagram.handler import DiagramHandler
+from precis.errors import BadInput
 from precis.figure.svg import SVG_LANG
-from precis.protocol import KindSpec
+from precis.protocol import KindSpec, Response
 
 
 class FigureHandler(DiagramHandler):
@@ -35,7 +33,8 @@ class FigureHandler(DiagramHandler):
             "the shared vocabulary (vocab=), the implementation notes (notes="
             "— the model's private design log), or the viewBox (viewbox=); delete "
             "soft-retires the figure. link binds an element to the chunk it "
-            "depicts (element=<id>, target=<dc…/pc…/me…>). The interactive "
+            "depicts (element=<id>, target=<dc…/pc…/me…>) or attaches the canvas "
+            "to a draft figure (rel='figure-in', target=<dc…>). The interactive "
             "draw-with-me chat is in the /figure web editor. corpus_role=none "
             "(never exported). See precis-figure-help."
         ),
@@ -52,3 +51,32 @@ class FigureHandler(DiagramHandler):
         # Compute-lane opt-in: a diagram_propose job parents on the figure it builds/verifies.
         can_own_jobs=True,
     )
+
+    def link(
+        self,
+        *,
+        id: str | int = "",
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        element: str | None = None,
+        **kwargs: object,
+    ) -> Response:
+        if rel != "figure-in" or element is not None:
+            return super().link(
+                id=id, target=target, mode=mode, rel=rel, element=element, **kwargs
+            )
+        anchor = self.store.drafts.get_draft_chunk(target) if target else None
+        if (
+            mode != "add"
+            or anchor is None
+            or anchor.retired
+            or anchor.chunk_kind != "figure"
+        ):
+            raise BadInput(
+                "figure-in needs a live draft figure chunk as its target",
+                next="link(kind='figure', id='<slug>', rel='figure-in', target='dc42')",
+            )
+        ref = self._resolve_any(id)
+        self.store.drafts.link_figure_canvas(anchor.chunk_id, ref.id)
+        return Response(body=f"embedded {ref.slug} at {anchor.dc}")

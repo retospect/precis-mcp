@@ -1238,6 +1238,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "structure_propose",
     "cad_propose",
     "diagram_propose",
+    "figure_render",
     "cad_discuss",
     "sandbox_run",
     "devin_task",
@@ -1382,6 +1383,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "cad_propose":
         _REGISTRY["cad_propose"] = _load_cad_propose()
         return _REGISTRY["cad_propose"]
+    if name == "figure_render":
+        from precis.workers.job_types import figure_render
+
+        _REGISTRY[name] = figure_render.SPEC
+        return _REGISTRY[name]
     if name == "diagram_propose":
         _REGISTRY["diagram_propose"] = _load_diagram_propose()
         return _REGISTRY["diagram_propose"]

@@ -382,6 +382,10 @@ Pathway environment points cross MCP reads, explicit re-solves and web links
 through `src/precis_pathway/environment.py::Environment`; stored-result lookup
 reuses `src/precis/quest/environment_basis.py::environment_basis` without
 loading the compute engine or scheduling work.
+Editable figures keep their canonical SVG and top-level element handles on
+the figure ref. The in-process `figure_render` job stores a PNG on the source
+chunk. LaTeX and docx reuse or materialize that asset at the linked draft
+figure chunk.
 Draft pathway figures store a lazy recipe in `meta.render`; export and web
 refresh share `src/precis/render/figure.py::render_figure_chunk`. Selection
 options live in `precis.utils.pathway_figure`, and the quest renderer freezes

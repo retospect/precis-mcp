@@ -154,6 +154,26 @@ async def figure_source(request: Request, slug: str) -> RawResponse:
     )
 
 
+@router.get("/figure/{slug}/export.png")
+async def figure_png(request: Request, slug: str) -> RawResponse:
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="figure", id=slug)
+    except NotFound:
+        return RawResponse(status_code=404, content="not found")
+    asset = await asyncio.to_thread(store.drafts.figure_png, ref.id)
+    if asset is None:
+        return RawResponse(status_code=422, content="canvas has no renderable drawing")
+    return RawResponse(
+        content=asset[0],
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'attachment; filename="figure.png"',
+        },
+    )
+
+
 @router.post("/figure/{slug}/turn")
 async def figure_turn(
     request: Request, slug: str, message: str = Form(...)

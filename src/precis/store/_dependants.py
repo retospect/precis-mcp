@@ -20,13 +20,17 @@ follows only the edges where the walked node is the relied-upon end:
   ``makes``, ``realizes``: the artifact leans on its origin), the
   dossier disposition edges (``cited-in``, ``superseded-in``,
   ``off-topic-for``: the dossier's record of the paper leans on it),
-  every ``has-*`` (the possession leans on its owner), and the passive
+  ownership edges such as ref-level ``has-figure`` (the figure leans on
+  its project), and the passive
   spellings of src-depends actives — ``cited-by``, ``prerequisite-of``,
   ``requirement-of``, ``used-in``, ``depicted-in``, ``fixed-by``,
   ``contradicted-by``, ``quantified-by``, every ``*-ed-by``/``*-in``
   inverse of a src-depends active. ``authored-by`` is the deliberate
   odd one out: ``authored`` itself is dst-depends, so its passive
   spelling is src-depends like the default.
+- For a draft figure anchor, chunk-level ``has-figure`` points to the
+  canvas the draft relies on. Its companion ``figure-in`` points from the
+  canvas to that anchor and places the dependant at dst.
 - Symmetric relations (:data:`_DEPENDANT_BOTH`) make each endpoint the
   other's dependant (``related-to``, ``same-family-as``, …).
 
@@ -129,6 +133,7 @@ _DEPENDANT_AT_DST: frozenset[str] = frozenset(
         "has-paper",
         "has-datasheet",
         "has-figure",
+        "figure-in",
         "has-mermaid",
         "has-snapshot",
         "has-fold-structure",
@@ -221,12 +226,16 @@ class DependantsMixin:
         return cached
 
     @staticmethod
-    def _dependant_side(relation: str) -> str:
+    def _dependant_side(relation: str, *, from_chunk: bool = False) -> str:
         """Which stored endpoint relies on the other: ``'dst'``, ``'src'``
         (the default — ``A -rel-> B`` means A's record points at and needs
         B), or ``'both'`` for a symmetric relation."""
         if relation in _DEPENDANT_BOTH:
             return "both"
+        # A draft anchor embedding a canvas relies on that canvas. The
+        # ref-level project → figure spelling describes project ownership.
+        if relation == "has-figure" and from_chunk:
+            return "src"
         if relation in _DEPENDANT_AT_DST:
             return "dst"
         return "src"
@@ -235,17 +244,18 @@ class DependantsMixin:
         self,
         conn: Connection,
         frontier: list[int],
-    ) -> tuple[list[tuple[int, int, int, str]], int]:
-        """Every ref-level link touching ``frontier``, plus the count of
+    ) -> tuple[list[tuple[int, int, int, str, bool]], int]:
+        """Every link touching ``frontier``, plus the count of
         matching edges the scan cap left unfetched.
 
         Returns ``(rows, truncated)`` — rows as ``(link_id, src_ref_id,
-        dst_ref_id, relation)`` in ``link_id`` order, ``truncated`` the
+        dst_ref_id, relation, from_chunk)`` in ``link_id`` order, ``truncated`` the
         number of edges never examined (0 when the cap didn't bite).
         """
         rows = conn.execute(
             """
             SELECT l.link_id, l.src_ref_id, l.dst_ref_id, l.relation,
+                   l.src_chunk_id IS NOT NULL AS from_chunk,
                    count(*) OVER () AS total
               FROM links l
              WHERE (l.src_ref_id = ANY(%(f)s::bigint[])
@@ -256,8 +266,8 @@ class DependantsMixin:
             """,
             {"f": list(frontier), "cap": _DEPENDANTS_EDGE_CAP},
         ).fetchall()
-        edges = [(int(r[0]), int(r[1]), int(r[2]), str(r[3])) for r in rows]
-        total = int(rows[0][4]) if rows else 0
+        edges = [(int(r[0]), int(r[1]), int(r[2]), str(r[3]), bool(r[4])) for r in rows]
+        total = int(rows[0][5]) if rows else 0
         return edges, max(total - len(edges), 0)
 
     def _live_dependant_kinds(
@@ -384,8 +394,8 @@ class DependantsMixin:
                 # dep_id -> (relation-as-seen, via_ref_id); first edge in
                 # link_id order wins so the walk is deterministic.
                 candidates: dict[int, tuple[str, int]] = {}
-                for _lid, src, dst, rel in edges:
-                    side = self._dependant_side(rel)
+                for _lid, src, dst, rel, from_chunk in edges:
+                    side = self._dependant_side(rel, from_chunk=from_chunk)
                     for anchor in (src, dst):
                         if anchor not in exp_set:
                             continue

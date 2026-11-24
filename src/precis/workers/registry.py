@@ -1551,6 +1551,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="figure_render",
+        label="Figure PNG render (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Rasterize an editable SVG canvas to a stored PNG in process.",
+        doc_skill="precis-figure-help",
+    ),
+    ServiceSpec(
         # gr592838: a PDF export compiles through ``latexmk`` — a host
         # capability, not an executor property. ``placement`` (check-only,
         # td543917) holds the row queued on hosts whose heartbeat doesn't

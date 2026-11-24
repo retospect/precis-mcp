@@ -4217,7 +4217,12 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
     if ref is None:
         return RedirectResponse(url=back, status_code=303)
     chunk = store.drafts.get_draft_chunk(handle)
-    if chunk is None or chunk.chunk_kind != "figure":
+    if (
+        chunk is None
+        or chunk.ref_id != ref.id
+        or chunk.retired
+        or chunk.chunk_kind != "figure"
+    ):
         return RedirectResponse(url=back, status_code=303)
 
     # Already drawn-with: jump straight into the existing canvas.
@@ -4245,8 +4250,6 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
         return await redirect_or_error(
             request, "put", args, redirect=back, error_title="Create drawing error"
         )
-    # Direct on purpose: no verb links a figure chunk to its canvas ref (the
-    # canvas mint above already went through ``put``).
     store.drafts.link_figure_canvas(chunk.chunk_id, canvas.id)
     return RedirectResponse(url=f"/figure/{slug}", status_code=303)
 

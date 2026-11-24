@@ -2,7 +2,7 @@
 id: precis-figure-help
 family: drafting
 title: precis — the figure kind (interactive SVG canvas you draw with the model)
-summary: author an SVG drawing as a slug-addressed chunk-tree, edit it by whole-source rewrite, and draw *with* the model in the /figure web canvas (two shared documents — the SVG source and a shared vocabulary — plus compile + out-of-bounds lints); never exported, browser-rendered
+summary: draw and edit an SVG canvas with the model, read individual elements by handle, and export a PNG or embed it in a draft
 answers:
   - how do I create and edit an SVG figure with the model?
   - how do I bind a figure element to the chunk it depicts?
@@ -16,15 +16,19 @@ status: active
 # precis-figure-help — draw SVG figures *with* the model
 
 A `figure` is an interactive **SVG canvas**. It rides the same chunk-tree
-substrate as `draft`/`plan` but is a distinct kind (`corpus_role='none'` —
-**never exported** as a deliverable; its rendered raster is a later slice).
-Slug-addressed; the ref handle is `fg<id>`, the SVG source node is `fn<id>`.
+substrate as `draft`/`plan`. The figure ref has `corpus_role='none'`.
+Its PNG can be downloaded or included in a draft export. The figure has
+a slug and an `fg<id>` handle, and its source chunk has an `fn<id>` handle.
 
 A figure is **three model-owned documents**:
 
 - **the SVG source** — one `figure_node` chunk holding the whole
   `<svg>…</svg>`. Name elements with stable `id=` and `<title>` so you can
-  talk about "the left eye". (Raw markup isn't embedded/searched.)
+  talk about "the left eye". Each top-level element has a child
+  `figure_element` chunk with its own `fn<id>`. Named elements keep that
+  handle across edits and reorderings. Anonymous elements are tracked by
+  position among anonymous siblings of the same tag. Edit the full SVG to
+  change the drawing. Raw SVG markup stays out of search indexing.
 - **the shared vocabulary** — one `figure_vocab` chunk: the *human-facing*,
   high-level ground truth ("green circles are foos", "a friendly round
   mascot"). Embedded + searchable; what keeps a long session coherent.
@@ -60,7 +64,7 @@ Read it (assembled SVG + shared vocabulary + `fn<id>` handle + lints):
 
     get(kind='figure', id='mascot')
     get(kind='figure')            # list all figures
-    get(kind='figure', id='fn42') # one source node verbatim
+    get(kind='figure', id='fn42') # source node or top-level element verbatim
 
 Edit — three independent axes:
 
@@ -74,6 +78,28 @@ Retire it:
 
 Place it in a folder (ADR 0045): `link(kind='figure', id='mascot',
 target='folder:7', rel='parent')`.
+
+## Export a PNG or embed the figure in a draft
+
+Download PNG from the figure editor, or queue a background render:
+
+```python
+put(kind='job', job_type='figure_render', parent_id=123)
+```
+
+Use the figure's ref ID as `parent_id`. The job stores a PNG on the source
+chunk and reports its SHA-256 and dimensions.
+
+To attach an existing canvas, link it to a draft figure chunk at the
+desired caption and position:
+
+```python
+link(kind='figure', id='mascot', rel='figure-in', target='dc42')
+```
+
+The draft reader shows the SVG. LaTeX and Word use the current PNG and
+render it on demand when the source has changed. PNG export captures the
+static SVG drawing.
 
 ## The two mechanical lints (everything else is your job)
 

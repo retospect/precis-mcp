@@ -219,11 +219,8 @@ class DiagramHandler(Handler):
     def _render(self, slug: str, ref: Any) -> Response:
         lang = self.LANG
         source, vocab_chunk, notes_chunk = self._docs(ref.id)
-        turns = sum(
-            1
-            for c in self.store.drafts.reading_order(ref.id, kind=lang.kind)
-            if c.chunk_kind == lang.turn_kind
-        )
+        chunks = self.store.drafts.reading_order(ref.id, kind=lang.kind)
+        turns = sum(c.chunk_kind == lang.turn_kind for c in chunks)
         src = source.text if source is not None else ""
         box = lang.bounds_from_meta((ref.meta or {}).get(lang.bounds_meta_key))
         if box is None:
@@ -257,6 +254,13 @@ class DiagramHandler(Handler):
                 lines.append(
                     f"- {b['element']} → {b['handle']} ({b['relation']}){title}"
                 )
+        if lang.kind == "figure":
+            elements = [c for c in chunks if c.chunk_kind == "figure_element"]
+            if elements:
+                lines.append("\n## Top-level elements")
+                for chunk in elements:
+                    key = chunk.meta["element_key"].split(":", 2)[-1]
+                    lines.append(f"- {chunk.dc}  {key.rsplit('}', 1)[-1]}")
         lines.append(f"\n## {lang.medium} source\n" + (src or "(empty)"))
         if findings:
             lines.append("\n## Lints")
