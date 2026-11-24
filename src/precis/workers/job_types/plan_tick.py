@@ -44,6 +44,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.runtime.scope import DOMAIN_ENV, DOMAINS
 from precis.utils.llm.router import (
     PLANNER_MODEL_ALIASES,
     Tier,
@@ -163,6 +164,15 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "fenced tick is pinned to the claude_agent transport — the "
             "envelope's facets exist only on that wire.",
         },
+        "domain": {
+            "type": "string",
+            "enum": sorted(DOMAINS),
+            "description": "Named surface domain the tick's spawned MCP "
+            "server binds (precis.runtime.scope.DOMAINS), exported to it "
+            "as PRECIS_DOMAIN. Declared means required: an unknown name "
+            "fails the job closed. Absent, the server resolves its own "
+            "default ('all').",
+        },
         "scout": {
             "type": "object",
             "properties": {
@@ -262,6 +272,13 @@ def validate_submit(
                     "named envelope — a fenced tick runs the scout prompt, "
                     "not the planner's"
                 )
+    if "domain" in params:
+        domain = params["domain"]
+        if not isinstance(domain, str) or domain not in DOMAINS:
+            return (
+                f"plan_tick: params.domain must be a registered domain "
+                f"{sorted(DOMAINS)}, got {domain!r}"
+            )
     if "scout" in params and params.get("envelope") != "scout":
         # A scout config without its envelope is a dropped or mistyped
         # key: the tick would run the scout procedure on the open
@@ -481,6 +498,7 @@ def run(
             job_ref_id=job_ref_id,
             log_event=log_event,
             fenced=fenced,
+            domain=params.get("domain"),
         )
         if fenced and outcome.exit_code == 0 and scout_cfg is not None:
             # The agent's only deliverable is its reply: worker code
@@ -711,6 +729,7 @@ def _run_claude_tick(
     job_ref_id: int,
     log_event: Any,
     fenced: bool = False,
+    domain: str | None = None,
 ) -> PlanTickOutcome:
     """Run one planner tick as a ``claude -p`` agent through the router.
 
@@ -761,6 +780,7 @@ def _run_claude_tick(
             model=model,
             agentlog_id=agentlog_id,
             workspace=workspace,
+            domain=domain,
         )
     # Turn-taking persona threads — run from a neutral cwd so `claude -p` discovers no project
     # CLAUDE.md, and surface any ambient one (user file or up the cwd tree) that
@@ -945,6 +965,7 @@ def _tick_env_overlay(
     model: str,
     agentlog_id: int | None,
     workspace: Any,
+    domain: str | None = None,
 ) -> dict[str, str]:
     """The env back-doors the spawned MCP server reads to bind this tick's
     runtime context — the claude path's equivalent of the OSS loop's ContextVar:
@@ -962,6 +983,10 @@ def _tick_env_overlay(
       has a repo checkout and the operator set no roots, so the python kind
       loads and a ``memory-review`` todo can be checked against the code
       (gr477865). Read-only index; no shell is granted.
+    * ``PRECIS_DOMAIN`` — the declared surface domain (``params.domain``,
+      gr572725), which ``runtime.scope.current_domain`` resolves in the
+      spawned server. Absent when the job declares none — no key, so the
+      server's own default (``'all'``) applies.
     """
     from precis import agentlog
 
@@ -973,6 +998,8 @@ def _tick_env_overlay(
         overlay["PRECIS_WORKSPACE"] = workspace.path
     if agentlog_id is not None:
         overlay[agentlog.ENV_VAR] = str(agentlog_id)
+    if domain is not None:
+        overlay[DOMAIN_ENV] = domain
     _python_roots_from_fix_repo(overlay)
     _disable_prose_file_kind(store, parent_ref_id, overlay)
     return overlay

@@ -337,8 +337,9 @@ def agent_run_mode() -> str:
 #: INTO the container (gr537773). The overlay reaches only the host-side
 #: ``docker run`` client; the container's stdio ``precis serve`` inherits the
 #: container env alone, so without this allowlist the run's attribution
-#: (``tool_calls.agentlog_id``/``source``), todo auto-parenting, acting-user
-#: and the ``PRECIS_KINDS_DISABLED`` kind gate all silently stop at the
+#: (``tool_calls.agentlog_id``/``source``), todo auto-parenting, acting-user,
+#: the ``PRECIS_KINDS_DISABLED`` kind gate and the ``PRECIS_DOMAIN`` surface
+#: binding (gr572725) all silently stop at the
 #: boundary. An explicit allowlist, never the whole overlay: the overlay can
 #: carry ``CLAUDE_CODE_OAUTH_TOKEN`` (asa_bot) and deny-verb / role values this
 #: module pins from the envelope. ``PRECIS_WORKSPACE`` / ``PRECIS_PYTHON_ROOTS``
@@ -351,6 +352,7 @@ RUN_CONTEXT_ENV_KEYS: tuple[str, ...] = (
     "PRECIS_CONV_READ_SCOPE",
     "PRECIS_ACTING_USER",
     "PRECIS_CURRENT_SOURCE",
+    "PRECIS_DOMAIN",
 )
 
 

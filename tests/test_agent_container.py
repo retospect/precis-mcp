@@ -147,6 +147,7 @@ def test_container_env_run_context_is_allowlisted_and_pinned_values_win() -> Non
             "PRECIS_CURRENT_AGENTLOG": "7",
             "PRECIS_ACTING_USER": "reto",
             "PRECIS_CURRENT_TODO": "",
+            "PRECIS_DOMAIN": "pcb",
             "CLAUDE_CODE_OAUTH_TOKEN": "tok-secret",
             "PRECIS_WORKSPACE": "/host/path",
             "PRECIS_MCP_DB_ROLE": "agent_rw",
@@ -155,6 +156,7 @@ def test_container_env_run_context_is_allowlisted_and_pinned_values_win() -> Non
     )
     assert cenv.values["PRECIS_CURRENT_AGENTLOG"] == "7"
     assert cenv.values["PRECIS_ACTING_USER"] == "reto"
+    assert cenv.values["PRECIS_DOMAIN"] == "pcb"
     assert "PRECIS_CURRENT_TODO" not in cenv.values
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in cenv.values
     assert "PRECIS_WORKSPACE" not in cenv.values

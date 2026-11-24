@@ -428,6 +428,30 @@ def test_run_claude_unfenced_still_passes_mcp_and_overlay(
     assert req.env_overlay["PRECIS_CURRENT_TODO"] == "2"
 
 
+def test_run_claude_domain_rides_the_env_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``params.domain='pcb'`` reaches the spawned serve as
+    ``PRECIS_DOMAIN=pcb`` in the routed request's env overlay
+    (gr572725 slice 1)."""
+    _, seen = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={"model": "opus", "domain": "pcb"},
+    )
+    assert seen["req"].env_overlay["PRECIS_DOMAIN"] == "pcb"
+
+
+def test_run_claude_no_domain_omits_precis_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``params.domain`` → no ``PRECIS_DOMAIN`` key: the overlay stays
+    byte-identical to a pre-domain tick and the serve keeps its own
+    default resolution (``'all'``)."""
+    _, seen = _run_claude(monkeypatch, result=_clean_result())
+    assert "PRECIS_DOMAIN" not in seen["req"].env_overlay
+
+
 def test_run_claude_envelope_on_oss_transport_refuses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -711,6 +735,22 @@ def test_validate_submit_accepts_absent_and_registered_envelope() -> None:
     )
 
 
+@pytest.mark.parametrize("bad", ["nope", "", 7, {}, [], None])
+def test_validate_submit_rejects_unknown_domain(bad: Any) -> None:
+    """Declared means required: a present ``params.domain`` key whose value
+    is empty, non-string, unregistered or ``None`` refuses at submit time
+    (gr572725 slice 1 — the isinstance check leads so an unhashable value
+    can't TypeError on ``in``)."""
+    err = pt.validate_submit(None, params={"model": "opus", "domain": bad})
+    assert err is not None
+    assert "domain" in err
+
+
+def test_validate_submit_accepts_absent_and_registered_domain() -> None:
+    assert pt.validate_submit(None, params={"model": "opus"}) is None
+    assert pt.validate_submit(None, params={"model": "opus", "domain": "pcb"}) is None
+
+
 # ── _claude_exit: the outcome mapping in isolation ─────────────────────
 
 
@@ -982,6 +1022,21 @@ def _overlay() -> dict[str, str]:
         agentlog_id=None,
         workspace=None,
     )
+
+
+def test_tick_env_overlay_domain() -> None:
+    """A declared domain lands under ``PRECIS_DOMAIN``; absent, the key is
+    not added at all (gr572725 slice 1)."""
+    overlay = pt._tick_env_overlay(
+        store=object(),
+        parent_ref_id=1,
+        model="sonnet",
+        agentlog_id=None,
+        workspace=None,
+        domain="pcb",
+    )
+    assert overlay["PRECIS_DOMAIN"] == "pcb"
+    assert "PRECIS_DOMAIN" not in _overlay()
 
 
 def test_tick_env_overlay_python_roots_from_fix_repo(
