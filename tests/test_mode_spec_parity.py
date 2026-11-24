@@ -163,10 +163,11 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     # -- put: structure's recognised modes are the deliberate-rerun
     #    door (put(id=<slug-or-handle>, mode='rerun')) onto the quest
     #    compute lane (gr499904), the CI-NEB edge ('neb'), the NVT
-    #    Langevin MD run ('md', struct_md job) and the audited harvest
-    #    trust-stamp correction ('trust', gr592893) — every other value
-    #    is rejected -----------------------------------------------
-    ("structure", "put"): ("rerun", "neb", "md", "analyze", "trust"),
+    #    Langevin MD run ('md', struct_md job), the audited harvest
+    #    trust-stamp correction ('trust', gr592893) and the cheap-tier
+    #    phonon-mediated-Tc estimator ('tc', gr709908) — every other
+    #    value is rejected --------------------------------------------
+    ("structure", "put"): ("rerun", "neb", "md", "analyze", "trust", "tc"),
     # -- put: job's recognised modes are the retry surface
     #    (put(id=N, mode='retry')), the queued-pin move (mode='retarget')
     #    and the audited claim.* override door (mode='setting', gr556919);

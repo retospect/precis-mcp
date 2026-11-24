@@ -413,20 +413,23 @@ GOLDEN: dict[str, list[tuple[str, int, float]]] = {
         ("<memory>", 0, 0.976477287),
     ],
     "fused_kind_paper": [
-        ("wang2020nitrate", 0, 0.032266458),
-        ("wang2020nitrate", 1, 0.031054405),
-        ("lee2021enzymes", 2, 0.031024531),
-        # td703300 (e7934df3b) length-normalizes lexical ranks: ranks 3-5
-        # reorder (shorter lee/4 now outranks smith/1 on the lexical leg)
-        ("lee2021enzymes", 3, 0.029877369),
-        ("lee2021enzymes", 4, 0.029513889),
-        ("smith2019perovskite", 1, 0.029437229),
-        ("smith2019perovskite", 0, 0.016393443),
-        ("wang2020nitrate", 3, 0.016129032),
-        ("lee2021enzymes", 1, 0.015625),
-        ("smith2019perovskite", 2, 0.015384615),
-        ("wang2020nitrate", 2, 0.014705882),
-        ("lee2021enzymes", 0, 0.014084507),
+        # td770084 (5b2ed120b) adds the rare-paper boost: papers carrying
+        # the query's rarest terms gain 2/(k+1) on the fused score and
+        # lead the lex_any leg. Here wang/lee carry the rarest terms
+        # (nitrate/reduct), so their nine chunks rise by 2/61 ≈ 0.032787
+        # above the unboosted smith rows, which keep their old scores.
+        ("wang2020nitrate", 0, 0.06505334374186833),
+        ("wang2020nitrate", 1, 0.06384129063829451),
+        ("lee2021enzymes", 2, 0.06381141627043266),
+        ("lee2021enzymes", 3, 0.06266425425370543),
+        ("lee2021enzymes", 4, 0.06230077413479053),
+        ("wang2020nitrate", 3, 0.04891591750396616),
+        ("lee2021enzymes", 1, 0.04841188524590164),
+        ("wang2020nitrate", 2, 0.047492767598842814),
+        ("lee2021enzymes", 0, 0.046871392288155164),
+        ("smith2019perovskite", 1, 0.02943722943722944),
+        ("smith2019perovskite", 0, 0.01639344262295082),
+        ("smith2019perovskite", 2, 0.015384615384615385),
     ],
     "semantic_max_distance": [
         ("lee2021enzymes", 3, 0.952645039),

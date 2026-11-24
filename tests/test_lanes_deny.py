@@ -71,6 +71,12 @@ _DEPLOY_SCAN_ALLOWLIST: dict[str, frozenset[str]] = {
     "deploy/roles/pgpass/tasks/main.yml": frozenset(
         {"{{ 'vault_' ~ item.password_var }}"}
     ),
+    # The chat MCP config renders a password-free daemon DSN (§L,
+    # gr171431): libpq resolves the password from the run-as user's
+    # .pgpass, so no credential is placed.
+    "deploy/roles/precis_web/templates/chat_mcp.json.j2": frozenset(
+        {"precis_web_daemon_dsn"}
+    ),
 }
 
 

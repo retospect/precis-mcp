@@ -2609,7 +2609,17 @@ class FailoverProvider:
             if rung.profile is not None:
                 call_req = _replace(call_req, profile=rung.profile)
             started = time.monotonic()
-            rung_model = rung.model or model
+            # A chain rung that pins a local-only alias (an operator
+            # ``llm.chain.*`` row naming ``summarizer`` on a hosted wire)
+            # gets the same hosted-small remap the resolved model gets —
+            # ``rung.model or model`` would otherwise hand the alias to a
+            # hosted endpoint that has never heard of it (the 395 class).
+            rung_model = _hosted_small_remap(
+                rung.model or model,
+                rung.transport,
+                has_local_slot=call_req.local_url is not None,
+                profile=rung.profile,
+            )
             rung_profile = resolve_profile(rung.profile) if rung.profile else None
             # A subscription-profile rung gates per call here (ops
             # allowlist, bulk guard, window cap). The refusal is
@@ -4993,6 +5003,32 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     if ladder:
         ladder, _unavail = _drop_unavailable_rungs(ladder, model)
         if not ladder:
+            # A durably oversized call is refused on size before the
+            # availability verdict: "max input" names the real problem,
+            # where "no usable rung" would send the caller debugging the
+            # host (td771804 routes a pinned non-Claude model to
+            # openai_compat, which a base-url-less host always drops).
+            from precis.utils.llm import admit as _admit
+
+            refusal = _admit.check_dispatch(
+                req, model=model, transport=_unavail[0][0].transport
+            )
+            if refusal is not None:
+                return _gate_result(
+                    req,
+                    LlmResult(
+                        text="",
+                        cost_usd=None,
+                        turns_used=None,
+                        model=model,
+                        tier=req.tier,
+                        error=refusal,
+                    ),
+                    entered=entered,
+                    transport=_unavail[0][0].transport,
+                    routed=_routed_placement(routed_rung, None),
+                    account=request_account(req, _unavail[0][0]),
+                )
             return _gate_result(
                 req,
                 LlmResult(

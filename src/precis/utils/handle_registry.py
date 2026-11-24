@@ -282,6 +282,8 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "handle",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
+    # live introspection — addressed by relation name, never a ref row
+    "schema",
     # private non-ref records — leN/gtN are store-local, never shared ref codes
     "learning",
     "gtd",

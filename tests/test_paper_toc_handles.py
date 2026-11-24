@@ -30,8 +30,10 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     e = MockEmbedder(dim=1024)
     blocks = store.chunks.insert_chunks(
         ref.id,
+        # Sentence-ended text: a bare fragment tail would trip the
+        # truncated-body banner (gr779217) ahead of the TOC headline.
         [
-            ChunkInsert(ord=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
+            ChunkInsert(ord=i, text=f"chunk {i} body text.", embedding=e.embed_one("x"))
             for i in range(n)
         ],
     )

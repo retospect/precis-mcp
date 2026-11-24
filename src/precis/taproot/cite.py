@@ -43,6 +43,7 @@ def _keyed_edges(
     edges: list[EvidenceEdge],
     *,
     cite_key_map: dict[int, list[str]] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> tuple[list[tuple[EvidenceEdge, str]], list[int]]:
     """Pair each edge with its paper's (oldest) ``cite_key`` alias.
 
@@ -61,13 +62,17 @@ def _keyed_edges(
     per-paper ``store.ref_cite_keys`` round trip entirely when given
     (the batch B fix: this was an N+1 per hub, and a *second* N+1 when
     ``claim_trust`` re-derived the same hub — see :mod:`precis.taproot.trust`).
-    ``None`` (the default) preserves the old per-edge query behaviour.
+    ``remap`` is its twin for the supersede walk: a bulk caller passes one
+    pre-fetched :func:`bibliographic_targets` map over every supporter
+    across every hub; ``None`` (the default) computes it per call, which
+    re-introduces a recursive-CTE round trip per hub in a batch render.
     """
     keyed: list[tuple[EvidenceEdge, str]] = []
     skipped: list[int] = []
     if not edges:
         return keyed, skipped
-    remap = bibliographic_targets(store, [e.paper_ref_id for e in edges])
+    if remap is None:
+        remap = bibliographic_targets(store, [e.paper_ref_id for e in edges])
     for edge in edges:
         resolved_id = remap.get(edge.paper_ref_id, edge.paper_ref_id)
         if cite_key_map is not None and resolved_id == edge.paper_ref_id:
@@ -244,13 +249,18 @@ def resolve_hub_print(
     *,
     cite_key_map: dict[int, list[str]] | None = None,
     paper_refs: dict[int, Any] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> HubPrint:
     """The body of :func:`hub_cite_keys`, returning the printed *edges* too —
     surfaces that mirror the print set (the web ★, the trust harden rule)
-    read ``.edges`` so they cannot drift from what the export cites."""
+    read ``.edges`` so they cannot drift from what the export cites.
+
+    ``remap`` threads a bulk caller's pre-fetched
+    :func:`bibliographic_targets` map into both :func:`_keyed_edges` calls —
+    ``None`` computes it per call (one supersede-walk query per hub)."""
     notes: list[tuple[str, str]] = []
     originators, skipped = _keyed_edges(
-        store, evidence.originators, cite_key_map=cite_key_map
+        store, evidence.originators, cite_key_map=cite_key_map, remap=remap
     )
     for ref_id in skipped:
         notes.append(
@@ -268,7 +278,7 @@ def resolve_hub_print(
         )
 
     corroborators, skipped = _keyed_edges(
-        store, evidence.corroborators, cite_key_map=cite_key_map
+        store, evidence.corroborators, cite_key_map=cite_key_map, remap=remap
     )
     for ref_id in skipped:
         notes.append(
@@ -409,6 +419,7 @@ def hub_cite_keys(
     *,
     cite_key_map: dict[int, list[str]] | None = None,
     paper_refs: dict[int, Any] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Locked resolution policy for a claim hub's living citation.
 
@@ -449,9 +460,10 @@ def hub_cite_keys(
     every supporter across every hub instead of paying a query per supporter
     here. ``paper_refs`` is its twin for the candidates' title/journal/
     authors; any candidate it lacks is fetched in one ``fetch_refs_by_ids``.
+    ``remap`` is the supersede-walk twin (see :func:`resolve_hub_print`).
     """
     result = resolve_hub_print(
-        store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+        store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs, remap=remap
     )
     return result.cite_keys, result.notes
 
@@ -476,6 +488,7 @@ def finding_cite_keys(
     *,
     assume_hub: bool = False,
     cite_key_map: dict[int, list[str]] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> FindingCite:
     """Resolve a finding ref to its bibliographic cite_key(s) — the one
     entry point both ``precis resolve`` and the draft exporters call.
@@ -494,7 +507,9 @@ def finding_cite_keys(
     """
     if assume_hub or is_claim_hub(store, ref_id):
         evidence = derive_evidence(store, ref_id, assume_hub=assume_hub)
-        cite_keys, notes = hub_cite_keys(store, evidence, cite_key_map=cite_key_map)
+        cite_keys, notes = hub_cite_keys(
+            store, evidence, cite_key_map=cite_key_map, remap=remap
+        )
         return FindingCite(
             cite_keys=cite_keys,
             is_hub=True,

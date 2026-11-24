@@ -25,6 +25,7 @@ import pytest
 
 from precis.cad.dsl import _ALIAS_KEYS
 from precis.cad.dsl import parse as cad_dsl_parse
+from precis.store._tag_filter import PAPER_ACCESS_FILTERS
 from precis.store.types import _KIND_ALLOWED_AXES
 from tests._skill_roots import skill_files
 
@@ -155,6 +156,11 @@ def _check_kind_axis_pairing(block: str, *, file: str) -> list[str]:
             body = tags_match.group("body")
             for tm in _CLOSED_TAG_RE.finditer(body):
                 prefix = tm.group("prefix")
+                if f"{prefix}:{tm.group('value')}" in PAPER_ACCESS_FILTERS:
+                    # ACCESS:open / ACCESS:arxiv are search filters, not
+                    # tag axes (gr659753) — the store passes them through
+                    # ahead of the axis check.
+                    continue
                 if prefix not in allowed:
                     errors.append(
                         f"{file}: kind={kind!r} call uses '{prefix}:' tag "

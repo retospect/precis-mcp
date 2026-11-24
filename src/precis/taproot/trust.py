@@ -46,7 +46,11 @@ from functools import reduce
 from typing import Any, Literal, cast
 
 from precis.store.protocols import ClaimTrustStore
-from precis.taproot.cite import finding_cite_keys, resolve_hub_print
+from precis.taproot.cite import (
+    bibliographic_targets,
+    finding_cite_keys,
+    resolve_hub_print,
+)
 from precis.taproot.seniority import (
     HubEvidence,
     conjunct_atoms_bulk,
@@ -162,6 +166,7 @@ def _hub_trust(
     evidence: HubEvidence | None = None,
     cite_key_map: dict[int, list[str]] | None = None,
     paper_refs: dict[int, Any] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> tuple[TrustLabel, str | None, str]:
     """A ``TAPROOT:claim`` hub's trust: empty print set (no originators AND
     no corroborators, i.e. :attr:`FindingCite.inflight`) → unverified; any
@@ -177,11 +182,15 @@ def _hub_trust(
     bulk caller already resolved it."""
     if evidence is not None:
         printed = resolve_hub_print(
-            store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+            store,
+            evidence,
+            cite_key_map=cite_key_map,
+            paper_refs=paper_refs,
+            remap=remap,
         )
         inflight = not printed.cite_keys
     else:
-        fc = finding_cite_keys(store, ref_id)
+        fc = finding_cite_keys(store, ref_id, remap=remap)
         inflight = fc.inflight
     if inflight:
         return "unverified", _HUB_UNVERIFIED_NOTE, "hub"
@@ -292,6 +301,7 @@ def claim_trust(
     ref: Any = None,
     paper_refs: dict[int, Any] | None = None,
     conjunct_atom_ids: list[int] | None = None,
+    remap: dict[int, int] | None = None,
     _expand_conjuncts: bool = True,
 ) -> TrustState:
     """Derive a finding's trust label — the ONE mapping every trust
@@ -339,7 +349,11 @@ def claim_trust(
     (batch/de-dup fix — a caller passing ``evidence`` also implies the
     ref IS a hub, so the ``is_claim_hub`` re-check is skipped too; it does
     NOT imply non-composite — a composite's derived evidence is legitimately
-    empty, so the conjunct check still runs). ``conjunct_atom_ids`` is that
+    empty, so the conjunct check still runs). ``remap`` is the
+    supersede-walk twin of ``cite_key_map`` — a bulk caller's pre-fetched
+    :func:`~precis.taproot.cite.bibliographic_targets` map, threaded into
+    every :func:`~precis.taproot.cite.resolve_hub_print` below so a batch
+    render pays one walk for its whole hub set, not three per hub. ``conjunct_atom_ids`` is that
     check's own threading knob: a caller that already batched
     :func:`~precis.taproot.seniority.conjunct_atoms_bulk` over its hub set
     passes each hub's list (``[]`` for a plain atomic hub) and this function
@@ -392,7 +406,11 @@ def claim_trust(
         # — no second derive.
         if evidence is None:
             evidence = finding_cite_keys(
-                store, finding_ref_id, assume_hub=True, cite_key_map=cite_key_map
+                store,
+                finding_ref_id,
+                assume_hub=True,
+                cite_key_map=cite_key_map,
+                remap=remap,
             ).evidence
         hub_evidence = evidence
         label, note, status = _hub_trust(
@@ -401,6 +419,7 @@ def claim_trust(
             evidence=evidence,
             cite_key_map=cite_key_map,
             paper_refs=paper_refs,
+            remap=remap,
         )
     else:
         label, note, status = _lifecycle_trust(store, finding_ref_id, meta)
@@ -410,7 +429,9 @@ def claim_trust(
         # unacquirable (a fact, not an author claim-backing assertion), so
         # 'clean' overstates it. Never reached for a composite (hub_evidence
         # stays None there — rule 3 is its rollup instead).
-        if _hub_grounding_unacquirable(store, hub_evidence, cite_key_map, paper_refs):
+        if _hub_grounding_unacquirable(
+            store, hub_evidence, cite_key_map, paper_refs, remap
+        ):
             label = "unverified"
             note = _HUB_GROUNDING_UNACQUIRABLE_NOTE
     elif hub_evidence is None and not atom_ids and label == "unverified":
@@ -469,6 +490,7 @@ def _hub_grounding_unacquirable(
     evidence: HubEvidence,
     cite_key_map: dict[int, list[str]] | None,
     paper_refs: dict[int, Any] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> bool:
     """Whether EVERY print-visible grounding paper behind a clean hub
     carries a paper-level ``unacquirable_override`` — rule 1 (harden) in
@@ -486,7 +508,11 @@ def _hub_grounding_unacquirable(
     grounding = [
         e.paper_ref_id
         for e in resolve_hub_print(
-            store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+            store,
+            evidence,
+            cite_key_map=cite_key_map,
+            paper_refs=paper_refs,
+            remap=remap,
         ).edges
     ]
     if not grounding:
@@ -562,6 +588,9 @@ def claim_trust_bulk(
         paper_refs = (
             store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
         )
+        # Supersede remap batched once over the same supporter set (mirrors
+        # cite_key_map) — else each hub's resolve_hub_print calls re-walk it.
+        remap = bibliographic_targets(store, sorted(supporter_ids))
 
         # Every atom's OWN trust, computed once regardless of how many
         # composites share it (two composites pointing at the same atom would
@@ -574,6 +603,7 @@ def claim_trust_bulk(
                 cite_key_map=cite_key_map,
                 ref=refs.get(a),
                 paper_refs=paper_refs,
+                remap=remap,
                 _expand_conjuncts=False,
             )
             for a in atom_ids
@@ -607,6 +637,7 @@ def claim_trust_bulk(
                     cite_key_map=cite_key_map,
                     ref=refs.get(rid),
                     paper_refs=paper_refs,
+                    remap=remap,
                     _expand_conjuncts=False,
                 )
     for rid in lifecycle_ids:

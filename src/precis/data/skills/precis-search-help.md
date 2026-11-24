@@ -527,9 +527,12 @@ prefer no-`q` when you want the whole set. When chunk search retries with any
 word (3+ words, or 2+ within a ref) and any title leg also has no strict
 matches, the header marks `q ran as ANY` and suggests a shorter query or a
 quoted phrase.
-Unscoped `kind='memory'` search never retries with any word: it returns the
-strict result plus "No lexical match contains all query words. Try 1–2
-distinctive words or quote a shorter phrase." Retry with a shorter query.
+Unscoped `kind='memory'` search never retries with any word on the rendered
+views: it returns the strict result plus "No lexical match contains all query
+words. Try 1–2 distinctive words or quote a shorter phrase." Retry with a
+shorter query. The machine recall paths (`view='index'`, the cross-kind
+stream) keep the any-word retry — no human reads the hint there, and a
+paraphrase must still recall.
 
 Some kinds fold a **default status** into this: `gripe` defaults to
 `status='open'` (live — every non-terminal STATUS; `tags=['STATUS:open']`

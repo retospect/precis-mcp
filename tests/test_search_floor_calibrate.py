@@ -337,14 +337,16 @@ def test_recall_set_tsv_conversion_and_local_measurement(
     """Exercise the real query set, not prod data, using hash-only fixtures."""
     mod = _load()
     source = _SCRIPT.parents[1] / "src/precis/data/memory_recall_set.json"
+    entries = json.loads(source.read_text(encoding="utf-8"))
     tsv = mod.recall_set_tsv(source)
     rows = tsv.splitlines()
-    assert len(rows) == 36
-    assert rows[0] == "label timestamps with Z\t481712"
+    assert len(rows) == len(entries)
+    assert (
+        rows[0] == f"label timestamps with Z\t{entries[0]['want'].removeprefix('me')}"
+    )
 
     # No production vectors/bodies are in the repo. Seed the public hook
     # snapshots under fresh local IDs and remap the TSV, never query prod IDs.
-    entries = json.loads(source.read_text(encoding="utf-8"))
     embedder = MockEmbedder(dim=store.embedding_dim())
     ids = {}
     for entry in entries:
@@ -375,7 +377,7 @@ def test_recall_set_tsv_conversion_and_local_measurement(
             exclude_kinds=(),
             noise_k=10,
         )
-    assert measured.n_queries == 36 and len(measured.rel) == 36
+    assert measured.n_queries == len(entries) and len(measured.rel) == len(entries)
     print("LOCAL HASH SNAPSHOTS (not production calibration)")
     print(mod.report(measured, current=0.42))
     assert mod.gap_shares(measured, 0.15) == pytest.approx((100, 100))

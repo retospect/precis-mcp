@@ -1699,8 +1699,10 @@ def _draft_chunk_text(store: Any, chunk_id: int) -> str:
 
 def test_merge_hubs_repoints_loser_cites_in_draft_prose(store: Any) -> None:
     """gr265228: live draft chunks citing the loser are rewritten to the
-    winner (collapsing a doubled winner cite) with an `edited` event; the
-    dry run reports them and writes nothing."""
+    winner with an `edited` event; the dry run reports them and writes
+    nothing. td768465's contract: only doubled winner cites inside a
+    rewritten group collapse — a doubled winner cite elsewhere in the
+    chunk is preserved (`see also [fi<winner>, fi<winner>]`)."""
     loser = mint_hub(store, _CLAIM)
     winner = mint_hub(store, _SHARPER_CLAIM)
     ref, _title = store.drafts.create_draft(name="citedraft", title="Cite draft")
@@ -1735,7 +1737,7 @@ def test_merge_hubs_repoints_loser_cites_in_draft_prose(store: Any) -> None:
     assert len(plan.cite_rewrites) == 2
     assert _draft_chunk_text(store, plain.chunk_id) == f"Claim [fi{winner}] stands."
     assert _draft_chunk_text(store, doubled.chunk_id) == (
-        f"Both [fi{winner}] agree; see also [fi{winner}]."
+        f"Both [fi{winner}] agree; see also [fi{winner}, fi{winner}]."
     )
     assert _draft_chunk_text(store, untouched.chunk_id) == (
         f"Other claim [fi{winner}] only."

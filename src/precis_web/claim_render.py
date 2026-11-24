@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from markupsafe import Markup
 
-from precis.taproot.cite import resolve_hub_print
+from precis.taproot.cite import bibliographic_targets, resolve_hub_print
 from precis.taproot.claim_type import claim_type_of, consensus_line, policy_for
 from precis.taproot.seniority import (
     CiterEdge,
@@ -643,6 +643,7 @@ def _render_one(
     paper_refs: dict[int, Any] | None = None,
     conjunct_atom_ids: list[int] | None = None,
     publish: tuple[str, Any] | None = None,
+    remap: dict[int, int] | None = None,
 ) -> dict[str, Any]:
     """Shape one already-resolved hub's evidence for the web — the shared
     tail both :func:`render_claim_evidence` (singular) and
@@ -656,7 +657,7 @@ def _render_one(
     # Print set (★): exactly the papers `hub_cite_keys` prints — originators
     # when derived, else the citation-standard pick among the corroborators.
     hub_print = resolve_hub_print(
-        store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+        store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs, remap=remap
     )
     printed_ids = {e.paper_ref_id for e in hub_print.edges}
     # The hub-derived trust label (trust-surfaces editor badges): empty print
@@ -675,6 +676,7 @@ def _render_one(
         ref=hub_ref,
         paper_refs=paper_refs,
         conjunct_atom_ids=conjunct_atom_ids,
+        remap=remap,
     )
     status = trust.label
     # ``paper_refs`` (all supporter rows, batched once by both the singular and
@@ -963,6 +965,10 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
     # Supporter-paper refs for the hub-clean unacquirable-override check, batched
     # once (mirrors cite_key_map) so claim_trust never re-fetches per hub.
     paper_refs = store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
+    # Supersede remap (preprint → published cite target) batched once over the
+    # same supporter set — the three resolve_hub_print calls per hub each
+    # re-walked it otherwise (a recursive CTE + pool checkout per hub).
+    remap = bibliographic_targets(store, sorted(supporter_ids))
     # Conjunct atoms batched once (mirrors cite_key_map) so claim_trust's
     # composite check issues no per-hub derive_conjuncts queries.
     atoms_by_hub = conjunct_atoms_bulk(store, hub_ref_ids)
@@ -987,6 +993,7 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
                 paper_refs=paper_refs,
                 conjunct_atom_ids=atoms_by_hub.get(ref_id, []),
                 publish=publish_by_hub.get(ref_id),
+                remap=remap,
             )
         )
     return out

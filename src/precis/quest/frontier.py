@@ -3403,9 +3403,17 @@ def leaderboard(
         """The engine version the row's evidence was minted under (gr770579):
         the newest stamped per-key basis version, else the latest harvest's
         ``network_basis``; ``" (stale)"`` when the read-time network demotion
-        dropped a key — ``""`` when nothing is stamped."""
+        dropped a key — ``""`` when nothing is stamped. An env-optimizer
+        basis stamp counts only when this leaderboard actually ranks on that
+        env key — on a quest that never opted into env ranking a stale env
+        basis stays invisible (td783125)."""
+        off_scope = (
+            frozenset(_ENV_BASIS_KEYS) - frozenset(obj_keys) - frozenset(run_keys)
+        )
         versions = [
-            str(b["version"]) for b in _key_bases(c).values() if b.get("version")
+            str(b["version"])
+            for k, b in _key_bases(c).items()
+            if b.get("version") and k not in off_scope
         ]
         harvest_basis = c.flags.get("network_basis")
         fallback = (

@@ -209,6 +209,12 @@ _EXEMPT_SITES = frozenset(
         "precis/cad/inspect.py::_MAX_RAY_STEPS",
         "precis/cad/inspect.py::_MAX_CREEP_STEPS",
         "precis/cad/inspect.py::_STALL_RETRY_MAX_STEPS",
+        # `precis_se/chain/protein.py`'s helix step modes (gr695518): a
+        # tuple of mode NAME strings ("per-residue", "per-ss-segment"),
+        # not a number at all — it trips the gate only because "STEPS"
+        # contains the "EPS" substring. Same carve-out as the
+        # cad/inspect.py ``*_STEPS`` counts above.
+        "precis_se/chain/protein.py::STEPS",
     }
 )
 

@@ -202,9 +202,14 @@ def test_a_reviewer_of_a_release_fix_reads_and_fetches_its_branch(
         ],
     )
     calls: list[tuple[list[str], Path]] = []
+    squash = "d" * 40
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         calls.append((args, Path(cwd)))
+        # The landed-squash readability gate (td770732) expands the sha the
+        # `landed:` comment names; answer it so the squash reads as held.
+        if args == ["rev-parse", f"{'d' * 9}^{{commit}}"]:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{squash}\n", stderr="")
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     synced: list[tuple[Path, str]] = []
@@ -220,8 +225,11 @@ def test_a_reviewer_of_a_release_fix_reads_and_fetches_its_branch(
     meta = {"generate": {"role": "reviewer", "from": f"td{target.id}"}}
     text = run_slice._review_target(store, meta, tree=clone, root=tmp_path)
     assert text is not None
-    assert "on origin/release/r7, not main" in text
-    assert "git fetch -q origin release/r7" in text
+    # td770732 reworded the line: the squash is read in the clone, and the
+    # release branch is named as its home (the "not main" phrasing, and the
+    # in-brief fetch instruction, are gone — the fetch happens out of
+    # session, asserted on `calls` below).
+    assert "(it is on origin/release/r7)" in text
     assert "(it is on origin/main)" not in text
     # gr741695: the reviewer has its own clone of the host's hub. The hub
     # follows the release branch first, then the clone fetches it from there.

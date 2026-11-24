@@ -13372,6 +13372,7 @@ class PaperHandler(Handler):
         return Response(body=body)
 
     def _render_browse_rows(self, refs: list[Ref], date_key: str | None) -> str:
+        ref_sizes = self.store.chunks.body_byte_counts([r.id for r in refs])
         rows = []
         for ref in refs:
             meta = ref.meta or {}
@@ -13386,9 +13387,10 @@ class PaperHandler(Handler):
                     "handle": _pa(ref),
                     "when": when,
                     "preview": _excerpt(title_md(ref.title), limit=80),
+                    "size": _size_cell(ref_sizes.get(ref.id, 0)),
                 }
             )
-        return render_agent_table(rows, schema=["handle", "when", "preview"])
+        return render_agent_table(rows, schema=["handle", "when", "preview", "size"])
 
 
 # ---------------------------------------------------------------------------

@@ -1328,12 +1328,12 @@ When the review is settled:
 3. Summarize what you checked, the evidence and any change you made. The
    done-tag is enforced: `STATUS:done` is refused while any linked live
    memory lacks a current `kg-review` stamp, and an `edit` after stamping
-   voids it — restamp the new sha first. When the stamp succeeded, close
-   with
+   voids it — restamp the new sha first. When the stamp succeeded, or
+   step 2 was skipped because the repo check could not run, close — with
+   the stamp:
    `put(kind='todo', id=<this todo>, text=<review comment>, tags=['STATUS:done'])`.
-   When step 2 was skipped because the repo check could not run, the
-   comment records the corroborating evidence and the close is the tag
-   call — a `put` close cannot carry `reason=`:
+   With step 2 skipped, the comment records the corroborating evidence
+   and the close is the tag call — a `put` close cannot carry `reason=`:
 
    ```python
    put(kind='todo', id=<this todo>, text='<review comment, repo check not run: why>')
