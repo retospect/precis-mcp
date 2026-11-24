@@ -249,6 +249,7 @@ from precis.plans.lane_breaker import release_note as _breaker_release_note
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
+from precis.store._chunks_ops import ChunkLinkRehome
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import (
     TERMINAL_TODO_STATUSES,
@@ -299,6 +300,49 @@ def _title_holds_details(title: str) -> bool:
     return any(
         ch in ".!?" and title[i + 1].isspace() for i, ch in enumerate(title[:-1])
     )
+
+
+def _rehome_ack_parts(rehome: ChunkLinkRehome) -> list[str]:
+    """The body-write ack's edge re-home pieces (gr782951): the
+    re-points, then the disclosure for an edge the rewrite still loses —
+    one that would collapse onto an identical surviving edge or
+    self-loop, whose ``evidence_anchors`` go with it."""
+    parts: list[str] = []
+    if rehome.moved:
+        parts.append(f"{rehome.moved} pinned edge(s) re-homed")
+    if rehome.dropped:
+        drop = f"{len(rehome.dropped)} pinned edge(s) dropped (collision)"
+        if rehome.evidence_lost:
+            drop += f", {rehome.evidence_lost} evidence anchor(s) lost"
+        parts.append(drop)
+    return parts
+
+
+def _pinned_edge_preview(plan: ChunkLinkRehome | None, *, clear: bool) -> str | None:
+    """The dry-run line naming what a body rewrite — or a body clear —
+    does to edges pinned on the ``todo_body`` chunk (gr782951, review
+    td784428): ``None`` when the preview reports no chunk-pinned edge.
+    On a clear, endpoints de-ground to ref-level, so a drop is a
+    collision with an existing ref-level edge."""
+    if plan is None or (not plan.moved and not plan.dropped):
+        return None
+    parts: list[str] = []
+    if plan.moved:
+        verb = (
+            "de-ground to ref-level" if clear else "re-point onto the rewritten chunk"
+        )
+        parts.append(f"{plan.moved} would {verb}")
+    if plan.dropped:
+        collision = (
+            "an identical ref-level edge"
+            if clear
+            else "an identical surviving edge or self-loop"
+        )
+        drop = f"{len(plan.dropped)} would drop — colliding with {collision}"
+        if plan.evidence_lost:
+            drop += f" ({plan.evidence_lost} evidence anchor(s) lost with it)"
+        parts.append(drop)
+    return "chunk-pinned edges: " + "; ".join(parts) + "."
 
 
 def _check_plan_meta(meta: dict[str, Any] | None, *, only: str | None = None) -> None:
@@ -2587,6 +2631,19 @@ class TodoHandler(NumericRefHandler):
                 preview.append("meta.ask would be replaced")
             preview.extend(f"meta.{k} would be replaced" for k in plan_set)
             preview.extend(f"meta.{k} would be cleared" for k in plan_clear)
+            if has_body or clear_body:
+                # A body write re-homes — a clear de-grounds — the edges
+                # pinned on the todo_body chunk; the preview names the
+                # moves and the drops a plain "would be replaced" hides
+                # (gr782951, review td784428).
+                line = _pinned_edge_preview(
+                    self.store.chunks.chunk_link_rehome_preview(
+                        ref.id, chunk_kind=_BODY_KIND, clear=clear_body
+                    ),
+                    clear=clear_body,
+                )
+                if line is not None:
+                    preview.append(line)
             return Response(
                 body=(
                     f"dry-run (no write) — would replace {' + '.join(preview)} "
@@ -2610,6 +2667,7 @@ class TodoHandler(NumericRefHandler):
         old_text: str | None = None
         preserved_title = False
         cleared_body: str | None = None
+        edge_rehomes: list[ChunkLinkRehome] = []
         facts_deferred = 0
         with self.store.tx() as conn:
             if has_text:
@@ -2638,6 +2696,7 @@ class TodoHandler(NumericRefHandler):
                         source=guards._caller_source(),
                         op="preserve-title",
                         conn=conn,
+                        repointed_out=edge_rehomes,
                     )
                     preserved_title = True
             if has_body:
@@ -2648,6 +2707,7 @@ class TodoHandler(NumericRefHandler):
                     chunk_kind=_BODY_KIND,
                     source=guards._caller_source(),
                     conn=conn,
+                    repointed_out=edge_rehomes,
                 )
             elif clear_body:
                 cleared_body = self.store.chunks.delete_body_chunk(
@@ -2656,6 +2716,7 @@ class TodoHandler(NumericRefHandler):
                     source=guards._caller_source(),
                     op="clear",
                     conn=conn,
+                    repointed_out=edge_rehomes,
                 )
             if unset_llm_tier:
                 # A real JSONB key deletion, not a ``stamp_ref_meta``
@@ -2762,6 +2823,8 @@ class TodoHandler(NumericRefHandler):
                 if cleared_body is not None
                 else "no details body to clear"
             )
+        for rehome in edge_rehomes:
+            parts.extend(_rehome_ack_parts(rehome))
         if unset_llm_tier:
             parts.append("meta.llm_tier (unset, parked)")
         if params_value is not None:
@@ -3009,7 +3072,21 @@ class TodoHandler(NumericRefHandler):
             else:
                 diff = format_unified_diff(old_body, new_body, file_label=label)
                 preview = diff.rstrip("\n") or "(no diff - pre and post are identical)"
-            return Response(body="\n".join([*header, "", preview]))
+            # The body rewrite re-homes edges pinned on the doomed
+            # chunk; the preview names the moves and the drops a bare
+            # diff hides (gr782951, review td784428).
+            line = _pinned_edge_preview(
+                self.store.chunks.chunk_link_rehome_preview(
+                    ref.id, chunk_kind=_BODY_KIND
+                ),
+                clear=False,
+            )
+            return Response(
+                body="\n".join(
+                    [*header, "", preview, *([line] if line is not None else [])]
+                )
+            )
+        edge_rehomes: list[ChunkLinkRehome] = []
         with self.store.tx() as conn:
             self.store.chunks.replace_body_chunk(
                 ref.id,
@@ -3018,6 +3095,7 @@ class TodoHandler(NumericRefHandler):
                 source=guards._caller_source(),
                 op=op_kind if op_kind == "delete-span" else None,
                 conn=conn,
+                repointed_out=edge_rehomes,
             )
             facts_deferred = self._sync_mention_links(
                 ref.id,
@@ -3033,17 +3111,30 @@ class TodoHandler(NumericRefHandler):
             else "inserted into"
         )
         n_spans = len(result.edited_spans)
-        return self._facts_note(
-            Response(
-                body=(
-                    f"{verb} details body of todo id={ref.id} "
-                    f"({len(old_body.split())} → {len(new_body.split())} words, "
-                    f"{n_spans} span{'s' if n_spans != 1 else ''}). "
-                    "view='log' for the full diff."
-                )
-            ),
-            facts_deferred,
+        ack = (
+            f"{verb} details body of todo id={ref.id} "
+            f"({len(old_body.split())} → {len(new_body.split())} words, "
+            f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+            "view='log' for the full diff."
         )
+        # The collision report rides the ack: a pinned edge that could
+        # not land (identical survivor, self-loop) — and the evidence it
+        # took — must never drop silently (gr782951, review td784428).
+        for rehome in edge_rehomes:
+            if rehome.moved:
+                ack += f" re-pointed {rehome.moved} pinned edge(s) onto the new body chunk."
+            if rehome.dropped:
+                ack += (
+                    f" dropped {len(rehome.dropped)} pinned edge(s) that could "
+                    "not re-point (collided with an identical surviving edge, "
+                    "or self-looped on the rewrite)"
+                )
+                if rehome.evidence_lost:
+                    ack += (
+                        f" — {rehome.evidence_lost} evidence anchor(s) went with them"
+                    )
+                ack += "."
+        return self._facts_note(Response(body=ack), facts_deferred)
 
     # ── comments: render + hide ───────────────────────────────────
 

@@ -3878,9 +3878,10 @@ class TestEditBody:
         with pytest.raises(BadInput, match="empty body"):
             h.edit(id=fid, find="only this", text="")
 
-    def test_chunk_pinned_edge_refuses(self, store) -> None:
-        """A link pinned at the body chunk would be severed by the
-        delete+insert — the edit refuses rather than drop it silently."""
+    def test_chunk_pinned_edge_rehomes(self, store) -> None:
+        """A link pinned at the body chunk re-homes onto the
+        replacement chunk across the delete+insert — the edge survives
+        and the ack names the re-point (gr782951, review td784428)."""
         fid = self._put_finding(store)
         other = _seed_paper(store, cite_key="other17")
         with store.pool.connection() as conn:
@@ -3895,8 +3896,45 @@ class TestEditBody:
                 (other, fid, chunk_id),
             )
         h = _make_handler(store)
-        with pytest.raises(BadInput, match="endpoint"):
-            h.edit(id=fid, find="overreaching", text="narrower")
+        out = h.edit(id=fid, find="overreaching", text="narrower")
+        assert "re-pointed 1 edge(s)" in out.body
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT dst_chunk_id FROM links WHERE src_ref_id = %s "
+                "AND dst_ref_id = %s AND relation = 'related-to'",
+                (other, fid),
+            ).fetchone()
+            new_chunk = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'finding_body'",
+                (fid,),
+            ).fetchone()[0]
+        assert row is not None, "chunk-pinned edge was dropped by the rewrite"
+        assert int(row[0]) == int(new_chunk)
+
+    def test_chunk_pinned_edge_previewed_on_dry_run(self, store) -> None:
+        """The body edit's dry-run names the re-home a bare diff hides
+        (gr782951, review td784428)."""
+        fid = self._put_finding(store)
+        other = _seed_paper(store, cite_key="other17")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'finding_body'",
+                (fid,),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO links (src_ref_id, dst_ref_id, dst_chunk_id, "
+                "relation, set_by) VALUES (%s, %s, %s, 'related-to', 'agent')",
+                (other, fid, chunk_id),
+            )
+        h = _make_handler(store)
+        out = h.edit(id=fid, find="overreaching", text="narrower", dry_run=True)
+        assert "chunk-pinned edges:" in out.body
+        assert "1 would re-point onto the rewritten chunk" in out.body
+        assert self._body(store, fid) == (
+            "Claim prose with an overreaching clause to strike."
+        )
 
 
 # ── search view='count' (gr518170) ───────────────────────────────────

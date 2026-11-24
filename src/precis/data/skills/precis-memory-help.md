@@ -296,7 +296,12 @@ line on a bare `get` shows the first and last writer.
 
 Rewrite a memory in place with `edit(kind='memory', id=42, mode='replace',
 text='new body'[, title='new header'])` — same id, links stay attached,
-old body kept in `view='log'`.
+old body kept in `view='log'`. An edge pinned on the body chunk itself
+(`memory:chunk:<id>`) re-points onto the rewritten chunk; the ack counts
+them (`re-pointed N edge(s)`). The one loss: an edge whose re-point
+would land on an identical surviving edge, or self-loop, is dropped —
+the ack and the `dry_run` preview say so, and any evidence anchors it
+carried go with it.
 
 Tack an update onto the end with `edit(kind='memory', id=42,
 mode='append', text='…')` — no anchor needed.

@@ -226,6 +226,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._chunks_ops import ChunkLinkRehome
 from precis.store._links_ops import MACHINE_EDGE_META_KEYS, canonical_relation
 from precis.store._search_cut import semantic_fold_distance
 from precis.store._secret_scope import secret_fence
@@ -797,6 +798,28 @@ def _ruling_ack(meta: dict[str, Any]) -> str:
     """The create ack's line naming the ruling keys the write stamped."""
     stamped = ", ".join(f"{k}={meta[k]}" for k in _RULING_META_KEYS if k in meta)
     return f"\nruling meta: {stamped}" if stamped else ""
+
+
+def _rehome_ack(rehome: ChunkLinkRehome | None) -> str:
+    """The body-edit ack's edge re-home tail (gr782951): the re-points,
+    then the disclosure for an edge the rewrite still loses — one that
+    would collapse onto an identical surviving edge or self-loop, whose
+    ``evidence_anchors`` go with it."""
+    if rehome is None:
+        return ""
+    out = ""
+    if rehome.moved:
+        out += f" re-pointed {rehome.moved} edge(s) onto the new body chunk."
+    if rehome.dropped:
+        out += (
+            f" dropped {len(rehome.dropped)} edge(s) that could not "
+            "re-point (collided with an identical surviving edge, or "
+            "self-looped on the rewrite)"
+        )
+        if rehome.evidence_lost:
+            out += f" — {rehome.evidence_lost} evidence anchor(s) went with them"
+        out += "."
+    return out
 
 
 def _expiry_line(store: Store, ref: Ref, tags: list[Tag]) -> str | None:
@@ -3047,13 +3070,38 @@ class MemoryHandler(AuditedRetirementHandler):
                     lines.extend(f"- {title}" for title in finding.titles)
         return replace(ack, body=ack.body + "\n\n" + "\n".join(lines))
 
-    def _dependants_preview(self, ref_id: int) -> str:
-        """``## Dependants`` block for edit dry-runs (gr626866)."""
+    def _dependants_preview(self, ref_id: int, *, body_write: bool = True) -> str:
+        """``## Dependants`` block for edit dry-runs (gr626866), plus the
+        chunk-pinned edge plan when the previewed call rewrites the body
+        — the re-homes and the drops a plain dependants list cannot show
+        (gr782951)."""
         from precis.handlers._dependants_view import dependants_block
 
-        return dependants_block(
+        block = dependants_block(
             self.store, kind=self.kind, ref_id=ref_id, id_arg=str(ref_id)
         )
+        if body_write:
+            plan = self.store.chunks.chunk_link_rehome_preview(
+                ref_id, chunk_kind=_BODY_KIND
+            )
+            if plan is not None:
+                parts: list[str] = []
+                if plan.moved:
+                    parts.append(
+                        f"{plan.moved} would re-point onto the rewritten chunk"
+                    )
+                if plan.dropped:
+                    drop = (
+                        f"{len(plan.dropped)} would drop — colliding with "
+                        "an identical surviving edge or self-looping"
+                    )
+                    if plan.evidence_lost:
+                        drop += (
+                            f" ({plan.evidence_lost} evidence anchor(s) lost with it)"
+                        )
+                    parts.append(drop)
+                block += "\n\nChunk-pinned edges: " + "; ".join(parts) + "."
+        return block
 
     def _dependants_ack(self, ref_id: int) -> str:
         """The ``dependants: X shown of Y`` ack line (gr626866)."""
@@ -3216,7 +3264,12 @@ class MemoryHandler(AuditedRetirementHandler):
 
         Distinct from ``supersede`` (the consolidate-into-new verb): edit
         keeps the same id and every inbound link — the "polish the wording"
-        affordance.
+        affordance. That includes edges pinned on the body chunk itself
+        (``memory:chunk:<id>``): the chunk's delete+reinsert re-points them
+        onto the replacement, never cascade-dropping them (gr782951), and
+        the ack counts the re-points — and discloses the one loss, an
+        edge whose re-point would collide with an identical surviving
+        edge or self-loop (its ``evidence_anchors`` go with it).
 
         ``id=[...]`` (``batch_ids``) applies the same edit to every id in
         one transaction — :meth:`_edit_batch` (gr514482).
@@ -3524,6 +3577,7 @@ class MemoryHandler(AuditedRetirementHandler):
         misses = self._attribution_misses(text)
         deferred: list[int] = []
         derived_title: list[str] = []
+        repointed: list[ChunkLinkRehome] = []
         old_body = self._write_body(
             ref.id,
             text,
@@ -3535,6 +3589,7 @@ class MemoryHandler(AuditedRetirementHandler):
             reason=reason,
             deferred_out=deferred,
             derived_title_out=derived_title,
+            repointed_out=repointed,
         )
         nudge = self._first_line_nudge(new_title) if new_title is not None else None
         old_words = len((old_body or "").split())
@@ -3548,6 +3603,7 @@ class MemoryHandler(AuditedRetirementHandler):
         elif derived_title:
             body += f" title re-derived: {derived_title[0]!r}."
         body += " view='log' for the full diff."
+        body += _rehome_ack(repointed[0] if repointed else None)
         if nudge:
             body += f"\n\nhint: {nudge}"
         lead = self._thread_lead_hint(
@@ -3873,6 +3929,7 @@ class MemoryHandler(AuditedRetirementHandler):
         op: str | None = None,
         deferred_out: list[int] | None = None,
         derived_title_out: list[str] | None = None,
+        repointed_out: list[ChunkLinkRehome] | None = None,
     ) -> str | None:
         """The one body-write path shared by every edit mode.
 
@@ -3928,6 +3985,7 @@ class MemoryHandler(AuditedRetirementHandler):
                     reason=reason.strip() if reason and reason.strip() else None,
                     op=op,
                     conn=conn,
+                    repointed_out=repointed_out,
                 )
                 previous = old_body if old_body is not None else (row[0] or "")
                 if expected_body is not None and previous != expected_body:
@@ -4170,6 +4228,7 @@ class MemoryHandler(AuditedRetirementHandler):
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
         derived_title: list[str] = []
+        repointed: list[ChunkLinkRehome] = []
         final_shape: list[ShapeAudit | None] = []
         self._write_body(
             ref.id,
@@ -4185,6 +4244,7 @@ class MemoryHandler(AuditedRetirementHandler):
             op=op_kind if op_kind == "delete-span" else None,
             deferred_out=deferred,
             derived_title_out=derived_title,
+            repointed_out=repointed,
         )
         verb = (
             "edited"
@@ -4200,6 +4260,7 @@ class MemoryHandler(AuditedRetirementHandler):
             f"{n_spans} span{'s' if n_spans != 1 else ''}). "
             "view='log' for the full diff."
         )
+        ack += _rehome_ack(repointed[0] if repointed else None)
         if new_title is not None:
             ack += f" title now: {new_title!r}."
             nudge = self._first_line_nudge(new_title)
@@ -4305,6 +4366,7 @@ class MemoryHandler(AuditedRetirementHandler):
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
         derived_title: list[str] = []
+        repointed: list[ChunkLinkRehome] = []
         final_shape: list[ShapeAudit | None] = []
         self._write_body(
             ref.id,
@@ -4318,12 +4380,14 @@ class MemoryHandler(AuditedRetirementHandler):
             reason=reason,
             deferred_out=deferred,
             derived_title_out=derived_title,
+            repointed_out=repointed,
         )
         ack = (
             f"appended to body of {self._sense()} id={ref.id} "
             f"({len(old_body.split())} → {len(new_body.split())} words). "
             "view='log' for the full diff."
         )
+        ack += _rehome_ack(repointed[0] if repointed else None)
         if new_title is not None:
             ack += f" title now: {new_title!r}."
         elif derived_title:
@@ -4394,7 +4458,9 @@ class MemoryHandler(AuditedRetirementHandler):
         ]
         if new_title is not None:
             lines.append(f"(title would become {new_title!r})")
-        resp_body = "\n".join([*lines, "", self._dependants_preview(ref.id)])
+        resp_body = "\n".join(
+            [*lines, "", self._dependants_preview(ref.id, body_write=False)]
+        )
         return self._with_shape_advisory(Response(body=resp_body), shape, dry_run=True)
 
     def _edit_ops(
@@ -4513,6 +4579,7 @@ class MemoryHandler(AuditedRetirementHandler):
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
         derived_title: list[str] = []
+        repointed: list[ChunkLinkRehome] = []
         final_shape: list[ShapeAudit | None] = []
         self._write_retried(
             ref.id,
@@ -4530,6 +4597,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 reason=reason,
                 deferred_out=deferred,
                 derived_title_out=derived_title,
+                repointed_out=repointed,
             ),
         )
         ack = (
@@ -4537,6 +4605,7 @@ class MemoryHandler(AuditedRetirementHandler):
             f"({len(old_body.split())} → {len(new_body.split())} words, "
             f"{len(ops)} ops). view='log' for the full diff."
         )
+        ack += _rehome_ack(repointed[0] if repointed else None)
         if new_title is not None:
             ack += f" title now: {new_title!r}."
             nudge = self._first_line_nudge(new_title)

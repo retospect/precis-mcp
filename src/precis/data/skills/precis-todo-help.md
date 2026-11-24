@@ -296,8 +296,10 @@ get(kind="todo", id=122, view="log")  # previous title/details
 
 Pass either or both fields. The id, parent, links, and tags stay attached;
 the previous title/details remain in the log. Title/body rewrites use
-`mode='replace'`. Owner-only on strategic / tactical nodes (same
-authority as delete / reparent).
+`mode='replace'`. An edge pinned on the body chunk re-homes onto the
+rewrite — or drops when it would collide with an identical surviving
+edge; the ack names either. Owner-only on strategic / tactical nodes
+(same authority as delete / reparent).
 
 ## Fill a plan gate's sha after a hand land
 

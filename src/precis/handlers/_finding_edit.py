@@ -23,6 +23,7 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.nanopub.reopen import reopen as reopen_publish_row
 from precis.nanopub.supersede import supersede as supersede_publish_row
 from precis.response import Response
+from precis.store._chunks_ops import ChunkLinkRehome
 from precis.store.pool import connection_is_pinned
 from precis.store.revision_context import current_revision_context
 from precis.store.types import Tag
@@ -95,9 +96,13 @@ def edit(
     (gr509620): the claim prose an agent needs to correct without a
     delete+re-put that would lose the id and every inbound link. The
     shared anchored-edit vocabulary applies (``before=``/``after=``/
-    ``match=``/``nth=``; ``dry_run=`` previews the diff). The write is
-    delete+reinsert (never an in-place UPDATE — embeddings/keywords
-    re-derive), the old text lands in a ``body_replaced`` ``ref_events``
+    ``match=``/``nth=``; ``dry_run=`` previews the diff and the edge
+    re-homes it forces). The write is delete+reinsert (never an
+    in-place UPDATE — embeddings/keywords re-derive); link endpoints
+    pinned on the outgoing ``finding_body`` chunk re-home onto the
+    replacement rather than cascade away (gr782951) — the ack names
+    the re-points and any collision drop. The old text lands in a
+    ``body_replaced`` ``ref_events``
     row with ``reason=``, and the recorded chunk citations in
     ``meta.chain`` are re-validated in the same transaction — a dangling
     one refuses the edit whole. A ``TAPROOT:claim`` hub is refused: its
@@ -1318,7 +1323,52 @@ def _preview_pick(
 # ``before``/``after``/``match``/``nth``/``dry_run``) resolved by
 # :mod:`precis.utils.edit_resolve`, and the write goes through
 # :meth:`Store.chunks.replace_body_chunk` — DELETE+INSERT, never UPDATE —
-# which lands the old text in a ``body_replaced`` ``ref_events`` row.
+# which lands the old text in a ``body_replaced`` ``ref_events`` row and
+# re-homes the link endpoints pinned on the outgoing chunk (gr782951) —
+# the ack names the re-points and any drop, never severs silently.
+
+
+def _rehome_ack(rehome: ChunkLinkRehome | None) -> str:
+    """The body-edit ack's edge re-home tail (gr782951) — the same
+    wording the memory and todo acks carry: the re-points, then the
+    disclosure for an edge the rewrite still loses (a collapse onto an
+    identical surviving edge or a self-loop, whose ``evidence_anchors``
+    go with it)."""
+    if rehome is None:
+        return ""
+    out = ""
+    if rehome.moved:
+        out += f" re-pointed {rehome.moved} edge(s) onto the new body chunk."
+    if rehome.dropped:
+        out += (
+            f" dropped {len(rehome.dropped)} edge(s) that could not "
+            "re-point (collided with an identical surviving edge, or "
+            "self-looped on the rewrite)"
+        )
+        if rehome.evidence_lost:
+            out += f" — {rehome.evidence_lost} evidence anchor(s) went with them"
+        out += "."
+    return out
+
+
+def _pinned_edge_preview(plan: ChunkLinkRehome | None) -> str | None:
+    """The dry-run line naming what the body rewrite does to edges
+    pinned on the ``finding_body`` chunk (gr782951, review td784428) —
+    ``None`` when no chunk-pinned edge exists."""
+    if plan is None or (not plan.moved and not plan.dropped):
+        return None
+    parts: list[str] = []
+    if plan.moved:
+        parts.append(f"{plan.moved} would re-point onto the rewritten chunk")
+    if plan.dropped:
+        drop = (
+            f"{len(plan.dropped)} would drop — colliding with an "
+            "identical surviving edge or self-looping"
+        )
+        if plan.evidence_lost:
+            drop += f" ({plan.evidence_lost} evidence anchor(s) lost with it)"
+        parts.append(drop)
+    return "chunk-pinned edges: " + "; ".join(parts) + "."
 
 
 def _edit_body(
@@ -1381,7 +1431,6 @@ def _edit_body(
             "nothing to edit",
             next="get(kind='finding', id='fi<N>') to see the finding's state",
         )
-    old_chunk_ids = [int(r[0]) for r in body_rows]
     old_body = str(body_rows[0][1] or "")
     label = f"finding fi{finding_ref_id}"
     text = mask_secrets(text)
@@ -1480,8 +1529,21 @@ def _edit_body(
         else:
             diff = format_unified_diff(old_body, new_body, file_label=label)
             preview = diff.rstrip("\n") or "(no diff - pre and post are identical)"
-        return Response(body="\n".join([*header, "", preview]))
+        # The body rewrite re-homes edges pinned on the doomed
+        # ``finding_body`` chunk; the preview names the moves and the
+        # drops a bare diff hides (gr782951, review td784428).
+        line = _pinned_edge_preview(
+            store.chunks.chunk_link_rehome_preview(
+                finding_ref_id, chunk_kind="finding_body"
+            )
+        )
+        return Response(
+            body="\n".join(
+                [*header, "", preview, *([line] if line is not None else [])]
+            )
+        )
 
+    repointed: list[ChunkLinkRehome] = []
     with store.tx() as conn:
         locked = conn.execute(
             "SELECT retired_at, meta FROM refs WHERE ref_id = %s AND kind = %s "
@@ -1498,24 +1560,6 @@ def _edit_body(
                 f"finding id={finding_ref_id} has been deleted",
                 next="search(kind='finding', q='<claim keywords>') for a live one",
             )
-        # The rewrite re-mints the body chunk (delete+insert); a link
-        # pinned at the outgoing chunk_id would be silently severed by
-        # the ON DELETE CASCADE on links.{src,dst}_chunk_id — refuse
-        # rather than drop an edge nobody asked to lose.
-        pinned_row = conn.execute(
-            "SELECT COUNT(*) FROM links WHERE src_chunk_id = ANY(%s) "
-            "OR dst_chunk_id = ANY(%s)",
-            (old_chunk_ids, old_chunk_ids),
-        ).fetchone()
-        if pinned_row is not None and pinned_row[0]:
-            raise BadInput(
-                f"{label}'s body chunk is the endpoint of {pinned_row[0]} link(s) "
-                "— rewriting it (delete+insert) would sever them",
-                next=(
-                    "remove the chunk-pinned links on fi<N>~<ord> first, or "
-                    "supersede the finding"
-                ),
-            )
         replaced = store.chunks.replace_body_chunk(
             finding_ref_id,
             new_body,
@@ -1523,6 +1567,7 @@ def _edit_body(
             source="agent",
             reason=reason_clean,
             conn=conn,
+            repointed_out=repointed,
         )
         if (replaced or "") != old_body:
             raise BadInput(
@@ -1541,12 +1586,16 @@ def _edit_body(
         if mode == "replace"
         else f", {len(edited_spans)} span{'s' if len(edited_spans) != 1 else ''}"
     )
+    # The re-home report rides the ack: a pinned edge that could not
+    # land (identical survivor, self-loop) — and the evidence it took —
+    # must never drop silently (gr782951, review td784428).
     return Response(
         body=(
             f"{verb} body of {label} ({len(old_body.split())} → "
             f"{len(new_body.split())} words{spans}).\n"
             "chunk citation re-validated: the chain still resolves. "
             "old text kept as a body_replaced ref_event."
+            + _rehome_ack(repointed[0] if repointed else None)
         )
     )
 

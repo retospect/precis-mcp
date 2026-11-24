@@ -35,10 +35,11 @@ from typing import TYPE_CHECKING, Any
 
 from pgvector import Vector
 from psycopg import Connection
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Internal
 from precis.store._mappers import (
     _CHUNKS_COLS,
     _CHUNKS_COLS_LEN,
@@ -993,6 +994,200 @@ _CARD_KIND_ORD: dict[str, int] = {
     "card_description": -2,
     "card_gen_abstract": -1002,
 }
+
+
+@dataclass(frozen=True)
+class ChunkLinkRehome:
+    """What a body-chunk rewrite did — or, via
+    :meth:`ChunkStore.chunk_link_rehome_preview`, would do — to the link
+    endpoints pinned on the doomed chunk(s) (gr782951).
+
+    ``moved`` counts the edges whose chunk endpoint re-homed onto the
+    replacement (or de-grounded to ref-level on a clear). ``dropped``
+    names the link_ids that could not land — a self-loop the links CHECK
+    forbids, or a collapse onto an identical edge under the
+    ``NULLS NOT DISTINCT`` unique tuple — and are deleted instead;
+    ``evidence_lost`` counts the ``evidence_anchors`` rows that
+    cascade-delete with them.
+    """
+
+    moved: int
+    dropped: tuple[int, ...]
+    evidence_lost: int
+
+
+#: A chunk id no real chunk ever holds (IDENTITY starts at 1) — the
+#: preview passes it as the replacement so the write path's own
+#: collision predicate names the drops before they happen.
+_PREVIEW_CHUNK_ID = -1
+
+#: Post-move endpoint tuple for every link pinned on a doomed chunk.
+#: ``%(n)s`` is the replacement chunk id, ``NULL`` on a clear, or
+#: :data:`_PREVIEW_CHUNK_ID` in a dry-run preview.
+_CHUNK_MOVED_CTE = """\
+WITH moved AS (
+    SELECT link_id, src_ref_id, dst_ref_id, relation,
+           CASE WHEN src_chunk_id = ANY(%(o)s::bigint[])
+                THEN %(n)s::bigint ELSE src_chunk_id END AS s,
+           CASE WHEN dst_chunk_id = ANY(%(o)s::bigint[])
+                THEN %(n)s::bigint ELSE dst_chunk_id END AS d
+      FROM links
+     WHERE src_chunk_id = ANY(%(o)s::bigint[])
+        OR dst_chunk_id = ANY(%(o)s::bigint[])
+)
+"""
+
+#: A moved edge cannot land when its post-move tuple is a self-loop the
+#: links CHECK forbids, or when it collapses onto an identical edge —
+#: another pinned edge moving to the same tuple (the lower link_id
+#: wins) or a live edge already holding it. A still-pinned ``x`` can
+#: never false-match: it keeps a doomed chunk id on one end, which no
+#: post-move value equals.
+_CHUNK_MOVE_COLLIDES = """\
+    (m.src_ref_id = m.dst_ref_id AND m.s IS NOT DISTINCT FROM m.d)
+    OR EXISTS (SELECT 1 FROM moved k
+                WHERE k.link_id < m.link_id
+                  AND k.src_ref_id = m.src_ref_id
+                  AND k.dst_ref_id = m.dst_ref_id
+                  AND k.relation = m.relation
+                  AND k.s IS NOT DISTINCT FROM m.s
+                  AND k.d IS NOT DISTINCT FROM m.d)
+    OR EXISTS (SELECT 1 FROM links x
+                WHERE x.link_id <> m.link_id
+                  AND x.src_ref_id = m.src_ref_id
+                  AND x.dst_ref_id = m.dst_ref_id
+                  AND x.relation = m.relation
+                  AND x.src_chunk_id IS NOT DISTINCT FROM m.s
+                  AND x.dst_chunk_id IS NOT DISTINCT FROM m.d)
+"""
+
+
+def _chunk_link_move_plan(
+    conn: Connection, doomed_chunk_ids: list[int], new_chunk_id: int | None
+) -> tuple[int, list[int]]:
+    """The re-home's plan, read-only: ``(moved count, dropped link_ids)``.
+
+    ``new_chunk_id`` is the replacement's real id on the write path or
+    :data:`_PREVIEW_CHUNK_ID` in a dry-run preview — either way the
+    collision predicate the write enforces is the one that runs, so a
+    named drop is a drop the write will make.
+    """
+    row = conn.execute(
+        _CHUNK_MOVED_CTE
+        + ", drops AS (SELECT m.link_id FROM moved m WHERE "
+        + _CHUNK_MOVE_COLLIDES
+        + ") SELECT (SELECT count(*) FROM moved),"
+        " (SELECT coalesce(array_agg(link_id), '{}') FROM drops)",
+        {"o": doomed_chunk_ids, "n": new_chunk_id},
+    ).fetchone()
+    assert row is not None
+    drops = [int(i) for i in row[1]]
+    return int(row[0]) - len(drops), drops
+
+
+#: ``_rehome_chunk_links`` re-plan bound for the racing-twin retry:
+#: each attempt turns at least one would-be move into a reported drop,
+#: so the loop converges — the bound only guards pathological churn.
+_REHOME_ATTEMPTS = 4
+
+
+def _rehome_chunk_links(
+    conn: Connection, doomed_chunk_ids: list[int], new_chunk_id: int | None
+) -> ChunkLinkRehome:
+    """Re-home link endpoints pinned on doomed chunks (gr782951).
+
+    ``links.src_chunk_id`` / ``links.dst_chunk_id`` are
+    ``ON DELETE CASCADE``, so deleting a body chunk silently drops every
+    edge scoped to it. Move each endpoint onto ``new_chunk_id`` — or
+    de-ground it to ref-level (``NULL``) when the body is cleared
+    outright — inside the caller's transaction.
+
+    The re-point runs through the schema's internal door
+    (``precis.trust_internal``, the ``precis_trust_body_guard`` /
+    ``ingest.body_ops._restore_link_stamp`` pattern): a chunk re-home is
+    bookkeeping — the edge asserts the same thing, so it keeps its own
+    origin/confidence stamp instead of being restamped to the body
+    writer's ``<origin>/hunch``, and a context-free rewrite no longer
+    aborts on a version-1 edge. The door is set and reset around the one
+    UPDATE, like ``_restore_link_stamp`` — the caller's transaction may
+    run on, and a left-open door would cover its later guarded writes.
+    The ``links_revision_*`` triggers still audit every re-point, and a
+    version-1 edge moved under a converted context records a ``revise``
+    act with its stamp held.
+
+    A move that cannot land — a collapse onto an identical surviving
+    edge under the ``NULLS NOT DISTINCT`` unique tuple, or a self-loop
+    the CHECK forbids — is dropped first so it can never fail the
+    rewrite. The report names the dropped link_ids and counts the
+    ``evidence_anchors`` rows they take with them, so the caller's ack
+    discloses the one loss the rewrite still makes.
+
+    One residual race the check alone cannot close (review td784428):
+    a concurrent ref-level ``add_link`` can claim the destination
+    tuple between the plan's read and the UPDATE — its FK ``FOR KEY
+    SHARE`` on the parent ref does not wait on the caller's
+    ``FOR NO KEY UPDATE``, so a plain INSERT commits mid-rewrite. The
+    ``links_endpoints_relation_idx`` insert then raises
+    ``UniqueViolation`` where the documented behaviour is "drop and
+    report". The UPDATE runs inside a savepoint for exactly this: on
+    the violation the attempt rolls back, the re-plan reads the
+    now-committed twin, the colliding pin lands in the drops, and the
+    retry succeeds with the loss named.
+    """
+    params: dict[str, Any] = {"o": doomed_chunk_ids, "n": new_chunk_id}
+    moved = 0
+    dropped: list[int] = []
+    evidence_lost = 0
+    for _attempt in range(_REHOME_ATTEMPTS):
+        moved, drops = _chunk_link_move_plan(conn, doomed_chunk_ids, new_chunk_id)
+        if drops:
+            # Lock the doomed edges before counting their evidence: an
+            # ``evidence_anchors`` insert takes FOR KEY SHARE on the
+            # link row, so the count can never miss an attach that
+            # races the delete.
+            conn.execute(
+                "SELECT link_id FROM links WHERE link_id = ANY(%s::bigint[])"
+                " FOR UPDATE",
+                (drops,),
+            )
+            row = conn.execute(
+                "SELECT count(*) FROM evidence_anchors "
+                "WHERE link_id = ANY(%s::bigint[])",
+                (drops,),
+            ).fetchone()
+            evidence_lost += int(row[0]) if row else 0
+            conn.execute(
+                "DELETE FROM links WHERE link_id = ANY(%s::bigint[])", (drops,)
+            )
+            dropped.extend(drops)
+        try:
+            with conn.transaction():  # savepoint — the retry's rewind
+                conn.execute("SELECT set_config('precis.trust_internal', 'on', true)")
+                conn.execute(
+                    """
+                    UPDATE links
+                       SET src_chunk_id = CASE WHEN src_chunk_id = ANY(%(o)s::bigint[])
+                                               THEN %(n)s::bigint ELSE src_chunk_id END,
+                           dst_chunk_id = CASE WHEN dst_chunk_id = ANY(%(o)s::bigint[])
+                                               THEN %(n)s::bigint ELSE dst_chunk_id END
+                     WHERE src_chunk_id = ANY(%(o)s::bigint[])
+                        OR dst_chunk_id = ANY(%(o)s::bigint[])
+                    """,
+                    params,
+                )
+                conn.execute("SELECT set_config('precis.trust_internal', '', true)")
+        except UniqueViolation as exc:
+            if exc.diag.constraint_name != "links_endpoints_relation_idx":
+                raise
+            continue
+        return ChunkLinkRehome(
+            moved=moved, dropped=tuple(dropped), evidence_lost=evidence_lost
+        )
+    raise Internal(
+        "chunk-pinned edge re-home kept colliding with concurrent link "
+        f"writes ({_REHOME_ATTEMPTS} attempts); the rewrite did not "
+        "land — retry the edit"
+    )
 
 
 class ChunkStore:
@@ -3240,6 +3435,7 @@ class ChunkStore:
         reason: str | None = None,
         op: str | None = None,
         conn: Connection | None = None,
+        repointed_out: list[ChunkLinkRehome] | None = None,
     ) -> str | None:
         """Replace the single body chunk of ``chunk_kind`` for a ref.
 
@@ -3256,6 +3452,23 @@ class ChunkStore:
         re-enters the embed+keyword queues. New chunk lands at the old
         ord (or the next free ord if none existed).
 
+        Link endpoints pinned on the doomed chunk(s) are re-homed onto
+        the replacement before the DELETE — ``links.src/dst_chunk_id``
+        are ``ON DELETE CASCADE``, so without the re-point an inbound
+        ``derived-from`` (or any chunk-scoped edge) silently died with
+        the old body (gr782951). ``repointed_out`` receives the
+        :class:`ChunkLinkRehome` report so the caller can name the moves
+        — and the collisions that dropped an edge — in the ack.
+
+        Writers serialize on the parent ``refs`` row (``FOR NO KEY
+        UPDATE``) before the doomed chunks are read — without it a
+        second rewrite resumes its chunk lock to zero rows and appends
+        a second body (review td784428). The replacement then goes in
+        at a scratch ord and settles at the old one after the DELETE;
+        the settle runs under ``precis.trust_internal`` (migration
+        0369) so the rewrite's audit stays at the single body
+        ``revise`` act a plain DELETE + INSERT records.
+
         Writes a ``body_replaced`` ``ref_events`` row (old+new text) for
         ``view='log'``. Returns the previous text, or ``None`` if absent.
         Mirrors :meth:`replace_ref_text` for a chunk-backed body
@@ -3263,15 +3476,40 @@ class ChunkStore:
         """
 
         def _do(c: Connection) -> str | None:
-            row = c.execute(
-                "SELECT text, ord FROM chunks "
+            # Serialize body writers on the parent ref BEFORE reading
+            # the chunks: a second rewrite that only waited on the
+            # doomed rows' locks resumes to zero rows under READ
+            # COMMITTED (the first writer deleted them) and would take
+            # the no-body path, appending a second body chunk after the
+            # first replacement (review td784428). The refs row is the
+            # lock every caller already takes — ``_write_body`` holds
+            # NO KEY UPDATE, this function's own ``updated_at`` write
+            # takes the same level — so taking it first keeps the
+            # whole store's lock order ref → chunk. NO KEY UPDATE (not
+            # FOR UPDATE): it still conflicts with a second writer's
+            # NO KEY UPDATE, but does not block the FOR KEY SHARE an
+            # FK check on a *different* ref's row takes — a reciprocal
+            # mention edit would otherwise deadlock (each writer holds
+            # its own ref, then checks the other's).
+            c.execute(
+                "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (ref_id,),
+            )
+            # FOR UPDATE (not the lighter NO KEY): a link insert pinned
+            # on a doomed chunk takes FOR KEY SHARE on it for the FK
+            # check — it must wait out this transaction and fail the
+            # check once the chunk is gone, never commit an edge the
+            # DELETE then silently cascades away (gr782951).
+            rows = c.execute(
+                "SELECT chunk_id, text, ord FROM chunks "
                 "WHERE ref_id = %s AND chunk_kind = %s "
-                "ORDER BY ord ASC LIMIT 1",
+                "ORDER BY ord ASC FOR UPDATE",
                 (ref_id, chunk_kind),
-            ).fetchone()
-            old_text = row[0] if row is not None else None
-            if row is not None:
-                pos = int(row[1])
+            ).fetchall()
+            old_text = rows[0][1] if rows else None
+            doomed = [int(r[0]) for r in rows]
+            if rows:
+                pos = int(rows[0][2])
             else:
                 # No body yet: ord 0 when free (readers such as taproot's
                 # ord=0 finding_body join expect it there), else the next
@@ -3285,15 +3523,50 @@ class ChunkStore:
                     (ref_id, ref_id),
                 ).fetchone()
                 pos = int(nxt[0]) if nxt is not None else 0
-            c.execute(
-                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
-                (ref_id, chunk_kind),
-            )
-            self.insert_chunks(
+            insert_ord = pos
+            if doomed:
+                # The replacement goes in at a scratch ord — UNIQUE
+                # (ref_id, ord) keeps ``pos`` occupied until the doomed
+                # rows are gone — so the edges can be re-homed onto it
+                # before the DELETE cascades them away.
+                nxt_ord = c.execute(
+                    "SELECT MAX(ord) + 1 FROM chunks WHERE ref_id = %s",
+                    (ref_id,),
+                ).fetchone()
+                insert_ord = int(nxt_ord[0]) if nxt_ord is not None else 0
+            blocks = self.insert_chunks(
                 ref_id,
-                [ChunkInsert(ord=pos, text=new_text, meta={"chunk_kind": chunk_kind})],
+                [
+                    ChunkInsert(
+                        ord=insert_ord,
+                        text=new_text,
+                        meta={"chunk_kind": chunk_kind},
+                    )
+                ],
                 conn=c,
             )
+            if doomed:
+                rehome = _rehome_chunk_links(c, doomed, blocks[0].id)
+                if repointed_out is not None:
+                    repointed_out[:] = [rehome]
+                c.execute(
+                    "DELETE FROM chunks WHERE chunk_id = ANY(%s::bigint[])",
+                    (doomed,),
+                )
+                # The ord settle is bookkeeping, not a body change: run
+                # it through the internal door (0369 —
+                # ``precis_trust_chunks_upd`` honors
+                # ``precis.trust_internal``) so the rewrite's audit
+                # stays at the single body ``revise`` act the
+                # DELETE + INSERT already records — no second guard
+                # pass for a move that changes no content (review
+                # td784428).
+                c.execute("SELECT set_config('precis.trust_internal', 'on', true)")
+                c.execute(
+                    "UPDATE chunks SET ord = %s WHERE chunk_id = %s",
+                    (pos, blocks[0].id),
+                )
+                c.execute("SELECT set_config('precis.trust_internal', '', true)")
             c.execute(
                 "UPDATE refs SET updated_at = now() WHERE ref_id = %s",
                 (ref_id,),
@@ -3331,6 +3604,7 @@ class ChunkStore:
         reason: str | None = None,
         op: str | None = None,
         conn: Connection | None = None,
+        repointed_out: list[ChunkLinkRehome] | None = None,
     ) -> str | None:
         """Delete the single body chunk of ``chunk_kind`` for a ref.
 
@@ -3340,24 +3614,50 @@ class ChunkStore:
         cascades the derived embedding/summary rows, and a
         ``body_replaced`` ``ref_events`` row (old text, ``new_text``
         NULL, ``op`` naming the clear) keeps ``view='log'`` honest.
-        Returns the previous text. When no such chunk exists nothing is
-        written — no ``updated_at`` bump, no audit row — and ``None``
-        comes back so the caller can say "no body to clear".
+        Edges pinned on the doomed chunk are de-grounded to ref-level
+        first — the same ``ON DELETE CASCADE`` hole :meth:`replace_body_chunk`
+        re-points around (gr782951); with no replacement chunk the edge
+        survives scoped to the ref. ``repointed_out`` receives the
+        :class:`ChunkLinkRehome` report — a de-grounded edge that lands
+        on an identical ref-level one is dropped, and the report names
+        it so the caller's ack can say so. Returns the previous text.
+        When no such chunk exists nothing is written — no ``updated_at``
+        bump, no audit row — and ``None`` comes back so the caller can
+        say "no body to clear". Writers serialize on the parent ``refs``
+        row first, as :meth:`replace_body_chunk` does — a clear that
+        only waited on a doomed row's lock would resume to zero rows
+        after a racing rewrite and report "no body" over a fresh one
+        (review td784428).
         """
 
         def _do(c: Connection) -> str | None:
-            row = c.execute(
-                "SELECT text FROM chunks "
-                "WHERE ref_id = %s AND chunk_kind = %s "
-                "ORDER BY ord ASC LIMIT 1",
-                (ref_id, chunk_kind),
-            ).fetchone()
-            if row is None:
-                return None
-            old_text = row[0]
+            # The same parent-ref serialization :meth:`replace_body_chunk`
+            # takes: a clear that only waited on a doomed row's lock would
+            # resume to zero rows after a racing rewrite deleted it and
+            # report "no body" while a fresh body now sits committed.
             c.execute(
-                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+                "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (ref_id,),
+            )
+            # FOR UPDATE for the same reason :meth:`replace_body_chunk`
+            # locks its doomed rows: a racing chunk-pinned link insert
+            # must fail the FK check, never commit a doomed edge.
+            rows = c.execute(
+                "SELECT chunk_id, text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = %s "
+                "ORDER BY ord ASC FOR UPDATE",
                 (ref_id, chunk_kind),
+            ).fetchall()
+            if not rows:
+                return None
+            old_text = rows[0][1]
+            doomed = [int(r[0]) for r in rows]
+            rehome = _rehome_chunk_links(c, doomed, None)
+            if repointed_out is not None:
+                repointed_out[:] = [rehome]
+            c.execute(
+                "DELETE FROM chunks WHERE chunk_id = ANY(%s::bigint[])",
+                (doomed,),
             )
             c.execute(
                 "UPDATE refs SET updated_at = now() WHERE ref_id = %s",
@@ -3381,6 +3681,60 @@ class ChunkStore:
                 ),
             )
             return old_text
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def chunk_link_rehome_preview(
+        self,
+        ref_id: int,
+        *,
+        chunk_kind: str,
+        clear: bool = False,
+        conn: Connection | None = None,
+    ) -> ChunkLinkRehome | None:
+        """Read-only mirror of :meth:`replace_body_chunk`'s edge re-home
+        (gr782951) — the dry-run disclosure. ``clear=True`` previews
+        :meth:`delete_body_chunk` instead: endpoints de-ground to
+        ref-level (``NULL``) rather than onto a replacement chunk, so a
+        drop is a collision with an existing ref-level edge.
+
+        The move plan runs against the live ``chunk_kind`` chunks with a
+        never-real placeholder id as the replacement (or ``NULL`` on a
+        clear), through the same collision predicate the write enforces:
+        a re-point or drop the preview names is what the write will do.
+        Returns ``None`` when no edge is pinned on the body chunk (the
+        common case — callers stay silent).
+        """
+
+        def _do(c: Connection) -> ChunkLinkRehome | None:
+            doomed = [
+                int(r[0])
+                for r in c.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+                    (ref_id, chunk_kind),
+                ).fetchall()
+            ]
+            if not doomed:
+                return None
+            moved, dropped = _chunk_link_move_plan(
+                c, doomed, None if clear else _PREVIEW_CHUNK_ID
+            )
+            if not moved and not dropped:
+                return None
+            evidence_lost = 0
+            if dropped:
+                row = c.execute(
+                    "SELECT count(*) FROM evidence_anchors "
+                    "WHERE link_id = ANY(%s::bigint[])",
+                    (dropped,),
+                ).fetchone()
+                evidence_lost = int(row[0]) if row else 0
+            return ChunkLinkRehome(
+                moved=moved, dropped=tuple(dropped), evidence_lost=evidence_lost
+            )
 
         if conn is not None:
             return _do(conn)

@@ -1300,3 +1300,103 @@ def test_search_ids_filters_to_listed_todos(handler: TodoHandler, nested: bool) 
     assert "selected beta" in narrowed.body
     assert "selected alpha" not in narrowed.body
     assert "unselected" not in narrowed.body
+
+
+# ── gr782951: chunk-pinned edges across body writes ──────────────────
+
+
+def _todo_body_chunk_id(handler: TodoHandler, ref_id: int) -> int:
+    with handler.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'todo_body'",
+            (ref_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_edit_anchored_repoints_chunk_pinned_edge(
+    handler: TodoHandler,
+) -> None:
+    """Review td784428: ``mode='find-replace'`` rewrites the
+    ``todo_body`` chunk through the same DELETE + INSERT — the collision
+    report must reach the ack, not drop silently (gr782951)."""
+    handler.put(text="a task", body="alpha beta gamma")
+    tid = _latest_todo_id(handler)
+    src = handler.store.insert_ref(kind="paper", slug="gr782951-td-fr", title="s")
+    handler.store.add_link(
+        src_ref_id=src.id, dst_ref_id=tid, dst_pos=0, relation="derived-from"
+    )
+
+    resp = handler.edit(id=tid, mode="find-replace", find="beta", text="BETA")
+
+    assert "re-pointed 1 pinned edge(s)" in resp.body
+    with handler.store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT dst_chunk_id FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'derived-from'",
+            (src.id, tid),
+        ).fetchone()
+    assert link is not None
+    assert int(link[0]) == _todo_body_chunk_id(handler, tid)
+
+
+def test_edit_dry_run_names_pinned_edge_rehome(
+    handler: TodoHandler,
+) -> None:
+    """Review td784428: the ``edit`` preview names the re-home a plain
+    'details body would be replaced' hides (gr782951)."""
+    handler.put(text="a task", body="details here")
+    tid = _latest_todo_id(handler)
+    src = handler.store.insert_ref(kind="paper", slug="gr782951-td-dry", title="s")
+    handler.store.add_link(
+        src_ref_id=src.id, dst_ref_id=tid, dst_pos=0, relation="derived-from"
+    )
+
+    resp = handler.edit(id=tid, mode="replace", body="new details", dry_run=True)
+
+    assert "details body would be replaced" in resp.body
+    assert "1 would re-point onto the rewritten chunk" in resp.body
+
+
+def test_edit_dry_run_names_pinned_edge_drop_on_clear(
+    handler: TodoHandler,
+) -> None:
+    """Review td784428: previewing a body clear warns about the drop —
+    a chunk-pinned edge de-grounds onto an identical ref-level edge and
+    loses (with its evidence anchors), where the old preview said only
+    'details body would be cleared'."""
+    handler.put(text="a task", body="details to drop")
+    tid = _latest_todo_id(handler)
+    src = handler.store.insert_ref(kind="paper", slug="gr782951-td-clr", title="s")
+    handler.store.add_link(src_ref_id=src.id, dst_ref_id=tid, relation="derived-from")
+    handler.store.add_link(
+        src_ref_id=src.id, dst_ref_id=tid, dst_pos=0, relation="derived-from"
+    )
+
+    resp = handler.edit(id=tid, mode="replace", body="", dry_run=True)
+
+    assert "details body would be cleared" in resp.body
+    assert "1 would drop — colliding with an identical ref-level edge" in resp.body
+
+
+def test_edit_anchored_dry_run_names_pinned_edge(
+    handler: TodoHandler,
+) -> None:
+    """The anchored preview carries the same disclosure: a bare diff
+    never says an edge re-points (gr782951, review td784428)."""
+    handler.put(text="a task", body="alpha beta gamma")
+    tid = _latest_todo_id(handler)
+    src = handler.store.insert_ref(kind="paper", slug="gr782951-td-adr", title="s")
+    handler.store.add_link(
+        src_ref_id=src.id, dst_ref_id=tid, dst_pos=0, relation="derived-from"
+    )
+
+    resp = handler.edit(
+        id=tid, mode="find-replace", find="beta", text="BETA", dry_run=True
+    )
+
+    assert "chunk-pinned edges:" in resp.body
+    assert "1 would re-point onto the rewritten chunk" in resp.body

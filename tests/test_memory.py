@@ -3658,3 +3658,502 @@ def test_put_inline_link_to_paper_chunk_under_machine_writer(
     assert edge.items() <= link_meta.items()
     assert dst_ord == 0
     assert dst_chunk_id == chunk_id
+
+
+def _body_chunk_id(store: Store, ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'memory_body'",
+            (ref_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_edit_replace_repoints_inbound_chunk_scoped_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr782951's exact shape: an inbound ``derived-from`` edge pinned on
+    the ``memory_body`` chunk (``memory:chunk:<id>``) survives a whole-body
+    ``edit(mode='replace')`` — re-pointed onto the replacement chunk, not
+    cascade-deleted with the old one — and the ack names the re-point."""
+    mid = id_of(handler.put(text="old body prose").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-src", title="src")
+    old_chunk = _body_chunk_id(store, mid)
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+    )
+
+    resp = handler.edit(id=mid, mode="replace", text="rewritten body prose")
+
+    new_chunk = _body_chunk_id(store, mid)
+    assert new_chunk != old_chunk
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT dst_chunk_id FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchone()
+    assert link is not None, "chunk-scoped edge was dropped by the rewrite"
+    assert int(link[0]) == new_chunk
+    assert "re-pointed 1 edge(s)" in resp.body
+
+
+def test_edit_find_replace_repoints_outbound_chunk_scoped_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The same cascade hole on the source side: an edge whose
+    ``src_chunk_id`` is the rewritten ``memory_body`` chunk survives an
+    anchored ``find-replace`` body edit."""
+    mid = id_of(handler.put(text="alpha beta gamma").body)
+    dst = store.insert_ref(kind="paper", slug="gr782951-dst", title="dst")
+    store.add_link(
+        src_ref_id=mid, src_pos=0, dst_ref_id=dst.id, relation="derived-from"
+    )
+
+    resp = handler.edit(id=mid, mode="find-replace", find="beta", text="BETA")
+
+    new_chunk = _body_chunk_id(store, mid)
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT src_chunk_id FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'derived-from'",
+            (mid, dst.id),
+        ).fetchone()
+    assert link is not None, "chunk-scoped edge was dropped by the rewrite"
+    assert int(link[0]) == new_chunk
+    assert "re-pointed 1 edge(s)" in resp.body
+
+
+def test_delete_body_chunk_degrounds_chunk_scoped_edges(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Clearing the body outright (no replacement chunk to re-home onto)
+    de-grounds a chunk-pinned edge to ref-level instead of dropping it —
+    gr782951's sanctioned fallback."""
+    mid = id_of(handler.put(text="body to clear").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-clear-src", title="src")
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+    )
+
+    cleared = store.chunks.delete_body_chunk(mid, chunk_kind="memory_body")
+
+    assert cleared == "body to clear"
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT dst_chunk_id FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchone()
+    assert link is not None, "chunk-scoped edge was dropped by the clear"
+    assert link[0] is None
+
+
+def test_edit_replace_keeps_stamped_edge_trust(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review td784428 (1): the re-home is bookkeeping, not the body
+    writer's claim — a trust-stamped inbound edge keeps its own
+    origin/confidence across a rewrite under a converted writer (it used
+    to restamp to the writer's ``<origin>/hunch``)."""
+    from precis.store.revision_context import revision_context
+
+    mid = id_of(handler.put(text="old body prose").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-trust-src", title="s")
+    with revision_context(trust_origin="human", trust_actor_type="human"):
+        store.add_link(
+            src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+        )
+
+    with revision_context(trust_origin="computed", trust_actor_type="worker"):
+        handler.edit(id=mid, mode="replace", text="rewritten body prose")
+
+    new_chunk = _body_chunk_id(store, mid)
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT dst_chunk_id, trust_origin, trust_confidence,"
+            " trust_write_version FROM links"
+            " WHERE src_ref_id = %s AND dst_ref_id = %s"
+            " AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchone()
+    assert link is not None
+    assert int(link[0]) == new_chunk
+    assert (link[1], link[2], int(link[3])) == ("human", "hunch", 1)
+
+
+def test_replace_body_chunk_context_free_keeps_stamped_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review td784428 (1): a context-free rewrite — the
+    ``cli/conventions.py`` shape — no longer aborts on a trust-stamped
+    chunk-pinned edge; the stamp holds."""
+    from precis.store.revision_context import revision_context
+
+    mid = id_of(handler.put(text="old body prose").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-cf-src", title="s")
+    with revision_context(trust_origin="human", trust_actor_type="human"):
+        store.add_link(
+            src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+        )
+
+    # No write context at all — the pre-fix UPDATE refused on the
+    # version-1 edge and took the whole rewrite down with it.
+    store.chunks.replace_body_chunk(mid, "new body", chunk_kind="memory_body")
+
+    new_chunk = _body_chunk_id(store, mid)
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT dst_chunk_id, trust_origin, trust_confidence,"
+            " trust_write_version FROM links"
+            " WHERE src_ref_id = %s AND dst_ref_id = %s"
+            " AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchone()
+    assert link is not None
+    assert int(link[0]) == new_chunk
+    assert (link[1], link[2], int(link[3])) == ("human", "hunch", 1)
+
+
+def _second_body_chunk(store: Store, ref_id: int, ord_: int = 5) -> int:
+    """A duplicate ``memory_body`` chunk — the state behind every
+    two-pins-collapse-on-rewrite test."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, %s, 'memory_body', 'duplicate body', '{}'::jsonb) "
+            "RETURNING chunk_id",
+            (ref_id, ord_),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _link_id_on(store: Store, chunk_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT link_id FROM links WHERE dst_chunk_id = %s", (chunk_id,)
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _attach_evidence(store: Store, link_id: int, ref_id: int, chunk_id: int) -> None:
+    """One ``anchors`` + ``evidence_anchors`` pair on ``link_id`` — the
+    row the collision drop takes with it."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO anchors (target_type, quote, fingerprint, ref_id,"
+            " chunk_id, char_start, char_end) VALUES"
+            " ('text', 'the quoted span', 'fp', %s, %s, 0, 5)"
+            " RETURNING anchor_id",
+            (ref_id, chunk_id),
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO evidence_anchors (link_id, anchor_id) VALUES (%s, %s)",
+            (link_id, int(row[0])),
+        )
+
+
+def test_edit_replace_discloses_collapsed_edge_and_evidence(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review td784428 (3): two edges pinned on two doomed body chunks
+    collapse onto one tuple on the rewrite — the lower link_id survives,
+    the other drops with its ``evidence_anchors``, and the ack names the
+    loss instead of reporting only the move."""
+    mid = id_of(handler.put(text="old body prose").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-coll-src", title="s")
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+    )
+    dupe = _second_body_chunk(store, mid)
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=5, relation="derived-from"
+    )
+    loser = _link_id_on(store, dupe)
+    _attach_evidence(store, loser, mid, dupe)
+
+    resp = handler.edit(id=mid, mode="replace", text="rewritten body prose")
+
+    assert "re-pointed 1 edge(s)" in resp.body
+    assert "dropped 1 edge(s)" in resp.body
+    assert "1 evidence anchor(s)" in resp.body
+    new_chunk = _body_chunk_id(store, mid)
+    with store.pool.connection() as conn:
+        links = conn.execute(
+            "SELECT link_id, dst_chunk_id FROM links"
+            " WHERE src_ref_id = %s AND dst_ref_id = %s"
+            " AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchall()
+        evidence = conn.execute(
+            "SELECT count(*) FROM evidence_anchors WHERE link_id = %s",
+            (loser,),
+        ).fetchone()
+    assert len(links) == 1
+    assert int(links[0][0]) != loser and int(links[0][1]) == new_chunk
+    assert evidence == (0,)
+
+
+def test_delete_body_chunk_discloses_degrounded_collision(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review td784428 (3) on the clear path: a chunk-pinned edge
+    de-grounded by ``delete_body_chunk`` can land on an identical
+    ref-level edge — the ref-level twin survives, the pinned edge drops
+    and the report names it (and the evidence it took)."""
+    from precis.store._chunks_ops import ChunkLinkRehome
+
+    mid = id_of(handler.put(text="body to clear").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-twin-src", title="s")
+    store.add_link(src_ref_id=src.id, dst_ref_id=mid, relation="derived-from")
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+    )
+    pinned = _link_id_on(store, _body_chunk_id(store, mid))
+    _attach_evidence(store, pinned, mid, _body_chunk_id(store, mid))
+
+    rehome: list[ChunkLinkRehome] = []
+    cleared = store.chunks.delete_body_chunk(
+        mid, chunk_kind="memory_body", repointed_out=rehome
+    )
+
+    assert cleared == "body to clear"
+    assert rehome[0].moved == 0
+    assert rehome[0].dropped == (pinned,)
+    assert rehome[0].evidence_lost == 1
+    with store.pool.connection() as conn:
+        links = conn.execute(
+            "SELECT link_id, dst_chunk_id FROM links"
+            " WHERE src_ref_id = %s AND dst_ref_id = %s"
+            " AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchall()
+    assert len(links) == 1
+    assert int(links[0][0]) != pinned and links[0][1] is None
+
+
+def test_delete_body_chunk_reports_racing_ref_level_twin(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review td784428 (FIX 2): a ref-level ``add_link`` can claim the
+    de-grounded destination tuple between the re-home's collision read
+    and its UPDATE — its FK ``FOR KEY SHARE`` does not wait on the
+    rewrite's ``FOR NO KEY UPDATE``. The clear used to die on the bare
+    unique violation; the savepoint retry re-plans, sees the committed
+    twin, and drops + reports the colliding pin instead."""
+    import precis.store._chunks_ops as chunks_ops
+    from precis.store._chunks_ops import ChunkLinkRehome
+
+    mid = id_of(handler.put(text="body to clear").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-racetwin-src", title="s")
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+    )
+    pinned = _link_id_on(store, _body_chunk_id(store, mid))
+    _attach_evidence(store, pinned, mid, _body_chunk_id(store, mid))
+
+    real_plan = chunks_ops._chunk_link_move_plan
+    raced = False
+
+    def plan_then_race(
+        conn: Any, doomed_ids: list[int], new_id: int | None
+    ) -> tuple[int, list[int]]:
+        nonlocal raced
+        plan = real_plan(conn, doomed_ids, new_id)
+        if not raced:
+            raced = True
+            # The competitor commits after the plan's snapshot but
+            # before the UPDATE — the de-grounded twin the move wanted.
+            store.add_link(src_ref_id=src.id, dst_ref_id=mid, relation="derived-from")
+        return plan
+
+    monkeypatch.setattr(chunks_ops, "_chunk_link_move_plan", plan_then_race)
+    rehome: list[ChunkLinkRehome] = []
+    cleared = store.chunks.delete_body_chunk(
+        mid, chunk_kind="memory_body", repointed_out=rehome
+    )
+
+    assert cleared == "body to clear"
+    assert rehome[0].moved == 0
+    assert rehome[0].dropped == (pinned,)
+    assert rehome[0].evidence_lost == 1
+    with store.pool.connection() as conn:
+        links = conn.execute(
+            "SELECT link_id, dst_chunk_id FROM links"
+            " WHERE src_ref_id = %s AND dst_ref_id = %s"
+            " AND relation = 'derived-from'",
+            (src.id, mid),
+        ).fetchall()
+    assert len(links) == 1
+    assert int(links[0][0]) != pinned and links[0][1] is None
+
+
+def test_edit_dry_run_discloses_pinned_edge_plan(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review td784428 (3): the dry-run names the re-homes and the drops
+    — the gripe's preview listed the dependant edge without saying it
+    could die."""
+    mid = id_of(handler.put(text="old body prose").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-dry-src", title="s")
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=0, relation="derived-from"
+    )
+    dupe = _second_body_chunk(store, mid)
+    store.add_link(
+        src_ref_id=src.id, dst_ref_id=mid, dst_pos=5, relation="derived-from"
+    )
+    _attach_evidence(store, _link_id_on(store, dupe), mid, dupe)
+
+    resp = handler.edit(id=mid, mode="replace", text="new body", dry_run=True)
+
+    assert "1 would re-point onto the rewritten chunk" in resp.body
+    assert "1 would drop" in resp.body
+    assert "1 evidence anchor(s) lost" in resp.body
+    # A meta-only preview doesn't rewrite the body — no edge plan.
+    meta = handler.edit(id=mid, meta={"hook": "idx"}, dry_run=True)
+    assert "Chunk-pinned edges" not in meta.body
+
+
+def test_replace_body_chunk_serializes_racing_chunk_pin(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review td784428 (2): a link insert pinned on the doomed chunk,
+    racing the rewrite inside its transaction, must serialize — fail the
+    FK check once the chunk is gone rather than commit an edge the
+    cascade then silently deletes."""
+    import precis.store._chunks_ops as chunks_ops
+
+    mid = id_of(handler.put(text="old body prose").body)
+    src = store.insert_ref(kind="paper", slug="gr782951-race-src", title="s")
+    doomed = _body_chunk_id(store, mid)
+    locked = Event()
+    release = Event()
+    real_rehome = chunks_ops._rehome_chunk_links
+
+    def paused(conn: Any, doomed_ids: list[int], new_id: int | None) -> Any:
+        locked.set()
+        assert release.wait(timeout=30)
+        return real_rehome(conn, doomed_ids, new_id)
+
+    monkeypatch.setattr(chunks_ops, "_rehome_chunk_links", paused)
+    racer_error: list[BaseException] = []
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        writer = pool.submit(
+            store.chunks.replace_body_chunk,
+            mid,
+            "new body",
+            chunk_kind="memory_body",
+        )
+        assert locked.wait(timeout=30)
+        with store.pool.connection() as racer:
+            racer.execute("SET LOCAL lock_timeout = '2s'")
+            try:
+                racer.execute(
+                    "INSERT INTO links (src_ref_id, dst_ref_id, dst_chunk_id,"
+                    " relation, set_by)"
+                    " VALUES (%s, %s, %s, 'derived-from', 'agent')",
+                    (src.id, mid, doomed),
+                )
+                racer.commit()
+            except Exception as exc:  # any refusal counts
+                racer_error.append(exc)
+        release.set()
+        writer.result(timeout=30)
+    assert racer_error, (
+        "the racing pin committed an edge to the doomed chunk — the "
+        "rewrite's DELETE then cascaded it away silently"
+    )
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (src.id, mid),
+        ).fetchone()
+    assert n == (0,)
+
+
+def test_replace_body_chunk_serializes_concurrent_rewrites(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review td784428 (4): two concurrent rewrites on one ref serialize
+    on the parent ``refs`` row — the second waits out the first's
+    commit, then reads the fresh body and replaces IT. Without the ref
+    lock the second resumed its doomed-chunk lock to zero rows and
+    appended a second body at the next ord."""
+    import precis.store._chunks_ops as chunks_ops
+
+    mid = id_of(handler.put(text="old body prose").body)
+    locked = Event()
+    release = Event()
+    real_rehome = chunks_ops._rehome_chunk_links
+
+    def paused(conn: Any, doomed_ids: list[int], new_id: int | None) -> Any:
+        locked.set()
+        assert release.wait(timeout=30)
+        return real_rehome(conn, doomed_ids, new_id)
+
+    monkeypatch.setattr(chunks_ops, "_rehome_chunk_links", paused)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            store.chunks.replace_body_chunk,
+            mid,
+            "first rewrite",
+            chunk_kind="memory_body",
+        )
+        assert locked.wait(timeout=30)
+        second = pool.submit(
+            store.chunks.replace_body_chunk,
+            mid,
+            "second rewrite",
+            chunk_kind="memory_body",
+        )
+        release.set()
+        first.result(timeout=30)
+        # The second writer saw the first's committed body (its return
+        # is the replaced text), then overwrote it — never a second
+        # body chunk.
+        assert second.result(timeout=30) == "first rewrite"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ord, text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'memory_body' ORDER BY ord",
+            (mid,),
+        ).fetchall()
+    assert [(int(r[0]), r[1]) for r in rows] == [(0, "second rewrite")]
+
+
+def test_edit_replace_records_one_body_revise_act(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review td784428 (4): a single body rewrite's audit is the one
+    ``revise`` act a plain DELETE + INSERT records — the scratch-ord
+    settle runs under ``precis.trust_internal`` (migration 0369) so
+    ``chunks_trust_body_update`` cannot re-run the body guard for a
+    move that changes no content."""
+    from precis.store.revision_context import revision_context
+
+    mid = id_of(handler.put(text="old body prose").body)
+    with revision_context(trust_origin="computed", trust_actor_type="worker"):
+        handler.edit(id=mid, mode="replace", text="rewritten body prose")
+
+    with store.pool.connection() as conn:
+        body_acts = [
+            act
+            for (acts,) in conn.execute(
+                "SELECT trust_acts FROM revisions "
+                "WHERE target_kind = 'ref' AND target_id = %s",
+                (mid,),
+            )
+            for act in (acts or [])
+            if isinstance(act, dict) and act.get("via") == "body"
+        ]
+    assert len(body_acts) == 1
+    assert body_acts[0]["action"] == "revise"

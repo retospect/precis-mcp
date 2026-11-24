@@ -541,8 +541,12 @@ edit(kind="finding", id="fi42", mode="replace", text="…whole new body…",
 `find`/`text` plus `before=`/`after=`/`match=`/`nth=` anchors;
 `dry_run=True` previews the diff; `reason=` lands on the `body_replaced`
 event that keeps the old text. Same id, links and chase state stay put —
-no delete+re-put. The chunk citation is re-validated: if the chunk the
-claim was read in is gone, the edit refuses and nothing is written. A
+no delete+re-put. An edge pinned on the `finding_body` chunk itself
+re-points onto the rewritten chunk; an edge whose re-point would land on
+an identical surviving edge, or self-loop, drops instead — the ack and
+the `dry_run` preview say so. The chunk citation is re-validated: if the
+chunk the claim was read in is gone, the edit refuses and nothing is
+written. A
 `TAPROOT:claim` hub is refused — its body IS the claim's identity, so
 reword it through `title=` (below), which keeps `refs.title`, the chunk
 and the `pub_id` in sync.
