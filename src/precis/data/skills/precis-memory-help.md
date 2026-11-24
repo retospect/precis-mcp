@@ -962,7 +962,8 @@ The preview finds prose mentions through the word index at any corpus
 size, even without links. With no successor,
 live claims refuse retirement unless `args={'force': True}` is explicit;
 dated history mentions are listed but exempt. A retired handle redirects
-to its successor; `view='retired'` reads the tombstone. Full recipe:
+to its successor; `view='retired'` reads the tombstone (`view='audit'`
+on a memory handle reads the same tombstone). Full recipe:
 [[precis-delete-help]].
 
 ## Compact or split a memory without losing its context
