@@ -14,7 +14,9 @@ from psycopg.types.json import Jsonb
 from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
+from precis.store.types import Tag
 from precis.workers.draft_refresh_scan import _stalest_section, run_draft_refresh_scan
+from tests.workers._helpers import seed_ref
 
 # ── draft/section builders (mirrors test_draft_refresh_job.py) ─────────────
 
@@ -348,3 +350,106 @@ def test_scan_idem_key_rearms_after_rewrite_but_dedups_when_unchanged(
     idem_key_2 = next(j["idem_key"] for j in jobs if j["idem_key"] != idem_key_1)
     assert idem_key_2 != idem_key_1
     assert new_time.strftime("%Y-%m-%d") in idem_key_2
+
+
+# ── (g) quest pull gate (gr774377): only an active quest exerts pull ────────
+
+
+def _quest(store: Store, *, status: str) -> int:
+    """A live quest carrying ``STATUS:<status>``."""
+    qid = seed_ref(store, title="Q", kind="quest")
+    store.add_tag(
+        qid, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    return qid
+
+
+def _stale_opted_in_draft(
+    draft: DraftHandler, hub: Hub, store: Store, *, slug: str
+) -> dict[str, Any]:
+    """An opted-in draft with one section whose paragraph is way past
+    threshold — mint-eligible in every respect except quest pull."""
+    seeded = _seed_draft(draft, hub, slug=slug)
+    sec = _add_section(
+        draft, slug=slug, after=seeded["title"], heading="Section A", paras=("P.",)
+    )
+    _set_created_at(store, sec["paras"][0], _NOW - timedelta(days=365))
+    _enable_refresh(store, seeded["ref_id"], staleness_days=1)
+    return seeded
+
+
+def test_scan_no_mint_when_served_quest_is_dormant(store: Store, hub: Hub) -> None:
+    """gr774377: a draft ``serves``-ing only a dormant quest stops getting
+    autonomous refreshes — moving the quest to dormant stops the pull."""
+    draft = DraftHandler(hub=hub)
+    _stale_opted_in_draft(draft, hub, store, slug="nt")
+    qid = _quest(store, status="dormant")
+    draft.link(id="nt", target=f"quest:{qid}", rel="serves")
+
+    result = run_draft_refresh_scan(store, 10)
+
+    assert result.claimed == 0
+    assert _draft_refresh_jobs(store, slug="nt") == []
+
+
+def test_scan_no_mint_when_served_quest_is_abandoned(store: Store, hub: Hub) -> None:
+    draft = DraftHandler(hub=hub)
+    _stale_opted_in_draft(draft, hub, store, slug="nt")
+    qid = _quest(store, status="abandoned")
+    draft.link(id="nt", target=f"quest:{qid}", rel="serves")
+
+    result = run_draft_refresh_scan(store, 10)
+
+    assert result.claimed == 0
+    assert _draft_refresh_jobs(store, slug="nt") == []
+
+
+def test_scan_mints_when_served_quest_is_active(store: Store, hub: Hub) -> None:
+    draft = DraftHandler(hub=hub)
+    _stale_opted_in_draft(draft, hub, store, slug="nt")
+    qid = _quest(store, status="active")
+    draft.link(id="nt", target=f"quest:{qid}", rel="serves")
+
+    result = run_draft_refresh_scan(store, 10)
+
+    assert result.claimed == 1
+    assert len(_draft_refresh_jobs(store, slug="nt")) == 1
+
+
+def test_scan_mints_when_any_served_quest_is_active(store: Store, hub: Hub) -> None:
+    """Pull persists while ANY served quest is active — a dormant sibling
+    does not veto the live one's pull (max-aggregation over the serves
+    DAG, same as the reweight)."""
+    draft = DraftHandler(hub=hub)
+    _stale_opted_in_draft(draft, hub, store, slug="nt")
+    dormant_qid = _quest(store, status="dormant")
+    active_qid = _quest(store, status="active")
+    draft.link(id="nt", target=f"quest:{dormant_qid}", rel="serves")
+    draft.link(id="nt", target=f"quest:{active_qid}", rel="serves")
+
+    result = run_draft_refresh_scan(store, 10)
+
+    assert result.claimed == 1
+    assert len(_draft_refresh_jobs(store, slug="nt")) == 1
+
+
+def test_scan_mints_when_quest_statuses_change(store: Store, hub: Hub) -> None:
+    """The gate reads live STATUS each fire: dormancy stops the next scan,
+    and re-tagging ``STATUS:active`` re-arms it (a dormant quest may
+    reawaken — no draft-meta surgery needed)."""
+    draft = DraftHandler(hub=hub)
+    _stale_opted_in_draft(draft, hub, store, slug="nt")
+    qid = _quest(store, status="active")
+    draft.link(id="nt", target=f"quest:{qid}", rel="serves")
+
+    store.add_tag(
+        qid, Tag.closed("STATUS", "dormant"), set_by="system", replace_prefix=True
+    )
+    assert run_draft_refresh_scan(store, 10).claimed == 0
+    assert _draft_refresh_jobs(store, slug="nt") == []
+
+    store.add_tag(
+        qid, Tag.closed("STATUS", "active"), set_by="system", replace_prefix=True
+    )
+    assert run_draft_refresh_scan(store, 10).claimed == 1
+    assert len(_draft_refresh_jobs(store, slug="nt")) == 1

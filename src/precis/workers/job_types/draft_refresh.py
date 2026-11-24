@@ -12,8 +12,8 @@ anchor), the dispatcher runs six steps for that ONE section:
    whole-draft TOC for context.
 2. **Evidence** — corpus-side missing-citation candidates for this section
    (:mod:`precis.backfill`), plus a **research arm**: when the draft
-   ``serves`` a quest, that quest's Pareto-frontier digest, and the
-   frontier digests of quests that in turn ``serves`` *it* (one bounded
+   ``serves`` an active quest, that quest's Pareto-frontier digest, and
+   the frontier digests of quests that in turn ``serves`` *it* (one bounded
    transitive walk — the sub-quest "arms"). All best-effort: any leg that
    fails or comes back empty degrades to omission, never a job failure.
 3. **New-paper seeking** — deliberately NOT implemented in v1: no external
@@ -36,10 +36,11 @@ anchor), the dispatcher runs six steps for that ONE section:
    preserved chunk that used to sit before the old paragraphs may end up
    after the new prose — acceptable in v1. The heading chunk itself stays in
    place (its text only edited if the rewrite changed it).
-6. **Process memory** — on the owning quest (when there is one): a logbook
-   entry (:func:`precis.quest.logbook.append_entry`) and an attempt-tree
-   node (:mod:`precis.quest.dossier`). A questless draft skips this step
-   entirely — the book itself stays pure content either way.
+6. **Process memory** — on the active owning quest (when there is one): a
+   logbook entry (:func:`precis.quest.logbook.append_entry`) and an attempt-tree
+   node (:mod:`precis.quest.dossier`). A draft with no ACTIVE served quest
+   skips this step entirely (a dormant quest must not accumulate refresh
+   results, gr774377) — the book itself stays pure content either way.
 
 Runs via plugin ``dispatch`` under ``claude_inproc`` — no claude
 subprocess, same shape as ``taproot_backfill``.
@@ -209,8 +210,18 @@ def _render_preserved(preserved: list[Any]) -> str:
 
 
 def _owning_quest_id(store: Store, draft_ref_id: int) -> int | None:
-    """The quest this draft ``serves``, or ``None`` — a quest-less draft is
-    legal (``review_fanout.py`` notes the same). Best-effort: any lookup
+    """The ACTIVE quest this draft ``serves``, or ``None``.
+
+    Only an active quest exerts pull — the same ``STATUS:active`` notion
+    :func:`precis.quest.allocator.active_quest_ids` mints loops under and
+    the scan's pull gate reuses: the research arm and the logbook go to
+    the lowest-ID *active* served quest, never to a dormant sibling
+    (gr774377 — a dormant quest must stop accumulating ``draft_refresh``
+    logbook lines just because a draft it shares with an active quest is
+    still refreshing). When no served quest is active the draft behaves
+    as questless: the prose refresh still applies, but no quest's
+    process memory is touched. A truly quest-less draft is legal
+    (``review_fanout.py`` notes the same). Best-effort: any lookup
     failure degrades to ``None``."""
     try:
         links = store.links_for(draft_ref_id, direction="out", relation="serves")
@@ -225,9 +236,21 @@ def _owning_quest_id(store: Store, draft_ref_id: int) -> int | None:
             and getattr(ref, "kind", None) == "quest"
             and getattr(ref, "retired_at", None) is None
         ]
-        # Deterministic when a draft serves >1 quest: the lowest ref_id wins
-        # (arbitrary but stable — was link-scan order, i.e. undefined).
-        return min(quest_ids) if quest_ids else None
+        if not quest_ids:
+            return None
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT rt.ref_id FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = ANY(%s) "
+                "AND t.namespace = 'STATUS' AND t.value = 'active'",
+                (quest_ids,),
+            ).fetchall()
+        active = {int(r[0]) for r in rows}
+        # Deterministic when a draft serves >1 active quest: the lowest
+        # ref_id wins (arbitrary but stable — was link-scan order, i.e.
+        # undefined).
+        return min(q for q in quest_ids if q in active) if active else None
     except Exception:
         log.warning(
             "draft_refresh: owning-quest lookup failed for draft ref %s",

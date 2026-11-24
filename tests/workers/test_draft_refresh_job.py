@@ -24,6 +24,7 @@ from precis.handlers.draft import DraftHandler
 from precis.handlers.job import JobHandler
 from precis.quest import dossier as dossier_mod
 from precis.store.store import Store
+from precis.store.types import Tag
 from precis.utils.llm.router import LlmResult, Tier
 from precis.workers.job_types import get_job_type, known_job_types
 from tests.workers._helpers import seed_ref
@@ -81,6 +82,12 @@ def _seed_section_draft(
 
 def _link_serves_quest(draft: DraftHandler, *, slug: str, quest_id: int) -> None:
     draft.link(id=slug, target=f"quest:{quest_id}", rel="serves")
+
+
+def _tag_status(store: Store, quest_id: int, status: str) -> None:
+    store.add_tag(
+        quest_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
 
 
 def _rewrite_result(
@@ -237,6 +244,10 @@ def test_dispatch_happy_path_applies_and_writes_process_memory(
         draft, hub, paras=("Old para one about a topic.", "Old para two, more detail.")
     )
     quest_id = seed_ref(store, title="Q", kind="quest")
+    # Only an ACTIVE quest owns process memory (gr774377) — the untagged
+    # seed would read as "no active owner" and skip the logbook/dossier
+    # assertions below.
+    _tag_status(store, quest_id, "active")
     _link_serves_quest(draft, slug="nt", quest_id=quest_id)
 
     old_para_ids = [int(dc[2:]) for dc in seeded["paras"]]
@@ -301,6 +312,86 @@ def test_dispatch_questless_draft_applies_without_process_memory(
     sec_chunk = next(c for c in live if c.dc == seeded["sec"])
     new_body = [c for c in live if c.parent_chunk_id == sec_chunk.chunk_id]
     assert [c.text for c in new_body] == ["New para, tightened."]
+
+
+# ── gr774377: owner selection follows the active-only pull gate ─────────────
+
+
+def _quest_logs(store: Store, quest_id: int) -> list[Any]:
+    return [
+        b
+        for b in store.chunks.list_chunks_for_ref(quest_id)
+        if b.chunk_kind == "quest_log"
+    ]
+
+
+def test_dispatch_owner_prefers_active_quest_over_dormant_sibling(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mixed-status case the scan test can't see: a shared draft keeps
+    refreshing while ANY served quest is active, but the research arm and
+    the process memory land on the ACTIVE owner — never on the dormant
+    sibling, even when the dormant quest holds the lower ref_id (the old
+    lowest-ID-live rule would have picked it)."""
+    draft = DraftHandler(hub=hub)
+    seeded = _seed_section_draft(draft, hub, paras=("Old para about a topic.",))
+    dormant_id = seed_ref(store, title="Dormant Q", kind="quest")
+    active_id = seed_ref(store, title="Active Q", kind="quest")
+    assert dormant_id < active_id
+    _tag_status(store, dormant_id, "dormant")
+    _tag_status(store, active_id, "active")
+    _link_serves_quest(draft, slug="nt", quest_id=dormant_id)
+    _link_serves_quest(draft, slug="nt", quest_id=active_id)
+
+    result = _rewrite_result("Tightened.", "Section A", ["New para, tightened."])
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
+
+    ctx = _FakeCtx(
+        store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    assert ctx.meta_set.get("applied") is True
+
+    # the active owner got the logbook entry + attempt-tree node…
+    logs = _quest_logs(store, active_id)
+    assert logs and "refreshed" in logs[0].text
+    assert "[tried]" in dossier_mod.read_ledger(store, active_id)
+    # …and the dormant sibling got nothing.
+    assert _quest_logs(store, dormant_id) == []
+    assert "draft_refresh" not in dossier_mod.read_ledger(store, dormant_id)
+
+
+def test_dispatch_no_active_owner_applies_without_process_memory(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every served quest dormant (e.g. a job minted just before dormancy,
+    or an operator poke): the prose refresh still applies, but no dormant
+    quest's logbook/dossier is touched — it behaves questless."""
+    draft = DraftHandler(hub=hub)
+    seeded = _seed_section_draft(draft, hub, paras=("Old para about a topic.",))
+    dormant_id = seed_ref(store, title="Dormant Q", kind="quest")
+    _tag_status(store, dormant_id, "dormant")
+    _link_serves_quest(draft, slug="nt", quest_id=dormant_id)
+
+    result = _rewrite_result("Tightened.", "Section A", ["New para, tightened."])
+    monkeypatch.setattr("precis.utils.llm.router.route", lambda _req: result)
+
+    ctx = _FakeCtx(
+        store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    assert ctx.meta_set.get("applied") is True
+    live = store.drafts.reading_order(seeded["ref_id"])
+    sec_chunk = next(c for c in live if c.dc == seeded["sec"])
+    new_body = [c for c in live if c.parent_chunk_id == sec_chunk.chunk_id]
+    assert [c.text for c in new_body] == ["New para, tightened."]
+    # the dormant quest accumulated no process memory.
+    assert _quest_logs(store, dormant_id) == []
+    assert "draft_refresh" not in dossier_mod.read_ledger(store, dormant_id)
 
 
 def test_dispatch_requests_the_free_text_lane(

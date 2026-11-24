@@ -100,7 +100,14 @@ measure. Progress is a **ledger of deeds**, not a percentage.
 
 Tagging a quest `active` is also the affordance that **starts its
 autonomous loop**; moving it to `dormant` / `abandoned` stops new loops
-from being minted — the current one winds down on its own.
+from being minted — the current one winds down on its own. The same gate
+covers a serving draft's autonomous section refreshes: the `draft_refresh`
+scan only mints for a draft whose served quests include a `STATUS:active`
+one, so dormancy stops those mints and reawakening re-arms them. A draft
+serving several quests refreshes while ANY of them is active, but each
+refresh's research arm and logbook line land on an active owner — never
+on a dormant sibling, so dormancy also stops a shared draft's refreshes
+accruing to the sleeping quest.
 
 ## Priority — how hard it steers
 

@@ -6,7 +6,10 @@ Fired every ~4h off the ``draft_refresh_scan`` scheduler cadence
 (:mod:`precis.workers.scheduler`), fleet-exactly-once via the standing
 lease — no host affinity, no eligibility gate, no spend (minting is free;
 the LLM spend lives in the job). Per fire: for each **opted-in** draft
-(``meta.draft_refresh.enabled``), rank its sections **stalest-first** —
+(``meta.draft_refresh.enabled``, and — when the draft ``serves`` a live
+quest — at least one such quest still ``STATUS:active``: only an active
+quest exerts pull, so a dormant/abandoned quest's drafts stop being
+refreshed, gr774377), rank its sections **stalest-first** —
 ``min(created_at)`` over each section's live *direct paragraph* chunks,
 the same clock the spec defines — and mint ONE ``draft_refresh`` job for
 the first section, past ``meta.draft_refresh.staleness_days`` (default
@@ -95,11 +98,18 @@ def _staleness_days(meta: dict[str, Any]) -> int:
 
 def _opted_in_drafts(store: Store) -> list[tuple[int, str, dict[str, Any]]]:
     """``(ref_id, slug, meta)`` for every live draft carrying
-    ``meta.draft_refresh.enabled = true``.
+    ``meta.draft_refresh.enabled = true`` whose pull is still live.
 
     ``slug`` isn't a ``refs`` column in v2 — it's a correlated subquery
     against ``ref_identifiers`` (``id_kind='cite_key'``), the same shape
-    :meth:`~precis.store.Store.resolve_handle` uses."""
+    :meth:`~precis.store.Store.resolve_handle` uses.
+
+    **The pull gate (gr774377):** only an ACTIVE quest exerts pull — the
+    same ``STATUS:active`` notion
+    :func:`precis.quest.allocator.active_quest_ids` uses to mint quest
+    loops. A draft that ``serves`` at least one live quest but no active
+    one (every served quest went dormant/abandoned) drops out of the
+    scan; a questless draft stays governed by its own opt-in."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT r.ref_id, "
@@ -110,6 +120,22 @@ def _opted_in_drafts(store: Store) -> list[tuple[int, str, dict[str, Any]]]:
             "  FROM refs r "
             " WHERE r.kind = 'draft' AND r.retired_at IS NULL "
             "   AND r.meta->'draft_refresh'->>'enabled' = 'true' "
+            "   AND (NOT EXISTS (SELECT 1 FROM links l "
+            "                     JOIN refs q ON q.ref_id = l.dst_ref_id "
+            "                    WHERE l.src_ref_id = r.ref_id "
+            "                      AND l.relation = 'serves' "
+            "                      AND q.kind = 'quest' "
+            "                      AND q.retired_at IS NULL) "
+            "        OR EXISTS (SELECT 1 FROM links l "
+            "                    JOIN refs q ON q.ref_id = l.dst_ref_id "
+            "                    JOIN ref_tags rt ON rt.ref_id = q.ref_id "
+            "                    JOIN tags t ON t.tag_id = rt.tag_id "
+            "                     AND t.namespace = 'STATUS' "
+            "                     AND t.value = 'active' "
+            "                   WHERE l.src_ref_id = r.ref_id "
+            "                     AND l.relation = 'serves' "
+            "                     AND q.kind = 'quest' "
+            "                     AND q.retired_at IS NULL)) "
             " ORDER BY r.ref_id"
         ).fetchall()
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]

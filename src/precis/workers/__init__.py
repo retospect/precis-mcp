@@ -91,8 +91,9 @@ stamps survive receipt expiry. Citation filtering precedes the cap.
 docstring for the lease mechanism. ``CADENCES``: ``cron_tick`` (60s),
 ``watch_poll`` (1h), ``health_digest`` (1h), ``materialize`` (300s),
 ``draft_refresh_scan`` (~4h — stalest-section pick over
-``meta.draft_refresh``-opted drafts, one bounded ``draft_refresh`` job/draft;
-clock = min ``created_at`` over live direct paragraphs), ``gripe_parents``
+``meta.draft_refresh``-opted drafts (questless, or serving an active
+quest), one bounded ``draft_refresh`` job/draft; clock = min
+``created_at`` over live direct paragraphs), ``gripe_parents``
 (300s — pipeline v2 dup-parent backfill: one ANN query per embedded gripe,
 ``meta.dup_parents`` marker write, ``meta.pipeline.claimed_at`` lease;
 ``gripe_parents.py``), ``structural``/
