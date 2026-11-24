@@ -75,6 +75,18 @@ UNINDEXED_FKS: frozenset[str] = frozenset(
         "links.links_set_by_fkey",
         "ref_tags.ref_tags_set_by_fkey",
         "refs.refs_set_by_fkey",
+        # 0358/0360 — frozen-release hold (td783123): these parents DO have
+        # live delete paths (re-ingest deletes chunks rows; a refs delete
+        # cascades to anchors), so the real fix is a covering index — a new
+        # migration, which a frozen release cannot land ungated (ship's
+        # --allow-migration is coordinator-only). The tables are new and
+        # empty, so the cascade probe seq-scans nothing today. The first
+        # post-release migration on main adds the four indexes and this
+        # ratchet then forces these entries back out.
+        "chunk_corrections.chunk_corrections_chunk_id_fkey",
+        "measure_anchors.measure_anchors_anchor_id_fkey",
+        "evidence_anchors.evidence_anchors_anchor_id_fkey",
+        "code_anchor_aliases.code_anchor_aliases_anchor_id_fkey",
     }
 )
 
@@ -200,6 +212,11 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "dream_log.seed_clusters",
         "dream_log.summary",
         "dream_transcripts.transcript",
+        # 0365: a saved EDGAR FTS query's keyword parameters — a small
+        # closed bag (keys ⊆ {q, forms, ciks}, validated at create),
+        # read whole into EdgarWatch.params and handed to the FTS
+        # client, never queried by SQL key.
+        "edgar_watches.params",
         "email_account.config",
         "email_scan.evidence",
         "host_heartbeat.meta",
