@@ -60,6 +60,7 @@ from typing import Any
 
 from precis.plans import release as _release
 from precis.workers import factory_git as _factory_git
+from precis.workers import release_test_fixes
 
 log = logging.getLogger(__name__)
 
@@ -113,14 +114,25 @@ def _err(proc: subprocess.CompletedProcess[str]) -> str:
 
 
 def _record(store: Any, todo_id: int, outcome: dict[str, Any]) -> None:
-    rel = _release.release_of(store, todo_id)
-    if rel is None:
-        return
     root = _release.plan_root(store, todo_id)
     when = datetime.now(UTC).strftime(_TS_FMT)
-    store.stamp_ref_meta(
-        root, {"release": {**rel, MERGE_BACK_KEY: {**outcome, "at": when}}}
-    )
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (root,)
+        ).fetchone()
+        meta = row[0] if row else {}
+        rel = meta.get("release")
+        if not rel:
+            return
+        updates: dict[str, Any] = {
+            "release": {**rel, MERGE_BACK_KEY: {**outcome, "at": when}}
+        }
+        head = outcome.get("head")
+        if head:
+            receipt = release_test_fixes.carried_receipt(store, meta, rel, head)
+            if receipt is not None:
+                updates[release_test_fixes.CARRIED_KEY] = receipt
+        store.stamp_ref_meta(root, updates, conn=conn)
 
 
 def _resolver_body(rn: str, cut: str, head: str, files: list[str]) -> str:
@@ -240,6 +252,7 @@ def _gone_ref_head(
         out = {
             "state": "noop",
             "why": f"origin/{branch} is gone; main already contains {full[:12]}",
+            "head": full,
         }
         _record(store, todo_id, out)
         return "", out
@@ -303,7 +316,11 @@ def merge_back(
         _record(store, todo_id, out)
         return out
     if _git(["merge-base", "--is-ancestor", head, "origin/main"], root).returncode == 0:
-        out = {"state": "noop", "why": f"origin/main already contains {head[:12]}"}
+        out = {
+            "state": "noop",
+            "why": f"origin/main already contains {head[:12]}",
+            "head": head,
+        }
         _record(store, todo_id, out)
         return out
     if refusal is not None:

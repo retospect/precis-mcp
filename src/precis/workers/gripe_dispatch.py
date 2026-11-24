@@ -1316,6 +1316,9 @@ def _candidate_picks(
     waiver_filter = {None: "TRUE", True: _WAIVER_SQL, False: f"NOT {_WAIVER_SQL}"}[
         waiver
     ]
+    from precis.workers import release_test_fixes
+
+    ownership = release_test_fixes.ownership(store)
     sql = f"""
         SELECT r.ref_id, r.title, {_dscore.score_sql()} AS score,
                {_WAIVER_SQL} AS is_waiver
@@ -1325,6 +1328,8 @@ def _candidate_picks(
                      AND s.namespace = 'STATUS' AND s.value = ANY(%s)
          WHERE r.kind = 'gripe' AND r.retired_at IS NULL
            AND {waiver_filter}
+           AND NOT (COALESCE(({release_test_fixes.TEST_GRIPE_SQL}), FALSE)
+                    AND (%s OR r.meta->'ci'->>'sig' = ANY(%s)))
            AND ({_WAIVER_SQL} OR COALESCE((SELECT max(tt.created_at)
                            FROM ref_tags tt JOIN tags t ON t.tag_id = tt.tag_id
                           WHERE tt.ref_id = r.ref_id
@@ -1398,6 +1403,8 @@ def _candidate_picks(
             sql,
             (
                 list(_DISPATCH_STATUSES),
+                ownership.pending_all,
+                sorted(ownership.pending),
                 fix_tags,
                 _MIN_AGE_MINUTES,
                 trust_all,
@@ -1556,6 +1563,11 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     except Exception:
         log.warning("gripe_dispatch: moot resolve sweep failed", exc_info=True)
         moot_resolved = []
+    from precis.workers import release_test_fixes
+
+    release_test_fixes.resolve_carried_gripes(
+        store, release_test_fixes.ownership(store)
+    )
     # Cause-based breaker first: a lane or host whose newest builds all died
     # of one engine cause stops taking builds (its ask is the only record),
     # before the capacity below is read.

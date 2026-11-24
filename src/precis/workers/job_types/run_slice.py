@@ -430,7 +430,7 @@ from precis.utils.dispatch_score import (
 from precis.utils.dispatch_score import (
     SCORE_META_KEY as _SCORE_KEY,
 )
-from precis.workers import admission
+from precis.workers import admission, release_test_fixes
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import release_fix_handoff as _release_fix_handoff
@@ -7527,6 +7527,15 @@ def submit(ctx: Any, spec: Any) -> Any:
         return waiting
 
     task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
+    if repo == _lanes.DEFAULT_REPO and task_class == _DEFAULT_TASK_CLASS:
+        root_id = _release.plan_root(store, todo_id)
+        if root_id != todo_id:
+            pending, fix = release_test_fixes.plan_disposition(store, root_id)
+            if pending or fix is not None:
+                ctx.set_meta(**{ATTEMPT_FREE_KEY: "release-test-fix"})
+                why = fix.note if fix is not None else "waiting for release merge-back"
+                ctx.record_failure(f"run_slice: td{todo_id} deferred — {why}")
+                return None
     # A relaunch after a lane's quota/rate window (gr565359) skips that
     # vendor outright; the table shrinks, it does not fall back.
     exclude = str((ctx.meta or {}).get("exclude_vendor") or "")

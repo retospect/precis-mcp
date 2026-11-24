@@ -536,6 +536,14 @@ def _sanitize_name(text: str, cap: int) -> str:
     return t.replace("\t", " ").strip()[:cap]
 
 
+def _test_signature(node: str) -> str:
+    return f"ci:{WORKFLOW_FILE}:{_test_node(node)}"
+
+
+def _test_node(node: str) -> str:
+    return _sanitize_log(PARAM_RE.sub("", node), _NODE_CAP)
+
+
 def _failed_nodes(log_text: str) -> list[tuple[str, str]]:
     """``(sanitised node id, sanitised reason)`` pairs — the pytest
     FAILED/ERROR nodes of one job log, parametrise stripped, order kept,
@@ -546,7 +554,7 @@ def _failed_nodes(log_text: str) -> list[tuple[str, str]]:
         m = NODE_RE.match(line)
         if not m:
             continue
-        node = _sanitize_log(PARAM_RE.sub("", m.group(2)), _NODE_CAP)
+        node = _test_node(m.group(2))
         reason = _sanitize_log(m.group(3) or "", _REASON_CAP)
         if node and node not in [n for n, _r in out]:
             out.append((node, reason))
@@ -591,7 +599,7 @@ def _run_signatures(
             continue
         for node, reason in nodes:
             info = out.setdefault(
-                f"ci:{WORKFLOW_FILE}:{node}",
+                _test_signature(node),
                 {"job": name, "nodes": [], "infra": False},
             )
             if (node, reason) not in info["nodes"]:

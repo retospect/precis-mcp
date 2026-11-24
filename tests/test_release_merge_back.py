@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.job_types import release_merge_back as mb
+from tests._refs import insert_gripe
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX git rig")
 
@@ -521,3 +523,91 @@ def test_the_merge_back_node_follows_the_deploy(store: Store) -> None:
         "type": "release_confirm",
         "params": {"merge_back": True, "todo_id": mint.ids["merge_back"]},
     }
+
+
+def _nightly_gripe(store: Store, test: str) -> int:
+    gid = insert_gripe(
+        store,
+        f"nightly red: {test}",
+        meta={"ci": {"sig": f"ci:check.yml:{test}", "wf": "nightly"}},
+    ).id
+    store.stamp_ref_meta(gid, {"filed_by": {"principal": "worker:ci_watch"}})
+    return gid
+
+
+def test_release_green_merge_carries_only_the_matching_nightly_fix(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    from precis.workers import release_test_fixes as fixes
+    from precis.workers.job_types import plan_dispatch as pd
+
+    root = rig["root"]
+    mint = _cut(store, root)
+    test = "tests/test_app.py::test_app"
+    gripe = _nightly_gripe(store, test)
+    chain = T.mint_gripe_fix_direct(store, gripe_id=gripe)
+    other = _nightly_gripe(store, "tests/test_app.py::test_other")
+    other_chain = T.mint_gripe_fix_direct(store, gripe_id=other)
+    assert fixes.plan_disposition(store, chain.root_id) == (True, None)
+
+    fixes.note_failures(store, mint.root_id, "r7", [f"{test}[one]"], complete=False)
+    assert fixes.plan_disposition(store, other_chain.root_id) == (True, None)
+    fixes.note_failures(store, mint.root_id, "r7", [f"{test}[one]"], complete=True)
+    assert fixes.plan_disposition(store, other_chain.root_id) == (True, None)
+    head = _commit(root, "release/r7", "fix.txt", "fixed\n", "fix the red")
+    R.record_head(store, mint.root_id, head)
+    R.record_ci_verdict(
+        store, head, "", "green", "17", now=datetime.now(UTC) + timedelta(seconds=1)
+    )
+    assert fixes.plan_disposition(store, chain.root_id) == (True, None)
+    assert mb.merge_back(store, mint.ids["merge_back"], root)["state"] == "merged"
+    # A retry still carries the release head, even though it has no push to make.
+    assert mb.merge_back(store, mint.ids["merge_back"], root)["state"] == "noop"
+
+    state = fixes.ownership(store)
+    waiting, carried = fixes.plan_disposition(store, chain.root_id, state)
+    assert not waiting and carried is not None and carried.head == head
+    assert fixes.plan_disposition(store, other_chain.root_id, state) == (False, None)
+    regression = _nightly_gripe(store, test)
+    with store.atomic() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+            (carried.green_at + timedelta(seconds=1), regression),
+        )
+    fixes.resolve_carried_gripes(store, state)
+    assert any(
+        t.prefix == "STATUS" and t.value == "open" for t in store.tags_for(regression)
+    )
+    assert any(
+        t.prefix == "STATUS" and t.value == "auto_verify" for t in store.tags_for(gripe)
+    )
+    plan = pd._load(store, [chain.root_id, other_chain.root_id])
+    remaining = pd._release_test_holds(
+        plan, pd._Writer(store, False), pd.PassResult(dry_run=False)
+    )
+    assert remaining.roots == [other_chain.root_id]
+    for tid in chain.ids.values():
+        assert any(
+            t.prefix == "STATUS" and t.value == "done" for t in store.tags_for(tid)
+        )
+
+
+def test_waived_red_is_released_back_to_main_intake(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    from precis.workers import release_test_fixes as fixes
+
+    root = rig["root"]
+    mint = _cut(store, root)
+    test = "tests/test_app.py::test_app"
+    chain = T.mint_gripe_fix_direct(store, gripe_id=_nightly_gripe(store, test))
+    fixes.note_failures(store, mint.root_id, "r7", [test], complete=True)
+    other = _nightly_gripe(store, "tests/test_app.py::test_other")
+    other_chain = T.mint_gripe_fix_direct(store, gripe_id=other)
+    assert fixes.plan_disposition(store, chain.root_id) == (True, None)
+    assert fixes.plan_disposition(store, other_chain.root_id) == (False, None)
+    head = _commit(root, "release/r7", "waive.txt", "waived\n", "waive the red")
+    R.record_head(store, mint.root_id, head)
+    R.record_ci_verdict(store, head, "", "green", "17", waived={"run_id": "17"})
+    assert mb.merge_back(store, mint.ids["merge_back"], root)["state"] == "merged"
+    assert fixes.plan_disposition(store, chain.root_id) == (False, None)

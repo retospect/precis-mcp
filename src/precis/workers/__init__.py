@@ -12,7 +12,7 @@ or failures. :meth:`status` reports ``(total, ok, failed, pending)``.
 :func:`run_handler_once` handles one batch. :func:`run_loop` rotates handlers
 and polls when idle.
 
-Preprint upgrade retries oldest checks first. Limiter refusals preserve retry eligibility.
+Preprint upgrades retry oldest checks first; limiter refusals keep eligibility.
 
 Pass taxonomy
 -------------
@@ -24,7 +24,8 @@ Pass taxonomy
   parent ``prio`` down the DAG. See ``docs/runbooks/minter-ops.md``.
 
 Rescue clocks breaker waits from the first park: rechecks refresh
-status (:mod:`.factory_rescue`). Queued jobs wait only where claim skips them. Mirror fetches avoid receive hooks
+status (:mod:`.factory_rescue`). Queued jobs wait only where claim skips
+them. Release digests hold nightly repairs until merge-back. Mirror fetches avoid receive hooks
 (:mod:`.factory_git_mirror`).
 Gripe intake bounds frozen reports (``precis-work-help``). Todo sweeps
 recheck under lock; thread sweeps serialize provenance-checked decisions
@@ -37,8 +38,7 @@ cadence halt state when applying a supervisor verdict.
 
 ``run_loop`` rotates serially. Scheduler leases, the GPU lane
 (``deploy/README.md``), and threaded heartbeats isolate slow handlers.
-The rotation heartbeat is idempotent. :mod:`.activity`
-stamps ref passes in ``host_heartbeat.meta.activity`` (Status **Now**)
+:mod:`.activity` stamps ref passes in ``host_heartbeat.meta.activity`` (Status **Now**)
 to distinguish silent work from worker death. Overdue rescue pauses Claude claims.
 
 Job digests

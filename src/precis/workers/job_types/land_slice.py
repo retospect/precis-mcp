@@ -441,7 +441,7 @@ from precis.plans.templates import (
 from precis.plans.todo_chain import has_landed_comment, source_of_root
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
-from precis.workers import admission
+from precis.workers import admission, release_test_fixes
 from precis.workers import capability_probe as _capability_probe
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
@@ -4890,6 +4890,44 @@ def _release_sync_conflict(
     )
 
 
+def _release_test_land_disposition(
+    store: Any, todo_id: int
+) -> tuple[bool, release_test_fixes.Carried | None]:
+    plan = _plan_tag(store, todo_id)
+    if plan is None or getattr(store, "pool", None) is None:
+        return False, None
+    return release_test_fixes.plan_disposition(store, int(plan[5:]))
+
+
+def _finish_release_test_land(
+    ctx: Any,
+    todo_id: int,
+    lane: Any,
+    pending: bool,
+    fix: release_test_fixes.Carried | None,
+) -> bool:
+    if fix is not None:
+        _rs._append_comment(ctx.store, todo_id, f"carried: {fix.note}")
+        ctx.store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
+        _close_todo(ctx.store, todo_id)
+        _drop_land_folder(ctx, todo_id)
+        ctx.append_chunk("job_summary", f"land_slice td{todo_id}: {fix.note}")
+        ctx.set_status("succeeded")
+        return True
+    if pending:
+        why = "release test fix is waiting for merge-back"
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            why,
+            handoff=f"land deferred: {why}.",
+            attempt_free="release-test-fix",
+            folder=FOLDER_KEEP,
+        )
+    return pending
+
+
 def _launch_ship(
     ctx: Any,
     tree: Path,
@@ -5012,6 +5050,10 @@ def _launch_ship(
             if _finish_if_landed(ctx, tree, params, subject, onto):
                 return None
             if not _clear_index_locks(ctx, gitdir, tree, todo_id, lane):
+                return None
+        if onto is None and number is None:
+            pending, fix = _release_test_land_disposition(ctx.store, todo_id)
+            if _finish_release_test_land(ctx, todo_id, lane, pending, fix):
                 return None
         # gr738762: a release fix is merged up to the release head here,
         # under the land lock and past the index.lock reap, so the first
@@ -5595,6 +5637,19 @@ def _sync_to_origin(
                 "a land that may not be on origin"
             )
             return True
+    if onto is None and expected_sha and _pr_param(params) is None:
+        # The release cut may have started since this main land launched.
+        pending, fix = _release_test_land_disposition(ctx.store, todo_id)
+        if pending or fix is not None:
+            if not _land_clone(tree):
+                repair_url = _github_url(root) if root is not None else None
+                for note in _repair_origin_state(
+                    ctx, tree, repair_url, tips, phantom_main=expected_sha
+                ):
+                    ctx.append_chunk("job_event", f"land_slice: {note}")
+            return _finish_release_test_land(
+                ctx, todo_id, params.get("lane"), pending, fix
+            )
     outcome, detail = "error", "mirror state unreadable"
     mirror: Path | None = None
     url: str | None = None

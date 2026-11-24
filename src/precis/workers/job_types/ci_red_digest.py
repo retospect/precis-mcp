@@ -1366,6 +1366,11 @@ def _digest_done(
     # catch-all fixer that reads the run itself. Only a digest with no
     # parsed id at all keeps one brief with the whole digest.
     failures, problems = _waiver.parse_failures(log_text or "", dict(rescued))
+    from precis.workers import release_test_fixes
+
+    release_test_fixes.note_failures(
+        ctx.store, todo_id, rn, failures, complete=not problems
+    )
     clusters, catch_alls = _clusters_of(log_text or "", failures, problems, run_id)
     # release.fix_mode (Reto 2026-11-20): one top-rung fixer owns the whole
     # red instead of one cheap fixer per cluster — every iteration

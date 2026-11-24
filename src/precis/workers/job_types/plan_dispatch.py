@@ -12461,6 +12461,59 @@ def read_only_reason(store: Any, params: dict[str, Any] | None = None) -> str | 
     return None
 
 
+def _release_test_holds(plan: _Plan, w: _Writer, res: PassResult) -> _Plan:
+    """Hold main's nightly fix plans and settle them on the merge receipt."""
+    from precis.workers import release_test_fixes
+    from precis.workers.job_types import land_slice
+
+    state = release_test_fixes.ownership(w.store)
+    if not (state.pending_all or state.pending or state.carried):
+        return plan
+
+    held: set[int] = set()
+    for root in plan.roots:
+        pending, fix = release_test_fixes.plan_disposition(w.store, root, state)
+        if not (pending or fix):
+            continue
+        held.add(root)
+        if fix is None:
+            continue
+        nodes = [n for n in plan.todos() if n.root == root]
+        if any(plan.live_job(n) for n in nodes):
+            continue
+        if any(
+            _resolve_op(n)[0] == DEFAULT_OP and _landed_sha(w.store, n.id)
+            for n in nodes
+        ):
+            # This plan has its own land and verification tail.
+            held.remove(root)
+            continue
+        if not w.dry_run:
+            gid = land_slice._plan_gripe(w.store, f"plan:{root}")
+            if gid is not None:
+                land_slice._resolve_gripe(
+                    w.store, gid, fix.head, fix.note, status="auto_verify"
+                )
+        for n in sorted(nodes, key=lambda n: n.id == root):
+            pending_land = n.meta.get(_templates.PENDING_LAND_KEY)
+            if _closed(n) and not pending_land:
+                continue
+            w.comment(n, f"carried: {fix.note}")
+            if pending_land:
+                w.stamp_meta(n, {_templates.PENDING_LAND_KEY: None})
+            w.remove_tags(n, _claims(n))
+            w.set_status(n, "done")
+        res.notes.append(f"plan td{root}: {fix.note}")
+
+    if not held:
+        return plan
+    return _Plan(
+        [root for root in plan.roots if root not in held],
+        {nid: n for nid, n in plan.nodes.items() if n.root not in held},
+        plan.blockers,
+    )
+
+
 def enqueue_roots(store: Any, roots: list[int]) -> PassResult:
     """Queue doable work in freshly minted chains without waiting a tick.
 
@@ -12480,9 +12533,11 @@ def enqueue_roots(store: Any, roots: list[int]) -> PassResult:
             res.skipped = "another tick holds the lock"
             return res
         plan = _load(store, roots)
+        w = _Writer(store, False)
+        plan = _release_test_holds(plan, w, res)
         _step_dispatch(
             plan,
-            _Writer(store, False),
+            w,
             res,
             _lanes.load_lanes(store),
             _spend_rules(store),
@@ -12521,6 +12576,7 @@ def run_pass(
         lane_table = _lanes.load_lanes(store)
         rules = _spend_rules(store)
         w = _Writer(store, dry_run)
+        plan = _release_test_holds(plan, w, res)
         _step_dead_roots(store, plan, w, res)
         _step_gates(store, plan, w, res, now)
         _step_loops(store, plan, w, res, now)

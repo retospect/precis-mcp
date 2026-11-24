@@ -296,6 +296,11 @@ Friction footer filings stay searchable under `STATUS:held`. The
 releases groups after three separate runs within 30 days, and closes
 groups that age out. See `src/precis/workers/gripe_triage.py::_friction_sweep`.
 
+Nightly test repairs wait for the active release's merge-back when its CI
+digest names the same failure. After an unwaived green release head reaches
+main, its receipt closes matching factory work as carried. See
+`src/precis/workers/release_test_fixes.py`.
+
 ## Subsystems (where the code lives)
 
 Checklist definitions retain their registry names and allocate a graph ref
