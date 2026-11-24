@@ -33,6 +33,8 @@ was invisible for 4 days):
   whatever other hosts do; ``gripe_dispatch`` alone
   (``claim_when_dark``) skips it only while some row lights the service
   elsewhere.
+  A scheduler outcome within the silence budget counts across hosts
+  for cadences without host affinity.
 * ``rescue-pass-cadence`` — the rescue-critical passes (sweeper,
   nursery, quest_loop_reconcile) have a fleet-wide cadence SLO. For
   sweeper/nursery (system-profile, fast rotation, where a gap IS
@@ -214,6 +216,10 @@ WITH live AS (
 ), hist AS (
     SELECT host, process, payload->>'handler' AS handler,
            max(ts) AS last_seen,
+           max(ts) FILTER (WHERE logger = 'precis.workers.scheduler'
+                           AND message LIKE 'scheduler: cadence %% outcome %%'
+                           AND payload->>'handler' = ANY(%(fleet_handlers)s))
+               AS last_cadence_fire,
            count(*) FILTER (WHERE ts > now() - interval '7 days') AS n7d,
            count(*) AS nlong
       FROM worker_logs
@@ -224,15 +230,20 @@ WITH live AS (
     -- the handler's newest row on the host under *any* process: a pass
     -- moved to another lane (host-lanes --skip) is live there, not dead
     SELECT host, handler, max(last_seen) AS last_seen FROM hist GROUP BY 1, 2
+), fleet AS (
+    SELECT handler, max(last_cadence_fire) AS last_fire FROM hist
+     WHERE last_cadence_fire IS NOT NULL
+     GROUP BY handler
 )
 SELECT h.host, h.process, h.handler,
        EXTRACT(EPOCH FROM (now() - h.last_seen)) / 3600.0 AS silent_h,
        EXTRACT(EPOCH FROM (now() - oh.last_seen)) / 3600.0 AS host_silent_h
   FROM hist h JOIN live l ON l.host = h.host
   JOIN on_host oh ON oh.host = h.host AND oh.handler = h.handler
- WHERE (h.last_seen < now() - make_interval(secs => %(budget_s)s)
+  LEFT JOIN fleet f ON f.handler = h.handler
+ WHERE (greatest(h.last_seen, f.last_fire) < now() - make_interval(secs => %(budget_s)s)
         AND h.n7d >= %(min_rows)s)
-    OR (h.last_seen < now() - make_interval(secs => %(slow_budget_s)s)
+    OR (greatest(h.last_seen, f.last_fire) < now() - make_interval(secs => %(slow_budget_s)s)
         AND h.last_seen > now() - make_interval(days => %(slow_max_silent_d)s)
         AND h.nlong >= %(slow_min_rows)s)
  ORDER BY 1, 2, 3
@@ -426,6 +437,15 @@ def _fresh_unit_lists(store: Store) -> dict[str, dict[str, object]]:
 
 
 def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
+    from precis.workers.scheduler import CADENCES
+
+    fleet_handlers = sorted(
+        {
+            _emit_handler(cad.name, cad.name)
+            for cad in CADENCES
+            if cad.host_affinity is None
+        }
+    )
     budget_s = _env_f("PRECIS_COND_PASS_DEAD_BUDGET_S", 4 * 3600.0)
     # ≥ ~1 row/hour over 7d — excludes one-off/manual handlers so a
     # deliberately-rare pass can't false-alarm.
@@ -435,6 +455,7 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
             _PASS_DEAD_SQL,
             {
                 "fresh_min": _HOST_FRESH_MIN,
+                "fleet_handlers": fleet_handlers,
                 "budget_s": budget_s,
                 "min_rows": min_rows,
                 "lookback_d": _PASS_DEAD_SLOW_LOOKBACK_DAYS,

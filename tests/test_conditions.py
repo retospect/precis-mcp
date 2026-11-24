@@ -212,6 +212,55 @@ def test_pass_dead_quiet_when_handler_recent(
     assert [f for f in _probe_pass_dead(store) if handler in f.key] == []
 
 
+@pytest.mark.parametrize(
+    ("handler", "min_rows", "last_age_s", "logger", "fires"),
+    [
+        ("gripe_autoclose", 5, 60, "precis.workers.scheduler", False),
+        ("lane_health", 150, 6 * 3600, "precis.workers.scheduler", False),
+        ("lane_health", 5, 6 * 3600, "precis.workers.scheduler", True),
+        ("lane_health", 5, 60, "precis.workers.runner", True),
+        ("fetch_oa", 5, 60, "precis.workers.scheduler", True),
+    ],
+    ids=["fast", "slow", "over-budget", "non-cadence-row", "host-local"],
+)
+def test_pass_dead_follows_scheduler_outcomes_across_hosts(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    handler: str,
+    min_rows: int,
+    last_age_s: float,
+    logger: str,
+    fires: bool,
+) -> None:
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", str(min_rows))
+    remote = _uniq("cond-test-peer")
+    key = f"pass-dead:{_HOST}/{_PROC}/{handler}"
+    _seed_heartbeat(store)
+    _seed_pass_logs(store, handler, n=60, last_age_s=15 * 3600, registered=False)
+    assert any(f.key == key for f in _probe_pass_dead(store))
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, level, logger, message, payload) "
+            "VALUES (now() - make_interval(secs => %s), %s, %s, 'INFO', %s, %s, %s)",
+            (
+                last_age_s,
+                remote,
+                _PROC,
+                logger,
+                f"scheduler: cadence {handler} outcome claimed=1 ok=1 failed=0",
+                Jsonb({"handler": handler, "claimed": 1, "ok": 1, "failed": 0}),
+            ),
+        )
+        conn.commit()
+    try:
+        assert any(f.key == key for f in _probe_pass_dead(store)) == fires
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM worker_logs WHERE host = %s", (remote,))
+            conn.commit()
+
+
 def test_pass_dead_slow_tier_fires_after_outage_past_7d_window(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

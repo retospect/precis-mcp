@@ -43,10 +43,11 @@ to distinguish silent work from worker death. Overdue rescue pauses Claude claim
 
 Job digests
 -------------
-:func:`run_loop` logs one :class:`.runner.BatchResult` per pass to
-``worker_logs.payload`` (``precis logs --pass <name> --payload``). Counters
-use ``extra``; blocked claims set ``report_only``. Crashes log under the
-same ``payload.handler`` so the pass-dead probe sees them (gr328589).
+:func:`run_loop` logs :class:`.runner.BatchResult` records to
+``worker_logs.payload`` (``precis logs --pass <name> --payload``).
+Counters use ``extra``; blocked claims set ``report_only``. Crashes retain
+``payload.handler`` (gr328589). Pass-dead follows unpinned scheduler
+outcomes fleet-wide because lease winners change.
 
 Profiles + service registry
 ---------------------------
