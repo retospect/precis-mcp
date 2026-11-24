@@ -65,7 +65,10 @@ Claim order is **class, then factory-pipeline ops, then jobs past the
 class age threshold, then dispatch score, then the lane deficit, then
 priority, then time queued** — `(class_rank, factory_pref,
 aged_past_class_age, dispatch_score, lane_deficit, aged_prio,
-queued_since, ref_id)`. The
+queued_since, ref_id)`. Only a job carrying a `dispatch_score` enters
+the age bucket, and its age counts inside its current class: a job that
+was promoted starts that class fresh. Among jobs without a score, the
+lane deficit and age decide. The
 `queue:` lines on a queued job report position from the same rank keys
 minus the deficit, so a shown position is advisory. Two mint-time
 knobs (both ride `args=` on the advertised `put` schema):

@@ -1968,12 +1968,61 @@ _DISPATCH_SCORE_SQL = (
 _CLAIM_ORDER_PREFIX_SQL = (
     "claim_rank ASC, factory_pref ASC, aged_past_class_age DESC, dispatch_score DESC"
 )
-_CLAIM_AGE_BUCKET_SQL = "b.age_s > %s"
+
+
+def _claim_age_bucket_sql(
+    class_age_s: float, *, class_rank: bool = True, release_freeze: bool = False
+) -> tuple[str, tuple[Any, ...]]:
+    """The ``aged_past_class_age`` claim key (gr736421): ``(sql, params)``.
+
+    True once a row has waited more than ``class_age_s`` INSIDE the class
+    it now ranks in — its queue age less the class-age intervals it spent
+    promoting (D3). A row that just promoted into a class therefore
+    starts that class fresh and cannot jump the class's own aged rows
+    (the age that promoted it is not counted twice). A row promoting
+    ``k`` steps reaches its floor at ``k * class_age_s``, so the bucket
+    opens at ``(k + 1) * class_age_s``: ``k`` is ``base_class`` less the
+    promotion floor of :func:`_claim_order_sql`. Prio-1 rows and the
+    ``class_rank=False`` kill switch never promote — plain queue age.
+
+    Only a row whose meta carries a ``dispatch_score`` stamp can enter the
+    bucket (td763180 ruling): the bucket bounds how long a static score
+    beats queue age, and a score-less row has no score to beat — among
+    score-less rows the order stays the pre-bucket one, so the share and
+    lane-deficit terms still decide. An unstamped ``land_slice`` reads the
+    :data:`_DISPATCH_SCORE_SQL` floor but carries no stamp, so it stays
+    outside the bucket too.
+    """
+    stamped = f"(r.meta->>'{_dscore.SCORE_META_KEY}') IS NOT NULL"
+    if not class_rank:
+        return f"({stamped} AND b.age_s > %s)", (class_age_s,)
+    floor = _eff_floor_sql(release_freeze)
+    sql = (
+        f"CASE WHEN NOT {stamped} THEN false"
+        " WHEN COALESCE(r.prio, %s)::float8 = 1 THEN b.age_s > %s"
+        f" ELSE b.age_s > %s * (1 + b.base_class - {floor}) END"
+    )
+    return sql, (_DEFAULT_JOB_PRIO, class_age_s, class_age_s)
+
 
 _BUILD_HOLD_FILTER_SQL = (
     " AND (COALESCE({alias}.meta->>'job_type', '') <> 'run_slice'"
     " OR {alias}.parent_id IS NULL OR {alias}.parent_id <> ALL(%s))"
 )
+
+
+def _eff_floor_sql(release_freeze: bool) -> str:
+    """The class-promotion floor :func:`_claim_order_sql` documents —
+    shared with :func:`_claim_age_bucket_sql` so both read one rule."""
+    cap_sql = (
+        f"CASE WHEN b.base_class = {_RELEASE_LEG_RANK} THEN b.base_class ELSE 0 END"
+    )
+    if release_freeze:
+        cap_sql += ", CASE WHEN t.has_release THEN b.base_class ELSE 0 END"
+    return (
+        "LEAST(b.base_class, GREATEST(COALESCE(t.top_class, b.base_class),"
+        f" 2, {cap_sql}))"
+    )
 
 
 def _claim_order_sql(
@@ -2040,15 +2089,7 @@ def _claim_order_sql(
     #: recurring. ``release_freeze`` adds ``t.has_release``: while a
     #: release leg is claimable every row's floor is its own base — no
     #: lower class promotes into or across the band.
-    _cap_sql = (
-        f"CASE WHEN b.base_class = {_RELEASE_LEG_RANK} THEN b.base_class ELSE 0 END"
-    )
-    if release_freeze:
-        _cap_sql += ", CASE WHEN t.has_release THEN b.base_class ELSE 0 END"
-    _eff_floor = (
-        "LEAST(b.base_class, GREATEST(COALESCE(t.top_class, b.base_class),"
-        f" 2, {_cap_sql}))"
-    )
+    _eff_floor = _eff_floor_sql(release_freeze)
     claim_rank = (
         "CASE WHEN COALESCE(r.prio, %s)::float8 = 1 THEN -1"
         f" ELSE GREATEST(b.base_class - FLOOR(b.age_s / %s), {_eff_floor}) END"
@@ -2214,8 +2255,12 @@ def claim_executor_jobs(
     ``ORDER BY claim_rank ASC, factory_pref ASC, aged_past_class_age DESC,
     dispatch_score DESC, lane_deficit DESC, aged_prio ASC, queued_since ASC,
     ref_id ASC``
-    (the age bucket puts jobs past :func:`claim_class_age_s` ahead of
-    fresher peers in the same class and factory band, gr736421;
+    (the age bucket puts jobs past :func:`claim_class_age_s` of IN-CLASS
+    age — queue age less the intervals spent promoting, so a promoted
+    row starts its new class fresh — ahead of fresher peers in the same
+    class and factory band, gr736421, :func:`_claim_age_bucket_sql`;
+    only a row with a ``meta.dispatch_score`` stamp enters the bucket,
+    so score-less rows keep the share/deficit order;
     ``dispatch_score`` = the ``meta.dispatch_score`` stamp, hot-first;
     an unstamped ``land_slice`` floors at
     :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` — see
@@ -3156,6 +3201,9 @@ def claim_executor_jobs(
         class_rank=class_rank_on,
         release_freeze=True,
     )
+    bucket_sql, bucket_params = _claim_age_bucket_sql(
+        class_age, class_rank=class_rank_on, release_freeze=True
+    )
     # The full eligibility gate, shared by the eligible-lane read (the
     # deficit denominator below) and the candidate query — one definition,
     # so the two can never disagree.
@@ -3255,7 +3303,7 @@ def claim_executor_jobs(
                {aged_prio_sql} AS aged_prio,
                {share_col_sql} AS lane_deficit,
                {_factory_pref_sql(class_rank_on)} AS factory_pref,
-               {_CLAIM_AGE_BUCKET_SQL} AS aged_past_class_age,
+               {bucket_sql} AS aged_past_class_age,
                {_DISPATCH_SCORE_SQL} AS dispatch_score
           FROM refs r
           CROSS JOIN LATERAL (
@@ -3292,7 +3340,7 @@ def claim_executor_jobs(
     fresh_params: tuple[Any, ...] = (
         *order_params,
         *share_params,
-        class_age,
+        *bucket_params,
         STATUS_NAMESPACE,
         list(CLAIMABLE),
         _DEFAULT_JOB_PRIO,
@@ -3450,6 +3498,10 @@ def claim_executor_jobs(
     ) -> tuple[float, float, int, int, float, float, float, int, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
+        age_in_class = age
+        # Only score-stamped rows enter the age bucket (td763180 ruling;
+        # the SQL twin is :func:`_claim_age_bucket_sql`).
+        stamped = dict(r[2] or {}).get(_dscore.SCORE_META_KEY) is not None
         if class_rank_on and prio == 1.0:
             rank, floor = -1.0, 5.0
         elif class_rank_on:
@@ -3463,6 +3515,10 @@ def claim_executor_jobs(
             )
             rank = float(max(base - int(age // class_age), floor_rank))
             floor = 5.0 if rank < 2 else 2.0
+            # In-class age for the age bucket: the intervals spent
+            # promoting into ``rank`` don't count again (the SQL twin is
+            # :func:`_claim_age_bucket_sql`).
+            age_in_class = age - (base - rank) * class_age
         else:
             # Kill switch: the pre-slice-2 order — aged prio, 1.5 floor.
             rank, floor = 0.0, 1.5
@@ -3479,7 +3535,7 @@ def claim_executor_jobs(
             -scarcity,
             rank,
             r[9],  # factory_pref
-            -int(r[10]),  # aged_past_class_age
+            -int(stamped and age_in_class > class_age),  # aged_past_class_age
             -r[11],  # dispatch_score
             -deficit,
             aged,

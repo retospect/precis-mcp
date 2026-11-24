@@ -5,15 +5,18 @@ from __future__ import annotations
 import plistlib
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import jinja2
+import pytest
 
 _TEMPLATES = (
     Path(__file__).resolve().parents[1] / "deploy/roles/node_exporter/templates"
 )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: spawns sh")
 def test_probe_reports_tracked_edits_and_failed_checks(tmp_path: Path) -> None:
     repo = tmp_path / "git deploy helper"
     repo.mkdir()

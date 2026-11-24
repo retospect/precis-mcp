@@ -72,6 +72,12 @@ _ALLOWED_UNRESOLVED: dict[tuple[str, str], tuple[str, int]] = {
         "origin in its own put(), not here",
         1,
     ),
+    ("precis/store/_cache_ops.py", "CacheMixin._version_cache_body"): (
+        "kind from the locked parent's refs row — callers reach it only "
+        "through _lock_current_cache_version, which requires a "
+        "cache_state row (provider cache kinds, never 'job')",
+        1,
+    ),
     ("precis/store/_cache_ops.py", "CacheMixin.put_cache_entry"): (
         "kind param — cached-copy writes",
         1,

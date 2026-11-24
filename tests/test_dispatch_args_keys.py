@@ -977,6 +977,10 @@ def test_args_key_naming_forwarded_kwarg_is_promoted_not_rejected(
 
     bad = _call(runtime_with_store, "todo", "search", {"sort": "bogus"})
     assert "not accepted by todo.search" not in bad, bad
+    # The base browse-sort refusal (td768630's wording) — proof the value
+    # reached ``sort=`` instead of dying at the ARGS_KEYS gate.
+    assert "[error:BadInput]" in bad, bad
+    assert "workflow sorts apply to queryless browse" in bad, bad
     assert "sort='prio'" in bad, bad
 
 
