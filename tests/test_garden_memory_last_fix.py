@@ -107,11 +107,14 @@ def test_undo_leaves_unrelated_successor_link_changes_alone(
     target = _thread(store, successor=successor)
     neighbor = _memory(store, "Unrelated neighbor evidence.")
     link_id = None
+    pinned_chunk = None
     if change == "chunk_link_cascade":
         with revision_context(trust_origin="generated", trust_actor_type="agent"):
-            link_id = store.add_link(
+            link = store.add_link(
                 src_ref_id=neighbor, src_pos=0, dst_ref_id=successor, relation="cites"
-            ).id
+            )
+            link_id = link.id
+            pinned_chunk = link.src_chunk_id
     prop = _propose(store, target, "supersede")
     before_target = _links(store, target)
     _apply(store, prop)
@@ -125,7 +128,10 @@ def test_undo_leaves_unrelated_successor_link_changes_alone(
             store.chunks.replace_body_chunk(
                 neighbor, "Corrected neighbor evidence.", chunk_kind="memory_body"
             )
-            assert not any(l[0] == link_id for l in _links(store, neighbor))
+            # Body rewrite re-homes the pin onto the replacement chunk
+            # (gr782951); the link survives, its src_chunk_id moves.
+            moved = [l for l in _links(store, neighbor) if l[0] == link_id]
+            assert len(moved) == 1 and moved[0][2] not in (None, pinned_chunk)
     untouched = _graph(store, [successor, neighbor])
     affected = {
         l["link_id"] for l in record["applied_links"] if l not in record["links"]
@@ -142,7 +148,8 @@ def test_undo_leaves_unrelated_successor_link_changes_alone(
         assert any(l[0] == link_id for l in _links(store, successor))
     else:
         assert _body(store, neighbor) == "Corrected neighbor evidence."
-        assert not any(l[0] == link_id for l in _links(store, neighbor))
+        repointed = [l for l in _links(store, neighbor) if l[0] == link_id]
+        assert len(repointed) == 1 and repointed[0][2] not in (None, pinned_chunk)
 
 
 @pytest.mark.parametrize("change", ["migrated", "added", "collision"])
