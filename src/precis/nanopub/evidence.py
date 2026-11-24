@@ -909,6 +909,9 @@ def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
     ``resolved_from or chunk_id``. A tombstoned chunk with NO live
     redirect keeps its pre-map answer (its text is still the passage a
     pin meant); a deleted row with a dead-end chain stays absent.
+
+    Results follow the order of ``chunk_ids`` (first occurrence), not the
+    row order the database happens to return.
     """
     if not chunk_ids:
         return []
@@ -964,7 +967,7 @@ def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
             section_path=list(r[4] or []),
             resolved_from=origin,
         )
-        for r, origin in found.values()
+        for r, origin in (found[cid] for cid in request_ids if cid in found)
     ]
 
 

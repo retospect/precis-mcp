@@ -25,13 +25,16 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     The keyword halves give ``segment_dp`` a real boundary, so the
     bucketed path emits multi-chunk ``~lo..hi`` ranges (not just the
     per-chunk fallback). Returns the paper ``ref_id``.
+
+    The trailing period keeps this short synthetic body from triggering
+    the TOC's truncated-body banner.
     """
     ref = store.insert_ref(kind="paper", slug=slug, title=slug)
     e = MockEmbedder(dim=1024)
     blocks = store.chunks.insert_chunks(
         ref.id,
         [
-            ChunkInsert(ord=i, text=f"chunk {i} body text", embedding=e.embed_one("x"))
+            ChunkInsert(ord=i, text=f"chunk {i} body text.", embedding=e.embed_one("x"))
             for i in range(n)
         ],
     )

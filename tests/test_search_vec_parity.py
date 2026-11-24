@@ -413,20 +413,22 @@ GOLDEN: dict[str, list[tuple[str, int, float]]] = {
         ("<memory>", 0, 0.976477287),
     ],
     "fused_kind_paper": [
-        ("wang2020nitrate", 0, 0.032266458),
-        ("wang2020nitrate", 1, 0.031054405),
-        ("lee2021enzymes", 2, 0.031024531),
-        # td703300 (e7934df3b) length-normalizes lexical ranks: ranks 3-5
-        # reorder (shorter lee/4 now outranks smith/1 on the lexical leg)
-        ("lee2021enzymes", 3, 0.029877369),
-        ("lee2021enzymes", 4, 0.029513889),
+        # td770084 (5b2ed120b) promotes the papers carrying the query's
+        # rarest term by 2/(k+1) — wang and lee here — so every hit of
+        # those two papers sits +3.279e-02 above its pre-promotion score
+        # and outranks the unpromoted smith hits.
+        ("wang2020nitrate", 0, 0.065053344),
+        ("wang2020nitrate", 1, 0.063841291),
+        ("lee2021enzymes", 2, 0.063811416),
+        ("lee2021enzymes", 3, 0.062664254),
+        ("lee2021enzymes", 4, 0.062300774),
+        ("wang2020nitrate", 3, 0.048915918),
+        ("lee2021enzymes", 1, 0.048411885),
+        ("wang2020nitrate", 2, 0.047492768),
+        ("lee2021enzymes", 0, 0.046871392),
         ("smith2019perovskite", 1, 0.029437229),
         ("smith2019perovskite", 0, 0.016393443),
-        ("wang2020nitrate", 3, 0.016129032),
-        ("lee2021enzymes", 1, 0.015625),
         ("smith2019perovskite", 2, 0.015384615),
-        ("wang2020nitrate", 2, 0.014705882),
-        ("lee2021enzymes", 0, 0.014084507),
     ],
     "semantic_max_distance": [
         ("lee2021enzymes", 3, 0.952645039),
