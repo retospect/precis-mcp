@@ -6383,10 +6383,16 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     it). Reuses ``LlmConfig.from_env`` and overrides only the model +
     ``enabled`` flag so the resolved tier model wins.
 
-    Transport failures open a process-local cooldown shared across models
-    on the same endpoint and with ``served_by`` slot acquisition. After the
-    cooldown, one call checks recovery while concurrent calls skip. A
-    transport failure on the probe renews the cooldown.
+    A slot-pinned ``local_url`` shares the served-endpoint health mark
+    (gr622031) with ``served_by`` slot acquisition: a dead-wire failure
+    marks that endpoint down so dispatch skips it for the cooldown and
+    ``acquire`` stops reserving on it; after the cooldown one call checks
+    recovery while concurrent calls skip. The mark keys on
+    ``req.local_url`` only — a ``None`` endpoint (the env-configured
+    default loopback) never marks, so the SMALL lane's in-process retry
+    keeps dialing through answered transport failures (a 5xx or a socket
+    timeout) instead of being short-circuited by a mark its own previous
+    attempt wrote. ``_dispatch_openai_tools`` keys the same way.
     """
     from dataclasses import replace
 
@@ -6424,7 +6430,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     messages = messages or [{"role": "user", "content": req.prompt}]
     from precis.utils.llm import local_serving as _local
 
-    skip_for, _claimed = _local.endpoint_probe(cfg.url)
+    skip_for, _claimed = _local.endpoint_probe(req.local_url)
     if skip_for > 0:
         return LlmResult(
             text="",
@@ -6466,7 +6472,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         )
     else:
         out = result_from_openai(res, model=model, tier=req.tier)
-    _note_endpoint_result(cfg.url, out)
+    _note_endpoint_result(req.local_url, out)
     return out
 
 
