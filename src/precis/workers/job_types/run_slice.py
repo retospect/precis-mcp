@@ -5349,6 +5349,70 @@ def _sync_base(
     )
 
 
+def _merge_back_resolver_head(store: Any, todo_id: int) -> tuple[str, str] | None:
+    """``(release branch, recorded head sha)`` when ``todo_id`` is a
+    merge-back resolver (release-train T3,
+    :mod:`precis.workers.job_types.release_merge_back`), else ``None``.
+    The head is the sha the mint stamped on the todo — the one its brief
+    names; a resolver minted before the stamp falls back to the plan's
+    recorded head."""
+    from precis.workers.job_types import release_merge_back as _mb
+
+    ref = store.get_ref(kind="todo", id=todo_id)
+    meta = (ref.meta if ref is not None else None) or {}
+    rn = str(meta.get(_mb.RESOLVER_KEY) or "").strip()
+    if not rn:
+        return None
+    head = str(meta.get(_mb.RESOLVER_HEAD_KEY) or "").strip()
+    if not head:
+        rel = _release.release_of(store, todo_id)
+        head = _mb._recorded_head(rel) if rel else ""
+    return _release.release_branch(rn), head
+
+
+def _sync_resolver_release(
+    root: Path, hub: Path, branch: str, head: str, notes: list[str]
+) -> None:
+    """Make the recorded release head fetchable in the resolver's clone
+    (gr782614): the clone's ``origin`` is the hub, so a session can only
+    read the ref the hub holds and fetch a sha the hub serves — a stale
+    ``release/r<N>`` tip in the hub is the tip the session resolves, and
+    that was the incomplete carry td782518 landed. Syncs the branch like
+    a release fix's base, then fetches the recorded head by sha when the
+    ref sync did not cover it (the ref may be retired). Raises
+    :class:`_slice_ws.WorkspaceError` — the launch defers attempt-free —
+    when the recorded head cannot be brought in: the resolver fetches
+    the recorded head or refuses, never a substitute tip."""
+    url = _hub_url(root, None)
+    if url is None:
+        raise _slice_ws.WorkspaceError(
+            f"the origin url of {root} is unreadable, so the recorded "
+            f"{branch} head cannot be verified; next: retry when the "
+            "checkout's origin remote is readable"
+        )
+    _slice_ws.sync_hub(root, url=url, base=branch)
+    ref = f"refs/heads/{branch}"
+    if head and _slice_ws.hub_tip(hub, ref) != head:
+        if _slice_ws.has_commit(hub, head):
+            # The head arrived through the objects alternate, not through a
+            # fetch: the hub holds it but names no ref for it, and a clone
+            # only ever reads refs.
+            _slice_ws.write_ref(hub, ref, head)
+        elif _slice_ws.fetch_sha(hub, url, head, ref) is None:
+            raise _slice_ws.WorkspaceError(
+                f"the recorded head {head[:12]} of {branch} is not in the "
+                "hub and could not be fetched from origin; next: retry "
+                "when GitHub answers — the resolver fetches the recorded "
+                "head or refuses, never substitutes a stale tip"
+            )
+    elif not head and _slice_ws.hub_tip(hub, ref) is None:
+        raise _slice_ws.WorkspaceError(
+            f"{branch} names no recorded head and could not be synced "
+            "into the hub; next: retry when GitHub answers"
+        )
+    notes.append(f"synced {branch} into the hub for the merge-back resolver")
+
+
 def _recorded_build_ref(store: Any, todo_id: int) -> dict[str, Any] | None:
     """The task's ``meta.build_ref`` (:data:`BUILD_REF_KEY`), freshly read."""
     from precis.plans.templates import BUILD_REF_KEY
@@ -6023,6 +6087,10 @@ def _open_attempt(
     tree = _slice_ws.attempt_dir(root, todo_id, job_id)
     hub = _slice_ws.ensure_hub(root, notes=notes)
     _sync_base(root, base, profile, notes)
+    if profile is None:
+        resolver = _merge_back_resolver_head(store, todo_id)
+        if resolver is not None:
+            _sync_resolver_release(root, hub, *resolver, notes)
     if tree.exists() and not relaunch:
         raise _slice_ws.WorkspaceError(
             f"the folder {tree} of this job is already there and this is not "

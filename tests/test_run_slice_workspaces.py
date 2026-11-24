@@ -881,6 +881,85 @@ def test_a_second_repositorys_attempt_gets_its_excludes_through_open_attempt(
     assert "generated/" in text and "notes.local" in text
 
 
+def _resolver_todo(rig: _Rig, rn: str, head: str) -> None:
+    rig.store.add_todo(
+        43,
+        f"Resolve the merge of release/{rn} back into main",
+        meta={
+            "op": "run_slice",
+            "merge_back_resolver": rn,
+            "merge_back_head": head,
+        },
+    )
+
+
+def test_a_merge_back_resolver_launch_syncs_the_release_into_the_hub(
+    rig: _Rig,
+) -> None:
+    """gr782614: the resolver's clone reads ``release/r<N>`` through the
+    hub — its origin — so a hub whose release tip is stale is the tip the
+    session resolves, and td782518 landed only part of r351 that way.
+    The launch must sync the release ref like a release fix's base and
+    leave the recorded head fetchable by sha in the clone."""
+    _g(rig.root, "checkout", "-q", "-b", "release/r7")
+    stale = _commit(rig.root, "old.txt", "old\n")
+    _g(rig.root, "push", "-q", "origin", "release/r7")
+    # the hub only ever saw the older tip — td782518's starting point
+    _slice_ws.sync_hub(rig.root, url=str(rig.github), base="release/r7")
+    assert _slice_ws.hub_tip(rig.hub, "refs/heads/release/r7") == stale
+    head = _commit(rig.root, "rel.txt", "release\n")
+    _g(rig.root, "push", "-q", "origin", "release/r7")
+    _g(rig.root, "checkout", "-q", "main")
+    _resolver_todo(rig, "r7", head)
+    ctx = _Ctx(rig.store, {"todo_id": 43})
+    ctx.ref_id = 901
+    notes: list[str] = []
+    opened = run_slice._open_attempt(ctx, rig.store, 43, rig.root, "main", None, notes)
+    tree = opened.tree
+    assert _slice_ws.hub_tip(rig.hub, "refs/heads/release/r7") == head
+    assert _g(tree, "rev-parse", "origin/release/r7") == head
+    # the brief's `git fetch origin <recorded-sha>` resolves in the clone
+    assert _g(tree, "fetch", "-q", "origin", head) == ""
+    assert _g(tree, "cat-file", "-t", head) == "commit"
+
+
+def test_a_merge_back_resolver_launch_finds_a_retired_branchs_head(
+    rig: _Rig,
+) -> None:
+    """Round close retires ``release/r<N>`` once the head is on main: the
+    ref sync finds nothing, and the launch must fetch the recorded head
+    by sha instead — the path td782518 needed and lacked."""
+    _g(rig.github, "config", "uploadpack.allowAnySHA1InWant", "true")
+    _g(rig.root, "checkout", "-q", "-b", "release/r7")
+    head = _commit(rig.root, "rel.txt", "release\n")
+    _g(rig.root, "push", "-q", "origin", "release/r7")
+    _g(rig.root, "checkout", "-q", "main")
+    _g(rig.root, "push", "-q", "origin", "--delete", "release/r7")
+    _resolver_todo(rig, "r7", head)
+    ctx = _Ctx(rig.store, {"todo_id": 43})
+    ctx.ref_id = 901
+    notes: list[str] = []
+    opened = run_slice._open_attempt(ctx, rig.store, 43, rig.root, "main", None, notes)
+    tree = opened.tree
+    assert _slice_ws.hub_tip(rig.hub, "refs/heads/release/r7") == head
+    assert _g(tree, "rev-parse", "origin/release/r7") == head
+    assert _g(tree, "cat-file", "-t", head) == "commit"
+
+
+def test_a_merge_back_resolver_launch_refuses_an_unreachable_head(
+    rig: _Rig,
+) -> None:
+    """A recorded head GitHub cannot serve defers the launch
+    attempt-free — never a session that resolves whatever tip the hub
+    happens to hold (gr782614)."""
+    _resolver_todo(rig, "r7", "f" * 40)
+    ctx = _Ctx(rig.store, {"todo_id": 43})
+    ctx.ref_id = 901
+    with pytest.raises(_slice_ws.WorkspaceError, match="recorded head"):
+        run_slice._open_attempt(ctx, rig.store, 43, rig.root, "main", None, [])
+    assert not _slice_ws.attempt_dir(rig.root, 43, 901).exists()
+
+
 # ── one sequential place settles a folder: the poll or the sweep (round 6) ──
 
 

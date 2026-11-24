@@ -33,8 +33,11 @@ the lands' path).
   minted under the plan root (:func:`precis.plans.templates.mint_merge_back_resolver`):
   ONE resolver todo — a normal ``run_slice`` slice off main that carries
   the release fixes' intent onto main, resolving the conflicting hunks
-  (its brief names the merged head sha, not the possibly-retired ref) —
-  and a second ``merge_back`` node blocked-by it with
+  (its brief names the merged head sha, not the possibly-retired ref;
+  the launch syncs that head into the attempt's hub so the sha fetch
+  works — a session that resolves a stale hub tip instead lands an
+  incomplete carry, gr782614) — and a second ``merge_back`` node
+  blocked-by it with
   ``strategy="ours"``. The lander merges current main into the resolver
   branch first so a recorded merge resolution is integrated as a tree
   against main. ``scripts/ship`` squashes the result into one
@@ -70,6 +73,11 @@ MERGE_BACK_KEY = "merge_back"
 #: The resolver todo's meta key (the release's ``rN``) — what
 #: :func:`_resolver` dedupes on before minting.
 RESOLVER_KEY = "merge_back_resolver"
+#: The resolver todo's meta key for the recorded head sha its brief
+#: names — the launch syncs exactly that commit into the attempt's hub
+#: (gr782614). Stamped by ``mint_merge_back_resolver`` when it knows the
+#: head; older resolvers fall back to the plan's recorded head.
+RESOLVER_HEAD_KEY = "merge_back_head"
 #: The ancestry-only merge after a resolver landed the content.
 OURS = "ours"
 #: Pushes lost to a moving main before the job gives up (the tick retries).
@@ -147,7 +155,13 @@ def _resolver_body(rn: str, cut: str, head: str, files: list[str]) -> str:
         "on main, so the branch may already be gone — then read the fixes "
         f"with `git log -p {since}`, and apply each one's change to main, "
         "resolving the conflicting hunks so BOTH sides' intent survives "
-        "(the release's fixes and main's later work). Commit the resolved "
+        "(the release's fixes and main's later work). The launch synced "
+        f"the recorded head into this clone's origin; if `git fetch "
+        f"origin {head}` still fails, STOP and report that the recorded "
+        f"head is unfetchable — never substitute `release/{rn}`'s tip or "
+        "another commit: the ours-merge that follows records this sha as "
+        "ancestor, and a resolution made against a different commit "
+        "lands an incomplete carry (gr782614). Commit the resolved "
         "changes. The lander merges current main into the slice before "
         "squashing. Run the tests the conflicted files touch. A fix "
         "main already carries needs nothing. Once this lands, the plan's "
@@ -418,6 +432,7 @@ __all__ = [
     "MERGE_BACK_KEY",
     "NAME",
     "OURS",
+    "RESOLVER_HEAD_KEY",
     "RESOLVER_KEY",
     "merge_back",
     "merge_message",

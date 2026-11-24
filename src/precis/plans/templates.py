@@ -1104,13 +1104,20 @@ def mint_merge_back_resolver(
     of main once the resolver's squash carried the content. ``head`` is
     the release head sha the ours-merge records — named in its brief
     because ``origin/release/r<N>`` may already be retired; ``None``
-    leaves the brief on the ref."""
+    leaves the brief on the ref. A given ``head`` is also stamped on the
+    resolver as ``meta.merge_back_head`` — the launch's cue to sync that
+    sha into the attempt's hub, so the clone never resolves the hub's
+    (possibly stale) release tip instead (gr782614)."""
 
     def build(m: _Minter) -> None:
         rid = m.node(
             "resolve",
             f"Resolve the merge of release/{rn} back into main",
-            {**_task(), "merge_back_resolver": rn},
+            {
+                **_task(),
+                "merge_back_resolver": rn,
+                **({"merge_back_head": head} if head else {}),
+            },
             body=body,
         )
         op: dict[str, Any] = {

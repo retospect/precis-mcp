@@ -194,6 +194,8 @@ def test_ensure_hub_is_idempotent_and_configured(tmp_path: Path) -> None:
     assert _g(hub, "config", "receive.autoGc") == "false"
     assert _g(hub, "config", "maintenance.auto") == "false"
     assert _g(hub, "config", "core.logAllRefUpdates") == "always"
+    # a session's `git fetch origin <sha>` names objects by id (gr782614)
+    assert _g(hub, "config", "uploadpack.allowAnySHA1InWant") == "true"
     assert _g(hub, "config", "--file", str(hub / "config"), "core.hooksPath") == str(
         hub / "hooks"
     )
@@ -322,6 +324,50 @@ def test_hub_tip_and_builds(rig: _Rig) -> None:
     assert ws.hub_tip(rig.hub, "refs/heads/none") is None
     with pytest.raises(ws.HubUnreadable, match="next:"):
         ws.hub_builds(rig.tmp / "no-hub.git", 5)
+
+
+def test_fetch_sha_brings_a_commit_no_ref_reaches_into_the_hub(rig: _Rig) -> None:
+    """A release head whose branch was retired must still enter the hub:
+    ``fetch_sha`` asks the remote for the sha itself — the fix that lets a
+    merge-back resolver's launch sync the recorded head (gr782614). An
+    object the remote does not hold stays absent; a malformed sha never
+    makes a ref."""
+    _git(rig.github, "config", "uploadpack.allowAnySHA1InWant", "true")
+    _git(rig.root, "checkout", "-q", "-b", "release/r7")
+    head = _commit(rig.root, "rel.txt", "release\n")
+    _git(rig.root, "push", "-q", "origin", "release/r7")
+    _git(rig.root, "checkout", "-q", "main")
+    _git(rig.root, "push", "-q", "origin", "--delete", "release/r7")
+    ref = "refs/heads/release/r7"
+    assert not ws.has_commit(rig.hub, head)
+    assert ws.fetch_sha(rig.hub, str(rig.github), head, ref) == head
+    assert ws.has_commit(rig.hub, head)
+    assert rig.hub_ref(ref) == head
+    assert ws.fetch_sha(rig.hub, str(rig.github), "f" * 40, "refs/heads/gone") is None
+    assert rig.hub_ref("refs/heads/gone") is None
+    assert ws.fetch_sha(rig.hub, str(rig.github), "not-a-sha", ref) is None
+
+
+def test_a_clone_fetches_the_recorded_sha_once_the_hub_serves_it(
+    rig: _Rig,
+) -> None:
+    """The session-side half of gr782614: inside the attempt clone,
+    ``git fetch origin <recorded-sha>`` is how the resolver's brief reads
+    the release head. Before the launch sync it must answer 'not our
+    ref' — the exact words td782518 hit — and after it, resolve."""
+    _git(rig.github, "config", "uploadpack.allowAnySHA1InWant", "true")
+    _git(rig.root, "checkout", "-q", "-b", "release/r7")
+    head = _commit(rig.root, "rel.txt", "release\n")
+    _git(rig.root, "push", "-q", "origin", "release/r7")
+    _git(rig.root, "checkout", "-q", "main")
+    _git(rig.root, "push", "-q", "origin", "--delete", "release/r7")
+    tree = rig.cut()
+    miss = _git(tree, "fetch", "-q", "origin", head, check=False)
+    assert miss.returncode != 0
+    assert "not our ref" in miss.stderr
+    assert ws.fetch_sha(rig.hub, str(rig.github), head, "refs/heads/release/r7")
+    assert _git(tree, "fetch", "-q", "origin", head).returncode == 0
+    assert _g(tree, "cat-file", "-t", head) == "commit"
 
 
 def test_import_legacy_brings_the_old_slice_ref_across(

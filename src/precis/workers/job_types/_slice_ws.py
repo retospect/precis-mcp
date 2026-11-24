@@ -362,6 +362,40 @@ def hub_tip(hub: Path, ref: str) -> str | None:
     return sha if _SHA.fullmatch(sha) else None
 
 
+def has_commit(hub: Path, sha: str) -> bool:
+    """``sha`` names a commit object the hub holds."""
+    if not _SHA.fullmatch(sha or ""):
+        return False
+    proc = _hub_git(hub, ["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"])
+    return proc.returncode == 0 and bool(_SHA.fullmatch(_out(proc)))
+
+
+def fetch_sha(hub: Path, url: str, sha: str, ref: str) -> str | None:
+    """Fetch commit ``sha`` from ``url`` into the hub under ``ref`` and
+    return it, or ``None``. A hub-side fetch — never a push, so the hook
+    does not see it — for a commit no synced ref reaches (a release head
+    whose branch is retired, gr782614). The remote must serve the sha:
+    GitHub serves any commit reachable from its refs."""
+    if not _SHA.fullmatch(sha or "") or ".." in ref:
+        return None
+    proc = _hub_git(
+        hub,
+        ["fetch", "--quiet", "--no-tags", "--", url, f"+{sha}:{ref}"],
+    )
+    if proc.returncode != 0:
+        return None
+    return sha if hub_tip(hub, ref) == sha else None
+
+
+def write_ref(hub: Path, ref: str, sha: str) -> None:
+    """Point ``ref`` at ``sha`` in the hub — a local update, no push and
+    no hook — when the hub already holds the commit (it arrived through
+    the objects alternate, not through a fetch, gr782614)."""
+    if ".." in ref or not _SHA.fullmatch(sha or ""):
+        raise WorkspaceError(f"refusing to write {ref} = {sha}")
+    _must(_hub_git(hub, ["update-ref", ref, sha]), f"write {ref} in the hub")
+
+
 def hub_builds(hub: Path, todo_id: int) -> dict[int, str]:
     """``{job_id: sha}`` for every ``refs/factory/build/<todo>/*`` in the
     hub. Raises :class:`HubUnreadable`."""
@@ -1289,6 +1323,12 @@ def _configure_hub(hub: Path) -> None:
         "maintenance.auto": "false",
         "core.logAllRefUpdates": "always",
         "core.hooksPath": str(hub / "hooks"),
+        # A session's ``git fetch origin <sha>`` (a merge-back resolver's
+        # recorded release head, gr782614) names objects by id, not by
+        # ref: upload-pack must serve any commit the hub holds or the
+        # fetch reads "not our ref" and the session substitutes a stale
+        # tip. Serves reads only; the pre-receive hook stays the fence.
+        "uploadpack.allowAnySHA1InWant": "true",
     }
     config = ["config", "--file", str(hub / "config")]
     for key, value in wanted.items():

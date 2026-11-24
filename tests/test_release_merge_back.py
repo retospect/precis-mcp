@@ -132,7 +132,7 @@ def test_a_conflicting_merge_mints_one_resolver_and_pushes_nothing(
 ) -> None:
     root = rig["root"]
     mint = _cut(store, root)
-    _commit(root, "release/r7", "app.py", "release\n", "release fix")
+    head = _commit(root, "release/r7", "app.py", "release\n", "release fix")
     main_before = _commit(root, "main", "app.py", "main\n", "main edit")
     out = mb.merge_back(store, mint.ids["merge_back"], root)
     assert out["state"] == "conflict" and out["files"] == ["app.py"]
@@ -142,6 +142,8 @@ def test_a_conflicting_merge_mints_one_resolver_and_pushes_nothing(
     assert ref is not None and ref.parent_id == mint.root_id
     assert ref.meta["op"] == "run_slice"
     assert ref.meta[mb.RESOLVER_KEY] == "r7"
+    # the launch syncs this sha into the attempt's hub (gr782614)
+    assert ref.meta[mb.RESOLVER_HEAD_KEY] == head
     assert "land_target" not in ref.meta  # a normal slice onto main
     assert f"plan:{mint.root_id}" in {str(t.value) for t in store.tags_for(rid)}
     ours = _ours_node(store, mint.root_id)
@@ -166,10 +168,15 @@ def test_a_deleted_release_branch_conflict_briefs_the_resolver_on_the_sha(
     out = mb.merge_back(store, mint.ids["merge_back"], root)
     assert out["state"] == "conflict" and out["files"] == ["app.py"]
     assert _origin(rig, "main") == main_before
-    body = T._todo_body(store, out["resolver"])
+    rid = out["resolver"]
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta[mb.RESOLVER_HEAD_KEY] == head
+    body = T._todo_body(store, rid)
     assert f"git fetch origin {head}" in body
     assert "git fetch origin release/r7" not in body
     assert f"..{head[:12]}" in body
+    # never substitute the branch's tip (gr782614's incomplete carry)
+    assert "never substitute" in body
     ours = _ours_node(store, mint.root_id)
     assert f"-s ours {head}" in T._todo_body(store, ours["id"])
 
