@@ -136,7 +136,7 @@ reparsed/reused counts, index limitations, parse-error count, the exact
 full Git state with branch, dirty scope and observation window, and the
 `Pin:` verdict when the root names a pinned package). The corpus
 hash frames sorted paths and exact indexed raw-byte SHA256 values; it excludes
-non-Python files, symlinks and hidden/skip directories, and is not a Git tree
+non-Python files (extensionless files without a Python shebang), symlinks and hidden/skip directories, and is not a Git tree
 hash. File/symbol source comes from the indexed snapshot; reused modules are
 stat-checked, content not revalidated (shown in the drill-down). Walks and Git
 observations are non-atomic. Entry discovery labels separately read project
@@ -243,7 +243,10 @@ many edges traversable.
 
 `::` resolves indexable symbols only — modules, classes, functions,
 methods. `pkg.__init__` resolves to the package's `__init__.py`
-module. A module-level constant or an import-bound name is not one; a
+module. Extensionless scripts whose first line is a Python shebang
+(`scripts/round`) are indexed too: address them by path without a suffix
+(`<alias>/scripts/round~cmd_x`) or by qualname (`<alias>::round.cmd_x`).
+A module-level constant or an import-bound name is not one; a
 miss there names what the leaf actually is and the file/lines read
 (`<alias>/<file>.py~L<a>-L<b>`, `view='source'`) that shows it.
 
