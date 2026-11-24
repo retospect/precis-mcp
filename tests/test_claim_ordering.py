@@ -326,6 +326,31 @@ def test_claim_batch_does_not_start_two_overlapping_builds(store: Store) -> None
         conn.rollback()
 
 
+def test_ineligible_build_host_leaves_overlap_lock_available(store: Store) -> None:
+    job = _slice_job(store, _slice_task(store, "Edit src/precis/a.py"))
+    _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
+    lock_sql = "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)"
+    lock_key = ("factory:build-overlap",)
+
+    with store.pool.connection() as ineligible, store.pool.connection() as probe:
+        assert not claim_executor_jobs(
+            ineligible, executor="ssh_node", limit=1, reserve_host_id="birch"
+        )
+        # The rejected claim still holds its row lock. Probe the separate
+        # global lock directly while the rejecting transaction is open.
+        assert probe.execute(lock_sql, lock_key).fetchone() == (True,)
+        probe.rollback()
+        ineligible.rollback()
+
+    with store.pool.connection() as eligible, store.pool.connection() as probe:
+        claimed = claim_executor_jobs(
+            eligible, executor="ssh_node", limit=1, reserve_host_id="maple"
+        )
+        assert [row[0] for row in claimed] == [job]
+        assert probe.execute(lock_sql, lock_key).fetchone() == (False,)
+        eligible.rollback()
+
+
 def _slice_task(store: Store, body: str) -> int:
     """A one-build plan's ``run_slice`` task id."""
     from precis.plans import templates

@@ -152,8 +152,9 @@ Fresh claims rank score-stamped jobs past the class age threshold
 (age counted inside their current class) ahead of fresher jobs in the
 same class and factory band, so a stream of high dispatch scores cannot
 keep an older job behind fresh peers. Jobs without a score keep the
-share and deficit order. The job card shares
-the SQL ordering and excludes builds held by overlap or sequencing.
+share and deficit order. The job card uses SQL ordering and filters held builds.
+Pin, capability and placement precede the global overlap lock so ineligible
+hosts cannot block claims.
 Fresh run_slice claims probe the same CPU/memory footprint as launch. The CPU
 side is the code default per work class unless the live
 ``claim.footprint.<work>.cpu_milli`` override sizes it, read at claim and at

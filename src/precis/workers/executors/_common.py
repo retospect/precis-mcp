@@ -2693,6 +2693,37 @@ def claim_executor_jobs(
         reclaimed row and a freshly-queued row go through identical
         bookkeeping.
         """
+        pin_hosts = _service_pin_hosts_for(meta, service_pinned)
+        if pin_hosts is not None and default_host not in pin_hosts:
+            # Placement pin (gr506045): the service's host-scoped enabled
+            # rows name the host(s) this job_type may run on. Every other
+            # host skips it — the row stays queued, it does not fail; the
+            # lock frees at commit so it re-gates next cycle.
+            log.debug(
+                "claim: skip job %s on %s — service_pin=%s pins to %s",
+                ref_id,
+                default_host,
+                meta.get("job_type"),
+                sorted(pin_hosts),
+            )
+            return None
+        if check_job_type_requires and not _coordinator_capability_ok(
+            meta, advertised, default_host
+        ):
+            # Check-only job-type capability gate (gr335087) — see
+            # claim_executor_jobs's docstring. A capability-less host never
+            # reaches the overlap lock or the resource_slots path.
+            return None
+        if not _placement_ok(meta, advertised, default_host, lane_adapters_for(meta)):
+            # Placement gate (td543917): a dark-factory op on a host without
+            # its checkout / lane binary / git stays queued for a capable host.
+            log.debug(
+                "claim: skip job %s on %s — placement %s not advertised",
+                ref_id,
+                default_host,
+                sorted(effective_placement(meta, advertised, lane_adapters_for(meta))),
+            )
+            return None
         if meta.get("job_type") == "run_slice" and status_value != RUNNING:
             # The claim stamps no STATUS:running (dispatch does, after the
             # batch), so a second build picked in this batch could not see
@@ -2722,38 +2753,6 @@ def claim_executor_jobs(
                 | build_blocked_holds(conn, shared=shared).keys()
             ):
                 return None
-        pin_hosts = _service_pin_hosts_for(meta, service_pinned)
-        if pin_hosts is not None and default_host not in pin_hosts:
-            # Placement pin (gr506045): the service's host-scoped enabled
-            # rows name the host(s) this job_type may run on. Every other
-            # host skips it — the row stays queued, it does not fail; the
-            # lock frees at commit so it re-gates next cycle.
-            log.debug(
-                "claim: skip job %s on %s — service_pin=%s pins to %s",
-                ref_id,
-                default_host,
-                meta.get("job_type"),
-                sorted(pin_hosts),
-            )
-            return None
-        if check_job_type_requires and not _coordinator_capability_ok(
-            meta, advertised, default_host
-        ):
-            # Check-only job-type capability gate (gr335087) — see
-            # claim_executor_jobs's docstring. Runs before anything else so a
-            # capability-less host never reaches (and never reserves against)
-            # the resource_slots path below for this row.
-            return None
-        if not _placement_ok(meta, advertised, default_host, lane_adapters_for(meta)):
-            # Placement gate (td543917): a dark-factory op on a host without
-            # its checkout / lane binary / git stays queued for a capable host.
-            log.debug(
-                "claim: skip job %s on %s — placement %s not advertised",
-                ref_id,
-                default_host,
-                sorted(effective_placement(meta, advertised, lane_adapters_for(meta))),
-            )
-            return None
         if reclaim_stale_running and meta.get("reserved"):
             # A stolen (crash-recovered) job still carries the dead worker's
             # reservation — refund it before this claim re-reserves, so slots
