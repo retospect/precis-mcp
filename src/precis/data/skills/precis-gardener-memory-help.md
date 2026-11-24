@@ -104,7 +104,10 @@ Proposal evidence and `view='smells'` carry detector names.
   no successor — "which closed gr1" is history, while "if we fixed
   gr1", "if we checked and we fixed gr1", "if it worked, then we fixed
   gr1", "we fixed gr1?", "never fixed gr1" or "the closed gr1" still
-  flags. This pass also checks
+  flags. A dated check dated before the retirement, with an outcome
+  after a dash ("2026-01-05: checked gr1 — still open"), is kept even
+  when a live successor exists; undated, post-retirement, scoped
+  ("if we checked …") or question forms still flag. This pass also checks
   `thread_shape` (a thread node whose `Left:` is missing or done),
   `anchor_rot` (a cited path/symbol/section/commit no longer resolves
   on main), `compact` (expired, cold-decaying or half-history, or
