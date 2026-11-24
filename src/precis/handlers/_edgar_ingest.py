@@ -30,9 +30,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from precis.embedder import Embedder
 from precis.errors import NotFound
@@ -82,9 +84,14 @@ def _disk_dir(root: Path, accession: Accession) -> Path:
 def _write_bytes(target: Path, data: bytes) -> None:
     """Atomic write: tmp file + rename, parents created on demand."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(target)
+    with NamedTemporaryFile(dir=target.parent, delete=False) as handle:
+        tmp = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.close()
+            tmp.replace(target)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def _append_log(target: Path, entry: dict) -> None:
@@ -106,6 +113,8 @@ def ingest_filing(
     client: EdgarClientProto,
     embedder: Embedder | None,
     raw_root: Path,
+    filer_cik: str | None = None,
+    account_download: Callable[[int], None] | None = None,
 ) -> EdgarIngestResult:
     """Fetch a filing from SEC EDGAR, store it, return the result.
 
@@ -121,6 +130,8 @@ def ingest_filing(
                    worker. Callers may pass ``None``.
         raw_root:  Directory where raw artefacts land on disk
                    (``$PRECIS_EDGAR_RAW_ROOT``).
+        filer_cik: Issuer CIK from an FTS hit if it differs from the accession prefix.
+        account_download: Optional recorder called for each downloaded response.
 
     Raises:
         NotFound: SEC reports no such filing / accession. No state
@@ -142,27 +153,31 @@ def ingest_filing(
             bytes_fetched=0,
         )
 
+    cik = filer_cik or parsed.cik
+
     # 1. Submissions index for the filer → locate the filing row.
     try:
-        submissions_raw = client.submissions(parsed.cik)
+        submissions_raw = client.submissions(cik)
     except EdgarNotFound as e:
         raise NotFound(
-            f"no SEC filer with CIK {parsed.cik!r}",
+            f"no SEC filer with CIK {cik!r}",
             next="search(kind='edgar', q='...') to find a filing",
         ) from e
 
+    if account_download is not None:
+        account_download(len(submissions_raw))
     subs = parse_submissions(submissions_raw)
     filing = find_filing(subs, slug)
     if filing is None:
         raise NotFound(
-            f"accession {slug!r} not found in CIK {parsed.cik} recent filings",
+            f"accession {slug!r} not found in CIK {cik} recent filings",
             next="check the accession number, or search(kind='edgar', q='...')",
         )
 
     # 2. Primary filing document.
     try:
         primary_html = client.filing_document(
-            cik=parsed.cik,
+            cik=cik,
             accession_dashless=parsed.dashless,
             primary_doc=filing.primary_doc,
         )
@@ -172,6 +187,8 @@ def ingest_filing(
             next="the filing may be an older text-only submission",
         ) from e
 
+    if account_download is not None:
+        account_download(len(primary_html))
     bytes_fetched = len(submissions_raw) + len(primary_html)
 
     # 3. Mirror raw artefacts to disk before parsing.
@@ -192,7 +209,7 @@ def ingest_filing(
     parsed_filing = assemble_filing(
         filing=filing,
         company=subs.company,
-        cik=subs.cik or parsed.cik,
+        cik=subs.cik or cik,
         tickers=subs.tickers,
         primary_html=primary_html,
     )

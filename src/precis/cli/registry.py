@@ -409,6 +409,27 @@ JOB_COMMANDS: tuple[Command, ...] = (
         run="run_cites",
     ),
     _c(
+        "watch-edgar",
+        "edgar",
+        "Create or delete a saved EDGAR FTS watch.",
+        register="add_parsers",
+        run="run_watch",
+    ),
+    _c(
+        "list-edgar-watches",
+        "edgar",
+        "List saved EDGAR watches.",
+        register="add_parsers",
+        run="run_list",
+    ),
+    _c(
+        "run-edgar-watches",
+        "edgar",
+        "Run due EDGAR watches once.",
+        register="add_parsers",
+        run="run_runner",
+    ),
+    _c(
         "watch-patents",
         "patent",
         "Create a saved CQL patent watch (or delete one with --delete).",

@@ -14,6 +14,10 @@ Mirrors ``PatentHandler`` (EPO OPS) but talks to the key-less SEC APIs:
   against the prior same-form filing for that company.
 - ``put(...)`` raises ``Unsupported`` (public record, read-only).
 
+Saved FTS watches run through the jobs CLI. Notable filings become news
+for the morning briefing, and material section deltas become generated
+findings with both filings as provenance.
+
 Available on every host: the SEC APIs need no credentials, the
 User-Agent defaults to a descriptive repo string (override
 ``PRECIS_EDGAR_USER_AGENT`` to add a contact), and the raw-cache root

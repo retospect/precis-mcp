@@ -342,6 +342,9 @@ def claim_tracing_findings(
           ) wait_run ON TRUE
          WHERE r.kind = 'finding'
            AND r.retired_at IS NULL
+           -- Filing diffs already link their two public sources. They
+           -- enter as generated findings and wait for explicit review.
+           AND (r.meta->'edgar_section_delta') IS DISTINCT FROM 'true'::jsonb
            AND (
                  EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)

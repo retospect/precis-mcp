@@ -201,7 +201,7 @@ class EdgarClient:
         if from_:
             query["from"] = str(from_)
         # EDGAR FTS ignores unknown params; ``size`` isn't a real FTS
-        # knob (it always returns 10/hit page) but we keep the arg for
+        # knob but we keep the arg for
         # signature parity with the patent client's range window.
         del size
         body = self._get(FTS_URL, params=query)

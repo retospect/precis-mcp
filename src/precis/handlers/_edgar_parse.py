@@ -340,6 +340,7 @@ class EdgarHit:
     filed_date: str | None
     company: str
     primary_doc: str
+    filer_cik: str | None = None
 
 
 def parse_fts_response(raw: bytes) -> tuple[list[EdgarHit], int]:
@@ -382,14 +383,17 @@ def parse_fts_response(raw: bytes) -> tuple[list[EdgarHit], int]:
         seen.add(accession)
         src = hit.get("_source") or {}
         names = src.get("display_names") or []
+        ciks = src.get("ciks") or []
+        cik = str(ciks[0]) if isinstance(ciks, list) and ciks else ""
         company = str(names[0]) if names else ""
         out.append(
             EdgarHit(
                 accession=accession,
                 form=str(src.get("file_type") or (src.get("root_forms") or [""])[0]),
-                filed_date=(str(src.get("file_date")) or None) or None,
+                filed_date=str(src.get("file_date") or "") or None,
                 company=company,
                 primary_doc=doc,
+                filer_cik=str(int(cik)) if cik.isascii() and cik.isdecimal() else None,
             )
         )
 

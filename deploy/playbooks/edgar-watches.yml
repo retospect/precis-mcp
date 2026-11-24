@@ -1,0 +1,28 @@
+---
+# Transitional launchd timer until the unified worker stash owns maintenance.
+# Run after provisioning the worker venv and its database credentials.
+- name: Schedule EDGAR watch passes
+  hosts: gateway
+  become: true
+  vars_files:
+    - ../roles/precis_worker/defaults/main.yml
+  tasks:
+    - name: Install EDGAR watch launchd timer
+      ansible.builtin.include_role:
+        name: service_unit
+      when: os_family == 'darwin'
+      vars:
+        service_unit_name: edgar-watches
+        service_unit_run_as: deploy
+        service_unit_exec: "{{ precis_worker_venv }}/bin/precis jobs run-edgar-watches"
+        service_unit_schedule:
+          mode: interval
+          seconds: 900
+        service_unit_env: >-
+          {{ precis_shared_env | combine({
+            'HOME': '/Users/deploy',
+            'PRECIS_DATABASE_URL': precis_worker_dsn,
+            'PGPASSFILE': '/Users/deploy/.pgpass',
+            'PRECIS_PROCESS': 'precis-edgar-watches',
+            'PRECIS_SOURCE': 'precis-edgar-watches',
+          }) }}

@@ -279,6 +279,12 @@ and reverts take a per-key transaction lock before reading the predecessor,
 and commit the override and audit together. Inbound chase uses this setting
 for both paper-read activation and worker admission.
 
+Saved EDGAR FTS watches checkpoint each successfully processed accession.
+The watch runner records downloads over a rolling seven-day window and
+feeds notable filings to the news store used by the morning briefing. Each
+material section delta uses the finding handler with generated trust and
+links to both filings. See `src/precis/jobs/edgar_watch.py`.
+
 ## Subsystems (where the code lives)
 
 Checklist definitions retain their registry names and allocate a graph ref

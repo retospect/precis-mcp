@@ -21,8 +21,8 @@ block carries ``meta.canonical_id`` + ``meta.section_path``.
 
 Downstream surfaces (spec § comparison): ``view='diff'`` renders the
 delta on demand and tags the ref; the phase-2 watch runner additionally
-mints ``finding`` + ``news`` refs (see ``mint_diff_findings`` /
-``mint_diff_news``).
+mints a generated finding per delta through the finding handler. The
+watch runner also sends notable filings to the morning briefing as news.
 """
 
 from __future__ import annotations
@@ -113,10 +113,10 @@ def find_prior_ref(store: Store, ref: Ref) -> Ref | None:
         WHERE  r.kind = 'edgar' AND r.retired_at IS NULL
                AND r.meta->>'cik' = %s
                AND r.meta->>'form' = %s
-               AND coalesce(r.meta->>'period_of_report',
+               AND coalesce(nullif(r.meta->>'period_of_report', ''),
                             r.meta->>'filed_date') < %s
                AND r.ref_id <> %s
-        ORDER BY coalesce(r.meta->>'period_of_report',
+        ORDER BY coalesce(nullif(r.meta->>'period_of_report', ''),
                           r.meta->>'filed_date') DESC
         LIMIT 1
     """

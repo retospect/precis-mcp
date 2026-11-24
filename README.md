@@ -571,6 +571,7 @@ precis jobs ingest / ingest-oracles    # Pre-warm files under PRECIS_ROOT /
 precis jobs import-perplexity ...      # Bulk-import Perplexity web-UI answers.
 precis jobs watch-patents / list-patent-watches / run-patent-watches /
 sweep-patent-fulltext                  # Saved CQL patent watches (patent kind).
+precis jobs watch-edgar / list-edgar-watches / run-edgar-watches  # Saved SEC filings searches and briefing news.
 precis jobs check-provenance / sync-retraction-watch
                                        # Provenance + retraction audits.
 ```
