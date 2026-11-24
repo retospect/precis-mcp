@@ -69,7 +69,7 @@ class MarkdownHandler(PlaintextHandler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        views=("toc", "raw", "links"),
+        views=("toc", "raw", "links", "log"),
         modes=("create",),
         # edit() is inherited unmodified from PlaintextHandler.
         edit_modes=("find-replace", "append", "insert", "replace"),
@@ -129,7 +129,7 @@ class MarkdownHandler(PlaintextHandler):
         slug: str,
         args: dict[str, Any] | None = None,
     ) -> Response:
-        """Render ``/toc`` and delegate ``/raw`` and explicit ``view='links'``."""
+        """Render ``/toc``; delegate ``/raw``, ``view='links'`` and ``view='log'``."""
         if view == "toc":
             return self._render_toc(ref)
         return super()._render_view(view, ref, slug=slug, args=args)

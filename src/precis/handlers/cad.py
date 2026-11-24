@@ -215,7 +215,7 @@ _PROBE_VIEWS = (
     "mold",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
-_OTHER_VIEWS = ("links", "sweep", "bom", "printability")
+_OTHER_VIEWS = ("links", "log", "sweep", "bom", "printability")
 _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
 
 #: view='printability' — flat, equal weights (se passes its own
@@ -1457,6 +1457,13 @@ class CadHandler(Handler):
             return self._render_node(int(parsed[2]))
 
         ref = resolve_live_slug_ref(self.store, kind="cad", id=s)
+        if view == "log":
+            # Dispatch ahead of ``cad_load``: the log is the ref's stored
+            # ``ref_events`` trail — a scene reconstruction failure must
+            # not hide it (review td782511).
+            from precis.handlers._event_log_render import render_event_log
+
+            return render_event_log(self.store, ref.id)
         spec, handles = self.store.cad_load(ref.id)
         with sticky_prefunits_scope(_spec_prefunits(spec)):
             return self._get_view(ref, spec, handles, view, args or {}, s)

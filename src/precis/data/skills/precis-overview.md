@@ -203,11 +203,12 @@ Three inspection views work on the **numeric-ref kinds** (`todo`,
 chars collapses to an elision note, and `args={'meta_key': '<key>'}`
 returns it whole). Reach for `raw` to
 debug behaviour the default render hides — e.g. a todo's
-`meta.executor` / `meta.schedule` / `meta.auto_check`. Slug/file/compute
-kinds (`paper`, `draft`, `cad`, `structure`, `pcb`, `tex`, `markdown`, …)
-don't inherit these — each exposes its own view set instead (e.g. `paper`
-has `view='log'` but not `links`/`raw`; a bad view returns the kind's
-option list).
+`meta.executor` / `meta.schedule` / `meta.auto_check`. For slug, file
+and compute kinds, `view='log'` reads the stored `ref_events` trail on
+`paper`, `datasheet`, `cfp`, `pres`, `draft`, `cad`, `structure`,
+`pcb`, `plaintext`, `markdown` and `news`. `tex` rejects the log
+view. Availability of `links` and `raw` varies by kind. A bad view
+returns the kind's option list.
 
 For handle format, sibling/parent navigation (`+1`/`-1`/`^`), and the
 full 2-char type-code table, see `precis-addressing-help`.

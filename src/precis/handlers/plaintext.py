@@ -294,7 +294,7 @@ class PlaintextHandler(Handler):
         is_numeric=False,
         id_required=False,
         note_like=True,
-        views=("raw", "links"),
+        views=("raw", "links", "log"),
         modes=_SUPPORTED_PUT_MODES,
         edit_modes=_SUPPORTED_EDIT_MODES,
     )
@@ -663,6 +663,15 @@ class PlaintextHandler(Handler):
         )
         effective_view = path_view or view
 
+        # ``view='log'`` renders the ref's stored ``ref_events`` trail —
+        # a read-only door. Routing it through ``_require_existing_file``
+        # would let ``ensure_ingested`` mint a ref for an on-disk file or
+        # replace the stored chunks before the render (review td782511),
+        # so the stored ref is resolved directly. A ``~SEL`` pairing
+        # still lands on the selector+view BadInput below.
+        if effective_view == "log" and sel is None and "log" in self.spec.views:
+            return self._render_log(slug)
+
         ref = self._require_existing_file(slug)
 
         if sel is not None and effective_view is not None:
@@ -689,12 +698,21 @@ class PlaintextHandler(Handler):
     ) -> Response:
         """Dispatch to a per-view renderer.
 
-        Plaintext supports ``raw`` and the explicit ``links`` view.
-        Subclasses can add views by overriding this method and
-        advertising them in their kind spec.
+        Plaintext supports ``raw`` and the explicit ``links`` and
+        ``log`` views — the latter two only where the kind advertises
+        them in ``spec.views`` (tex serves neither). Subclasses can
+        add views by overriding this method and advertising them in
+        their kind spec.
         """
         if view == "raw":
             return self._render_raw(ref)
+        if view == "log" and view in self.spec.views:
+            # Reached only by a caller that resolved its ref another way —
+            # ``get`` dispatches ``log`` ahead of
+            # ``_require_existing_file`` so the door stays read-only.
+            from precis.handlers._event_log_render import render_event_log
+
+            return render_event_log(self.store, ref.id)
         if view == "links" and view in self.spec.views:
             # Same shared links table every Handler-direct kind serves
             # (``handlers/_links_render.py``); ``args={'limit'|'cursor'}``
@@ -729,6 +747,18 @@ class PlaintextHandler(Handler):
             options=list(self.spec.views),
             next=nexts,
         )
+
+    def _render_log(self, slug: str) -> Response:
+        """``view='log'`` — the stored ref's ``ref_events`` trail.
+
+        Read-only end to end: resolves the ref the store already holds
+        through :meth:`_stored_file_ref` rather than
+        ``_require_existing_file``, whose ``ensure_ingested`` could mint
+        a ref or replace stored chunks on a read (review td782511).
+        """
+        from precis.handlers._event_log_render import render_event_log
+
+        return render_event_log(self.store, self._stored_file_ref(slug).id)
 
     # ── search ─────────────────────────────────────────────────────
 
@@ -2210,6 +2240,44 @@ class PlaintextHandler(Handler):
         assert ref is not None  # _raise_file_not_found never returns
         return ref
 
+    def _stored_file_ref(self, slug: str) -> Ref:
+        """Resolve *slug* to the live ref the store already holds — no ingest.
+
+        The read-only counterpart of :meth:`_require_existing_file` for
+        views that serve stored state only (``view='log'``): same
+        tombstone→``Gone`` ordering, same record-handle fallback, same
+        suggestions-rich NotFound — minus the ``ensure_ingested`` write
+        path, which could mint a ref for an on-disk file or replace
+        stored chunks on what is meant to be a pure read (review
+        td782511). The NotFound's ``next:`` names the plain ``get`` that
+        performs the ingest, so a never-ingested file still has a
+        recovery path.
+        """
+        if self._tombstone(slug) is not None:
+            raise Gone(
+                f"{self._KIND} file {slug!r} is deleted",
+                next=f"get(kind='{self._KIND}') to list live files",
+            )
+        ref = self.store.get_ref(kind=self._KIND, id=slug)
+        if ref is None:
+            ref = self._stored_ref_for_record_handle(slug)
+        if ref is None:
+            self._raise_file_not_found(slug)
+        assert ref is not None  # _raise_file_not_found never returns
+        return ref
+
+    def _stored_ref_for_record_handle(self, slug: str) -> Ref | None:
+        """The live ref a same-kind record handle (``tx<N>``) names, or
+        ``None`` — the ingest-free half of
+        :meth:`_ref_for_record_handle`."""
+        parsed = handle_registry.parse(slug)
+        if parsed is None or parsed[0] != self._KIND or parsed[1]:
+            return None
+        owning = self.store.get_ref(kind=self._KIND, id=parsed[2])
+        if owning is None or owning.slug is None:
+            return None
+        return owning
+
     def _ref_for_record_handle(self, slug: str) -> Ref | None:
         """Resolve a same-kind universal record handle (``tx<N>``) to
         its ref, or ``None``.
@@ -2225,12 +2293,10 @@ class PlaintextHandler(Handler):
         addressed block — they fall through to the handle-aware error
         in ``_raise_file_not_found``.
         """
-        parsed = handle_registry.parse(slug)
-        if parsed is None or parsed[0] != self._KIND or parsed[1]:
+        owning = self._stored_ref_for_record_handle(slug)
+        if owning is None:
             return None
-        owning = self.store.get_ref(kind=self._KIND, id=parsed[2])
-        if owning is None or owning.slug is None:
-            return None
+        assert owning.slug is not None  # _stored_ref_for_record_handle filters
         return self.ensure_ingested(owning.slug, missing_ok=True)
 
     # ── render helpers ─────────────────────────────────────────────

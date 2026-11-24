@@ -335,6 +335,9 @@ class CacheBackedHandler(Handler):
     #: the flag is only read on the no-handle refusal branch.
     stores_cached_refs: ClassVar[bool] = True
 
+    #: ``view='log'`` (the ref's ``ref_events`` trail) is opt-in per kind.
+    _SERVES_LOG_VIEW: ClassVar[bool] = False
+
     provider: ClassVar[str]
     ttl_seconds: ClassVar[int | None]
     attribution: ClassVar[str]
@@ -539,20 +542,24 @@ class CacheBackedHandler(Handler):
 
         # ``view='body'`` reads one cached ref's body through the normal
         # complete-result budget. Read-only: it implies ``no_fetch`` below,
-        # so the view can never fire a provider call. Any other non-None
-        # view that reaches a cache-backed ``get`` is unknown — the
-        # dispatcher consumes eye-ladder labels before this method runs.
-        # ``view='links'`` is the stored ref's edge graph (gr702974) — also
-        # read-only, resolved from the store alone.
+        # so the view can never fire a provider call. ``view='links'`` is
+        # the stored ref's edge graph (gr702974) and ``view='log'`` its
+        # ``ref_events`` trail — both read-only, resolved from the store
+        # alone; ``log`` is opt-in per kind (``_SERVES_LOG_VIEW``). Any
+        # other non-None view that reaches a cache-backed ``get`` is
+        # unknown — the dispatcher consumes eye-ladder labels before this
+        # method runs.
+        if view == "log" and self._SERVES_LOG_VIEW:
+            return self._render_log_view(id)
         if view == "links":
             return self._render_links_view(
                 id, cursor=cursor, limit=limit, rel=rel, of_kind=of_kind
             )
         if view is not None and view != "body":
-            # gr613469: ``body`` is the only view — the corrected call is
-            # unambiguous, so it always leads (the caller's own args
-            # preserved, review td680653; a ``<slug>`` placeholder when
-            # the call named no id).
+            # gr613469: ``body`` is the unambiguous correction, so it
+            # always leads (the caller's own args preserved, review
+            # td680653; a ``<slug>`` placeholder when the call named no
+            # id). The options mirror the views this kind serves.
             corrected = retry_call(
                 "get",
                 kind=self.spec.kind,
@@ -564,9 +571,12 @@ class CacheBackedHandler(Handler):
                 f"get(kind={self.spec.kind!r}, id=<slug>, view='body') "
                 "reads a cached ref whole, without the context fold"
             )
+            served = ["body", "links"]
+            if self._SERVES_LOG_VIEW:
+                served.append("log")
             raise BadInput(
                 f"unknown view={view!r} for kind={self.spec.kind!r}",
-                options=["body", "links"],
+                options=served,
                 next=nexts,
             )
 
@@ -1174,6 +1184,28 @@ class CacheBackedHandler(Handler):
             ref_id = int(ident)
         return self.store.get_cache_entry_by_ref_id(kind=self.spec.kind, ref_id=ref_id)
 
+    def _resolve_cached_entry(self, id: str | int | None) -> Any:
+        """Stored cache entry by ref id / handle, then slug; never fetches."""
+        entry = self._entry_by_ref_id(id)
+        if entry is None and isinstance(id, str) and id.strip():
+            entry = self.store.get_cache_entry_by_slug(
+                kind=self.spec.kind, slug=id.strip()
+            )
+        return entry
+
+    def _render_log_view(self, id: str | int | None) -> Response:
+        """``view='log'`` — the cached ref's ``ref_events`` trail."""
+        from precis.handlers._event_log_render import render_event_log
+
+        entry = self._resolve_cached_entry(id)
+        if entry is None:
+            raise NotFound(
+                f"{self.spec.kind} {id!r} is not cached — view='log' reads "
+                "a stored ref and never fetches",
+                next=f"get(kind={self.spec.kind!r}, id='/recent') lists cached refs",
+            )
+        return render_event_log(self.store, entry[0].id)
+
     def _render_links_view(
         self,
         id: str | int | None,
@@ -1192,11 +1224,7 @@ class CacheBackedHandler(Handler):
         """
         from precis.handlers._links_render import render_links_view
 
-        entry = self._entry_by_ref_id(id)
-        if entry is None and isinstance(id, str) and id.strip():
-            entry = self.store.get_cache_entry_by_slug(
-                kind=self.spec.kind, slug=id.strip()
-            )
+        entry = self._resolve_cached_entry(id)
         if entry is None:
             raise NotFound(
                 f"{self.spec.kind} {id!r} is not cached — view='links' reads "

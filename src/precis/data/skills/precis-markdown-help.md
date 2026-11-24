@@ -82,13 +82,15 @@ get(kind="markdown", id="<slug>", view="toc")  # heading-driven TOC
 get(kind="markdown", id="<slug>/toc")  # path form is equivalent
 get(kind="markdown", id="<slug>/raw")  # untouched source text
 get(kind="markdown", id="<slug>", view="links", args={"limit": 20})
+get(kind="markdown", id="<slug>", view="log")  # ref event trail
 get(kind="markdown", id="<slug>")  # overview with TOC preview
 ```
 
 The overview previews the heading TOC. `/toc` gives the full table and
 `/raw` returns the file bytes verbatim. Use `view="links"` to list graph
-links, with optional `args.limit` and `args.cursor` for paging. A path
-ending in `/links` addresses a file.
+links, with optional `args.limit` and `args.cursor` for paging, and
+`view="log"` for the file ref's `ref_events` trail. A path ending in
+`/links` or `/log` addresses a file — pass the view explicitly.
 
 ## Edit one section, leave the rest alone
 ## Replace a single chunk by name or line range

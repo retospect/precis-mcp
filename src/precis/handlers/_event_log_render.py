@@ -1,10 +1,21 @@
 """Shared renderer for ``view='log'`` across ref kinds.
 
-Both :class:`precis.handlers.finding.FindingHandler` and
-:class:`precis.handlers.paper.PaperHandler` expose a ``view='log'``
-that reads ``ref_events`` for the ref and renders the chronology
-in a human-scannable format. Same shape across kinds — factored
-here so the two handlers don't drift.
+One renderer, many doors — the view reads ``ref_events`` for the ref
+and renders the chronology in a human-scannable format:
+
+- every ``NumericRefHandler`` kind (todo, gripe, finding, job, …)
+  reaches it through the ``log`` arm in ``_numeric_ref.py``;
+- ``paper`` and ``presentation`` call it directly;
+- ``memory`` opts into ``newest_first`` for counted windows and an
+  event-id drilldown;
+- the slug/file/compute kinds ``cad``, ``structure``, ``pcb``,
+  ``draft``, ``plaintext`` and ``markdown`` serve it from their own
+  dispatch (the file kinds gate it on ``spec.views``, so ``tex``
+  still refuses);
+- ``CacheBackedHandler`` serves it for kinds that set
+  ``_SERVES_LOG_VIEW`` (``news``).
+
+Same shape across kinds — factored here so the handlers don't drift.
 
 Paper and finding logs stay chronological oldest → newest; memory
 logs are newest first, with bounded windows and an event-id drilldown.

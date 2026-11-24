@@ -2,8 +2,8 @@
 
 At boot, handlers register :class:`precis.protocol.KindSpec` with
 :class:`precis.dispatch.Hub`. Shared adapters use underscore prefixes.
-Plaintext and Markdown take an explicit links view, preserving file paths
-ending in ``/links``.
+Plaintext and Markdown take explicit ``links`` and ``log`` views so paths
+ending in ``/links`` or ``/log`` still resolve as files.
 LLM diagnostics scan recent calls and report decide modes from the live
 routing memo.
 Schema introspection reads the live public catalog in a bounded read-only

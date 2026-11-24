@@ -192,6 +192,7 @@ _VIEWS = (
     "rays",
     "inspect",
     "links",
+    "log",
     "literature",
     "pathways",
     "pourbaix",
@@ -3826,6 +3827,11 @@ class StructureHandler(Handler):
         # top-level; both routes are honoured.
         a = args or {}
         src = (source or a.get("source") or "").strip() or None
+        if view == "log" and src is not None:
+            raise BadInput(
+                "structure logs read stored events and cannot hydrate external sources",
+                next="get(kind='structure', id='<slug>', view='log') without source=",
+            )
         if view in ("completion", "completion_digest") and src is not None:
             raise BadInput(
                 "completion reads cannot hydrate external sources",
@@ -3846,6 +3852,10 @@ class StructureHandler(Handler):
                 )
             return self._render_list()
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        if view == "log":
+            from precis.handlers._event_log_render import render_event_log
+
+            return render_event_log(self.store, ref.id)
         if view in ("completion", "completion_digest"):
             from precis.structure.completion_read import (
                 STRUCTURE_ARGS,

@@ -47,6 +47,7 @@ one chunk cannot fit, increase the named byte budgets and retry the exact call.
 | `get(id=<scope>, view='hygiene')` | full lists of abbreviation, citation and record gaps, plus house-style counts |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
+| `get(id='<slug>', view='log')` | the whole draft's stored event trail |
 | `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'page_size':N}`, ≤500) |
 | `get(id='dc<id>', view='proposals')` | open anchored todos with `meta.proposed_text`, as diffs vs the current text |
 | `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes); `args={'rel': 'touched', 'of_kind': 'agentlog'}` narrows it (a hot draft's unfiltered view runs to hundreds of KB) |
