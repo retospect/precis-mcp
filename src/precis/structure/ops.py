@@ -127,6 +127,30 @@ _OPS_ALIASES = {
     "remove_sites": "vacancy",
 }
 
+#: Names a model guesses for a label-preserving atom move (gr788533: a quest
+#: concluded none existed and fell back to vacancy+add_atom, which mints a
+#: new label and breaks CI-NEB label matching). The real op is ``displace``.
+_MOVE_ALIASES = frozenset(
+    {
+        "move_atom",
+        "move",
+        "translate_atom",
+        "translate",
+        "relocate_atom",
+        "shift_atom",
+        "displace_atom",
+        "set_position",
+        "set_atom_position",
+    }
+)
+_DISPLACE_EXAMPLE = '{"op":"displace","atom":"aO1","vector":[0.8,0.0,0.0]}'
+_DISPLACE_HINT = (
+    "'displace' moves one existing atom by 'vector' [dx,dy,dz] (Cartesian Å; "
+    "'cartesian': false for a fractional delta) and KEEPS its label — use it "
+    "instead of vacancy + add_atom, which mints a new label (breaks "
+    "label-matched IS/FS pairs for NEB)"
+)
+
 
 def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
     """Apply a list of typed ops to ``scene`` in order, mutating it."""
@@ -136,6 +160,13 @@ def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
         name = op["op"]
         handler = _OPS.get(name)
         if handler is None:
+            if str(name) in _MOVE_ALIASES:
+                raise OpError(
+                    f"unknown op: {name!r} — 'displace' is the label-preserving "
+                    "atom-move op",
+                    example=_DISPLACE_EXAMPLE,
+                    next=_DISPLACE_HINT,
+                )
             alias = _OPS_ALIASES.get(str(name))
             if alias is not None:
                 raise OpError(

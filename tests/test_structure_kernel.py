@@ -345,6 +345,20 @@ def test_delete_atom_guess_names_the_vacancy_op() -> None:
     assert "aPd1" in scene.atoms
 
 
+def test_move_atom_guess_names_displace_and_displace_keeps_label() -> None:
+    """gr788533: a guessed ``move_atom`` learns ``displace``, which keeps
+    the label (vacancy+add_atom would mint a new one)."""
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic())
+    apply_ops(scene, [{"op": "add_atom", "element": "O", "frac": [0.1, 0, 0]}])
+    with pytest.raises(OpError) as exc:
+        apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "vector": [1, 0, 0]}])
+    assert "displace" in str(exc.value)
+    apply_ops(scene, [{"op": "displace", "atom": "aO1", "vector": [1.0, 0, 0]}])
+    assert list(scene.atoms) == ["aO1"]
+
+
 # -- add_atom_site (site-symbolic placement) ---------------------------------
 
 

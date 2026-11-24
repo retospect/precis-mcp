@@ -173,7 +173,7 @@ The rest of the op vocabulary, also used by `edit`:
 | op | args | effect |
 |----|------|--------|
 | `vacancy` | `atom` \| `atoms:[…]` \| `site:{type:"top"\|"subsurface"\|"bottom", element?, near?, count?\|fraction?}` | remove atom(s) — labels not recycled; `site` picks from the named z-layer of `element`'s own sublattice (an anion like N resolves too) or the slab's majority host, and `count`/`fraction`>1 removes an **ordered** vacancy set by greedy farthest-point selection — the seed nearest `near`, each next pick the atom farthest from those already chosen (the boridene/defect-ordered derivative off a relaxed parent) |
-| `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | nudge (Cartesian Å by default; `cartesian:false` for a fractional delta) |
+| `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | move one atom, **label preserved** (Cartesian Å by default; `cartesian:false` for a fractional delta) — use it, not `vacancy`+`add_atom` (new label), to build a label-matched NEB final state |
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
 | `remove_bond` | `i`, `j` | drop a declared bond |
 | `constrain` | `atoms:[…]`, `kind` | `fixed-x|y|z|all` — freeze axes (use sparingly) |
