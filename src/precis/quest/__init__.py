@@ -1,20 +1,19 @@
 """Quest layer runtime — the striving's autonomous research loop.
 
-Surface in :mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
-``serves`` DAG into rotation/acquisition/reading), `gaps` (health and queue
-for quiet lifecycle-active quests), `logbook` (WORM entries), `synthesis` (graph
-linearisation with frontier figures), `dossier` (deprecated living
-synthesis), `tick` (one bounded LLM step), `compute` (candidates →
+Surface: :mod:`precis.handlers.quest`. Submodules: `reweight` (``serves`` DAG
+priority for rotation/acquisition/reading), `gaps` (quiet active quest
+health/queue), `logbook` (WORM entries), `synthesis` (graph linearisation
+with frontier figures), `dossier` (deprecated synthesis), `tick` (bounded
+LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank),
 `results_table` (objective basis and pathway credit), `protocol` (per-quest
 measurement protocols, deduped dispatch/harvest drift entries,
 frontier/status histograms; gr593142), `environment_basis` and
-`correction_policy` (engine-free hashes/tuples), `atomcost` (element-price
-table → the ``atom_cost`` economic axis), `figures` (static matplotlib
-pareto/profile renderers + frozen snapshots for draft export; CLI
-``precis quest figure``), `replay` (measured-history optimisation
-benchmark — per-axis top-5% coverage + best-so-far/regret vs a seeded
-random baseline, gr608711; CLI ``precis quest replay`` + ``view='replay'``),
+`correction_policy` (engine-free hashes/tuples), `atomcost` (element prices →
+``atom_cost``), `figures` (matplotlib Pareto/profile plots + frozen draft
+exports; ``precis quest figure``), `replay` (measured-history optimisation
+benchmark: per-axis top-5% coverage + best-so-far/regret vs seeded random
+baseline, gr608711; ``precis quest replay`` and ``view='replay'``),
 `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
@@ -34,6 +33,7 @@ Package-level invariants (detail lives on the named module):
   so a filed key re-keys to itself); repeats bump even parked gripes
   without merging distinct lane prefixes.
 - **Operational commits advance ticks.**
+- **Acquire folds spend no fetch slot.** The logbook names the held survivor.
 - **Environment objectives preserve missing evidence.**
   ``environment_optimizer`` evaluates one stored point without solving or
   stamping: the five eV terms, physical/trust mask and bottleneck J. Rates

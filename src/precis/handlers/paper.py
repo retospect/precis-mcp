@@ -2364,6 +2364,11 @@ class PaperHandler(Handler):
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
+           When the identifier's resolved title names a *held* paper that never
+           recorded this id, the stub folds into that survivor and the
+           call resolves to it
+           (:func:`precis.ingest.dedup.fold_stub_into_held_twin`,
+           gr784146).
         3. Link it from ``context_ref_id`` (provenance) when supplied —
            a ref id or its universal handle (``pa621646``; a chunk
            handle lands on its owning ref).
@@ -2658,6 +2663,19 @@ class PaperHandler(Handler):
                     break
             break
 
+        stub_authors = (
+            new_authors
+            or (meta or {}).get("authors")
+            or (registry_meta or {}).get("authors")
+        )
+        # The resolver's own byline is the fold's author evidence — a
+        # supplied hint may seed the cite key but can't outvote what the
+        # DOI/arXiv actually names (a matching hint would mask a
+        # conflicting resolver author and force a wrong merge).
+        resolver_authors = (meta or {}).get("authors") or (registry_meta or {}).get(
+            "authors"
+        )
+        resolved_title = ((registry_meta or meta or {}).get("title") or "").strip()
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
                 identifiers=identifiers,
@@ -2665,13 +2683,27 @@ class PaperHandler(Handler):
                 year=year,
                 # Supplied or S2/registry authors seed the cite_key —
                 # a real surname beats a title word.
-                authors=new_authors
-                or (meta or {}).get("authors")
-                or (registry_meta or {}).get("authors"),
+                authors=stub_authors,
                 set_by="dream",
                 s2_meta=s2_meta,
                 conn=conn,
             )
+            if (
+                resolved_title
+                and (
+                    held_twin := self._fold_stub_into_held_twin(
+                        ref_id,
+                        resolved_title=resolved_title,
+                        stub_authors=stub_authors,
+                        resolver_authors=resolver_authors,
+                        conn=conn,
+                    )
+                )
+                is not None
+            ):
+                # gr784146: the paper is already held in full under a
+                # record that never recorded this id — resolve to it.
+                ref_id, created = held_twin, False
             if not created:
                 # The hit came through one alias (say the S2 id of a stub
                 # minted from a citation list); register the others this
@@ -2874,6 +2906,28 @@ class PaperHandler(Handler):
                 body += line
 
         return Response(body=body, ref_id=ref_id)
+
+    def _fold_stub_into_held_twin(
+        self,
+        ref_id: int,
+        *,
+        resolved_title: str,
+        stub_authors: Any,
+        resolver_authors: Any,
+        conn: Any,
+    ) -> int | None:
+        """Merge a just-resolved stub into its held title twin (gr784146)."""
+        from precis.ingest.dedup import fold_stub_into_held_twin
+
+        return fold_stub_into_held_twin(
+            self.store,
+            ref_id,
+            resolved_title=resolved_title,
+            stub_authors=stub_authors,
+            resolver_authors=resolver_authors,
+            source="acquire:title-twin",
+            conn=conn,
+        )
 
     # -- get -----------------------------------------------------------------
 

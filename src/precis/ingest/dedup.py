@@ -1,6 +1,6 @@
 """Duplicate-paper reconciliation — merge a duplicate ref into a survivor.
 
-Two entry points share one merge primitive:
+Entry points share one merge primitive:
 
 * **Phase 1** (in :mod:`precis.ingest.remediate`): when ``fix-metadata``
   re-derives a DOI that a *different* live ref already owns, the suspect
@@ -9,6 +9,14 @@ Two entry points share one merge primitive:
 * **Phase 2** (:func:`reconcile_by_pdf_sha256`): a standing sweep that
   collapses live paper refs sharing a ``pdf_sha256`` (the same file
   ingested as two refs) to the best survivor.
+* **Phase 3** (:func:`reconcile_by_title_similarity`): the title sweep —
+  folds a leaked *identifier-less* stub into the held paper its title
+  names, leaving sub-confidence matches for review.
+* **Acquire-time** (:func:`fold_stub_into_held_twin`): the identifier-
+  *bearing* twin of Phase 3 — a stub that carries an arXiv/DOI id (so
+  both the sweep and the mint-time title guard skip it) folds at
+  acquire time into the held paper that never recorded that id
+  (gr784146).
 
 The merge is the same shape as ``ingest/add._reconcile_orphan_stub``:
 migrate external identifiers + graph edges to the survivor, record a
@@ -29,9 +37,10 @@ second copy that shares *none* of those keys — a different file of the
 same paper that resolved no DOI, or a different OCR of the same text.
 Better ingest-time resolution shrinks that set but can't zero it, so the
 periodic reconciliation (this module, run by ``paper_reconcile``) is the
-safety net. Phase 3 (:func:`reconcile_by_title_similarity`) covers the
-id-less title-only-stub class; near-dup detection across two *held*
-copies with different OCR (SimHash/MinHash) is not built.
+safety net. Phase 3 covers the id-less title-only-stub class and
+:func:`fold_stub_into_held_twin` the id-bearing one; near-dup detection
+across two *held* copies with different OCR (SimHash/MinHash) is not
+built.
 """
 
 from __future__ import annotations
@@ -60,7 +69,16 @@ log = logging.getLogger(__name__)
 #: describe *that* artifact — unless the survivor takes the duplicate's
 #: body/PDF, in which case they re-home onto it
 #: (:func:`_move_body_to_survivor`, :func:`_rehome_content_identifiers`).
-_MIGRATABLE_ID_KINDS = ("doi", "arxiv", "s2", "pubmed", "openalex", "mag", "dblp")
+_MIGRATABLE_ID_KINDS = (
+    "doi",
+    "arxiv",
+    "s2",
+    "pubmed",
+    "pmcid",
+    "openalex",
+    "mag",
+    "dblp",
+)
 
 #: Content-derived identifier kinds that follow the PDF / body to the survivor.
 _PDF_ID_KINDS = ("pdf_sha256", "content_hash")
@@ -1444,11 +1462,8 @@ def audit_doi_trailing_junk(
 # retire a stub when the survivor is a paper we *demonstrably have* — a
 # pdf_sha256 AND real body chunks (a bare held-flag on a never-ingested ref
 # is not enough) — and the title/year match is high-confidence. This pass
-# only touches **id-less** stubs: a stub carrying its own DOI/arXiv/S2
-# asserts it is a distinct work, so a mere title match is not proof of
-# sameness (preprint vs published, erratum, version, namesake). Those are
-# left to the identifier-proven paths (reconcile_by_doi_case / pdf) or
-# surfaced for human review — never auto-merged on title alone.
+# only touches **id-less** stubs. Identifier-bearing stubs can fold during
+# acquire using the identifier resolver's title.
 
 #: Auto-merge floor: trigram title similarity at/above this (with a
 #: compatible year) folds the stub into the held paper unattended.
@@ -1579,11 +1594,127 @@ def reconcile_by_title_similarity(
     return outcomes
 
 
+def _external_id_sets(conn: Any, ref_ids: list[int]) -> dict[int, dict[str, set[str]]]:
+    """Each ref's external-paper identifiers — ``{ref_id: {kind: {values}}}``.
+
+    DOIs canonicalise and every value lowercases so a same-kind disjoint
+    pair of sets means the two records claim different works — the fold's
+    identifier veto. A shared value can't arise: ``ref_identifiers``'s
+    ``(id_kind, id_value)`` pk lets one value live on only one ref.
+    """
+    rows = conn.execute(
+        "SELECT ref_id, id_kind, id_value FROM ref_identifiers "
+        "WHERE ref_id = ANY(%s) AND id_kind = ANY(%s)",
+        (ref_ids, list(_MIGRATABLE_ID_KINDS)),
+    ).fetchall()
+    out: dict[int, dict[str, set[str]]] = {}
+    for rid, kind, value in rows:
+        v = str(value)
+        if str(kind) == "doi":
+            v = normalize_doi(v) or v
+        out.setdefault(int(rid), {}).setdefault(str(kind), set()).add(v.lower())
+    return out
+
+
+def fold_stub_into_held_twin(
+    store: Store,
+    stub_ref_id: int,
+    *,
+    resolved_title: str,
+    source: str,
+    conn: Any,
+    stub_authors: Any = None,
+    resolver_authors: Any = None,
+) -> int | None:
+    """Fold an identifier-bearing PDF-less stub into the held paper it duplicates.
+
+    ``reconcile_by_title_similarity`` only sees identifier-less stubs, and
+    the mint-time title guard only runs for identifier-less asks, so a held
+    paper that never recorded its arXiv/DOI id (gr784146: ``pa714242`` held
+    in full, ``pa35377`` the arXiv stub) leaves an id-asking acquire minting
+    or re-pinning a second record. Match the identifier resolver's title against *held*
+    papers (PDF and body chunks) with the same corroboration the mint-time
+    guard uses (>=5 title tokens, years within 1 — a missing year needs sim
+    >= 0.95 — agreeing first author) and merge the stub into the match.
+
+    The resolver title is required because stub titles can come from hints.
+    ``resolver_authors`` — the byline the DOI/arXiv resolver returned for
+    this identifier — is the fold's first author evidence; a supplied
+    byline (``stub_authors``, which may seed the cite key) or the stub's
+    stored one only corroborates when the resolver is silent, so a matching
+    hint can't mask a conflicting resolver author. A conflicting stored
+    first author vetoes the fold outright, and a held candidate carrying a
+    *different* value of an identifier kind the stub holds (another arXiv
+    id, another DOI) is skipped — merging would put both ids on one record.
+
+    Returns the survivor's ref id, or ``None`` when the ref is not a live
+    PDF-less stub or no corroborated twin exists. Must run in a tx.
+    """
+    if not resolved_title.strip():
+        return None
+    row = conn.execute(
+        "SELECT year, authors FROM refs "
+        "WHERE ref_id = %s AND kind = 'paper' AND retired_at IS NULL "
+        "  AND pdf_sha256 IS NULL",
+        (stub_ref_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    year, stored_authors = row
+    stored_family = _first_family(stored_authors)
+    cands = conn.execute(
+        "SELECT r.ref_id, r.title, r.year, r.authors, similarity(r.title, %s) "
+        "FROM refs r "
+        "WHERE r.kind = 'paper' AND r.retired_at IS NULL "
+        "  AND r.pdf_sha256 IS NOT NULL AND r.title IS NOT NULL "
+        "  AND r.ref_id <> %s AND similarity(r.title, %s) >= 0.85 "
+        f"  AND {has_body_sql('r')} "
+        "ORDER BY 5 DESC, r.ref_id ASC LIMIT 5",
+        (resolved_title, stub_ref_id, resolved_title),
+    ).fetchall()
+    id_sets = _external_id_sets(conn, [stub_ref_id, *(int(c[0]) for c in cands)])
+    stub_ids = id_sets.get(stub_ref_id, {})
+    for cid, ctitle, cyear, cauthors, csim in cands:
+        held_ids = id_sets.get(int(cid), {})
+        if any(
+            kind in held_ids and stub_ids[kind].isdisjoint(held_ids[kind])
+            for kind in stub_ids
+        ):
+            continue
+        held_family = _first_family(cauthors)
+        if stored_family and held_family and stored_family != held_family:
+            continue
+        if (
+            title_merge_refusal(
+                resolved_title,
+                year,
+                resolver_authors or stub_authors or stored_authors,
+                ctitle,
+                cyear,
+                cauthors,
+                sim=float(csim),
+                unknown_year_min_sim=0.95,
+            )
+            is None
+        ):
+            merge_duplicate(
+                store,
+                survivor_ref_id=int(cid),
+                duplicate_ref_id=stub_ref_id,
+                source=source,
+                reason=f"stub title-matches held paper (sim {float(csim):.2f})",
+                conn=conn,
+            )
+            return int(cid)
+    return None
+
+
 __all__ = [
     "DoiTrailingJunkRow",
     "ReconcileOutcome",
     "TitleMatchReview",
     "audit_doi_trailing_junk",
+    "fold_stub_into_held_twin",
     "merge_duplicate",
     "merge_refs",
     "pick_survivor",

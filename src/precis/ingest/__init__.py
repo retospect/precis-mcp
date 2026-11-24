@@ -36,10 +36,9 @@ A foreign article's head in the tail is journalled as a suspected
 boundary — naming the held stub that owns it when one does — under a
 multi-article tag; the extract itself is never cut.
 
-Metadata enrichment withholds contested registry metadata. It flags a
-substantial Crossref/local title disagreement, zero distinctive overlap
-at the article opening, or a title formula absent outside references.
-The flags let a human verify the DOI and body before citation.
+Enrichment withholds contested registry metadata for human review:
+substantial Crossref/local title disagreement, zero distinctive opening
+overlap, or title formulas found only in references.
 
 Identifier trust (td730803): a prefixed ``arxiv:``/``doi:`` S2 single-id
 lookup must echo the requested id, so its record always carries it. An
@@ -57,11 +56,12 @@ Only fuzzy PDF verification loads the optional RapidFuzz dependency.
 DOI writes strip citation punctuation. The audit routes punctuation-equivalent
 papers to explicit ``merge_into`` after identity review.
 
-Title failures and refused stub reconciles share rolling review todos
-(``paper_review.py``). A paper or pair key makes retries idempotent. The
-generated table carries no decision tag. Reconcile folds in older todos
-and drains repaired rows. PDF ingest falls back to Marker's title block
-when bibliographic metadata is junk, because the body omits that block.
+Acquire matches the identifier resolver's title to held papers and checks
+incoming and stored bylines for first-author conflicts before folding stubs.
+Title failures and refused stub reconciles share decision-tag-free review
+tables keyed by paper or pair (``paper_review.py``). Reconcile folds in
+older todos and drains repaired rows. PDF ingest replaces junk metadata
+titles with Marker's title block, which the body omits.
 
 Draft DOI recovery (``doi_fetch.py``) requires a persistent non-DOI
 identifier. Lookup misses and write refusals share an attempt stamp so

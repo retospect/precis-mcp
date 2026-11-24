@@ -307,8 +307,8 @@ def title_merge_refusal(
     (:func:`content_tokens`) on both sides, a
     known year on BOTH sides within +/-1 (preprint vs published; a NULL year
     never passes), and agreeing first-author family names whenever both sides
-    carry authors. Shared by ``ingest.dedup.reconcile_by_title_similarity`` and
-    ``Store.upsert_stub_paper``.
+    carry authors. Shared by ``ingest.dedup.reconcile_by_title_similarity``,
+    ``ingest.dedup.fold_stub_into_held_twin`` and ``Store.upsert_stub_paper``.
 
     The token-count leg can be waived when the two titles are identical
     after normalisation (gr515509): ``"The rise of graphene" == "The Rise

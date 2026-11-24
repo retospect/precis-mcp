@@ -146,9 +146,11 @@ stub is not minted and the held row is left for repair; check
 A **DOI / arXiv / S2 / PubMed / PMC id is strongly preferred** — the stub carries the
 id, and an explicit `put` jumps the fetch queue: the stub is pinned to
 the front (`prio=1`) so `fetch_oa` tries it on its very next pass —
-re-requesting an already-wanted stub re-pins it, including one
+re-requesting a still-pending stub re-pins it, including one
 immediate retry for a stub deep in fetch backoff — an explicit ask
-always re-arms that retry, however recent the last attempt.
+re-arms that retry however recent the last attempt. If the identifier's
+resolved title corroborates a held paper, acquire can fold the stub into
+that paper and return its handle without queueing another fetch.
 (Auto-discovered stubs — citation chase, watched feeds, quest
 lit-fetch — instead wait their ranked turn, and their re-requests
 stay under the 24 h re-stamp guard.) A fetch pass whose legs were

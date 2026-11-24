@@ -7,13 +7,27 @@ Covers the id-less-title-only-stub-duplicating-a-held-paper class:
 * ``reconcile_by_title_similarity`` folds an *existing* leaked stub into
   the held paper (high-confidence band only), and leaves ambiguous
   matches for review.
+
+Plus the id-bearing twin (gr784146): ``fold_stub_into_held_twin`` folds
+an acquire-resolved stub that carries an arXiv/DOI id into the held
+paper that never recorded it.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from precis.ingest.dedup import TitleMatchReview, reconcile_by_title_similarity
+import pytest
+
+from precis.dispatch import Hub
+from precis.handlers import paper as paper_mod
+from precis.handlers.paper import PaperHandler
+from precis.ingest.dedup import (
+    TitleMatchReview,
+    fold_stub_into_held_twin,
+    reconcile_by_title_similarity,
+)
+from precis.quest.search import apply_fetches
 from precis.store import Store
 
 
@@ -589,3 +603,235 @@ def test_first_author_agreement() -> None:
         )
         is False
     )
+
+
+# ── identifier-bearing stub vs held twin (gr784146) ───────────────
+
+
+@pytest.mark.parametrize(
+    ("scheme", "value"), [("arxiv", "2602.23489"), ("pmcid", "pmc1234567")]
+)
+def test_acquire_stub_folds_into_held_twin_without_year(
+    store: Store, monkeypatch: pytest.MonkeyPatch, scheme: str, value: str
+) -> None:
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    held = _held(store, n=3, slug="bochkarev00", title=title, year=None)
+    stub, created = store.upsert_stub_paper(
+        identifiers=[(scheme, value)], title=title, year=2026
+    )
+    assert created is True
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: {"title": title, "year": 2026}
+    )
+    result = PaperHandler(hub=Hub(store=store)).acquire(identifier=f"{scheme}:{value}")
+    assert result.ref_id == held
+    assert _ref_state(store, stub)["superseded_by"] is not None
+    again, created = store.upsert_stub_paper(identifiers=[(scheme, value)], title=title)
+    assert (again, created) == (held, False)
+
+
+def test_fold_stub_leaves_unrelated_titles_alone(store: Store) -> None:
+    _held(
+        store,
+        n=4,
+        slug="smith24",
+        title="Advanced Graph Algorithms for Distributed Network Analysis",
+    )
+    stub, _ = store.upsert_stub_paper(
+        identifiers=[("arxiv", "2602.00001")],
+        title="A Totally Different Paper About Frogs Jumping",
+        year=2026,
+    )
+    with store.tx() as conn:
+        assert (
+            fold_stub_into_held_twin(
+                store,
+                stub,
+                resolved_title="A Totally Different Paper About Frogs Jumping",
+                source="test",
+                conn=conn,
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("existing_stub", [True, False])
+@pytest.mark.parametrize("resolved_title", [None, "A Different Paper About Frogs"])
+def test_acquire_title_hint_does_not_establish_identity(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_stub: bool,
+    resolved_title: str | None,
+) -> None:
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    arxiv = "2602.23489"
+    held = _held(store, n=5, slug="bochkarev00", title=title, year=None)
+    if existing_stub:
+        store.upsert_stub_paper(identifiers=[("arxiv", arxiv)], title=title, year=2026)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {"title": resolved_title, "year": 2026} if resolved_title else None,
+    )
+
+    result = PaperHandler(hub=Hub(store=store)).acquire(
+        identifier=f"arxiv:{arxiv}", title=title
+    )
+
+    assert result.ref_id is not None and result.ref_id != held
+    assert store.find_ref_by_identifier("arxiv", arxiv, kind="paper") == result.ref_id
+    assert "pinned to front of fetch queue" in result.body
+
+
+@pytest.mark.parametrize("byline_source", ["supplied", "resolved"])
+def test_arxiv_put_keeps_stub_with_conflicting_author(
+    store: Store, monkeypatch: pytest.MonkeyPatch, byline_source: str
+) -> None:
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    arxiv = "2602.23489"
+    held = _held(store, n=5, slug="bochkarev00", title=title, year=None)
+    metadata: dict[str, Any] = {"title": title, "year": 2026, "arxiv_id": arxiv}
+    authors = ["Another Researcher"]
+    if byline_source == "resolved":
+        metadata["authors"] = [{"name": authors[0]}]
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: metadata)
+
+    result = PaperHandler(hub=Hub(store=store)).put(
+        args={
+            "arxiv": arxiv,
+            "authors": authors if byline_source == "supplied" else None,
+        }
+    )
+
+    assert result.ref_id is not None and result.ref_id != held
+    assert store.find_ref_by_identifier("arxiv", arxiv, kind="paper") == result.ref_id
+    assert "pinned to front of fetch queue" in result.body
+
+
+def test_quest_fetch_fold_names_held_paper_and_preserves_cap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    arxiv = "2602.23489"
+    held = _held(store, n=6, slug="bochkarev00", title=title, year=None)
+    stub, _ = store.upsert_stub_paper(
+        identifiers=[("arxiv", arxiv)], title=title, year=2026
+    )
+    pending, _ = store.upsert_stub_paper(identifiers=[], title="A different work")
+    quest_id = store.insert_ref(kind="quest", slug=None, title="Fetch fold").id
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda _: None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {"title": title, "year": 2026, "arxiv_id": arxiv},
+    )
+
+    assert (
+        apply_fetches(
+            store, quest_id, [{"paper": f"pa{stub}"}, {"paper": f"pa{pending}"}], cap=1
+        )
+        == 1
+    )
+
+    assert _ref_state(store, stub)["deleted"]
+    notes = [chunk.text for chunk in store.chunks.list_chunks_for_ref(quest_id)]
+    assert any(f"pa{held}: full text already held" in note for note in notes)
+    assert [note for note in notes if note.startswith("lit-fetch:")] == [
+        f"lit-fetch: requested full text for pa{pending}"
+    ]
+
+
+def test_quest_fetch_refuses_pdf_without_readable_chunks(store: Store) -> None:
+    """A PDF-on-file record never enters the fetch queue
+    (``pin_stub_for_fetch`` no-ops on it), so a fetch request is refused
+    and spends no slot — the repair is ``reextract``."""
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    arxiv = "2602.23489"
+    paper_id = _held(store, n=7, slug="bochkarev00", title=title)
+    with store.tx() as conn:
+        conn.execute("DELETE FROM chunks WHERE ref_id = %s", (paper_id,))
+    store.insert_ref_identifiers(paper_id, [("arxiv", arxiv, "test")])
+    quest_id = store.insert_ref(kind="quest", slug=None, title="Fetch PDF").id
+
+    assert apply_fetches(store, quest_id, [{"paper": f"pa{paper_id}"}], cap=1) == 0
+    notes = [chunk.text for chunk in store.chunks.list_chunks_for_ref(quest_id)]
+    assert any("PDF on file" in note and "reextract" in note for note in notes)
+    assert not any(note.startswith("lit-fetch:") for note in notes)
+
+
+def test_fold_refuses_held_candidate_with_conflicting_identifier(
+    store: Store,
+) -> None:
+    """The held paper claims a DIFFERENT value of an identifier kind the
+    stub carries — merging would put both ids on one record."""
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    held = _held(store, n=8, slug="bochkarev00", title=title, year=2026)
+    store.insert_ref_identifiers(held, [("arxiv", "2602.11111", "test")])
+    stub, _ = store.upsert_stub_paper(
+        identifiers=[("arxiv", "2602.23489")], title=title, year=2026
+    )
+    with store.tx() as conn:
+        assert (
+            fold_stub_into_held_twin(
+                store, stub, resolved_title=title, source="test", conn=conn
+            )
+            is None
+        )
+    assert _ref_state(store, stub)["deleted"] is False
+
+
+def test_supplied_byline_does_not_mask_resolver_author_conflict(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolver's byline is the fold's author evidence — a supplied
+    hint that matches the held paper can't mask a conflicting resolver
+    first author."""
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    arxiv = "2602.23489"
+    held = _held(store, n=9, slug="bochkarev00", title=title, year=None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": title,
+            "year": 2026,
+            "arxiv_id": arxiv,
+            "authors": [{"name": "Jane Doe"}],
+        },
+    )
+
+    result = PaperHandler(hub=Hub(store=store)).put(
+        args={"arxiv": arxiv, "authors": ["Some Author"]}
+    )
+
+    assert result.ref_id is not None and result.ref_id != held
+    assert store.find_ref_by_identifier("arxiv", arxiv, kind="paper") == result.ref_id
+    assert "pinned to front of fetch queue" in result.body
+
+
+def test_resolver_byline_corroborates_despite_conflicting_hint(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The identifier names the resolver's paper, not the hint's: when the
+    resolver's first author agrees with the held paper a conflicting
+    supplied hint does not block the fold (and is not applied)."""
+    title = "Advanced Graph Algorithms for Distributed Network Analysis"
+    arxiv = "2602.23489"
+    held = _held(store, n=10, slug="bochkarev00", title=title, year=None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": title,
+            "year": 2026,
+            "arxiv_id": arxiv,
+            "authors": [{"name": "Some Author"}],
+        },
+    )
+
+    result = PaperHandler(hub=Hub(store=store)).put(
+        args={"arxiv": arxiv, "authors": ["Jane Doe"]}
+    )
+
+    assert result.ref_id == held
+    assert store.find_ref_by_identifier("arxiv", arxiv, kind="paper") == held

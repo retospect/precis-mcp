@@ -105,7 +105,11 @@ def test_put_doi_without_pdf_verification(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda _: record)
     monkeypatch.setitem(sys.modules, "precis.ingest.verify_metadata", None)
     store = MagicMock()
-    store.tx.return_value = nullcontext()
+    conn = MagicMock()
+    # acquire now title-folds a resolved stub into a held twin (gr784146);
+    # a None first row means "not a PDF-less stub" → no fold.
+    conn.execute.return_value.fetchone.return_value = None
+    store.tx.return_value = nullcontext(conn)
     store.find_ref_by_identifier.return_value = None
     store.upsert_stub_paper.return_value = (42, True)
     store.pin_stub_for_fetch.return_value = True

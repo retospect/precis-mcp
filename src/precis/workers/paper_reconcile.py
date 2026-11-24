@@ -8,7 +8,9 @@ the system worker at a low cadence so the corpus self-heals:
 * :func:`reconcile_by_title_similarity` — the motivating case: an id-less
   title-only stub minted for a paper we already hold (no shared
   identifier to collapse on). Auto-merges the high-confidence band only;
-  the ambiguous band is logged, never merged.
+  the ambiguous band is logged, never merged. The id-bearing twin folds
+  at acquire time instead (:func:`precis.ingest.dedup.fold_stub_into_held_twin`,
+  gr784146).
 * :func:`reconcile_by_pdf_sha256` / :func:`reconcile_by_doi_case` — the
   identifier/file duplicate classes. Idempotent and cheap once the corpus
   is clean.

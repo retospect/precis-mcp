@@ -1178,8 +1178,12 @@ def apply_fetches(
     registered identifier (doi/arxiv/s2) goes through ``acquire`` — the
     identifier collapses onto the held stub and re-pins it at the head of
     the ``fetch_oa`` queue, so a repeat request is a no-op pin, never a
-    second mint; a stub with no identifier is re-pinned directly. A paper
-    that already holds a body is refused ("already held").
+    second mint; a stub with no identifier is re-pinned directly. If
+    acquire resolves to an already-held paper, the note names the held
+    ref and the request spends no fetch slot. A record that carries a
+    PDF but no readable body is refused too — the fetch queue only
+    serves PDF-less stubs (``pin_stub_for_fetch`` no-ops on it), so the
+    repair is ``reextract``, not another fetch.
 
     ``{"url": "<https://…>", "why": ...}`` fetches a live page through the
     ``web`` cache (:func:`_fetch_web_page`; gr573684 — the pricing-page /
@@ -1270,6 +1274,17 @@ def apply_fetches(
                 f"{ident}: full text already held — read its chunks with `read`"
             )
             continue
+        if ref.pdf_sha256:
+            # A PDF-bearing record never enters the fetch queue
+            # (pin_stub_for_fetch no-ops on it), so counting this as a
+            # made fetch would be a lie — the repair for a file that
+            # left no readable text is reextract.
+            refused.append(
+                f"{ident}: PDF on file but no readable text — repair with "
+                f"`edit(id='pa{ref.id}', args={{'reextract': True}})`, "
+                "not fetch"
+            )
+            continue
         try:
             ids = store.identifiers_for_refs([ref.id]).get(ref.id, {})
         except Exception:
@@ -1277,6 +1292,7 @@ def apply_fetches(
         identifier = next(
             (f"{k}:{ids[k]}" for k in ("doi", "arxiv", "s2") if ids.get(k)), None
         )
+        fetch_ref_id = ref.id
         try:
             if identifier is not None:
                 if handler is None:
@@ -1286,15 +1302,38 @@ def apply_fetches(
                     handler = PaperHandler(
                         hub=hub if hub is not None else Hub(store=store)
                     )
-                handler.acquire(
+                result = handler.acquire(
                     identifier=identifier,
                     title=(ref.title or None),
                     reason=f"quest lit-fetch: {why or 'tick-requested'}",
                     verify=True,
                     explicit=False,
                 )
+                if result.ref_id is not None:
+                    fetch_ref_id = result.ref_id
+                if _paper_body_held(store, fetch_ref_id):
+                    refused.append(
+                        f"pa{fetch_ref_id}: full text already held — "
+                        "read its chunks with `read`"
+                    )
+                    continue
+                resolved = (
+                    ref
+                    if fetch_ref_id == ref.id
+                    else store.get_ref(kind="paper", id=fetch_ref_id)
+                )
+                if resolved is not None and resolved.pdf_sha256:
+                    refused.append(
+                        f"pa{fetch_ref_id}: PDF on file but no readable text — "
+                        "repair with `edit(id='pa"
+                        f"{fetch_ref_id}', args={{'reextract': True}})`, "
+                        "not fetch"
+                    )
+                    continue
             else:
-                store.pin_stub_for_fetch(ref.id)
+                if not store.pin_stub_for_fetch(ref.id):
+                    refused.append(f"{ident}: not a stub the fetch queue serves")
+                    continue
         except Exception as exc:
             log.exception(
                 "apply_fetches: acquire failed for quest %s paper %s",
@@ -1309,7 +1348,7 @@ def apply_fetches(
                 store,
                 quest_id,
                 text=(
-                    f"{_FETCH_MARKER} requested full text for pa{ref.id}"
+                    f"{_FETCH_MARKER} requested full text for pa{fetch_ref_id}"
                     + (f" — {why}" if why else "")
                 )[:400],
                 entry_type="observation",
