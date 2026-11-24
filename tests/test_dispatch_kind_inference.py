@@ -398,3 +398,14 @@ class TestDisabledPythonKindNext:
         ]
         assert not _next_calls(out, "tag")
         assert "precis-kinds-disabled-help" in out
+
+    def test_get_refusal_says_do_not_retry(self, runtime: PrecisRuntime) -> None:
+        """gr753023: the same refusal on ``get`` (the 24h sample was all
+        ``get(kind='python', id='main::...')``)."""
+        out = runtime.dispatch(
+            "get", {"kind": "python", "id": "main::precis.workers.chase.x"}
+        )
+        assert "[error:Unsupported]" in out
+        assert "kind 'python' is off on this host" in out
+        assert "do not retry" in out
+        assert "your own file and search tools" in out
