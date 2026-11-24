@@ -49,12 +49,6 @@ _FACTOR = re.compile(r"1(\.0)?e-?10\b")
 #: Modules allowed to carry the factor, each with its reason. Paths are
 #: relative to ``src/precis_se``.
 _ALLOWED: dict[str, str] = {
-    "ops.py": (
-        "import_trace reads a PDB / mmCIF C-alpha trace — Å-native by "
-        "format spec — into the se metre world: the structure-enclave "
-        "crossing at the file-ingest boundary, beside the cad.dsl "
-        "require_units parse"
-    ),
     "atomic/mechanics.py": (
         "interaction physics keeps Å/nN/eV signatures — cost terms over "
         "the geometry, not lengths in it (merge doc: NOT in scope)"
