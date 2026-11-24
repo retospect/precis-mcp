@@ -55,7 +55,10 @@ log history is a ghost, not a death. Deliberate offs are excluded:
 disabled services, a `service_config`-gated cadence (`gripe_dispatch`,
 `gripe_triage`, `asks_triage`) on a host where it resolves dark (no row,
 or prio 0; for `gripe_dispatch` only while another host is lit), and
-worker units the host heartbeat reports both inactive and disabled. A finding keys as `pass-dead:<host>/<process>/<handler>` at `warn`.
+worker units the host heartbeat reports both inactive and disabled. A scheduler
+cadence outcome logged on any host within the silence budget also counts for
+a cadence with no host affinity (lease winners change), so a handler that
+merely moved hosts is not reported dead. A finding keys as `pass-dead:<host>/<process>/<handler>` at `warn`.
 Sibling rows: `pass-wedged` (the
 heartbeat stays fresh but the pass's `since` goes stale — it has been
 running for hours), `rescue-pass-cadence`, `llm-degraded`,
