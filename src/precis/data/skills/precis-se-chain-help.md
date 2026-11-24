@@ -8,6 +8,7 @@ answers:
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
   - why is pairing derived instead of declared — how do two strands actually pair?
   - what do the chain_bend/chain_clash/chain_loop_short/... findings mean and how do I fix them?
+  - how do I import a protein C-alpha trace and tube?
   - how do I materialise a helix's segments so the 3D viewer draws it (layout_chain)?
   - what Leontis-Westhof geometries can geometry=/overrides= take and which bases do they accept?
   - which offsets admit a 0-nt crossover on a honeycomb/square lattice (the register rule)?
@@ -17,7 +18,7 @@ answers:
   - how do I turn a sequence's ViennaRNA fold into helices/strands/domains (fold_layout)?
   - why does view='drc' say chain_fold_unavailable, and what is chain_offtarget telling me?
   - why does declare_helix/add_domain reject a bare number?
-applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|unpair|fill_complement|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
+applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|unpair|fill_complement|remove_domain|clear_chain|layout_chain|import_trace|relax_chain|fold_layout|realize_chain)
 status: active
 tags: verbs, design
 kinds: se
@@ -35,10 +36,10 @@ route two strands over the same helix offsets running opposite directions
 and the pair falls out of that; see "Pairing is derived" below, the single
 most important idea here.
 
-All twelve ops sit on an ordinary se block — `declare_helix`/`declare_strand`
+All thirteen ops sit on an ordinary se block — `declare_helix`/`declare_strand`
 mark a block `add_block` already minted, the same way `set_mode`/`declare_dof`
-do (`fold_layout` is the exception: it mints the blocks its fold needs). Nine
-are pure and auto-apply; `relax_chain`, `fold_layout` and `realize_chain` are
+do. `fold_layout` and `import_trace` mint the blocks they need. Ten
+ops apply directly; `relax_chain`, `fold_layout` and `realize_chain` are
 handler-level and arrive as proposals. For the rest of the `se` call surface
 (blocks, ports, connects, measures, BOM, states) see [[precis-se-help]].
 
@@ -275,6 +276,21 @@ viewer actually draws — a helix with no `layout_chain` run has geometry
 
 `layout_chain` on a non-helix block is refused ("declare_helix it first —
 a strand has no geometry of its own").
+
+## Importing a protein trace — `import_trace`
+
+Set `name=` to a new block name and `source=` to the PDB or mmCIF text,
+or to `structure:<slug>` for a structure linked to its original protein
+fold. Use `chain=` when the file has multiple chains. The default
+`step='per-residue'` follows the C-alpha polyline. Use
+`step='per-ss-segment'` for child blocks fitted to alpha-helix,
+beta-strand and coil runs inferred from C-alpha distances. The op
+builds the `layout_chain` envelopes with `tube_radius=` (default 0.5 nm).
+A chain whose trace has a break (missing residues) is refused; import
+each contiguous piece as its own block with `start=`/`end=` — a
+half-open window over the chain's C-alpha positions, the refusal names
+the index. A protein helix takes no `add_domain` route; it is a tube,
+not a duplex carrier.
 
 ## Clearing a declaration — `clear_chain`
 

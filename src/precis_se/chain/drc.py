@@ -36,7 +36,9 @@ What each rule is, and why it is at the tier it is:
 - ``chain_clash`` (warn) — two segments' swept tubes are closer than the
   design's ``min_gap`` (:func:`precis_chain.clash.clashes`, the kernel's
   exact broad phase). Consecutive segments of one helix and the two
-  segments a crossover joins are *supposed* to touch and are skipped.
+  segments a crossover joins are *supposed* to touch and are skipped; so
+  is every protein-trace pair — an imported tube envelopes a measured
+  fold, so its contacts are the structure, not a design error.
 - ``chain_loop_short`` (error) — a loop cannot reach: the gap between the
   two backbone exits exceeds ``(n + 1) * c + tol``, the kernel's
   ``(n+1)``-bond contour convention plus the spec's ``tol``, which is the
@@ -55,7 +57,8 @@ What each rule is, and why it is at the tier it is:
   so; the handler-side pass re-emits against a ``material`` row when the
   design has one.
 - ``chain_dangling_domain`` (error) — a domain naming a block that is not
-  there (or is not a strand/helix), an offset past the helix's end, or a
+  there (or is not a strand/helix), a route onto a protein trace (whose
+  units are residues, not bases), an offset past the helix's end, or a
   route whose ``ord`` sequence has a hole or a repeat.
 - ``chain_sequence_length`` (error) — a strand's sequence is not as long
   as its route: every domain's bases (less deleted offsets, plus inserted
@@ -101,9 +104,10 @@ from precis_chain.clash import capsule_distance, clashes
 from precis_chain.curvature import min_bend_radius_violations
 from precis_chain.loop import contour, loop_slack_energy
 from precis_chain.register import commensurate
-from precis_se.chain import nucleic
+from precis_se.chain import nucleic, protein
 from precis_se.chain.layout import (
     HelixGeometry,
+    clearance_owner,
     helix_geometry,
     segment_capsule,
     segment_ranges,
@@ -395,6 +399,21 @@ def _route_findings(
                     )
                 )
                 continue
+            if geom.nucleic == protein.PROTEIN:
+                findings.append(
+                    ValidationIssue(
+                        rule="chain_dangling_domain",
+                        subject=f"{strand}#{domain.ord}",
+                        detail=(
+                            f"domain routes onto {domain.helix!r}, a protein "
+                            "trace — its units are C-alpha residues, not bases "
+                            "a strand can occupy; remove_domain the row (a "
+                            "protein helix carries no nucleic-acid route)"
+                        ),
+                        severity="error",
+                    )
+                )
+                continue
             if domain.end > geom.n_units:
                 findings.append(
                     ValidationIssue(
@@ -458,9 +477,10 @@ def _sequence_length_findings(
 
 def _segment_table(
     geoms: dict[str, HelixGeometry],
-) -> tuple[list[Any], dict[str, tuple[int, int]]]:
+) -> tuple[list[Any], dict[str, tuple[int, int]], list[str]]:
     """Capsules for every helix's segments, plus ``helix → (base index,
-    units per segment)`` so an offset's capsule index is arithmetic.
+    units per segment)`` so an offset's capsule index is arithmetic, and
+    the owning helix's name per capsule.
 
     The same tiling ``layout_chain`` materialises (:func:`precis_se.chain.
     layout.segment_ranges`), computed here rather than read off the child
@@ -469,13 +489,15 @@ def _segment_table(
     """
     capsules: list[Any] = []
     index: dict[str, tuple[int, int]] = {}
+    owners: list[str] = []
     for name in sorted(geoms):
         geom = geoms[name]
         per = units_per_segment(geom)
         index[name] = (len(capsules), per)
         for start, end in segment_ranges(geom.n_units, per):
             capsules.append(segment_capsule(geom, start, end))
-    return capsules, index
+            owners.append(name)
+    return capsules, index, owners
 
 
 def _capsule_of(
@@ -493,7 +515,7 @@ def _clash_findings(
     loops: list[tuple[DomainSpec, DomainSpec, float, float]],
     findings: list[ValidationIssue],
 ) -> None:
-    capsules, index = _segment_table(geoms)
+    capsules, index, owners = _segment_table(geoms)
     if len(capsules) < 2:
         return
     # Sanctioned contacts: consecutive segments of one helix (they share an
@@ -508,15 +530,23 @@ def _clash_findings(
         j = _capsule_of(index, after.helix, after.entry_offset)
         if i is not None and j is not None and i != j:
             skip.append((i, j))
-    # One tolerance for the whole pass: the tightest ``min_gap`` any helix
-    # in the design declares. A per-pair tolerance would need the pair, and
-    # the kernel's broad phase is built around a single tol — taking the
-    # tightest is the conservative reading (it reports less), and a design
-    # mixing tolerances is told which helix set the number.
-    owner = min(geoms.values(), key=lambda g: g.min_gap_m)
+    # A pair of protein-trace capsules is exempt outright: an imported
+    # tube envelopes a measured fold, so its contacts — inside one trace,
+    # across a per-ss-segment boundary, at an interface between two
+    # imports — ARE the structure, never a min_gap design error. At the
+    # default 0.5 nm tube radius any real fold's trace would otherwise
+    # flood the report with one warning per pair of segments two bonds
+    # apart. Protein-vs-nucleic still reports: a trace overlapping a
+    # designed duplex is a collision worth naming.
+    is_protein = [geoms[owner].nucleic == protein.PROTEIN for owner in owners]
+    if all(is_protein):
+        return
+    owner = clearance_owner(geoms)
     tol = owner.min_gap_m
     default_note = "" if owner.gap_authored else ", the coded lattice default"
     for i, j in clashes(capsules, skip_pairs=skip, tol=tol):
+        if is_protein[i] and is_protein[j]:
+            continue
         gap = capsule_distance(capsules[i], capsules[j])
         findings.append(
             ValidationIssue(

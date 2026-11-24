@@ -70,6 +70,7 @@ from dataclasses import dataclass
 
 from precis_chain.motif import Motif
 from precis_chain.register import Lattice
+from precis_se.chain import protein
 
 # ── motifs ──────────────────────────────────────────────────────────────
 
@@ -135,8 +136,11 @@ OXDNA_UNIT_M = 0.8518e-9
 #: The motifs by name, in se's metres/radians. ``min_bend_radius`` is the
 #: Lp/5 default; ``contour_per_unit`` is the SINGLE-strand contour, which
 #: is what the kernel's loop machinery wants from a duplex motif (see
-#: :attr:`precis_chain.motif.Motif.contour_per_unit`).
+#: :attr:`precis_chain.motif.Motif.contour_per_unit`). The three protein
+#: motifs (:mod:`precis_se.chain.protein`) are listed here too so a helix
+#: record can name them.
 MOTIFS: dict[str, Motif] = {
+    **protein.MOTIFS,
     "B-DNA": Motif(
         name="B-DNA",
         rise=B_DNA_RISE_M,
@@ -159,7 +163,7 @@ MOTIFS: dict[str, Motif] = {
 
 #: Which nucleic acid each motif is made of — the default motif for a
 #: strand/helix that names only ``nucleic``.
-MOTIF_FOR_NUCLEIC = {"DNA": "B-DNA", "RNA": "A-RNA"}
+MOTIF_FOR_NUCLEIC = {"DNA": "B-DNA", "RNA": "A-RNA", protein.PROTEIN: "protein-coil"}
 
 #: The two nucleic acids this cut models.
 NUCLEICS = ("DNA", "RNA")
@@ -465,6 +469,9 @@ def minor_groove_span_from_widths(minor_m: float, major_m: float) -> float:
 MINOR_GROOVE_SPAN_RAD: dict[str, float] = {
     "B-DNA": math.radians(144.0),
     "A-RNA": minor_groove_span_from_widths(*GROOVE_WIDTH_M["A-RNA"]),
+    # A protein trace is a single strand: no groove, and its one backbone
+    # point (the C-alpha) sits ON the unit frame's normal.
+    **{name: 0.0 for name in protein.MOTIFS},
 }
 
 

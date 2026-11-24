@@ -80,10 +80,16 @@ def rmf_double_reflection(
     frames[0, :, 1] = r
     frames[0, :, 2] = np.cross(t_i, r)
 
+    # "Coincident" is judged against the longest chord, not an absolute
+    # number: the kernel is unit-agnostic, and in metres a 0.15 nm rise has
+    # a squared chord of 2e-20 — below any fixed epsilon, which silently
+    # skipped the first reflection on every step of a nanometre-scale helix.
+    chords = np.einsum("ij,ij->i", np.diff(pts, axis=0), np.diff(pts, axis=0))
+    c1_floor = _EPS * float(chords.max()) if chords.size else 0.0
     for i in range(n - 1):
         v1 = pts[i + 1] - pts[i]
         c1 = float(np.dot(v1, v1))
-        if c1 > _EPS:
+        if c1 > c1_floor and c1 > 0.0:
             r_l = r - (2.0 / c1) * float(np.dot(v1, r)) * v1
             t_l = t_i - (2.0 / c1) * float(np.dot(v1, t_i)) * v1
         else:  # coincident samples — nothing to reflect in

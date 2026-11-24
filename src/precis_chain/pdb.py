@@ -235,7 +235,7 @@ def _split_cif_row(line: str) -> list[str]:
 
 def _read_trace_cif(text: str, atom_name: str) -> dict[str, list[list[float]]]:
     lines = text.splitlines()
-    out: dict[str, list[list[float]]] = {}
+    out: dict[str, list[tuple[int, list[float]]]] = {}
     i = 0
     while i < len(lines):
         if lines[i].strip().lower() != "loop_":
@@ -246,7 +246,7 @@ def _read_trace_cif(text: str, atom_name: str) -> dict[str, list[list[float]]]:
         while i < len(lines) and lines[i].strip().startswith("_"):
             tags.append(lines[i].strip())
             i += 1
-        if not all(tag.startswith("_atom_site.") for tag in tags):
+        if not tags or not all(tag.startswith("_atom_site.") for tag in tags):
             continue
         keys = [tag.split(".", 1)[1] for tag in tags]
         try:
@@ -260,6 +260,7 @@ def _read_trace_cif(text: str, atom_name: str) -> dict[str, list[list[float]]]:
                 "mmCIF _atom_site loop lacks label_atom_id / label_asym_id / "
                 f"Cartn_x,y,z — cannot read a trace from it ({exc})"
             ) from None
+        col_seq = keys.index("label_seq_id") if "label_seq_id" in keys else None
         while i < len(lines):
             row = lines[i].strip()
             if not row or row.startswith(("#", "_", "loop_", "data_")):
@@ -270,10 +271,21 @@ def _read_trace_cif(text: str, atom_name: str) -> dict[str, list[list[float]]]:
                 continue
             if values[col_name] != atom_name:
                 continue
-            out.setdefault(values[col_chain], []).append(
-                [float(values[col_x]), float(values[col_y]), float(values[col_z])]
+            seq = values[col_seq] if col_seq is not None else "."
+            if seq in ("?", ".") and col_seq is not None and atom_name == "CA":
+                continue  # Calcium and other non-polymer atoms have no residue id.
+            rows = out.setdefault(values[col_chain], [])
+            ordinal = int(seq) if seq not in ("?", ".") else len(rows)
+            rows.append(
+                (
+                    ordinal,
+                    [float(values[col_x]), float(values[col_y]), float(values[col_z])],
+                )
             )
-    return out
+    return {
+        chain: [coords for _, coords in sorted(rows, key=lambda row: row[0])]
+        for chain, rows in out.items()
+    }
 
 
 def read_trace(text: str, atom_name: str) -> dict[str, np.ndarray]:
@@ -289,8 +301,8 @@ def read_trace(text: str, atom_name: str) -> dict[str, np.ndarray]:
     ``atom_name`` that appears nowhere yields an empty dict rather than an
     error, since a chain legitimately may not carry the atom.
 
-    Rows come back in file order, which for a well-formed model is residue
-    order. Alternate locations, insertion codes and models are **not**
+    Rows come back in mmCIF label_seq_id order when present, otherwise in
+    file order. Alternate locations, insertion codes and models are **not**
     distinguished — every matching record lands in its chain's array. A caller
     reading a multi-model NMR ensemble gets all models concatenated, and should
     split on ``MODEL`` itself before calling.

@@ -530,15 +530,16 @@ Atomic mode applies when a block's realization is chemistry rather than a
 solid — nested envelopes down to bond-level threading, degrees of freedom,
 a binding into a real `structure` design.
 
-## Nucleic-acid chains (DNA/RNA design)
+## DNA/RNA chains and protein traces
 
-Seven pure ops over ordinary blocks (see [[precis-se-chain-help]]): `declare_helix` (geometry — centre
+Chain ops over ordinary blocks (see [[precis-se-chain-help]]): `declare_helix` (geometry — centre
 line, motif, unit count) · `declare_strand` (route chemistry — sequence
 optional) · `add_domain`/`set_domain`/`remove_domain` (a strand's ordered
 route along a helix; `set_domain` edits one row in place, `remove_domain` is
 destructive) · `clear_chain` (un-declare,
 cascading) · `layout_chain` (materialise `<helix>.s<k>` segment children —
-what the 3D viewer draws). Pairing is DERIVED — two strands on one helix
+what the 3D viewer draws) · `import_trace` (import one protein C-alpha
+chain from PDB/mmCIF or a converged fold as a path and tube). Pairing is DERIVED — two strands on one helix
 offset running opposite ways, never declared. Three
 handler-level ops, proposals never auto-applied: `relax_chain`
 (settle those segments — hinges, loop springs, excluded volume; poses

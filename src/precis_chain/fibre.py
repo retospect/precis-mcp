@@ -35,6 +35,26 @@ from precis_chain.path import Path, sample_at
 _FIT_RTOL = 1e-9
 
 
+def r0_seed(path: Path, preferred: np.ndarray) -> np.ndarray:
+    """``preferred`` as the ``r0`` seed for :func:`unit_frames` on ``path``
+    — or, when it is (near-)parallel to the first tangent, the world axis
+    least aligned with that tangent (the same fallback ``r0=None`` uses).
+
+    A caller passing a fixed world seed (se's ``+x`` convention) needs the
+    SAME seed for every path the azimuth convention must agree on; a
+    parallel one would only fail inside the frame solve, so the swap
+    happens here, where the path is in hand.
+    """
+    _, tangents = sample_at(path, np.array([0.0]))
+    t0 = tangents[0]
+    r = np.asarray(preferred, dtype=float).reshape(3)
+    if float(np.linalg.norm(r - float(r @ t0) * t0)) < 1e-6:
+        seed = np.zeros(3)
+        seed[int(np.argmin(np.abs(t0)))] = 1.0
+        return seed
+    return r
+
+
 @dataclass(frozen=True)
 class UnitFrames:
     """Where every repeat unit of a helix sits, and how it is rolled.
@@ -66,6 +86,7 @@ def unit_frames(
     phase0: float = 0.0,
     *,
     r0: np.ndarray | None = None,
+    distances: np.ndarray | None = None,
 ) -> UnitFrames:
     """Place ``n_units`` units of ``motif`` along ``path``.
 
@@ -75,6 +96,8 @@ def unit_frames(
     deterministic but the absolute azimuth is arbitrary; pass an explicit
     ``r0`` when the design's azimuths must mean something in world terms, e.g.
     "toward the lattice neighbour at 12 o'clock").
+
+    ``distances`` optionally gives one arc length per unit for irregular samples.
 
     The frame field is built from the **unit-spaced samples themselves**, not
     from the path's own (possibly finer) sampling. At a rise three orders of
@@ -86,14 +109,23 @@ def unit_frames(
         raise ValueError(f"n_units must be >= 0, got {n_units}")
     if n_units == 0:
         return UnitFrames(np.zeros((0, 3)), np.zeros((0, 3, 3)), np.zeros(0))
-    needed = float(n_units - 1) * motif.rise
+    s = np.arange(n_units, dtype=float) * motif.rise if distances is None else distances
+    if (
+        s.shape != (n_units,)
+        or not np.all(np.isfinite(s))
+        or s[0] < 0
+        or np.any(np.diff(s) <= 0)
+    ):
+        raise ValueError(
+            "unit distances must be finite, strictly increasing and on the path"
+        )
+    needed = float(s[-1])
     if path.length * (1.0 + _FIT_RTOL) < needed:
         raise ValueError(
             f"path is {path.length:g} long but {n_units} units of motif "
             f"{motif.name!r} need {needed:g} (rise {motif.rise:g}) to place "
             "every unit origin — shorten the run or lengthen the path"
         )
-    s = np.arange(n_units, dtype=float) * motif.rise
     origins, tangents = sample_at(path, s)
     if r0 is None:
         t0 = tangents[0]

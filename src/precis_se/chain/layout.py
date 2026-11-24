@@ -32,16 +32,17 @@ the kernel's (:class:`~precis_chain.envelope.Capsule` +
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 
 from precis_chain.envelope import Capsule, capsule_pose
-from precis_chain.fibre import UnitFrames, backbone_exit, unit_frames
+from precis_chain.fibre import UnitFrames, backbone_exit, r0_seed, unit_frames
 from precis_chain.motif import Motif, units_for_length
 from precis_chain.path import Path, polyline
-from precis_se.chain import nucleic
+from precis_se.chain import nucleic, protein
 from precis_se.chain.vocab import (
     DEFAULT_SEGMENT_UNITS,
     HELIX_ROLE,
@@ -60,6 +61,9 @@ class HelixGeometry:
     the unconstrained one, kept so a report can name both. ``units``
     carries one origin and one frame per unit; ``lattice`` is the register
     lattice's name, or ``None`` for a free centre line.
+
+    ``tube_radius_m`` controls protein envelopes independently of the
+    motif backbone offset.
 
     ``min_bend_radius_m`` is the authored limit when there is one and
     :data:`precis_se.chain.nucleic.DEFAULT_MIN_BEND_RADIUS_M` otherwise —
@@ -86,6 +90,7 @@ class HelixGeometry:
     #: feed :func:`twist_residual` only.
     insertions: int = 0
     deletions: int = 0
+    tube_radius_m: float | None = None
 
     def origin(self, offset: int) -> np.ndarray:
         """Unit ``offset``'s position on the axis, metres."""
@@ -118,6 +123,16 @@ class HelixGeometry:
             + nucleic.strand_azimuth_rad(self.base_motif, bool(forward))
         )
         return float((raw + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+def clearance_owner(geoms: Mapping[str, HelixGeometry]) -> HelixGeometry:
+    """The tightest duplex gap governs every pair involving a duplex.
+
+    Both callers exempt protein-only pairs. The protein-only fallback
+    supplies a nominal gap for the settle summary and other bodies.
+    """
+    duplexes = [geom for geom in geoms.values() if geom.nucleic != protein.PROTEIN]
+    return min(duplexes or geoms.values(), key=lambda geom: geom.min_gap_m)
 
 
 def _helix_path(record: dict[str, Any], motif: Motif, n_units: int) -> Path:
@@ -155,11 +170,24 @@ def helix_geometry(node: Any) -> HelixGeometry:
     if lattice is None and site is not None:
         lattice = site["kind"]
     motif = nucleic.lattice_motif(base_motif, lattice)
+    if record.get("rise_m") is not None:
+        motif = replace(motif, rise=float(record["rise_m"]))
+    tube_radius_m = record.get("tube_radius_m")
+    if nucleic_name == protein.PROTEIN and tube_radius_m is None:
+        tube_radius_m = protein.DEFAULT_TUBE_RADIUS_M
     n_units = int(record["n_units"])
     phase0 = float(record.get("phase0") or 0.0)
     path = _helix_path(record, motif, n_units)
     try:
-        units = unit_frames(path, motif, n_units, phase0, r0=np.array([1.0, 0.0, 0.0]))
+        distances = path.s[:n_units] if motif.name == "protein-coil" else None
+        units = unit_frames(
+            path,
+            motif,
+            n_units,
+            phase0,
+            r0=r0_seed(path, np.array([1.0, 0.0, 0.0])),
+            distances=distances,
+        )
     except ValueError as exc:
         raise ChainError(f"helix {node.name!r}: {exc}") from exc
     bend_authored = record.get("min_bend_radius_m") is not None
@@ -180,10 +208,15 @@ def helix_geometry(node: Any) -> HelixGeometry:
             else base_motif.min_bend_radius
         ),
         bend_authored=bend_authored,
+        tube_radius_m=tube_radius_m,
         min_gap_m=(
             float(record["min_gap_m"])
             if gap_authored
-            else nucleic.default_min_gap_m(base_motif)
+            else (
+                0.0
+                if tube_radius_m is not None
+                else nucleic.default_min_gap_m(base_motif)
+            )
         ),
         gap_authored=gap_authored,
         insertions=len((record.get("register") or {}).get("insertions") or []),
@@ -266,10 +299,14 @@ def units_per_segment(geom: HelixGeometry, max_seg_len_m: float | None = None) -
     ``max_seg_len`` under one rise still yields one unit per segment rather
     than an empty tiling). Otherwise **one lattice repeat** (21 units
     honeycomb, 32 square), or :data:`precis_se.chain.vocab.
-    DEFAULT_SEGMENT_UNITS` for a helix with no lattice.
+    DEFAULT_SEGMENT_UNITS` for a helix with no lattice — and one unit for a
+    ``protein-coil`` trace, where each segment is a C-alpha bond (a longer
+    chord would cut a bend).
     """
     if max_seg_len_m is not None:
         return max(1, units_for_length(geom.motif, max_seg_len_m))
+    if geom.motif.name == "protein-coil":
+        return 1
     if geom.lattice is not None:
         return nucleic.LATTICES[geom.lattice].pitch_units
     return DEFAULT_SEGMENT_UNITS
@@ -315,13 +352,21 @@ def segment_capsule(geom: HelixGeometry, start: int, end: int) -> Capsule:
     that is what ``chain_bend`` is for, and that check reads the path's own
     samples, not the capsules.
     """
+    if geom.motif.name == "protein-coil":
+        assert geom.tube_radius_m is not None
+        a = geom.origin(start)
+        if end + 1 < len(geom.path.points):
+            b = geom.path.points[end + 1]
+        else:
+            b = geom.origin(end) + 0.5 * geom.motif.rise * geom.units.frames[end][:, 0]
+        return Capsule(a, b, geom.tube_radius_m)
     half = 0.5 * geom.motif.rise
     t_start = np.asarray(geom.units.frames[start][:, 0], dtype=float)
     t_end = np.asarray(geom.units.frames[end][:, 0], dtype=float)
     return Capsule(
         geom.origin(start) - half * t_start,
         geom.origin(end) + half * t_end,
-        geom.motif.radius,
+        geom.motif.radius if geom.tube_radius_m is None else geom.tube_radius_m,
     )
 
 

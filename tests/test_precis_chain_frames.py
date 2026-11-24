@@ -176,3 +176,20 @@ def test_repeated_samples_do_not_poison_the_frame_field() -> None:
     frames = rmf_double_reflection(points, tangents, np.array([0.0, 1.0, 0.0]))
     assert np.all(np.isfinite(frames))
     assert np.allclose(frames[:, :, 1], np.tile([0.0, 1.0, 0.0], (4, 1)))
+
+
+def test_rmf_is_scale_invariant() -> None:
+    """The same helix in metres at nanometre scale and in nanometres gives the
+    same frames — a fixed epsilon on the squared chord used to skip the first
+    reflection on every step at 1e-10 scale."""
+    t = np.linspace(0.0, 3.0, 40)
+    pts = np.column_stack([np.cos(t), np.sin(t), 0.3 * t])
+    seed = np.array([0.0, 0.0, 1.0])
+    a = rmf_double_reflection(pts, _unit_tangents(pts), seed)
+    b = rmf_double_reflection(pts * 1e-10, _unit_tangents(pts), seed)
+    assert np.allclose(a, b, atol=1e-9)
+
+
+def _unit_tangents(pts: np.ndarray) -> np.ndarray:
+    d = np.gradient(pts, axis=0)
+    return d / np.linalg.norm(d, axis=1, keepdims=True)

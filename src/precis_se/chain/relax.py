@@ -79,8 +79,10 @@ from precis_chain.relax import (
 )
 from precis_se import compose as se_compose
 from precis_se import library as se_library
+from precis_se.chain import protein
 from precis_se.chain.layout import (
     HelixGeometry,
+    clearance_owner,
     helix_geometry,
     local_capsule,
     segment_capsule,
@@ -409,7 +411,7 @@ def _bodies(tree: SeTree, geoms: dict[str, HelixGeometry]) -> list[_Body]:
                     end=end,
                     a_nm=a_nm,
                     b_nm=a_nm + length_nm * axis,
-                    radius_nm=geom.motif.radius * _NM_PER_M,
+                    radius_nm=nominal.r * _NM_PER_M,
                     length_nm=length_nm,
                     carry=carry,
                     movable=False,
@@ -802,7 +804,6 @@ def _write_back(
     tree: SeTree,
     bodies: list[_Body],
     settled: np.ndarray,
-    geoms: dict[str, HelixGeometry],
 ) -> int:
     """Settled bead positions → each movable child's pose/rot, stamped
     ``origin='proposed'``.
@@ -825,7 +826,7 @@ def _write_back(
         b = a + (body.length_nm / _NM_PER_M) * axis
         parent = tree.blocks[body.helix]
         capsule = local_capsule(
-            Capsule(a, b, geoms[body.helix].motif.radius), parent.pose, parent.rot
+            Capsule(a, b, body.radius_nm / _NM_PER_M), parent.pose, parent.rot
         )
         pose, rot = segment_pose(capsule)
         node.local_pose, node.local_rot = pose, rot
@@ -1025,16 +1026,27 @@ def _settle(
     hinges = _hinges(bodies, geoms, lp)
     loops = _loops(tree, geoms, bodies)
     legs = _legs(tree, geoms, bodies, walkers)
-    # The excluded-volume clearance is the same number ``chain_clash``
-    # measures against — the tightest ``min_gap`` any helix declares — so a
-    # settle and the check that grades it cannot disagree.
-    gap_owner = min(geoms.values(), key=lambda g: g.min_gap_m)
+    # Use the same duplex clearance as chain_clash in a mixed design.
+    gap_owner = clearance_owner(geoms)
     # Sanctioned contacts, matching ``chain_clash``'s own exemptions: the
-    # two segments a loop joins are *supposed* to touch. Hinge-welded pairs
-    # are already exempt inside the kernel.
+    # two segments a loop joins are *supposed* to touch, and protein-trace
+    # pairs are exempt outright — an imported tube envelopes a measured
+    # fold, so letting excluded volume act between its segments would
+    # settle the structure *apart*. Hinge-welded pairs are already exempt
+    # inside the kernel.
+    protein_bodies = [
+        i
+        for i, body in enumerate(bodies)
+        if body.helix in geoms and geoms[body.helix].nucleic == protein.PROTEIN
+    ]
     skip = sorted(
         {tuple(sorted((loop.body_a, loop.body_b))) for loop in loops}
         | {tuple(sorted((leg.walker, leg.foot))) for leg in legs}
+        | {
+            (a, b)
+            for k, a in enumerate(protein_bodies)
+            for b in protein_bodies[k + 1 :]
+        }
     )
     pins = [
         Pin(body=i, end=end, target=_triple((body.a_nm, body.b_nm)[end]))
@@ -1057,7 +1069,7 @@ def _settle(
         )
     except ValueError as exc:  # pragma: no cover — the vetting above precedes it
         raise OpError(f"relax_chain: the settle refused this bundle: {exc}") from exc
-    written = _write_back(tree, bodies, result.bodies, geoms)
+    written = _write_back(tree, bodies, result.bodies)
     curves = 0 if walkers else _write_curves(bodies, loops, result.bodies)
     stations = _write_state_poses(tree, bodies, result.bodies, walkers)
     return _summary(

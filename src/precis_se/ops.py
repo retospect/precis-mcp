@@ -268,7 +268,7 @@ beside the others and each one's *scope* is the block it names.
 
 **The nucleic-acid domain** (vocabulary and numbers in
 :mod:`precis_se.chain`, geometry in :mod:`precis_chain`)
-adds seven pure ops. Same rule as the atomic mode: one op table, and each
+adds eight pure ops. Same rule as the atomic mode: one op table, and each
 op's scope is the block it names. The two chain ops that spend compute or
 need an optional dependency (``relax_chain``, ``fold_layout``) are
 handler-level and are not in this table.
@@ -311,6 +311,14 @@ handler-level and are not in this table.
   end]`` unit range — the ranges tiling the helix exactly, which is the
   seam ``se-nucleic-realize-export`` reads. Re-running retires and
   regenerates; both derived facets are stamped ``origin='proposed'``.
+- ``import_trace``      — a protein C-alpha trace (PDB / mmCIF text,
+  one chain) as helix block(s) plus their ``layout_chain`` tube:
+  ``step='per-residue'`` (one helix, a unit per residue) or
+  ``'per-ss-segment'`` (a helix child per helix / strand / coil run on the
+  ``alpha-helix`` / ``beta-strand`` / ``protein-coil`` motifs of
+  :mod:`precis_se.chain.protein`), ``tube_radius=`` (default 0.5 nm),
+  ``start=``/``end=`` to take a window of the chain's C-alpha positions
+  (a trace with a chain break imports as one piece per window).
 
 The two handler-level chain ops (:mod:`precis_se.chain.relax`,
 :mod:`precis_se.chain.fold`, dispatched by
@@ -387,6 +395,7 @@ from precis_se.chain import layout as chain_layout
 from precis_se.chain import nucleic
 from precis_se.chain import occupancy as chain_occupancy
 from precis_se.chain import pairing as chain_pairing
+from precis_se.chain import protein as chain_protein
 from precis_se.chain import vocab as chain_vocab
 from precis_se.chain.vocab import UNPAIRED, ChainError, DomainSpec
 from precis_se.fret import (
@@ -4007,6 +4016,23 @@ def _domains_of(tree: SeTree, strand: str) -> list[DomainSpec]:
     return sorted((d for d in tree.domains if d.strand == strand), key=lambda d: d.ord)
 
 
+def _refuse_protein_helix(tree: SeTree, helix: str, opname: str) -> None:
+    """Refuse routing a strand domain onto a protein-trace helix.
+
+    A strand's domains occupy *bases*; a protein helix's units are C-alpha
+    residues and its tube is the whole payload — pairing, occupancy and
+    ``realize_chain`` would otherwise emit DNA backbone and base pairs on
+    a measured trace. ``chain_dangling_domain`` carries the same refusal
+    to rows that reach the store by another route."""
+    node = tree.blocks.get(helix)
+    if node is not None and (node.chain or {}).get("nucleic") == chain_protein.PROTEIN:
+        raise OpError(
+            f"{opname}: helix {helix!r} is a protein trace — a strand's "
+            "domains run along nucleic-acid helices; the trace's units are "
+            "C-alpha residues, not bases a strand can occupy"
+        )
+
+
 def _renumber(route: list[DomainSpec]) -> None:
     """Re-index a route 0…n-1 after a removal, and drop a leading
     ``loop_before_nt``.
@@ -4109,6 +4135,7 @@ def _op_add_domain(tree: SeTree, op: dict[str, Any]) -> None:
             "add_domain: 'strand' and 'helix' must be different blocks — a "
             "strand routes ALONG a helix; one block cannot be both"
         )
+    _refuse_protein_helix(tree, helix, "add_domain")
     payload = {k: v for k, v in op.items() if k not in ("op", "strand", "helix")}
     route = _domains_of(tree, strand)
     try:
@@ -4195,6 +4222,7 @@ def _op_set_domain(tree: SeTree, op: dict[str, Any]) -> None:
             "set_domain: 'strand' and 'helix' must be different blocks — a "
             "strand routes ALONG a helix; one block cannot be both"
         )
+    _refuse_protein_helix(tree, helix, "set_domain")
     payload: dict[str, Any] = {
         "forward": match.forward,
         "start": match.start,
@@ -4745,6 +4773,119 @@ def _op_layout_chain(tree: SeTree, op: dict[str, Any]) -> None:
     compose_world_pose(tree)
 
 
+def _trace_window(op: dict[str, Any], n: int) -> tuple[int, int]:
+    """``import_trace``'s ``start=``/``end=`` — a half-open window over the
+    chosen chain's ``n`` C-alpha positions (absent → the whole chain). A
+    chain whose C-alpha trace has a break is imported as two windows, one
+    contiguous piece each; the break refusal names the index to cut at."""
+    lo_raw, hi_raw = op.get("start"), op.get("end")
+    try:
+        lo = 0 if lo_raw is None else int(lo_raw)
+        hi = n if hi_raw is None else int(hi_raw)
+    except (TypeError, ValueError) as exc:
+        raise ChainError(
+            f"import_trace: 'start'/'end' must be whole-number C-alpha "
+            f"positions, got start={lo_raw!r} end={hi_raw!r}"
+        ) from exc
+    if not (0 <= lo < hi <= n):
+        raise ChainError(
+            f"import_trace: 'start'/'end' window [{lo}, {hi}) is outside "
+            f"the chain's {n} C-alpha positions"
+        )
+    return lo, hi
+
+
+def _op_import_trace(tree: SeTree, op: dict[str, Any]) -> None:
+    """Import one chain's C-alpha trace as helix block(s) plus their
+    ``layout_chain`` tube — the protein ``declare_helix`` analogue.
+
+    ``name=`` (a new block, like ``add_block``), ``source=`` (or ``text=``) the
+    PDB / mmCIF text, ``chain=`` the chain id (optional when the file has one
+    chain), ``start=``/``end=`` a half-open window over the chain's C-alpha
+    positions (for splitting around a chain break — the refusal names the
+    index), ``step='per-residue'`` (default; one helix block, a unit per
+    residue on the C-alpha polyline) or ``'per-ss-segment'`` (a parent block
+    ``name`` with one helix child ``name.ss<k>`` per helix / strand / coil run
+    called from the C-alpha distances, helices and strands on the
+    ``alpha-helix`` / ``beta-strand`` motifs), and ``tube_radius=`` (a length,
+    default 0.5 nm). Numbers and the secondary-structure call:
+    :mod:`precis_se.chain.protein`.
+
+    The store-aware dispatcher resolves ``source='structure:<slug>'`` to the
+    linked protein fold's original mmCIF before this pure op runs."""
+    from precis_chain import read_trace
+
+    raw = op.get("source", op.get("text"))
+    if not isinstance(raw, str) or not raw.strip():
+        raise OpError("import_trace: needs source= (the PDB / mmCIF text)")
+    if raw.lstrip().startswith("structure:"):
+        raise OpError(
+            "import_trace: a structure design stores element and position only "
+            "(no atom or residue names), so a C-alpha trace cannot be read back "
+            "from it — pass the PDB / mmCIF text as source="
+        )
+    name = _require_name(op, "name", "import_trace")
+    step = str(op.get("step") or "per-residue")
+    try:
+        tube = (
+            chain_protein.DEFAULT_TUBE_RADIUS_M
+            if op.get("tube_radius") is None
+            else chain_vocab.length_m(op["tube_radius"], "tube_radius", "import_trace")
+        )
+        try:
+            traces = read_trace(raw, "CA")
+        except ValueError as exc:
+            raise ChainError(f"import_trace: {exc}") from exc
+        chain_id = op.get("chain")
+        if chain_id is None:
+            if len(traces) != 1:
+                raise ChainError(
+                    "import_trace: chain= is required — the file has chain(s) "
+                    f"{', '.join(sorted(traces)) or '(no C-alpha atoms)'}"
+                )
+            chain_id = next(iter(traces))
+        if str(chain_id) not in traces:
+            raise ChainError(
+                f"import_trace: no C-alpha atoms in chain {chain_id!r}; the file "
+                f"has {', '.join(sorted(traces)) or '(none)'}"
+            )
+        trace = traces[str(chain_id)]
+        lo, hi = _trace_window(op, trace.shape[0])
+        runs = chain_protein.build_runs(trace[lo:hi] * 1e-10, step, tube)
+        for run in runs:
+            chain_vocab.vet_path(run.record["path"], "import_trace")
+    except (ChainError, chain_protein.TraceError) as exc:
+        raise OpError(str(exc)) from exc
+    helices = [
+        SeBlock(
+            name=f"{name}{run.suffix}",
+            parent=name if run.suffix else None,
+            descr=f"residues {run.first + lo}–{run.last + lo} ({run.ss})",
+            chain=run.record,
+        )
+        for run in runs
+    ]
+    for helix in helices:
+        try:
+            geom = chain_layout.helix_geometry(helix)
+        except ChainError as exc:
+            raise OpError(f"import_trace: {exc}") from exc
+        ranges = chain_layout.segment_ranges(
+            geom.n_units, chain_layout.units_per_segment(geom)
+        )
+        names = [helix.name, *(f"{helix.name}.s{k}" for k in range(len(ranges)))]
+        for candidate in names:
+            if candidate in tree.blocks:
+                raise OpError(f"import_trace: block {candidate!r} already exists")
+    _op_add_block(tree, {k: op[k] for k in ("name", "desc") if k in op})
+    for helix in helices:
+        if helix.name == name:
+            tree.blocks[name].chain = helix.chain
+        else:
+            tree.blocks[helix.name] = helix
+        _op_layout_chain(tree, {"block": helix.name})
+
+
 _OPS = {
     **blocktree.CORE_OPS,
     "add_block": _op_add_block,
@@ -4805,6 +4946,7 @@ _OPS = {
     "remove_domain": _op_remove_domain,
     "clear_chain": _op_clear_chain,
     "layout_chain": _op_layout_chain,
+    "import_trace": _op_import_trace,
 }
 
 

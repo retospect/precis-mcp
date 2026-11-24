@@ -456,6 +456,10 @@ def apply_ops_with_atomic(
                 echoes.append(op_wall_rate(store, tree, op))
                 continue
             try:
+                if name == "import_trace":
+                    from precis_se.chain.protein_source import resolve_trace_source
+
+                    op = resolve_trace_source(store, op)
                 apply_ops(tree, [op])
             except OpError as exc:
                 raise BadInput(str(exc)) from exc

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.utils.units import echo_quantity, format_vector, op_note, parse_quantity
-from precis_se.chain import nucleic
+from precis_se.chain import nucleic, protein
 
 #: ``chain.role`` values. ``helix`` carries geometry, ``strand`` carries
 #: the route's chemistry, ``segment`` is a ``layout_chain`` child
@@ -53,6 +53,7 @@ _HELIX_KEYS = frozenset(
         "min_gap_m",
     }
 )
+_PROTEIN_HELIX_KEYS = frozenset({"rise_m", "tube_radius_m", "ss"})
 #: Keys a stored strand record may carry.
 _STRAND_KEYS = frozenset({"role", "sequence", "nucleic", "anchor"})
 #: Keys a stored segment record may carry.
@@ -494,6 +495,8 @@ def build_helix(op: dict[str, Any], *, what: str = "declare_helix") -> dict[str,
     """
     nucleic_name = resolve_nucleic(op.get("nucleic"), what)
     motif_name = resolve_motif_name(op.get("motif"), nucleic_name, what)
+    if motif_name in protein.MOTIFS:
+        raise ChainError(f"{what}: use import_trace for protein motifs")
     n_units = _int(op.get("n_units"), "n_units", what, minimum=1)
     raw_path = op.get("path")
     if raw_path is None:
@@ -689,9 +692,39 @@ def validate_chain(raw: Any, *, what: str = "chain") -> dict[str, Any]:
         raise ChainError(f"{what} must be a JSON object, got {raw!r}")
     role = str(raw.get("role") or "").strip()
     if role == HELIX_ROLE:
-        _strays(raw, _HELIX_KEYS, f"{what} (helix)")
-        nucleic_name = resolve_nucleic(raw.get("nucleic"), what)
-        resolve_motif_name(raw.get("motif"), nucleic_name, what)
+        is_protein = raw.get("nucleic") == protein.PROTEIN
+        keys = _HELIX_KEYS | _PROTEIN_HELIX_KEYS if is_protein else _HELIX_KEYS
+        _strays(raw, keys, f"{what} (helix)")
+        nucleic_name = (
+            protein.PROTEIN if is_protein else resolve_nucleic(raw.get("nucleic"), what)
+        )
+        motif = resolve_motif_name(raw.get("motif"), nucleic_name, what)
+        if is_protein != (motif in protein.MOTIFS):
+            raise ChainError(
+                f"{what}: motif {motif!r} does not match polymer {nucleic_name!r}"
+            )
+        if is_protein:
+            for key in ("rise_m", "tube_radius_m"):
+                if key in raw:
+                    value = raw[key]
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                        or value <= 0
+                    ):
+                        raise ChainError(
+                            f"{what}: {key!r} must be a finite positive length in metres"
+                        )
+            ss = raw.get("ss")
+            if not isinstance(ss, str) or not ss or set(ss) - {"H", "E", "C"}:
+                raise ChainError(f"{what}: 'ss' must contain H, E or C labels")
+            if raw.get("register") is not None or (
+                isinstance(raw.get("path"), dict) and "lattice" in raw["path"]
+            ):
+                raise ChainError(
+                    f"{what}: a protein trace requires waypoints without a lattice register"
+                )
         _int(raw.get("n_units"), "n_units", what, minimum=1)
         vet_path(raw.get("path"), what)
         if raw.get("register") is not None:

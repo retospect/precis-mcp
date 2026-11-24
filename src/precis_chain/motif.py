@@ -75,7 +75,6 @@ class Motif:
     def __post_init__(self) -> None:
         for field_name in (
             "rise",
-            "radius",
             "min_bend_radius",
             "persistence_length",
             "contour_per_unit",
@@ -86,6 +85,10 @@ class Motif:
                     f"Motif.{field_name} must be a finite positive length, "
                     f"got {value!r} (motif {self.name!r})"
                 )
+        if not math.isfinite(self.radius) or self.radius < 0:
+            raise ValueError(
+                f"Motif.radius must be finite and non-negative, got {self.radius!r}"
+            )
         if not math.isfinite(float(self.twist)):
             raise ValueError(f"Motif.twist must be finite, got {self.twist!r}")
 

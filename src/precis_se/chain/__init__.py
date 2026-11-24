@@ -1,16 +1,13 @@
-"""se's nucleic-acid domain — DNA/RNA design in the block tree.
+"""se chain geometry for DNA/RNA designs and protein traces.
 
 The binding between the chemistry-free :mod:`precis_chain` geometry kernel
 and se's six-level IR. The pure ops that write these records live in
 :mod:`precis_se.ops`; the two handler-level ones are
 :mod:`precis_se.chain.relax` (``relax_chain``) and
-:mod:`precis_se.chain.fold` (``fold_layout``). Every module here but
-:mod:`precis_se.chain.relax` and :mod:`precis_se.chain.findings` is
-store-free — those two are the ones that read a ``material``
-persistence-length row, which is exactly why the op and the finding that
-uses it are handler-level. ``fold_layout`` is store-free too and
-handler-level for the other two reasons: an optional dependency
-(ViennaRNA, the ``[chain]`` extra) and O(n³) compute.
+:mod:`precis_se.chain.fold` (``fold_layout``). The relax and findings modules
+read material persistence lengths, and the protein source resolver reads
+fold metadata. Fold layout is handler-level for its optional ViennaRNA
+dependency and O(n³) compute.
 
 **The decomposition** (scadnano's, chosen 2026-09-27): a **helix** carries
 the geometry — a centre line, a motif, per-unit frames, a swept tube; a
@@ -34,6 +31,17 @@ antiparallel domains on one helix and a loop between them.
   ``se_blocks.chain`` and a ``kind='domain'`` topology row
   (:class:`~precis_se.chain.vocab.DomainSpec`), and the one units boundary
   (metres in, metres stored).
+- :mod:`precis_se.chain.protein` — the protein motifs (alpha-helix,
+  beta-strand, coil), the C-alpha secondary-structure call and the
+  ``import_trace`` record builder. Protein traces reuse helix layout and DRC
+  and are refused from DNA/RNA strand routing (a domain on one is
+  ``chain_dangling_domain``). The motif radius places the C-alpha
+  backbone, while the stored tube radius sizes the layout capsules.
+  DRC and relaxation exempt protein–protein capsule pairs because
+  their contacts represent the measured fold. The tightest duplex
+  clearance governs duplex–duplex and protein–duplex pairs.
+  :mod:`precis_se.chain.protein_source` resolves a converged structure
+  through its fold link because the projected atoms lack residue identities.
 - :mod:`precis_se.chain.layout` — a stored record → kernel arrays: the
   centre-line path, per-unit origins/frames, the segment tiling
   ``layout_chain`` materialises, the capsules the clash check runs on.
