@@ -288,7 +288,15 @@ The daily `walk_cards` pass is a third capture door beside what-is asks and
 page highlights: it reads each login's `/eye` walk and queues the concepts
 they focused or met one hop out (`twin:asked`, `source="walk"` — never a
 new term, never a carded or mastered one). Cards the forge mints from a
-walk-queued concept carry `meta.source="walk"` + `meta.walk_date`.
+walk-queued concept carry `meta.source="walk"` + `meta.walk_date`; cards
+from a pending highlight carry `meta.source="highlight"` (a highlight wins
+over a walk, since its text supplies the prompt), and a rework keeps the
+old card's source. Dropping a walk card pauses walk intake for that concept
+on your account for 90 days.
+
+On `/anki` and `/learning`, automatic cards show a **walk**, **highlight**
+or **forge** badge, and **drop all** retires a whole source + UTC mint-day
+batch at once. These are web-only; there is no tool call for them.
 
 Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on
 the next sync — own-guid lookups only, so your hand-made cards are unreachable.
