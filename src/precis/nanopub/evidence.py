@@ -909,6 +909,10 @@ def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
     ``resolved_from or chunk_id``. A tombstoned chunk with NO live
     redirect keeps its pre-map answer (its text is still the passage a
     pin meant); a deleted row with a dead-end chain stays absent.
+
+    Results come back in REQUEST order (each id's first occurrence), not
+    the query's row order: callers pin grounding passages in edge order
+    and the redirect join's plan is free to return rows any way it likes.
     """
     if not chunk_ids:
         return []
@@ -955,17 +959,23 @@ def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
                 else:
                     nxt[origin] = int(new_id)
             frontier = nxt
-    return [
-        ChunkInfo(
-            chunk_id=int(r[0]),
-            ref_id=int(r[1]),
-            ord=int(r[2]),
-            text=str(r[3] or ""),
-            section_path=list(r[4] or []),
-            resolved_from=origin,
+    out: list[ChunkInfo] = []
+    for cid in request_ids:
+        hit = found.get(cid)
+        if hit is None:
+            continue
+        row, stale = hit
+        out.append(
+            ChunkInfo(
+                chunk_id=int(row[0]),
+                ref_id=int(row[1]),
+                ord=int(row[2]),
+                text=str(row[3] or ""),
+                section_path=list(row[4] or []),
+                resolved_from=stale,
+            )
         )
-        for r, origin in found.values()
-    ]
+    return out
 
 
 def paper_body_chunks(store: Store, ref_id: int) -> list[ChunkInfo]:
