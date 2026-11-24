@@ -3,7 +3,9 @@
 Pure logic; deps are stdlib plus ``docstring_parser`` (param docs).
 Walks a repo — skipping cruft dirs, ``CACHEDIR.TAG`` caches and
 ``.gitignore``-excluded paths, the same source selection git applies —
-and parses every remaining `.py` file with `ast`, producing a
+and parses `.py` files and extensionless scripts with a Python shebang
+using `ast`. A bounded binary first-line probe identifies scripts without
+decoding arbitrary extensionless files. The parser produces a
 queryable in-memory index of modules, classes, functions, methods,
 line ranges, signatures, docstrings, and per-param records
 (`Symbol.params` — signature merged with Google / Sphinx / NumPy

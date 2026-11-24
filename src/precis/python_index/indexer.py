@@ -1,10 +1,10 @@
 """AST-based indexer.
 
-`index_repo(root)` walks a directory, parses every `.py` file with
+`index_repo(root)` walks a directory, parses Python source files with
 `ast`, and builds a `RepoIndex`. `index_module(...)` parses one file
 and is a useful unit-test seam.
 
-Qualname resolution: for each `.py` file, walk up parents while
+Qualname resolution: for each source file, walk up parents while
 `__init__.py` exists. The first ancestor *without* an `__init__.py` is
 the package boundary; everything below it becomes the dotted qualname.
 
@@ -79,7 +79,7 @@ _SKIP_DIRS = frozenset(
 
 
 def index_repo(root: Path) -> RepoIndex:
-    """Build a `RepoIndex` for every indexable `.py` file under `root`.
+    """Build a `RepoIndex` for every indexable Python file under `root`.
 
     Parse errors are captured on each `ModuleIndex.parse_error` and do
     not abort the walk; the module ends up with a single module-level
@@ -116,7 +116,7 @@ def index_module(
     qualname: str,
     file_relative: str | None = None,
 ) -> ModuleIndex:
-    """Parse one `.py` file and return its `ModuleIndex`.
+    """Parse one Python source file and return its `ModuleIndex`.
 
     `qualname` is the dotted import path the module is reachable as
     (e.g. `precis.registry`). `file_relative` is what's recorded in
@@ -803,7 +803,7 @@ def _resolve_attribute(
 
 
 def _walk_python_files(root: Path) -> Iterable[Path]:
-    """Yield every indexable `.py` file under `root`, depth-first, sorted
+    """Yield every indexable Python file under `root`, depth-first, sorted
     within each directory for stable output order.
 
     A directory is skipped when it is in `_SKIP_DIRS`, starts with `.`,
@@ -821,7 +821,7 @@ def _walk_python_files(root: Path) -> Iterable[Path]:
 
 
 def _walk_python_dir(directory: Path, rulesets: gitignore.Rulesets) -> Iterable[Path]:
-    """Yield indexable `.py` files under `directory`, descending only
+    """Yield indexable Python files under `directory`, descending only
     into directories the accumulated `.gitignore` rules keep."""
     local = gitignore.read_rules(directory / ".gitignore")
     scoped = (*rulesets, (directory, local)) if local else rulesets
@@ -836,13 +836,24 @@ def _walk_python_dir(directory: Path, rulesets: gitignore.Rulesets) -> Iterable[
             if (entry / "CACHEDIR.TAG").is_file():
                 continue
             yield from _walk_python_dir(entry, scoped)
-        elif entry.is_file() and entry.suffix == ".py":
-            if not gitignore.is_ignored(scoped, entry, is_dir=False):
+        elif entry.suffix in ("", ".py") and entry.is_file():
+            if gitignore.is_ignored(scoped, entry, is_dir=False):
+                continue
+            if entry.suffix == ".py" or _has_python_shebang(entry):
                 yield entry
 
 
+def _has_python_shebang(path: Path) -> bool:
+    try:
+        with path.open("rb") as stream:
+            first_line = stream.readline(256)
+    except OSError:
+        return False
+    return first_line.startswith(b"#!") and b"python" in first_line
+
+
 def _qualname_for_file(path: Path) -> str:
-    """Compute the dotted import qualname for a `.py` file.
+    """Compute the dotted qualname for a Python source file.
 
     Walk up parents while each one contains an `__init__.py`. Once we
     hit a directory without `__init__.py`, that's the package

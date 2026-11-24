@@ -248,6 +248,30 @@ def test_get_file_outline_explicit_view(handler: PythonHandler) -> None:
     assert "outline" in out.body
 
 
+@pytest.mark.parametrize(
+    "address", ["r/scripts/round~cmd_supersede", "r::round.cmd_supersede"]
+)
+def test_get_extensionless_python_script_symbol(tmp_path: Path, address: str) -> None:
+    _write(
+        tmp_path,
+        "scripts/round",
+        """
+        #!/usr/bin/env python3
+        def cmd_supersede():
+            return 'superseded'
+
+        def unrelated():
+            return 'unrelated'
+        """,
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+
+    out = handler.get(id=address, view="source")
+
+    assert "return 'superseded'" in out.body
+    assert "def unrelated" not in out.body
+
+
 def test_get_unknown_file_raises(handler: PythonHandler) -> None:
     with pytest.raises(NotFound, match="not found in repo"):
         handler.get(id="r/no/such/file.py")

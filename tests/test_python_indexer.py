@@ -58,6 +58,22 @@ def _by_qualname(idx: RepoIndex, qn: str) -> Symbol:
     return sym
 
 
+def test_extensionless_python_script_indexed(tmp_path: Path) -> None:
+    script = "#!/usr/bin/env -S uv run --no-project --python >=3.12 python\n"
+    script += "def cmd_supersede():\n    return 'superseded'\n"
+    round_script = _write(tmp_path, "scripts/round", script)
+    _write(tmp_path, "scripts/shell", "#!/usr/bin/env bash\n# python\n")
+    (tmp_path / "scripts/binary").write_bytes(b"\x00\xffpython")
+    _write(tmp_path, ".gitignore", "scripts/ignored\n")
+    _write(tmp_path, "scripts/ignored", script)
+    (tmp_path / "scripts/linked").symlink_to(round_script)
+
+    idx = index_repo(tmp_path)
+
+    assert sorted(idx.modules) == ["round"]
+    assert _by_qualname(idx, "round.cmd_supersede").start_line == 2
+
+
 # ---------------------------------------------------------------------------
 # Top-level shape
 # ---------------------------------------------------------------------------
