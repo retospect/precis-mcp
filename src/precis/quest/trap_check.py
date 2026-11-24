@@ -82,14 +82,22 @@ STRIVING = (
 )
 
 # The planted energies can read like recoverable slab calculations in the
-# frontier. Explain the synthetic geometry even on previously minted quests.
+# frontier. Explain the synthetic geometry even on previously minted quests
+# — every candidate, or the tick asks for the unnamed ones' host/slab
+# metadata instead (gr696720: the Co and Cu traps stayed dopant-looking).
 FIXTURE_CONTEXT = (
-    "These candidates are synthetic single-atom fixtures with planted measurements. "
-    "trap-swapped-endpoint is a Ni atom with no host slab, so host element and slab "
-    "size are inapplicable. control-clean is a separate Fe atom. There is no "
-    "physical endpoint to reconstruct and these rows cannot form an NEB pair. "
-    "Use needs to request a trusted re-measurement of the provisional result "
-    "within the exercise."
+    "These candidates are synthetic single-atom fixtures with planted "
+    "measurements — each is one atom alone in the cell, not a slab "
+    "carrying a dopant. trap-stale-engine is a Co atom, "
+    "trap-swapped-endpoint is a Ni atom with no host slab, "
+    "trap-absurd-barrier is a Cu atom and control-clean is a separate "
+    "Fe atom. No candidate has a host slab, so host element and slab "
+    "size are inapplicable to every row — that metadata does not exist "
+    "to give, so do not request it. There is no physical endpoint to "
+    "reconstruct, no pair of these rows can form an NEB calculation, "
+    "and no corrected geometry or re-proposal on another binding site "
+    "can fix a planted row. Use needs to request a trusted "
+    "re-measurement of the provisional result within the exercise."
 )
 
 #: The rubric the fixture declares — barrier first (the trapped axis),

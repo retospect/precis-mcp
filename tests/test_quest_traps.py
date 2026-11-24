@@ -90,6 +90,11 @@ class TestFixture:
         prompt = build_tick_prompt(store, quest)
         assert "trap-swapped-endpoint is a Ni atom with no host slab" in prompt
         assert "control-clean is a separate Fe atom" in prompt
+        # every candidate is named — an unnamed trap still reads as a
+        # dopant structure and draws host/slab metadata needs (gr696720)
+        assert "trap-stale-engine is a Co atom" in prompt
+        assert "trap-absurd-barrier is a Cu atom" in prompt
+        assert "host element and slab size are inapplicable to every row" in prompt
 
     def test_mints_dormant_quest_outside_the_loop(self, store: Any) -> None:
         qid = trap_check.ensure_fixture(store)
