@@ -9,11 +9,15 @@ missing/retired answers have unavailable get sizes, never a zero-cost success.
 
 from __future__ import annotations
 
-import re
 from statistics import median
 from typing import Any
 
-from precis.cli.memory import SPACE_TAG, _mirrored_handles
+from precis.cli.memory import (
+    SPACE_TAG,
+    _mirrored_handles,
+    _recall_rank,
+    _recall_targets,
+)
 from precis.config import PrecisConfig
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
@@ -40,9 +44,18 @@ def measure_recall(
     MemoryHandler(hub=hub)._register_with(hub)
     runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
     ks = sorted({*CURVE_KS, k})
+    targets = _recall_targets(store, entries)
     mirrored = _mirrored_handles(store, [e["want"] for e in entries])
+    stale: list[dict[str, str]] = []
     queries: list[dict[str, Any]] = []
-    for entry in entries:
+    for entry, accepted in zip(entries, targets, strict=True):
+        want = entry["want"]
+        if not accepted:
+            stale.append({"want": want, "query": entry["query"]})
+            continue
+        # Prefer the canonical answer for cost. If it is stale but an explicit
+        # alternate is still live, measure the first live alternate in set order.
+        answer = next(h for h in (want, *entry.get("accept", ())) if h in accepted)
         indexes: dict[str, Any] = {}
         ranks: dict[int, int | None] = {}
         for cutoff in ks:
@@ -60,18 +73,14 @@ def measure_recall(
             if error:
                 raise RuntimeError(f"memory recall search failed: {text}")
             indexes[str(cutoff)] = _size(text)
-            handles = re.findall(r"^- .+? \((me\d+)[,)]", text, re.M)
-            ranks[cutoff] = next(
-                (i for i, handle in enumerate(handles, 1) if handle == entry["want"]),
-                None,
-            )
+            ranks[cutoff] = _recall_rank(text, accepted)
         sizes: dict[str, Any] = {}
         for key, view in (
             ("fisheye_1hop", "fisheye+1hop"),
             ("fisheye_1hop_recall", "fisheye+1hop+recall"),
         ):
             text, error = runtime.dispatch_with_status(
-                "get", {"kind": "memory", "id": entry["want"], "view": view}, fold=True
+                "get", {"kind": "memory", "id": answer, "view": view}, fold=True
             )
             if error and not text.startswith(("[error:NotFound]", "[error:Gone]")):
                 raise RuntimeError(f"memory recall get failed: {text}")
@@ -111,6 +120,8 @@ def measure_recall(
         "token_estimator": TOKEN_ESTIMATOR,
         "rank_k": max(ks),
         "queries": queries,
+        "stale": sorted({entry["want"] for entry in stale}),
+        "stale_queries": stale,
         "curve": curve,
         "median_tokens_k5": next(
             row["median_tokens"] for row in curve if row["k"] == 5
@@ -134,4 +145,8 @@ def render_recall_curve(measurements: dict[str, Any]) -> str:
             f"{row['k']:2} {row['hits']}/{row['total']} ({row['recall']:.1%}) "
             f"{shown} {row['measured']}"
         )
+    out.extend(
+        f"STALE {entry['want']} {entry['query']}"
+        for entry in measurements["stale_queries"]
+    )
     return "\n".join(out) + "\n"

@@ -851,7 +851,7 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "warn",
         "scheduler",
         triage="Read app_settings['memory_recall:last'] for the misses, then "
-        "`precis memory index --set` for the per-query HIT/MISS table "
+        "`precis memory index --set` for the per-query HIT/MISS/STALE table "
         "(--curve for recall versus estimated tokens); fix the regressed "
         "titles/hooks, index path or render cost, then resolve.",
     ),

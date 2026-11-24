@@ -30,7 +30,7 @@ Gripe intake bounds frozen reports (``precis-work-help``). Todo sweeps
 recheck under lock; thread sweeps serialize provenance-checked decisions
 on the target ref.
 
-Runner halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra
+Halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra
 failures and gives task-design failures one repair attempt. :mod:`.halt_recovery`
 keeps the infra breaker and cohort probe. :mod:`.halt_heal` locks
 cadence halt state when applying a supervisor verdict.
@@ -82,7 +82,7 @@ Scheduler cadences
 ``transcript_audit`` samples closed factory chains, dark by default;
 :mod:`.transcript_audit`.
 
-``memory_recall`` measures renders; :mod:`.memory_recall`.
+``memory_recall`` scores live questions, lists stale targets (:mod:`.memory_recall`).
 ``memory_recall_harvest`` queues proposals, default-OFF; :mod:`.memory_recall_harvest`.
 
 :mod:`.retention` reports before soft-deleting unused news. Durable read
@@ -108,7 +108,7 @@ and excludes dispatch priority nudges.
 
 Review tiers
 ------------
-Two SQL watchdog passes and two agentic reviewers, plus disk:
+SQL watchdogs, reviewers and disk monitoring:
 
 * ``nursery`` — SQL-only, every cycle, own docstring for the detector
   catalogue. ``critical`` categories (worker-restart, dead-worker,

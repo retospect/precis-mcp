@@ -654,32 +654,56 @@ def render_memory_index(
     return _render_live_threads(store, loaded, budget_tok, days=days, now=now)
 
 
+def _recall_targets(store: Store, entries: list[dict[str, Any]]) -> list[set[str]]:
+    """Live accepted handles per question. An empty set marks a stale question."""
+    handles = {
+        handle
+        for entry in entries
+        for handle in (entry["want"], *entry.get("accept", ()))
+    }
+    ids = [int(h[2:]) for h in handles if re.fullmatch(r"me[0-9]+", h)]
+    if not ids:
+        return [set() for _ in entries]
+    with store.tx() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+             WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' AND r.retired_at IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM links l JOIN refs s ON s.ref_id = l.src_ref_id
+                    WHERE l.dst_ref_id = r.ref_id AND l.relation = 'supersedes'
+                      AND s.ref_id <> r.ref_id
+                      AND s.kind = 'memory' AND s.retired_at IS NULL
+               )
+            """,
+            (ids,),
+        ).fetchall()
+    live = {f"me{rid}" for (rid,) in rows}
+    return [
+        live.intersection((entry["want"], *entry.get("accept", ())))
+        for entry in entries
+    ]
+
+
+def _recall_rank(text: str, targets: set[str]) -> int | None:
+    handles = re.findall(r"^- .+? \((me[0-9]+)[,)]", text, re.M)
+    return next((i for i, handle in enumerate(handles, 1) if handle in targets), None)
+
+
 def score_recall(
     store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
 ) -> list[int | None]:
-    """Rank of each entry's ``want`` handle in the ``--q`` render of its
-    ``query`` (1-based; ``None`` when it is not in the top ``k``).
-
-    The question-set scorer for ``memory_recall_set.json``: the
-    same :func:`render_memory_index` call a session's recall makes.
-    """
-    ranks: list[int | None] = []
-    for entry in entries:
-        lines = render_memory_index(
-            store, q=entry["query"], k=k, embedder=embedder
-        ).splitlines()
-        handle = f"({entry['want']}"
-        ranks.append(
-            next(
-                (
-                    i
-                    for i, ln in enumerate(lines, 1)
-                    if handle + ")" in ln or handle + "," in ln
-                ),
-                None,
-            )
+    """Rank of each entry's first accepted handle in the query's index."""
+    targets = _recall_targets(store, entries)
+    return [
+        _recall_rank(
+            render_memory_index(store, q=entry["query"], k=k, embedder=embedder),
+            accepted,
         )
-    return ranks
+        if accepted
+        else None
+        for entry, accepted in zip(entries, targets, strict=True)
+    ]
 
 
 def _mirrored_handles(store: Store, handles: list[str]) -> set[str]:
@@ -694,37 +718,35 @@ def _mirrored_handles(store: Store, handles: list[str]) -> set[str]:
     return {f"me{rid}" for (rid,) in rows}
 
 
-def recall_report_rows(
-    store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
-) -> list[tuple[dict[str, Any], int | None, str]]:
-    """``(entry, rank, origin)`` per question — the data the ``--set`` report
-    prints and the weekly ``memory_recall`` cadence records. ``origin`` is
-    ``"mirror"`` when the answer node carries a ``file_mirror`` stamp,
-    ``"native"`` otherwise."""
-    ranks = score_recall(store, entries, k=k, embedder=embedder)
-    mirrored = _mirrored_handles(store, [e["want"] for e in entries])
-    return [
-        (entry, rank, "mirror" if entry["want"] in mirrored else "native")
-        for entry, rank in zip(entries, ranks, strict=True)
-    ]
-
-
 def render_recall_report(
     store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
 ) -> str:
     """One ``HIT <rank>``/``MISS -`` line per entry (with the answer node's
-    origin, native or mirror), then a ``RECALL`` total split by origin."""
-    rows = recall_report_rows(store, entries, k=k, embedder=embedder)
+    origin, native or mirror), a ``STALE <want>`` line per entry whose
+    want (and ``accept`` alternates) is deleted or superseded, then a
+    ``RECALL`` total split by origin over the live entries."""
+    targets = _recall_targets(store, entries)
+    mirrored = _mirrored_handles(store, [e["want"] for e in entries])
     out: list[str] = []
     tally = {"native": [0, 0], "mirror": [0, 0]}
-    for entry, rank, origin in rows:
+    for entry, accepted in zip(entries, targets, strict=True):
+        want = entry["want"]
+        if not accepted:
+            out.append(f"STALE {want} {entry['query']}")
+            continue
+        rank = _recall_rank(
+            render_memory_index(store, q=entry["query"], k=k, embedder=embedder),
+            accepted,
+        )
+        origin = "mirror" if want in mirrored else "native"
         tally[origin][1] += 1
         tally[origin][0] += rank is not None
         verdict = f"HIT  {rank}" if rank is not None else "MISS -"
         out.append(f"{verdict} {entry['want']} {origin:6} {entry['query']}")
-    hits = sum(r is not None for _e, r, _o in rows)
+    hits = tally["native"][0] + tally["mirror"][0]
+    total = tally["native"][1] + tally["mirror"][1]
     out.append(
-        f"RECALL {hits}/{len(rows)} at k={k} "
+        f"RECALL {hits}/{total} at k={k} "
         f"(native {tally['native'][0]}/{tally['native'][1]}, "
         f"mirror {tally['mirror'][0]}/{tally['mirror'][1]})"
     )
@@ -740,6 +762,7 @@ RECALL_SET_RESOURCE = "memory_recall_set.json"
 
 def load_recall_set(path: str | Path | None = None) -> list[dict[str, Any]]:
     """A recall question set as a list of ``{query, want, ...}`` dicts —
+    optional ``accept`` lists other acceptable memory handles. Use
     the packaged P4 set when ``path`` is ``None`` (bare ``--set``, and the
     ``memory_recall`` cadence), else the JSON file at ``path``."""
     import json
@@ -1837,8 +1860,10 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         metavar="JSON",
         help=(
             "Score a recall question set instead of listing: a JSON list of "
-            "{query, want} (want = the answer me-handle). Prints HIT/MISS per "
-            "entry and a RECALL total at --k, split native/mirror. Bare "
+            "{query, want} (want = the answer me-handle; optional accept "
+            "lists other acceptable handles). Prints HIT/MISS per live "
+            "entry, STALE for entries whose want is deleted or superseded, "
+            "and a RECALL total at --k, split native/mirror. Bare "
             "--set scores the packaged P4 set (precis.data "
             "memory_recall_set.json)."
         ),

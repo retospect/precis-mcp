@@ -19,6 +19,9 @@ nobody watches; this makes it durable. Fired from the weekly host-agnostic ``mem
    a bounded ``history`` of prior scores. Additive ``queries``/``curve``
    fields retain ranks, recall and rendered chars/tokens (``chars/4``)
    through agent runtime dispatch, including both fisheye get variants.
+   Questions with no live, unsuperseded accepted answer are *stale*. They
+   are left out of the score and listed under ``stale`` (and in the alert
+   detail) so the set can be retargeted or pruned.
 3. **Alert** — a recall drop versus the last recorded run (total or
    either origin split, compared over the questions both runs scored —
    the set is a living document, so raw leg totals would read a ``want``
@@ -84,6 +87,8 @@ _HISTORY_KEYS = (
     "token_estimator",
     "rank_k",
     "queries",
+    "stale",
+    "stale_queries",
     "curve",
     "median_tokens_k5",
 )
@@ -279,9 +284,11 @@ def run_memory_recall_pass(
                 f"regressions on questions shared with the last recorded run: "
                 f"{'; '.join(drops)}; misses: "
                 f"{', '.join(misses) or 'none'}.\n"
+                f"Stale questions (no current answer): "
+                f"{', '.join(score['stale']) or 'none'}.\n"
                 "Scores live in app_settings['memory_recall:last'] "
                 "(prior scores in 'history'); `precis memory index --set` "
-                "prints the per-query HIT/MISS table; add --curve for recall "
+                "prints the per-query HIT/MISS/STALE table; add --curve for recall "
                 "versus median tokens (index + fisheye+1hop, chars/4). Fix "
                 "the regressed titles/hooks, index path or render cost, "
                 "then resolve this alert."

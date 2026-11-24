@@ -9,12 +9,13 @@ entries + the mock embedder. Scores land in ``app_settings``
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
 from precis.budget import settings as app_settings
-from precis.cli.memory import SPACE_TAG
-from precis.cli.memory_recall import CURVE_KS, measure_recall
+from precis.cli.memory import SPACE_TAG, render_recall_report
+from precis.cli.memory_recall import CURVE_KS, measure_recall, render_recall_curve
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
 from precis.protocol import tolerates_extra_kwargs
@@ -50,6 +51,15 @@ def _entries(*queries_wants: tuple[str, int]) -> list[dict[str, str]]:
     return [{"query": q, "want": f"me{w}"} for q, w in queries_wants]
 
 
+def _miss(entries: list[dict[str, str]], rid: int) -> list[dict[str, str]]:
+    """``entries`` with ``rid``'s question made unanswerable: a live node the
+    query no longer finds — a real miss (a deleted node is stale instead)."""
+    return [
+        {**e, "query": "unanswerable zzqx phrasing"} if e["want"] == f"me{rid}" else e
+        for e in entries
+    ]
+
+
 def _open_alerts(store: Store) -> list[tuple[int, str]]:
     with store.pool.connection() as conn:
         return conn.execute(
@@ -60,7 +70,7 @@ def _open_alerts(store: Store) -> list[tuple[int, str]]:
         ).fetchall()
 
 
-def _last(store: Store) -> dict:
+def _last(store: Store) -> dict[str, Any]:
     raw = app_settings.get_setting(store, LAST_SCORE_KEY)
     assert raw is not None
     return json.loads(raw)
@@ -73,7 +83,7 @@ def test_cadence_registered_weekly() -> None:
     assert not cad.spends
 
 
-def test_eligible_gate_matches_embedder_config(monkeypatch) -> None:
+def test_eligible_gate_matches_embedder_config(monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
     import precis.config
@@ -95,12 +105,12 @@ def test_load_recall_set_packaged() -> None:
     from precis.cli.memory import load_recall_set
 
     entries = load_recall_set()
-    assert len(entries) >= 36
+    assert len(entries) >= 34
     assert all(e["query"] and e["want"].startswith("me") for e in entries)
 
 
 def test_run_records_score_native_and_mirror(
-    hub: Hub, store: Store, monkeypatch
+    hub: Hub, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     native = _put(hub, title="native-node", hook="zebra quorum native")
     mirror = _put(hub, title="mirror-node", hook="xenon lattice mirror", mirror=True)
@@ -110,7 +120,9 @@ def test_run_records_score_native_and_mirror(
     rendered = []
     dispatch = PrecisRuntime.dispatch_with_status
 
-    def capture(self, verb, args, **kwargs):
+    def capture(
+        self: PrecisRuntime, verb: str, args: dict[str, Any], **kwargs: Any
+    ) -> tuple[str, bool]:
         assert kwargs["fold"] is True
         result = dispatch(self, verb, args, **kwargs)
         rendered.append((verb, dict(args), result))
@@ -172,7 +184,7 @@ def test_score_drop_raises_warn_alert(hub: Hub, store: Store) -> None:
     entries = _entries(("zebra quorum", native), ("xenon lattice", mirror))
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
 
-    store.retire_ref(mirror)  # the mirror answer node is gone -> mirror drops
+    entries = _miss(entries, mirror)  # the mirror query now misses -> mirror drops
 
     r = run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
     assert (r.ok, r.failed) == (1, 1)
@@ -181,9 +193,7 @@ def test_score_drop_raises_warn_alert(hub: Hub, store: Store) -> None:
 
     doc = _last(store)
     assert doc["mirror_hits"] == 0 and doc["hits"] == 1
-    assert doc["queries"][1]["fisheye_1hop"] is None
-    assert doc["queries"][1]["fisheye_1hop_recall"] is None
-    assert all(row["measured"] == 1 for row in doc["curve"])
+    assert doc["stale"] == []
     assert doc["history"][-1]["hits"] == 2  # the pre-drop score is kept
 
 
@@ -195,7 +205,7 @@ def test_drop_alert_names_the_regressed_wants(hub: Hub, store: Store) -> None:
     entries = _entries(("zebra quorum", native), ("xenon lattice", mirror))
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
 
-    store.retire_ref(native)
+    entries = _miss(entries, native)
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
     with store.tx() as conn:
         row = conn.execute(
@@ -235,18 +245,19 @@ def test_new_question_that_misses_is_not_a_drop(hub: Hub, store: Store) -> None:
     # An entry added to the set has no baseline; its miss lands in the
     # recorded misses but cannot be a regression versus the last run.
     native = _put(hub, title="native-node", hook="zebra quorum native")
+    other = _put(hub, title="other-node", hook="xenon lattice other")
     run_memory_recall_pass(
         store, entries=_entries(("zebra quorum", native)), embedder=hub.embedder
     )
 
     r = run_memory_recall_pass(
         store,
-        entries=_entries(("zebra quorum", native), ("unanswerable phrasing", 999999)),
+        entries=_entries(("zebra quorum", native), ("unanswerable phrasing", other)),
         embedder=hub.embedder,
     )
     assert (r.ok, r.failed) == (1, 1)
     doc = _last(store)
-    assert doc["misses"] == ["me999999"]
+    assert doc["misses"] == [f"me{other}"]
     assert _open_alerts(store) == []
 
 
@@ -279,7 +290,7 @@ def test_legacy_prior_without_queries_compares_rates(hub: Hub, store: Store) -> 
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
     assert _open_alerts(store) == []
 
-    store.retire_ref(native)
+    entries = _miss(entries, native)
     _seed_prior(2, 2)  # 0/1 against a queryless 2/2 baseline is a rate drop
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
     assert len(_open_alerts(store)) == 1
@@ -322,11 +333,11 @@ def test_recovery_resolves_the_drop_alert(hub: Hub, store: Store) -> None:
     entries = _entries(("zebra quorum", native), ("xenon lattice", mirror))
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
 
-    store.retire_ref(mirror)
+    entries = _miss(entries, mirror)
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
     assert len(_open_alerts(store)) == 1
 
-    # The node is still gone but the last recorded score is the lower one,
+    # The question still misses but the last recorded score is the lower one,
     # so an unchanged run resolves the drop alert (its condition cleared).
     run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
     assert _open_alerts(store) == []
@@ -344,7 +355,12 @@ def test_recovery_resolves_the_drop_alert(hub: Hub, store: Store) -> None:
     [(1.30, "chars/4", True), (1.25, "chars/4", False), (1.30, "other", False)],
 )
 def test_token_regression_threshold_and_recovery(
-    hub: Hub, store: Store, monkeypatch, factor: float, estimator: str, alerted: bool
+    hub: Hub,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    factor: float,
+    estimator: str,
+    alerted: bool,
 ) -> None:
     rid = _put(hub, title="native-node", hook="zebra quorum native")
     entries = _entries(("zebra quorum", rid))
@@ -354,7 +370,15 @@ def test_token_regression_threshold_and_recovery(
     # render metadata (for example age labels) changing between calls.
     measured = {
         key: prior[key]
-        for key in ("token_estimator", "rank_k", "queries", "curve", "median_tokens_k5")
+        for key in (
+            "token_estimator",
+            "rank_k",
+            "queries",
+            "curve",
+            "median_tokens_k5",
+            "stale",
+            "stale_queries",
+        )
     }
     measured["median_tokens_k5"] *= factor
     monkeypatch.setattr(
@@ -378,7 +402,9 @@ def test_token_regression_threshold_and_recovery(
     assert _open_alerts(store) == []
 
 
-def test_curve_cutoffs_count_hits_not_hint_lines(hub: Hub, store: Store, monkeypatch):
+def test_curve_cutoffs_count_hits_not_hint_lines(
+    hub: Hub, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from precis.response import Response
 
     rid = _put(hub, title="wanted", hook="zebra quorum")
@@ -388,7 +414,7 @@ def test_curve_cutoffs_count_hits_not_hint_lines(hub: Hub, store: Store, monkeyp
     # caches it per class), so a bare ``**kwargs`` would refuse q/tags/view
     # when no earlier test warmed the cache: opt out as a real handler would.
     @tolerates_extra_kwargs
-    def ranked(self, *, page_size=10, **kwargs):
+    def ranked(self: MemoryHandler, *, page_size: int = 10, **kwargs: Any) -> Response:
         handles = [f"me{rid + 100 + i}" for i in range(12)]
         handles[7] = f"me{rid}"
         return Response(
@@ -415,3 +441,55 @@ def test_empty_set_and_missing_summary(store: Store, hub: Hub) -> None:
     assert memory_recall_summary(store) == ""
     app_settings.set_setting(store, LAST_SCORE_KEY, "not json")
     assert memory_recall_summary(store) == ""
+
+
+def test_deleted_want_is_stale_not_a_miss(hub: Hub, store: Store) -> None:
+    keep = _put(hub, title="kept-node", hook="zebra quorum kept")
+    gone = _put(hub, title="gone-node", hook="xenon lattice gone")
+    with store.tx() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (gone,))
+    entries = _entries(("zebra quorum", keep), ("xenon lattice", gone))
+
+    r = run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+    doc = _last(store)
+    assert doc["stale"] == [f"me{gone}"]
+    assert doc["misses"] == []
+    assert doc["total"] == 1
+
+
+@pytest.mark.parametrize("alternate", [False, True])
+def test_superseded_want_in_cli_and_worker(
+    hub: Hub, store: Store, alternate: bool
+) -> None:
+    old = _put(hub, title="old-node", hook="zebra quorum original")
+    new = _put(hub, title="new-node", hook="xenon lattice successor")
+    if not alternate:
+        baseline = _entries(("zebra quorum", old))
+        run_memory_recall_pass(store, entries=baseline, embedder=hub.embedder)
+        assert _last(store)["hits"] == 1
+    store.add_link(src_ref_id=new, dst_ref_id=old, relation="supersedes")
+    entry: dict[str, Any] = {"want": f"me{old}", "query": "xenon lattice"}
+    if alternate:
+        entry["accept"] = [f"me{new}"]
+
+    entries = [entry]
+    report = render_recall_report(store, entries, embedder=hub.embedder)
+    measured = measure_recall(store, entries, embedder=hub.embedder)
+    curve = render_recall_curve(measured)
+    result = run_memory_recall_pass(store, entries=entries, embedder=hub.embedder)
+
+    assert result.failed == 0
+    assert _open_alerts(store) == []
+    if alternate:
+        assert "RECALL 1/1" in report
+        assert all(row["hits"] == row["total"] == 1 for row in measured["curve"])
+        assert measured["stale"] == []
+        assert measured["queries"][0]["fisheye_1hop"] is not None
+    else:
+        assert "RECALL 0/0" in report
+        assert f"STALE me{old} xenon lattice" in report
+        assert f"STALE me{old} xenon lattice" in curve
+        assert all(row["total"] == 0 for row in measured["curve"])
+        assert _last(store)["stale"] == [f"me{old}"]
