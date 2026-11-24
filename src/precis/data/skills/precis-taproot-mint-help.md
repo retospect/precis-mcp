@@ -335,9 +335,15 @@ search(kind="finding", q="<the claim sentence>", status="*", mode="semantic")
 With `status=` omitted, the search returns every claim hub, whatever its
 lifecycle state, plus the `established` findings. `status='*'` drops the
 filter entirely and also returns non-hub `tracing`/`dead_chain` rows.
-Either works for dedup; `'*'` returns the most. If a search returns
-nothing on a topic the corpus plainly covers, round-trip a hub you know
-exists before trusting the empty result.
+Either works for dedup. `'*'` returns the most.
+
+If query embedding fails, search retries once in hybrid mode. Inspect any
+hits for a duplicate. A response marked `semantic leg skipped` covers only
+lexical matches. If those hits reveal no duplicate, repeat the semantic
+search after the embedder recovers before minting. Use any retry window
+given in the response. If a search returns nothing on a topic the corpus
+plainly covers, round-trip a hub you know exists before trusting the empty
+result.
 
 Then judge each near hit:
 
