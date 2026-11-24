@@ -2589,6 +2589,10 @@ class TestReactionContext:
         # gr547306: the anchor-free form and the recipe skill are named
         # in the reaction quest's own op menu too.
         assert '"site":{"type":"fcc"}}' in prompt
+        assert (
+            '{"op":"move_atom","atom":"aO1","site":{"type":"top","anchors":["aPd32"]}}'
+            in prompt
+        )
         assert "precis-structure-slab-help" in prompt
         # gr549760: the old recipe's hard-coded frac-z guidance put adatoms
         # INSIDE the slab — the menu keeps raw add_atom only for a declared

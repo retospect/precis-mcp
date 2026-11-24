@@ -41,8 +41,12 @@ moves ONE atom onto an acceptor atom along the acceptor's open
 coordination direction — the elementary bond-swap step of a surface
 reaction (CH4 + O* → CH3* + OH* is one transfer of an H from C to O);
 ``move_group`` rigidly moves a whole declared-bond fragment (an adsorbate)
-so its named atom lands on a new site. Both keep atom labels stable, so
-the edited design stays pairable with its pre-edit parent.
+so its named atom lands on a new site; ``move_atom`` repositions ONE
+existing atom onto a named site with only its ``frac`` rewritten (gr788526)
+— the laterally-displaced-adsorbate edit the ``vacancy`` + ``add_atom``
+workaround got wrong, minting a fresh label and breaking the IS/FS label
+correspondence CI-NEB interpolates by. All three keep atom labels stable,
+so the edited design stays pairable with its pre-edit parent.
 
 **Fragment-building ops** (built for the molecule-mode fragment library the
 retired ``nm`` kind — now ``se`` atomic mode, docs/backlog/nm-se-merge.md —
@@ -2205,6 +2209,48 @@ def _op_move_group(scene: Scene, op: dict[str, Any]) -> None:
         scene.atoms[label].frac = scene.cell.wrap(scene.atoms[label].frac + delta)
 
 
+def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
+    """Reposition ONE existing atom onto a named site, keeping its label
+    (gr788526) — the single-atom, label-preserving move a laterally
+    displaced adsorbate FS needs.
+
+    ``{"op": "move_atom", "atom": "aO1", "site": {"type": "top",
+    "anchors": ["aCu34"]}, "height": <optional Å>}``
+
+    Only ``frac`` is written: label, element, charge and declared bonds
+    carry over, so an FS derived off an IS stays label-matched for NEB
+    pairing — the ``vacancy`` + ``add_atom`` workaround this replaces
+    minted a fresh label and broke that correspondence. The op does NOT
+    re-bond: a lone adsorbate moves cleanly (a surface contact is
+    inferred, never declared); use ``transfer`` for a bond-swap and
+    ``move_group`` to carry a whole fragment. The moving atom is excluded
+    from the site clearance check, so its own current position never
+    blocks the target. Refuses a fixed atom (release it with constrain
+    kind='none' first).
+    """
+    atom_label = op.get("atom")
+    if not atom_label:
+        raise OpError("move_atom needs 'atom' (the label to reposition)")
+    atom_label = str(atom_label)
+    atom = _require_atom(scene, atom_label)
+    if atom.fixed:
+        raise OpError(
+            f"move_atom can't move {atom_label!r} — it is constrained "
+            "('fixed'); release it with constrain kind='none' first"
+        )
+    site = op.get("site")
+    if not isinstance(site, dict):
+        raise OpError(
+            "move_atom needs a 'site' object: "
+            "{'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: [labels]}",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
+    atom.frac = _resolve_site(
+        scene, site, str(atom.element), op.get("height"), ignore={atom_label}
+    )
+
+
 _OPS = {
     "set_cell": _op_set_cell,
     "slab": _op_slab,
@@ -2227,4 +2273,5 @@ _OPS = {
     "from_smiles": _op_from_smiles,
     "transfer": _op_transfer,
     "move_group": _op_move_group,
+    "move_atom": _op_move_atom,
 }

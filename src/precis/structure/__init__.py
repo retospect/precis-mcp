@@ -10,6 +10,10 @@ except the error-severity ``small_ring_strain``). The relaxer/DFT
 dependency, MLIP/GPAW rungs remain extras-gated; the store + handler (the DB
 layer) wrap this core.
 
+Surface endpoint edits use ``move_atom`` to place an existing atom at a
+named site while preserving its label for NEB correspondence and retaining
+its declared bonds. Catalyst cards replay the recorded placement by label.
+
 Exact completion transport lives in ``completion_codec``: tagged integer IDs
 and reduced rational numbers avoid client float rounding. It provides no
 receipt trust, classification or compute; those remain separate boundaries.

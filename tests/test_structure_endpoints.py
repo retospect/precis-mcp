@@ -1,6 +1,8 @@
 """NEB endpoint authoring (gr512126, slice 1): the hydrocarbon adsorbate
-groups (C/CH/CH2/CH3/CH4) and the ``transfer``/``move_group``
-reaction-endpoint ops.
+groups (C/CH/CH2/CH3/CH4) and the ``transfer``/``move_group``/``move_atom``
+reaction-endpoint ops (``move_atom`` is gr788526 — the label-keeping
+single-atom reposition the qu161906 tick needed for a laterally displaced
+adsorbate).
 
 Kernel-level tests are DB-free ``Scene`` + ``apply_ops`` in the
 ``test_structure_kernel.py`` style: the CHx catalogue geometry is checked
@@ -345,6 +347,171 @@ def test_move_group_refuses_a_slab_atom_directly() -> None:
                 }
             ],
         )
+
+
+# -- move_atom -------------------------------------------------------------
+
+
+def _o_over_pd() -> Scene:
+    """Two Pd anchors, a lone adsorbed O near their bridge, and a declared
+    O-H group off to the side — the move_atom playground."""
+    scene = Scene(cell=Cell(np.eye(3) * 20.0))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "cart": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "cart": [2.75, 0.0, 0.0]},
+            {"op": "add_atom", "element": "O", "cart": [1.375, 1.0, 1.9]},
+            {"op": "add_atom", "element": "O", "cart": [5.0, 5.0, 5.0]},
+            {"op": "add_atom", "element": "H", "cart": [5.0, 5.0, 5.97]},
+            {"op": "add_bond", "i": "aO2", "j": "aH1", "order": 1},
+        ],
+    )
+    return scene
+
+
+def test_move_atom_lands_where_add_atom_site_would_put_a_fresh_atom() -> None:
+    scene = _o_over_pd()
+    twin = copy.deepcopy(scene)
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "move_atom",
+                "atom": "aO1",
+                "site": {"type": "top", "anchors": ["aPd2"]},
+                "height": 1.9,
+            }
+        ],
+    )
+    apply_ops(
+        twin,
+        [
+            {
+                "op": "add_atom_site",
+                "element": "O",
+                "site": {"type": "top", "anchors": ["aPd2"]},
+                "height": 1.9,
+            }
+        ],
+    )
+    moved = scene.cell.frac_to_cart(scene.atoms["aO1"].frac)
+    fresh = twin.cell.frac_to_cart(twin.atoms["aO3"].frac)
+    assert moved == pytest.approx(fresh, abs=1e-9)
+    # The label is reused, never reminted — the qu161906 failure was the
+    # vacancy+add_atom workaround assigning the displaced O a fresh aO2.
+    assert "aO3" not in scene.atoms
+    assert scene.atoms["aO1"].element == "O"
+
+
+def test_move_atom_keeps_declared_bonds_and_leaves_other_atoms() -> None:
+    """A declared bond is intent: move_atom repositions only — it neither
+    drops nor mints bonds (``transfer`` is the re-bonding op), and nothing
+    else moves (a fragment moves with ``move_group``)."""
+    scene = _o_over_pd()
+    before_h = scene.atoms["aH1"].frac.copy()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "move_atom",
+                "atom": "aO2",
+                "site": {"type": "top", "anchors": ["aPd2"]},
+                "height": 1.9,
+            }
+        ],
+    )
+    pairs = {frozenset((b.i, b.j)) for b in scene.bonds}
+    assert frozenset(("aO2", "aH1")) in pairs
+    assert scene.atoms["aH1"].frac == pytest.approx(before_h)
+
+
+def test_move_atom_auto_site_ignores_the_movers_own_position() -> None:
+    """The moving atom never blocks its own target: an O already on aPd1's
+    top site, re-placed with near=aPd1, stays — without the ignore its own
+    position would push the pick to the next site over."""
+    scene = _pd_triangle()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom_site",
+                "element": "O",
+                "site": {"type": "top", "anchors": ["aPd1"]},
+            }
+        ],
+    )
+    apply_ops(
+        scene,
+        [{"op": "move_atom", "atom": "aO1", "site": {"type": "top", "near": "aPd1"}}],
+    )
+    o_cart = scene.cell.frac_to_cart(scene.atoms["aO1"].frac)
+    assert o_cart[:2] == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
+def test_move_atom_refuses_a_fixed_atom() -> None:
+    scene = _o_over_pd()
+    apply_ops(scene, [{"op": "constrain", "atoms": ["aO1"], "kind": "fixed-all"}])
+    with pytest.raises(OpError, match="fixed"):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "move_atom",
+                    "atom": "aO1",
+                    "site": {"type": "top", "anchors": ["aPd1"]},
+                }
+            ],
+        )
+
+
+def test_move_atom_needs_an_atom_and_a_site() -> None:
+    scene = _o_over_pd()
+    for op in (
+        {"op": "move_atom", "site": {"type": "top", "anchors": ["aPd1"]}},
+        {"op": "move_atom", "atom": "aO1"},
+        {"op": "move_atom", "atom": "aO1", "site": "top"},
+    ):
+        with pytest.raises(OpError):
+            apply_ops(scene, [op])
+    with pytest.raises(OpError, match="no such atom"):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "move_atom",
+                    "atom": "aO9",
+                    "site": {"type": "top", "anchors": ["aPd1"]},
+                }
+            ],
+        )
+
+
+def test_move_atom_displaces_the_adsorbate_laterally_keeping_the_pair() -> None:
+    """gr788526 / qu161906: the laterally-displaced-O FS edit. The
+    vacancy+add_atom workaround reminted the O's label and broke CI-NEB's
+    IS/FS correspondence; move_atom repositions aO1 in place, so the pair
+    stays label-identical and validates/preflights clean."""
+    scene_is, mg_site, _spare = _endpoint_is("Pd")
+    scene_fs = copy.deepcopy(scene_is)
+    apply_ops(
+        scene_fs,
+        [
+            {
+                "op": "move_atom",
+                "atom": "aO1",
+                "site": {"type": "top", "anchors": [mg_site]},
+                "height": _O_HEIGHT,
+            }
+        ],
+    )
+    _assert_pair(scene_is, scene_fs)
+    # The O really moved — off the bridge onto the named top site (read on
+    # the periodic image nearest the anchor: the cell wraps the landing).
+    mg_cart = scene_fs.cell.frac_to_cart(scene_fs.atoms[mg_site].frac)
+    o_near = _mic_cart(scene_fs, mg_cart, "aO1")
+    assert o_near[:2] == pytest.approx(mg_cart[:2], abs=1e-6)
+    assert o_near[2] == pytest.approx(mg_cart[2] + _O_HEIGHT, abs=1e-6)
 
 
 # -- the acceptance pair: Cu(111)/O/CH4 IS -> FS ---------------------------

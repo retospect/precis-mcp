@@ -295,6 +295,28 @@ def test_adsorbates_render_as_coads() -> None:
     assert catalyst_label(ops) == "Pd(111) + O (bridge) + 2 H (top)"
 
 
+def test_move_atom_updates_only_the_named_adsorbate_site() -> None:
+    ops = [
+        _SLAB,
+        {"op": "add_atom_site", "element": "O", "site": {"type": "bridge"}},
+        {"op": "add_adsorbate", "species": "O", "site": {"type": "bridge"}},
+        {"op": "move_atom", "atom": "aO2", "site": {"type": "fcc"}},
+        {"op": "move_atom", "atom": "aO2", "site": {"type": "top"}},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + O (bridge) + O (top)"
+
+
+def test_moving_a_water_hydrogen_keeps_the_oxygen_site() -> None:
+    ops = [
+        _SLAB,
+        {"op": "add_adsorbate", "species": "H2O", "site": {"type": "bridge"}},
+        {"op": "move_atom", "atom": "aH1", "site": {"type": "top"}},
+    ]
+    assert catalyst_label(ops) == "Pd(111) + H2O (bridge)"
+    ops.append({"op": "move_atom", "atom": "aO1", "site": {"type": "top"}})
+    assert catalyst_label(ops) == "Pd(111) + H2O (top)"
+
+
 def test_retransmuted_label_counts_once() -> None:
     """Labels are stable: 'aPd35 to Ag, then to Cu' is one Cu dopant, and
     back to the host is none — the same net-effect rule

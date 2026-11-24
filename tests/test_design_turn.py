@@ -138,6 +138,7 @@ def test_signature_tables_name_only_real_ops() -> None:
     vocab = design_turn.op_vocabulary("structure")
     for name in design_turn.roster("structure"):
         assert name in vocab
+    assert "move_atom{atom,site:{type:top|bridge|hollow|fcc|hcp" in vocab
 
 
 def test_destructive_se_ops_are_a_nonempty_subset_of_known_ops() -> None:

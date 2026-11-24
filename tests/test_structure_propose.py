@@ -101,6 +101,14 @@ _VOCAB_EXAMPLE_SCRIPT: list[dict] = [
         "site": {"type": "top", "anchors": ["aPd1"]},
         "height": 2.5,
     },
+    # move_atom (gr788526): the lone O repositioned to a lower height on
+    # the same named site — the label-keeping single-atom move.
+    {
+        "op": "move_atom",
+        "atom": "aO1",
+        "site": {"type": "top", "anchors": ["aPd1"]},
+        "height": 2.0,
+    },
 ]
 
 

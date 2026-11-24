@@ -164,9 +164,9 @@ def _formula_counts(species: str) -> dict[str, int] | None:
 def _near_label(op: dict[str, Any]) -> str | None:
     """The atom label an op names as its placement neighbour — ``near``
     inside the ``site`` object (``set_element`` / ``add_atom_site`` /
-    ``add_adsorbate`` / ``move_group``) or an op-level ``near``. Only
-    label-shaped values count: an element name means 'any atom of it',
-    never one recorded neighbour."""
+    ``add_adsorbate`` / ``move_group`` / ``move_atom``) or an op-level
+    ``near``. Only label-shaped values count: an element name means 'any
+    atom of it', never one recorded neighbour."""
     site = op.get("site")
     near = site.get("near") if isinstance(site, dict) else None
     if near is None:
@@ -603,7 +603,8 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
                 if isinstance(site, dict) and site.get("type")
                 else ""
             )
-            mods.append({"kind": "ads", "what": sp.strip(), "words": t})
+            ad_mod = {"kind": "ads", "what": sp.strip(), "words": t}
+            mods.append(ad_mod)
             ad_idx = len(mods) - 1
             counts = _formula_counts(sp.strip())
             if counts is None:
@@ -617,6 +618,28 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
                         band_of[lab] = None
                         atom_mod.setdefault(lab, []).append(ad_idx)
                     hi[e] = start + n
+                # The first atom of the binding element owns the group site.
+                # The current catalogue binds through the leading element
+                # except water, which binds through oxygen.
+                binding = "O" if sp.strip() == "H2O" else next(iter(counts))
+                ad_mod["site_atom"] = f"a{binding}{hi[binding] - counts[binding] + 1}"
+        elif name == "move_atom":
+            label = str(op.get("atom"))
+            site = op.get("site")
+            if not isinstance(site, dict) or not site.get("type"):
+                continue
+            for idx in atom_mod.get(label, ()):
+                mod = mods[idx]
+                if mod is None or mod["kind"] == "subst":
+                    continue
+                if mod.get("site_atom", label) != label:
+                    continue
+                if mod["kind"] == "add":
+                    band_of[label] = None
+                    mod["kind"] = (
+                        "ads" if mod["what"] in _ADSORBATE_ELEMENTS else "adatom"
+                    )
+                mod["words"] = str(site["type"])
         elif name == "vacancy":
             site = op.get("site")
             coloc = bool(op.get("near")) or any(op.get(k) for k in _COLOCATED_KEYS)

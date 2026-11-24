@@ -272,6 +272,7 @@ _STRUCTURE_OP_SIGNATURES: dict[str, str] = {
     "set_element": "set_element{atom,element}",
     "vacancy": "vacancy{atom|atoms:[…]|site:{type,element?,near?,count?|fraction?}}",
     "displace": "displace{atom,vector:[dx,dy,dz],cartesian?}",
+    "move_atom": "move_atom{atom,site:{type:top|bridge|hollow|fcc|hcp,anchors?:[…],near?},height?}",
     "add_bond": "add_bond{i,j,order?,kind?,image?}",
     "remove_bond": "remove_bond{i,j}",
     "constrain": "constrain{atoms:[…],kind:none|fixed-x|fixed-y|fixed-z|fixed-all}",

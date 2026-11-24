@@ -1992,8 +1992,11 @@ _GENERIC_NEB_CONTEXT = (
     "2. FS: a second proposal CLONED off the IS so atom labels match — "
     '"structure": {"derive_from": "<is-slug or st<id>>", "ops": [...]}. '
     "`transfer` moves one atom onto an acceptor (the bond-swap step); "
-    "`move_group` rigidly relocates a fragment; `displace` nudges one "
-    "atom. A fresh non-clone spec is NEVER NEB-pairable (its own atom "
+    "`move_group` rigidly relocates a fragment; `move_atom` repositions "
+    "ONE atom onto a named site with its label kept — the "
+    "laterally-displaced-adsorbate edit (vacancy+add_atom would remint "
+    "the label and break the pairing); `displace` nudges one atom by a "
+    "vector. A fresh non-clone spec is NEVER NEB-pairable (its own atom "
     "order), and neither is a clone whose ops change the atom set "
     "(vacancy, add_atom).\n"
     "3. Both endpoints relax automatically when they're minted — wait "
@@ -2120,6 +2123,12 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '{"op":"move_group","atom":"aC1","site":{"type":"top",'
         '"anchors":["aPd1"]}} (refuses if the fragment holds a fixed or '
         "slab atom)\n"
+        "- move_atom — reposition ONE existing atom onto a named site, "
+        "its label kept (a laterally displaced adsorbate in an FS — never "
+        "vacancy+add_atom, which remints the label and breaks IS/FS "
+        'pairing): {"op":"move_atom","atom":"aO1","site":{"type":"top",'
+        f'"anchors":["{top_label}"]}}}} (refuses a fixed atom; declared bonds stay '
+        "as authored — transfer re-bonds, move_group carries a fragment)\n"
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
         '"element":"Cu"}, or let code pick the host atom: '

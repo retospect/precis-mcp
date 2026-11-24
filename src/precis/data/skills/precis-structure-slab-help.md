@@ -276,7 +276,11 @@ picks the declared-bonded atom nearest `to` (an equidistant tie refuses
 naming both — pick with `atom:`); `move_group` carries the whole
 declared-bond fragment rigidly and refuses when it holds a fixed or slab
 atom (slab = the largest connected metal cluster — a dopant inside it
-counts as slab). Site labels come from the design TOC. Both land
+counts as slab); `move_atom` repositions ONE atom onto a named site with
+its label kept — the laterally-displaced-adsorbate edit, where
+`vacancy`+`add_atom` would remint the label and break the pairing (it
+refuses a fixed atom and leaves declared bonds as authored). Site labels
+come from the design TOC. All land
 starting-guess geometry — `relax` each endpoint at `fidelity:"ml"` first.
 
 Then check the pair (read-only, no compute):
