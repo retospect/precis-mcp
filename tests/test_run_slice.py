@@ -465,6 +465,12 @@ def _pushed(
 @pytest.fixture
 def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     """Fake git + launcher + process probe; records every call."""
+    # The in-memory store has no SQL-backed release ownership ledger.
+    monkeypatch.setattr(
+        run_slice.release_test_fixes,
+        "plan_disposition",
+        lambda _store, _root: (False, None),
+    )
     calls: dict[str, Any] = {
         "git": [],
         "launch": [],
@@ -6822,6 +6828,7 @@ def _fix_norepro_env(
         run_slice,
         "_release",
         types.SimpleNamespace(
+            plan_root=_release_real.plan_root,
             release_of=lambda _s, _t: {
                 "rN": "r7",
                 "sha": "abc1234",
