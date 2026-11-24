@@ -68,6 +68,10 @@ def _retired(store: Any, ref_id: int) -> bool:
     return store.fetch_refs_by_ids([ref_id])[ref_id].retired_at is not None
 
 
+def _last_revision(store: Any, ref_id: int) -> Any:
+    return store.revisions_for("ref", ref_id)[-1]
+
+
 def test_rule_a_retires_a_left_none_thread(store: Any, handler: MemoryHandler) -> None:
     tid = _thread(handler, "Left: none\n\nWrapped up; the sha list is in main.")
 
@@ -75,6 +79,10 @@ def test_rule_a_retires_a_left_none_thread(store: Any, handler: MemoryHandler) -
 
     assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
     assert _retired(store, tid)
+    # gr572672: a sweep retirement carries the process's writer stamp.
+    last = _last_revision(store, tid)
+    assert last.event == "retired" and last.reason != "(unrecorded)"
+    assert (last.writer or {}).get("source") == "memory_thread_sweep"
 
 
 def test_rule_a_retires_an_empty_thread(store: Any) -> None:
@@ -301,6 +309,9 @@ def test_rule_c_answer_retire_soft_retires_the_node(
 
     assert result.ok == 1
     assert _retired(store, tid)
+    last = _last_revision(store, tid)
+    assert last.event == "retired" and last.reason != "(unrecorded)"
+    assert (last.writer or {}).get("source") == "memory_thread_sweep"
     # soft delete: the tombstone still answers a post-mortem get()
     got = handler.get(id=tid, view="retired")
     assert "Campaign" in got.body
@@ -694,6 +705,9 @@ def test_rule_s_retires_a_scratch_node_past_the_default_ttl(
 
     assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
     assert _retired(store, sid)
+    last = _last_revision(store, sid)
+    assert last.event == "retired" and last.reason != "(unrecorded)"
+    assert (last.writer or {}).get("source") == "memory_thread_sweep"
 
 
 def test_rule_s_leaves_a_fresh_scratch_node_alone(

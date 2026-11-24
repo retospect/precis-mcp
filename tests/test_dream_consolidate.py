@@ -130,6 +130,10 @@ def test_pass_writes_one_summary_per_cluster_and_retires(store: Store) -> None:
     assert any(str(t) == "DREAM:consolidated" for t in store.tags_for(sid))
     links = store.links_for(sid, direction="out", relation="supersedes")
     assert {getattr(l, "dst_ref_id", None) for l in links} == {a, b}
+    # gr572672: a swept retirement carries the process's writer stamp.
+    last = store.revisions_for("ref", a)[-1]
+    assert last.event == "retired" and last.reason != "(unrecorded)"
+    assert (last.writer or {}).get("source") == "dream_consolidate"
 
 
 # ── cleanup script (selection + apply on the dev/test DB) ─────────

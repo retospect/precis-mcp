@@ -61,6 +61,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis import settings as psettings
+from precis.store.revision_context import revision_context
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.runner import BatchResult
 
@@ -253,7 +254,14 @@ def _consolidate_cluster(store, cluster: DreamCluster) -> int:
         lines.append(f"- me{m.ref_id} ({kind}{m.horizon_days}d horizon): {m.title}")
     body = "\n".join(lines)
     title = (members[0].title or "dream consolidation")[:72]
-    with store.tx() as conn:
+    with (
+        revision_context(
+            f"dream_consolidate: consolidate {len(members)} dreams",
+            actor="dream_consolidate",
+            writer={"source": "dream_consolidate"},
+        ),
+        store.tx() as conn,
+    ):
         ref = store.insert_ref(
             kind="memory",
             slug=None,

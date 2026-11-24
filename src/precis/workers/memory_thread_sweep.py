@@ -106,6 +106,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.store.revision_context import revision_context
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES
 from precis.utils.memory_threads import (
@@ -688,7 +689,14 @@ def _enact_answered_thread_asks(
             log.info("memory_thread_sweep: would enact %s for me%d", choice, thread_id)
             continue
         try:
-            with store.tx() as conn:
+            with (
+                revision_context(
+                    f"memory_thread_sweep rule=c:{choice} (ask=td{ask_id})",
+                    actor="memory_thread_sweep",
+                    writer={"source": "memory_thread_sweep"},
+                ),
+                store.tx() as conn,
+            ):
                 _lock_ref(conn, thread_id)
                 _lock_ref(conn, ask_id)
                 still_rows = _pending_decisions(conn, thread_id=thread_id)
@@ -815,7 +823,14 @@ def run_memory_thread_sweep_pass(
             )
             continue
         try:
-            with store.tx() as conn:
+            with (
+                revision_context(
+                    f"memory_thread_sweep rule={item.rule}: {item.reason}",
+                    actor="memory_thread_sweep",
+                    writer={"source": "memory_thread_sweep"},
+                ),
+                store.tx() as conn,
+            ):
                 _lock_ref(conn, item.ref_id)
                 if _thread_plan(conn, now, item.ref_id) != [item]:
                     acted -= 1
@@ -1070,7 +1085,14 @@ def run_scratch_sweep_pass(
             )
             continue
         try:
-            with store.tx() as conn:
+            with (
+                revision_context(
+                    f"memory_thread_sweep rule={item.rule}: {item.reason}",
+                    actor="memory_thread_sweep",
+                    writer={"source": "memory_thread_sweep"},
+                ),
+                store.tx() as conn,
+            ):
                 # Inbound ``supersedes`` edges stay (gr503546's tombstone
                 # trail, same as the memory delete door): a harvest's
                 # clean node keeps its "supersedes me<scratch>" edge
