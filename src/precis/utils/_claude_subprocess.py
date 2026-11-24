@@ -1002,6 +1002,8 @@ async def run_claude_async(
     stdin_data: bytes | None = None,
     cwd: str | None = None,
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    on_process_group: Callable[[int], None] | None = None,
+    bare: bool = False,
 ) -> SimpleNamespace:
     """Async analog of :func:`run_claude` — spawns ``argv`` via
     ``asyncio.create_subprocess_exec`` instead of blocking
@@ -1035,6 +1037,10 @@ async def run_claude_async(
       (mirrors ``subprocess.CompletedProcess`` closely enough for every
       downstream reader, which only touches those two attributes).
 
+    When given, ``on_process_group`` receives the new session's process group
+    ID. The caller can then stop the CLI and its subprocesses together.
+    ``bare`` skips the OAuth bootstrap for API-key-only callers.
+
     Admitted when a store is bound (gr657996/gr657245), same footprint
     contract as :func:`run_claude`.
     """
@@ -1049,6 +1055,8 @@ async def run_claude_async(
         stdin_data=stdin_data,
         cwd=cwd,
         on_event=on_event,
+        on_process_group=on_process_group,
+        bare=bare,
     )
 
 
@@ -1064,6 +1072,8 @@ async def _run_claude_async_inner(
     stdin_data: bytes | None,
     cwd: str | None,
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    on_process_group: Callable[[int], None] | None = None,
+    bare: bool = False,
 ) -> SimpleNamespace:
     from precis.budget import meter
     from precis.workers import admission
@@ -1081,13 +1091,19 @@ async def _run_claude_async_inner(
             # gain vars this function sets (this path previously mutated it in place).
             env = dict(env) if env is not None else dict(os.environ)
             disarm_session_hooks(env)
-            ensure_oauth_token(env)
+            if not bare:
+                ensure_oauth_token(env)
             if stdin_data is not None and stdin_devnull:
                 raise ValueError(
                     "run_claude_async: stdin_data and stdin_devnull are exclusive"
                 )
             refuse_oversized_argv(argv, label=label, error_cls=error_cls)
 
+            # Workers stay in the supervisor's group. Interactive callers
+            # can own a dedicated group for stopping the CLI and its MCP.
+            spawn_options: dict[str, Any] = {}
+            if on_process_group is not None:
+                spawn_options["start_new_session"] = True
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
@@ -1100,8 +1116,7 @@ async def _run_claude_async_inner(
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
                     env=env,
-                    # No start_new_session — stay in the worker's process group so
-                    # a launchd restart reaps an in-flight run (see run_claude).
+                    **spawn_options,
                 )
             except FileNotFoundError as exc:
                 raise error_cls(
@@ -1117,6 +1132,15 @@ async def _run_claude_async_inner(
                         argv_too_long=True,
                     ) from exc
                 raise
+
+            async def terminate() -> None:
+                if on_process_group is None:
+                    await terminate_claude_async(proc)
+                else:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
             feeder: asyncio.Task[None] | None = None
             if stdin_data is not None:
@@ -1157,11 +1181,13 @@ async def _run_claude_async_inner(
                     await on_event(evt)
 
             try:
+                if on_process_group is not None:
+                    on_process_group(proc.pid)
                 await asyncio.wait_for(_pump_stdout(), timeout=timeout_s)
             except TimeoutError:
                 if feeder is not None:
                     feeder.cancel()
-                await terminate_claude_async(proc)
+                await terminate()
                 stderr_partial = b""
                 if proc.stderr is not None:
                     try:
@@ -1180,8 +1206,8 @@ async def _run_claude_async_inner(
                 # Never leak a live CLI on cancellation/an unexpected error.
                 if feeder is not None:
                     feeder.cancel()
-                if proc.returncode is None:
-                    await terminate_claude_async(proc)
+                if proc.returncode is None or on_process_group is not None:
+                    await terminate()
                 raise
             if feeder is not None:
                 try:

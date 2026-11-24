@@ -396,6 +396,11 @@ Shared context lives in `src/precis/chat/context.py::build`, behind a
 `src/asa_bot/preamble.py::build` preserves its existing prompt; `WEB_CHAT`
 omits soul and inner life and bounds hot turns and the complete prompt.
 Core imports neither frontend, so web callers can reuse context independently.
+`src/precis_web/chat_turns.py::start_turn` appends the human turn and starts a
+web-owned streaming task on an API-key-only Claude Agent rung. Progress lives
+in memory. Answers and reported spend persist to the conversation, which
+supplies the UTC day admission check. Stop and lifespan shutdown signal the
+CLI process group.
 
 The `/rxn` web form dispatches the rxn energetics handler and renders its
 tables through the shared reader. Explicit keep stores equation inputs and

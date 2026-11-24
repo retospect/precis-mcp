@@ -612,12 +612,13 @@ async def call_claude_agent_async(
     env_overlay: dict[str, str] | None = None,
     cwd: str | Path | None = None,
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    on_process_group: Callable[[int], None] | None = None,
 ) -> AgentResult:
     """Streaming async twin of :func:`call_claude_agent`.
 
-    Same keyword surface (see that function's docstring for every arg
-    except ``on_event``) — used by a real-time caller (asa_bot's Discord
-    bridge) instead of the blocking sync one. Argv building and env/OAuth/
+    See the sync function for shared arguments. The streaming callback
+    and optional process-group handoff are for real-time callers such as
+    web chat and the Discord bridge. Argv building and env/OAuth/
     envelope setup are shared with the sync path via
     :func:`_resolve_agent_args`/:func:`_prepare_agent_env`; only the
     subprocess execution differs
@@ -663,6 +664,19 @@ async def call_claude_agent_async(
     proc_env = _prepare_agent_env(
         active_env=active_env, bare=bare, env_overlay=env_overlay
     )
+    if bare:
+        from precis.secrets import get_secret
+        from precis.utils.claude_oauth import API_KEY_VAR, ENV_VAR
+
+        proc_env.pop(ENV_VAR, None)
+        proc_env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        try:
+            api_key = get_secret(API_KEY_VAR)
+        except UnicodeDecodeError:
+            api_key = None
+        if not api_key:
+            raise ClaudeAgentError(f"{API_KEY_VAR} is not resolvable")
+        proc_env[API_KEY_VAR] = api_key
     cwd_str = str(cwd) if cwd is not None else None
 
     # This twin is in-process only, but check the boundary anyway: a
@@ -684,6 +698,8 @@ async def call_claude_agent_async(
             stdin_data=prompt.encode("utf-8") if prompt_stdin else None,
             cwd=cwd_str,
             on_event=on_event,
+            on_process_group=on_process_group,
+            bare=bare,
         )
     except ClaudeAgentError as exc:
         # Same resumable-exhaustion recovery the sync path applies — no

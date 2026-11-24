@@ -84,7 +84,7 @@ def create_app(
             from precis.store.migrate import check_schema_at_startup
 
             check_schema_at_startup(app.state.runtime.config.database_url)
-        from precis_web.chat_turns import log_preflight
+        from precis_web.chat_turns import log_preflight, shutdown
 
         log_preflight()
         nas_stop = threading.Event()
@@ -104,6 +104,7 @@ def create_app(
             yield
         finally:
             nas_stop.set()
+            await shutdown()
             if owns_runtime:
                 store = getattr(app.state.runtime, "store", None)
                 if store is not None:

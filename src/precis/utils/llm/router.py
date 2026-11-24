@@ -1636,6 +1636,11 @@ class LlmRequest:
     #: a transport. ``None`` ⇒ error-free accepts (transport-error-only
     #: failover — the default).
     accept: AcceptFn | None = None
+    #: Pin a single Claude Agent rung for streaming dispatch, overriding live
+    #: tier and operation routing. A rejected rung ends the call.
+    stream_rung: Rung | None = None
+    #: Opt into a dedicated process group and receive its ID on spawn.
+    on_process_group: Callable[[int], None] | None = None
 
     def __post_init__(self) -> None:
         if self.task_kind is not None and not isinstance(self.task_kind, str):
@@ -5485,7 +5490,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     )
 
 
-async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult:
+async def _dispatch_claude_agent_async(
+    req: LlmRequest, model: str, *, bare: bool = False
+) -> LlmResult:
     """Async analog of :class:`ClaudeAgentProvider`'s ``run`` — the streaming
     leg :func:`dispatch_async` calls when a caller sets ``on_event``. Same
     post-processing (result normalization + the post-hoc ``max_tokens``
@@ -5511,6 +5518,8 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
             env_overlay=_overlay_with_source(req),
             cwd=req.cwd,
             on_event=req.on_event,
+            bare=bare,
+            on_process_group=req.on_process_group,
         )
     except ClaudeProcessError as exc:
         return _error_result(exc, model=model, tier=req.tier)
@@ -5551,8 +5560,9 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     does not wrap the streaming call in :class:`FailoverProvider`, so a
     streaming caller trades the multi-rung safety net for real-time
     progress on that one call. A no-op distinction today: a streaming
-    caller sits on the cloud claude tiers, where :func:`resolve_chain`
-    returns a single rung anyway.
+    caller normally sits on the cloud claude tiers. An explicit
+    ``stream_rung`` replaces the resolved chain and keeps all refusals on
+    the streaming path, including unavailable credentials.
     """
     entered = time.monotonic()
     from precis.utils.llm import operations
@@ -5560,19 +5570,29 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     # Keyword parity with route(): a matched rule delegates to the sync
     # path — the retargeted call gives up the on_event stream but keeps
     # every gate (and, on an unusable target, the normal resolution).
-    if req.model is None and _keyword_route.match_request(req) is not None:
-        return route(req)
-    if _local_first_chain(req) is not None:
-        return route(req)
     original_request = req
-    op = operations.resolve_op(req.source) if req.source else None
-    if op is not None:
-        req = _replace(req, tier=op[0])
-    model = (op[1] if op is not None else req.model) or resolve_model(req.tier)
-    # Resolve the primary transport through the always-on chain, same as sync route() — the streaming decision keys on rung 0.
-    ladder = operations.resolve_op_chain(
-        req.source, tools_needed=req.tools_needed
-    ) or resolve_chain(req.tier, tools_needed=req.tools_needed, model=model)
+    pin = req.stream_rung
+    if pin is None:
+        if req.model is None and _keyword_route.match_request(req) is not None:
+            return route(req)
+        if _local_first_chain(req) is not None:
+            return route(req)
+        op = operations.resolve_op(req.source) if req.source else None
+        if op is not None:
+            req = _replace(req, tier=op[0])
+        model = (op[1] if op is not None else req.model) or resolve_model(req.tier)
+        ladder = operations.resolve_op_chain(
+            req.source, tools_needed=req.tools_needed
+        ) or resolve_chain(req.tier, tools_needed=req.tools_needed, model=model)
+    else:
+        if (
+            pin.transport is not Transport.CLAUDE_AGENT
+            or req.on_event is None
+            or req.require_transport not in (None, pin.transport)
+        ):
+            raise ValueError("stream_rung requires a streaming Claude Agent request")
+        model = pin.model or req.model or resolve_model(req.tier)
+        ladder = [pin]
     # Structured placement filter — strict parity with sync route(): an
     # emptied nonempty chain is an explicit error result, not a silent
     # paused/degrade. No-op when req.placement is None/unrecognized.
@@ -5615,6 +5635,24 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     ladder, _unavail = _drop_unavailable_rungs(ladder, model)
     transport = ladder[0].transport if ladder else None
 
+    if pin is not None and not ladder:
+        return _gate_result(
+            req,
+            LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=_unavail[0][1] if _unavail else "cloud routing is paused",
+                paused=not _unavail,
+            ),
+            entered=entered,
+            transport=pin.transport,
+            routed=_placement_of(pin),
+            account=request_account(req, pin),
+        )
+
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
         return route(original_request)
 
@@ -5630,7 +5668,9 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     # When the quota fallback is armed this gate skips its tally — the
     # delegation to route() below tallies the call's real outcome, so a row
     # here would double-count it (parity with the sync gate).
-    fallback_ladder = _quota_fallback_ladder(ladder, req.source)
+    fallback_ladder = (
+        _quota_fallback_ladder(ladder, req.source) if pin is None else None
+    )
     trip = _breaker.gate_tier(
         req.tier,
         transport=transport.value,
@@ -5702,7 +5742,7 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     # (always cloud), so this is a de-facto no-op today — kept identical so the
     # two paths can't drift if a local-served model ever streams.
     serve_model = ladder[0].model or model
-    slot = _local.acquire(serve_model)
+    slot = _local.acquire(serve_model) if pin is None else None
     if slot is not None and slot.paused:
         # Same drain deferral as sync route() — the paused busy-gate, never
         # an escape (there is none here to skip, but the message stays
@@ -5742,7 +5782,9 @@ async def _dispatch_async_inner(req: LlmRequest) -> LlmResult:
     started = time.monotonic()
     try:
         result = _classified(
-            await _dispatch_claude_agent_async(call_req, model=call_model)
+            await _dispatch_claude_agent_async(call_req, model=call_model, bare=True)
+            if ladder[0].bare
+            else await _dispatch_claude_agent_async(call_req, model=call_model)
         )
     finally:
         _local.release(slot)

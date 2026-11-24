@@ -5,6 +5,10 @@ LAN. :func:`create_app` wires routers, errors and one lifespan-owned
 :class:`precis.runtime.PrecisRuntime`. ``precis web`` lazy-loads ``[web]``.
 
 **Ask chat.** Startup logs ``chat_turns.preflight`` warnings and proceeds.
+``chat_turns`` keeps pending progress in the single web process. It appends
+the human message before launch and records the answer and metering at
+completion. The pinned streaming rung keeps spend on the Anthropic API key.
+An isolated CLI process group lets Stop and web shutdown kill its MCP child.
 
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
