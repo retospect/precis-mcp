@@ -1283,6 +1283,8 @@ class MemoryHandler(AuditedRetirementHandler):
         hours: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if view == "audit":
+            view = "retired"
         if days is not None:
             if id != "/threads":
                 raise BadInput(

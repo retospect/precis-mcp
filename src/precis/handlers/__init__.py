@@ -26,6 +26,8 @@ section handles, and tag changes follow find validation.
 Cache eyes apply injection verdicts while retaining link rings.
 Comment visibility previews share target and state validation with apply.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
+Memory's audit view uses the retired view so a superseded handle exposes
+its own tombstone through the same read path.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
 Unscoped paper TOCs flag short bodies that end mid-sentence so readers can
 recognize possible gaps in the held copy before drawing conclusions.

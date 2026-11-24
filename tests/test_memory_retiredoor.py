@@ -140,9 +140,12 @@ def test_inbound_successor_stamps_handle_and_redirects(
     resolved = store.resolve_handle(f"me{old}")
     assert resolved is not None
     assert resolved.ref_id == successor and resolved.redirected_from == f"me{old}"
-    id_value = {"handle": f"me{old}", "integer": old, "numeric_string": str(old)}[
-        id_form
-    ]
+    id_values: dict[str, str | int] = {
+        "handle": f"me{old}",
+        "integer": old,
+        "numeric_string": str(old),
+    }
+    id_value = id_values[id_form]
     body, failed = runtime_with_store.dispatch_with_status(
         "get", {"kind": "memory", "id": id_value}
     )
@@ -154,6 +157,33 @@ def test_inbound_successor_stamps_handle_and_redirects(
     assert not failed, retired
     assert f"me{old} — retired" in retired
     assert "Obsolete retirement content." in retired
+    addresses: list[dict[str, str | int]] = [{"kind": "memory", "id": id_value}]
+    if id_form == "handle":
+        addresses.extend([{"id": id_value}, {"id": f"memory:{id_value}"}])
+    for address in addresses:
+        audit, failed = runtime_with_store.dispatch_with_status(
+            "get", {**address, "view": "audit"}
+        )
+        assert not failed, audit
+        assert f"me{old} — retired" in audit
+        assert "Obsolete retirement content." in audit
+        assert "Replacement content is current." not in audit
+
+
+def test_memory_audit_infers_kind_for_plain_tombstone(
+    hub: Hub, runtime_with_store: PrecisRuntime
+) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    old = _memory(store, "Retired without a replacement.")
+    handler.delete(id=old)
+
+    audit, failed = runtime_with_store.dispatch_with_status(
+        "get", {"id": f"me{old}", "view": "audit"}
+    )
+    assert not failed, audit
+    assert f"me{old} — retired" in audit
+    assert "Retired without a replacement." in audit
+    assert "Retired without a replacement." in handler.get(id=old, view="audit").body
 
 
 @pytest.mark.parametrize("kind", ["todo", "skill", "gripe"])

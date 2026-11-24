@@ -3587,6 +3587,19 @@ class DispatchMixin(RuntimeShape):
         # grammar already used by ``link=`` / ``unlink=``.
         if verb == "delete":
             self._refuse_superseded_delete(args)
+        if verb == "get" and args.get("view") == "audit":
+            kind = args.get("kind")
+            if kind is None:
+                address = str(args.get("id") or "")
+                prefix, sep, _ = address.partition(":")
+                parsed = handle_registry.parse(address)
+                if sep and prefix.strip() == "memory":
+                    kind = "memory"
+                elif parsed is not None and not parsed[1]:
+                    kind = parsed[0]
+            if kind == "memory":
+                # The tombstone must survive both numeric and handle routing.
+                args["view"] = "retired"
         pre_kind = args.get("kind")
         self._maybe_split_prefixed_id(args, verb=verb)
         gate = _KIND_GATE.get()
