@@ -23,9 +23,10 @@ Pass taxonomy
   ``dispatch`` mints jobs for open todos with ``meta.executor``, passing
   parent ``prio`` down the DAG. See ``docs/runbooks/minter-ops.md``.
 
-Rescue clocks breaker waits from the first park: rechecks refresh
-status (:mod:`.factory_rescue`). Queued jobs wait only where claim skips
-them. Release digests hold nightly repairs until merge-back. Mirror fetches avoid receive hooks
+Rescue clocks breaker waits from first park because rechecks refresh
+status. Queued jobs wait when operator holds cover every eligible host
+(:mod:`.factory_rescue`).
+Release digests hold nightly repairs until merge-back. Mirror fetches avoid receive hooks
 (:mod:`.factory_git_mirror`).
 Gripe intake bounds frozen reports (``precis-work-help``). Todo sweeps
 recheck under lock; thread sweeps serialize provenance-checked decisions

@@ -475,11 +475,15 @@ def enter_rescue(
 # file-overlap sequence (its mint queues; the claim loop skips the job
 # until the blocker lands, gr702610), the free-failure backoff and a
 # ``child-failed:``-latched transient park's ``retry_after`` — and a
-# queued job no live host can claim: its placement tokens (a pinned
-# lane's ``<adapter>_bin``, td543917) advertised by no host together, so
-# the claim loop never takes it (gr685082). The judgment reads the live
-# job's own meta. A lane's park, backoff, cap or disabled state is NOT a
-# claim hold: the claim takes that row and submit parks or fails it, so
+# queued job the claim loop can never take (gr685082, gr788297): its
+# placement tokens (a pinned lane's ``<adapter>_bin``, td543917)
+# advertised by no live host together, or every host able to take it
+# stopped by an operator claim hold — the executor cap's hold-at-zero
+# (``claim.executor_cap.<executor>[.<host>] = 0``, the arming runbook's
+# gr752561 hold), a ``claim.max_running.<job_type> = 0`` type stop, or a
+# live ``service_config`` reserve on a ``respect_reserve`` lane. The
+# judgment reads the live job's own meta. A lane's park, backoff, cap or
+# disabled state still permits claim. Submit parks or fails the row, so
 # the queue-liveness rule still judges a silent queue it never drains.
 # Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
@@ -1161,38 +1165,99 @@ def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:
     return str(row[0]) if row else None
 
 
+#: Executors whose claim honors the operator reserve (``respect_reserve``
+#: at the ``claim_executor_jobs`` call sites — ``ssh_node``,
+#: ``claude_docker``, ``job_inproc``): a live ``service_config``
+#: ``reserve`` row on the claiming host or ``*`` stops their fresh claims.
+_RESERVE_CLAIM_EXECUTORS: tuple[str, ...] = (
+    "ssh_node",
+    "claude_docker",
+    "job_inproc",
+)
+
+
 def _queued_claim_hold(store: Store, j: Any) -> str | None:
     """Why the claim loop cannot take this queued job right now, or
     ``None`` when a live host can claim it (the silence is the queue's).
 
-    The one lane-shaped hold a queued job carries is the claim loop's
-    placement gate (td543917, ``_common._placement_ok``): a ``run_slice``
-    pinned to a lane, or stamped with ``meta.adapter`` by a prior submit,
-    needs that adapter's ``<a>_bin`` token, and a job whose tokens no live
-    host advertises together is never claimed. The check reads the LIVE
-    job's own ``meta`` (``job_type``, ``params``, ``adapter``), never the
+    A queued job's claim holds, read off the LIVE job's own ``meta``
+    (``job_type``, ``executor``, ``params``, ``adapter``) — never the
     todo's current op or lane: a land stays judged as a land, and a pin
     the job never carried is not invented.
+
+    * the placement gate (td543917, ``_common._placement_ok``): a
+      ``run_slice`` pinned to a lane, or stamped ``meta.adapter`` by a
+      prior submit, needs that adapter's ``<a>_bin`` token — a job whose
+      tokens no live host advertises together is never claimed
+      (gr685082);
+    * the operator claim holds that stop every host able to take it
+      (gr788297): the executor cap's hold-at-zero — ``claim.executor_cap.
+      <executor>[.<host>] = 0``, the arming runbook's gr752561 hold that
+      ``plan_dispatch._zero_cap_hosts`` already names — a
+      ``claim.max_running.<job_type> = 0`` type stop, and a live
+      ``service_config`` reserve on a ``respect_reserve`` lane. The
+      ``target_node`` pin narrows "every host" to the pinned one.
 
     A lane's park, backoff, cap or disabled state is NOT a claim hold. The
     claim takes such a row without reading any of them; the lane's verdict
     is made at submit (``run_slice.submit`` parks it into ``waiting_time``
-    or fails it). Those queued rows get no exemption, so a silent queue the
-    claim never drains still rescues (gr685082).
+    or fails it). Neither is a busy lane at its running cap — a full lane
+    drains on a completion, the same way a draining queue does (gr625325).
+    Those queued rows get no exemption, so a silent queue the claim never
+    drains still rescues (gr685082).
     """
     from precis.workers.executors import _common
+    from precis.workers.service_config import reserve_active
 
+    meta = j.meta
+    pin = (meta.get("params") or {}).get("target_node")
+    executor = str(meta.get("executor") or "")
+    job_type = str(meta.get("job_type") or "")
     with store.pool.connection() as conn:
         advertised = _common.advertised_by_host(conn)
         lane_adapters = _common.lane_adapter_map(conn)
-    gap = _common.placement_gap(j.meta, advertised, lane_adapters)
-    if not gap:
-        return None
-    pin = (j.meta.get("params") or {}).get("target_node")
-    tokens = ", ".join(sorted(gap))
-    if pin:
-        return f"pinned host {pin} does not advertise all of {tokens}"
-    return f"no live host advertises all of {tokens}"
+        gap = _common.placement_gap(meta, advertised, lane_adapters)
+        if gap:
+            tokens = ", ".join(sorted(gap))
+            if pin:
+                return f"pinned host {pin} does not advertise all of {tokens}"
+            return f"no live host advertises all of {tokens}"
+        if _common.job_type_running_caps(conn).get(job_type) == 0:
+            return f"job_type {job_type} held at claim.max_running 0"
+        needed = _common.effective_placement(meta, advertised, lane_adapters)
+        capable = [
+            h
+            for h, have in advertised.items()
+            if needed <= have and (pin is None or h == str(pin))
+        ]
+        if executor and capable:
+            hosts_without_zero_cap = [
+                h
+                for h in capable
+                if _common.executor_lane_limits(conn, executor, h)[0] != 0
+            ]
+            if not hosts_without_zero_cap:
+                if pin:
+                    return (
+                        f"pinned host {pin} has {executor} cap 0 "
+                        f"(claim.executor_cap.{executor}.{pin})"
+                    )
+                return (
+                    f"every host that could claim it has {executor} cap 0 "
+                    f"(claim.executor_cap.{executor}[.<host>])"
+                )
+            if executor in _RESERVE_CLAIM_EXECUTORS and all(
+                reserve_active(conn, h) for h in hosts_without_zero_cap
+            ):
+                if pin:
+                    return f"pinned host {pin} is under an operator reserve"
+                if len(hosts_without_zero_cap) < len(capable):
+                    return (
+                        f"every host that could claim it has {executor} cap 0 "
+                        "or is under an operator reserve"
+                    )
+                return "every host that could claim it is under an operator reserve"
+    return None
 
 
 def _stage_for(
@@ -1254,9 +1319,8 @@ def _stage_for(
                 )
             claim_hold = _queued_claim_hold(store, live)
             if claim_hold is not None:
-                # The claim loop's placement gate never takes the job: no
-                # live host advertises its tokens, so the silence is the
-                # placement's and the node parks (gr685082).
+                # Placement or operator holds keep every live host from
+                # claiming the job, so the node waits (gr685082, gr788297).
                 return (
                     "parked",
                     "parked",

@@ -128,6 +128,7 @@ def _job(
     todo: int,
     *,
     job_type: str = "run_slice",
+    executor: str = "ssh_node",
     status: str = "queued",
     params: dict[str, Any] | None = None,
     meta_extra: dict[str, Any] | None = None,
@@ -137,7 +138,7 @@ def _job(
             store,
             conn=conn,
             job_type=job_type,
-            executor="ssh_node",
+            executor=executor,
             title=job_type,
             params=params or {},
             parent_id=todo,
@@ -2184,6 +2185,138 @@ def test_queued_land_is_judged_on_its_own_placement(
     assert not _common._placement_ok(
         _job_meta(store, job), {"host-a": no_repo}, "host-a"
     )
+
+
+# ── queued jobs and operator claim holds (gr788297) ───────────────
+
+
+def test_queued_pinned_job_on_a_cap_zero_host_is_a_wait(store: Store) -> None:
+    """gr788297: the arming runbook's hold-at-zero — ``claim.executor_cap.
+    ssh_node.<host> = 0`` — suspends claims on a host the way a placement
+    gap does: a job pinned there waits on the operator's hold, and a
+    silent queue under it is deliberate, not a stall
+    (``plan_dispatch._zero_cap_hosts`` names the same hold in its
+    unplaced ask)."""
+    store.set_setting("claim.executor_cap.ssh_node.host-a", "0")
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued", params={"target_node": "host-a"})
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("pinned host host-a has ssh_node cap 0" in n for n in res.notes)
+
+
+def test_queued_job_every_capable_host_cap_zero_is_a_wait(store: Store) -> None:
+    """The unsuffixed ``claim.executor_cap.<executor> = 0`` suspends the
+    executor on every host without an override — an unpinned job with
+    nowhere to claim is the same deliberate wait."""
+    store.set_setting("claim.executor_cap.ssh_node", "0")
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any(
+        "every host that could claim it has ssh_node cap 0" in n for n in res.notes
+    )
+
+
+def test_queued_job_an_uncapped_capable_host_still_rescues(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The over-holding guard: while ONE host able to take the job is
+    uncapped a claim is possible, so a queue that still hasn't moved is
+    a stall."""
+    monkeypatch.setattr(
+        _common,
+        "_advertised_by_host",
+        lambda conn: {"host-a": set(_ALL_PLACEMENT), "host-b": set(_ALL_PLACEMENT)},
+    )
+    store.set_setting("claim.executor_cap.ssh_node.host-a", "0")
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+
+
+def test_queued_job_cap_zero_and_reserve_hold_different_hosts(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.service_config import set_reserve
+
+    monkeypatch.setattr(
+        _common,
+        "_advertised_by_host",
+        lambda conn: {"host-a": set(_ALL_PLACEMENT), "host-b": set(_ALL_PLACEMENT)},
+    )
+    store.set_setting("claim.executor_cap.ssh_node.host-a", "0")
+    set_reserve(store, "host-b", hours=1)
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("cap 0 or is under an operator reserve" in n for n in res.notes)
+
+
+def test_queued_job_a_cap_on_another_executor_is_no_hold(store: Store) -> None:
+    """The cap keys are per-executor: an ``ssh_node`` hold-at-zero says
+    nothing about a ``job_inproc`` row."""
+    store.set_setting("claim.executor_cap.ssh_node", "0")
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, job_type="plan_tick", executor="job_inproc", status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+
+
+def test_queued_pinned_job_on_a_reserved_host_is_a_wait(store: Store) -> None:
+    """A live operator reserve on a ``respect_reserve`` lane
+    (``ssh_node``, ``claude_docker``, ``job_inproc``) stops fresh claims
+    on the pinned host until it expires — the same deliberate silence."""
+    from precis.workers.service_config import set_reserve
+
+    set_reserve(store, "host-a", hours=1)
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued", params={"target_node": "host-a"})
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any(
+        "pinned host host-a is under an operator reserve" in n for n in res.notes
+    )
+
+
+def test_queued_job_type_held_at_max_running_zero_is_a_wait(store: Store) -> None:
+    """``claim.max_running.<job_type> = 0`` excludes the type from every
+    fresh pick on every host — a fleet-wide type stop, not a stall."""
+    store.set_setting("claim.max_running.run_slice", "0")
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("job_type run_slice held at claim.max_running 0" in n for n in res.notes)
 
 
 # ── the tick heartbeat (tick-silent) ──────────────────────────────
