@@ -26,10 +26,10 @@ throttle, same as ``health_digest``/``ots_sweep``):
    queue's own lookup a guaranteed self-match: the pass can never mint a
    new term (the contract's hard rule). Skipped: mastered concepts,
    concepts with a live card for this owner, concepts the forge already
-   declined (``card_forge_skip``), and concepts already holding a live
-   ``walk`` submission — the second rule is what makes a daily re-read
-   of the same 90-day log idempotent: a concept is queued once per
-   source until its card exists. The candidate also passes the same
+   declined (``card_forge_skip``), and concepts with a live walk
+   submission or an explicit walk-card drop for this owner within
+   retention. The submission check makes re-reading the same 90-day
+   log idempotent. The candidate also passes the same
    secret-tag fence as the focused refs — another login's secret
    concept can't ride a walk into this queue.
 4. **Queue** — :func:`precis.reading.asked.queue_asked_term` with the
@@ -48,7 +48,7 @@ throttle, same as ``health_digest``/``ots_sweep``):
    (asked-first ordering) and the existing daily mint cap still decides
    how many cards a day the forge writes; a walk-queued concept simply
    waits its turn like any ask. A card the forge mints for a concept
-   carrying a live walk submission gets ``meta.source="walk"`` and
+   driven by a live walk submission gets ``meta.source="walk"`` and
    ``meta.walk_date`` (the submission's UTC day) — see
    ``reading/flashcards.py``'s ``_LATEST_WALK`` lateral.
 
@@ -63,11 +63,12 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from precis.eye_visits import RETENTION_DAYS
 from precis.reading.asked import (
+    DROPPED_WALK_SQL,
     LIVE_CARD_SQL,
     queue_asked_term,
     unqueue_asked_term,
@@ -129,9 +130,12 @@ _CANDIDATES_SQL = """
                WHERE (l.src_ref_id = ANY(%(focused)s) AND l.dst_ref_id = c.ref_id)
                   OR (l.dst_ref_id = ANY(%(focused)s) AND l.src_ref_id = c.ref_id)))
       AND NOT EXISTS ({live_card})
+      AND NOT EXISTS ({dropped_walk})
       AND NOT EXISTS (
           SELECT 1 FROM jsonb_each(c.meta->'asked_submissions') s
           WHERE s.value->>'source' = %(walk_source)s
+            AND s.value->>'owner' = %(owner)s
+            AND (s.value->>'at')::timestamptz >= %(cutoff)s
             AND s.value->>'forge_skipped' IS NULL)
       AND {visible}
     ORDER BY c.ref_id
@@ -212,18 +216,29 @@ def _focused_ref_ids(
 
 
 def _candidates(
-    conn: Connection, ref_ids: set[int], *, owner_login: str, owner_handle: str
+    conn: Connection,
+    ref_ids: set[int],
+    *,
+    owner_login: str,
+    owner_handle: str,
+    cutoff: datetime,
 ) -> list[tuple[int, str]]:
     """Queueable concepts for one owner — see :data:`_CANDIDATES_SQL`."""
     live_card = LIVE_CARD_SQL.format(concept="c.ref_id", owner="%(owner)s::text")
+    dropped_walk = DROPPED_WALK_SQL.format(
+        concept="c.ref_id", owner="%(owner)s", cutoff="%(cutoff)s"
+    )
     visible = _VISIBLE_SQL.format(ref="c.ref_id")
     rows = conn.execute(
-        _CANDIDATES_SQL.format(live_card=live_card, visible=visible),
+        _CANDIDATES_SQL.format(
+            live_card=live_card, dropped_walk=dropped_walk, visible=visible
+        ),
         {
             "owner": owner_login,
             "handle": owner_handle,
             "focused": sorted(ref_ids),
             "walk_source": WALK_SOURCE,
+            "cutoff": cutoff,
         },
     ).fetchall()
     return [(int(row[0]), str(row[1])) for row in rows]
@@ -237,6 +252,7 @@ def run_walk_cards_pass(store: Store, *, now: datetime | None = None) -> dict[st
     ``failed`` per-candidate queue errors — a bad candidate never
     sinks the rest of the pass."""
     now = now or datetime.now(UTC)
+    cutoff = now - timedelta(days=RETENTION_DAYS)
     result = {"claimed": 0, "ok": 0, "failed": 0, "owners": 0}
     with store.pool.connection() as conn:
         owners = _walk_owners(conn, now)
@@ -246,7 +262,7 @@ def run_walk_cards_pass(store: Store, *, now: datetime | None = None) -> dict[st
             if not focused:
                 continue
             candidates = _candidates(
-                conn, focused, owner_login=login, owner_handle=abbrev
+                conn, focused, owner_login=login, owner_handle=abbrev, cutoff=cutoff
             )
             result["claimed"] += len(candidates)
             for concept_id, name in candidates:

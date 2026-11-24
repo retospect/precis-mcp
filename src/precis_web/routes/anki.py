@@ -7,14 +7,20 @@ teach, and the daily mint cap for heavy mornings.
 
 * ``GET  /anki``        — counts header + forge cards grouped by concept
                           (newest first, ``meta.mastery``/``state`` shown),
-                          the queue textarea, and the cap form.
+                          origin badges and batch drops, the queue
+                          textarea, and the cap form.
 * ``POST /anki/known``  — checkbox batch: soft-delete every live card the
                           concept ``represents`` (the forge's retire path —
                           the next ``anki-sync`` removes the note from the
                           mirror) and set ``meta.mastery=1.0`` /
                           ``state='mastered'``.
 * ``POST /anki/undo-known`` — restore the signed-in owner's dismissal.
-* ``POST /anki/drop``   — the same retire path on one bad card.
+* ``POST /anki/drop``   — retire one card. Dropping a walk card also
+                          suppresses walk intake for its owner and concept
+                          for the walk retention window.
+* ``POST /anki/drop-source`` — retire a displayed batch of walk, highlight
+                          or forge cards by UTC mint date. The next sync
+                          removes the notes, as for a single drop.
 * ``POST /anki/boost``  — stamp ``meta.anki_boost_due`` on one live card;
                           the next ``anki_sync`` tick brings the mirror
                           card's due date forward to today (never review
@@ -27,8 +33,8 @@ teach, and the daily mint cap for heavy mornings.
                           ``term`` + the 2–2000 char selection as ``context``
                           + the page's record handle as ``ref``. Owner-scoped
                           by login. The selection supplies forge context,
-                          ``meta.source`` stamps
-                          ``"highlight"``, and the page's ref gains a
+                          the resulting card carries
+                          ``meta.source="highlight"``, and the page's ref gains a
                           ``related-to`` edge. JSON answers the chip's
                           fetch; a plain form post falls back to ``/anki``.
 * ``POST /anki/highlight/undo`` — the toast's Undo, bound to the
@@ -71,6 +77,8 @@ from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
@@ -79,6 +87,34 @@ router = APIRouter(prefix="/anki", tags=["anki"])
 
 _FORGE_AUTHOR = "card_forge"
 _FOREIGN_SOURCE = "anki-foreign"
+
+#: Origins the review pages badge and the bulk drop accepts (gr743235).
+_ORIGINS = ("walk", "highlight", "forge")
+
+#: Older overlapping asks could stamp both fields, but the highlight
+#: supplied the mint context and consumed the submission.
+_ORIGIN_SQL = """CASE
+    WHEN a.meta ? 'highlight_submission' THEN 'highlight'
+    WHEN a.meta->>'source' IN ('walk', 'highlight', 'forge') THEN a.meta->>'source'
+    WHEN a.meta->>'authored_by' = 'card_forge' THEN 'forge'
+    ELSE '' END"""
+_ORIGIN_DATE_SQL = "to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+_CARD_SCOPE_SQL = """
+    a.kind = 'anki' AND a.retired_at IS NULL
+    AND a.owner_login = %s
+    AND COALESCE(a.meta->>'source', '') != %s
+    AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
+    AND (a.meta->>'authored_by' = %s OR NOT %s)
+"""
+_CARD_CONCEPT_SQL = """
+    (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
+    OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by')
+"""
+_LIVE_CONCEPT_SQL = """
+    c.kind = 'concept' AND c.retired_at IS NULL
+    AND c.ref_id = CASE WHEN l.src_ref_id = a.ref_id
+                       THEN l.dst_ref_id ELSE l.src_ref_id END
+"""
 
 
 def _require_user(request: Request) -> WebUser:
@@ -187,7 +223,7 @@ def _card_groups(
     ``boosted`` mirrors ``meta.anki_boost_due``: a queued bring-forward the
     next ``anki_sync`` tick applies, so a list row can show "boost queued"
     instead of offering the same boost again."""
-    sql = """
+    sql = f"""
         SELECT a.ref_id,
                a.meta->'fields'->>'Text',
                a.meta->>'anki_boost_due',
@@ -195,19 +231,12 @@ def _card_groups(
                c.meta->>'name',
                c.meta->>'mastery',
                c.meta->>'state',
-               c.meta->'memory_match'
+               c.meta->'memory_match',
+               {_ORIGIN_SQL}, {_ORIGIN_DATE_SQL}
         FROM refs a
-        LEFT JOIN links l ON (
-                 (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
-              OR (l.src_ref_id = a.ref_id AND l.relation = 'represented-by'))
-        LEFT JOIN refs c ON c.kind = 'concept' AND c.retired_at IS NULL
-                   AND c.ref_id = CASE WHEN l.src_ref_id = a.ref_id
-                                       THEN l.dst_ref_id ELSE l.src_ref_id END
-        WHERE a.kind = 'anki' AND a.retired_at IS NULL
-          AND a.owner_login = %s
-          AND COALESCE(a.meta->>'source', '') != %s
-          AND NOT COALESCE((a.meta->>'readonly')::boolean, FALSE)
-          AND (a.meta->>'authored_by' = %s OR NOT %s)
+        LEFT JOIN links l ON ({_CARD_CONCEPT_SQL})
+        LEFT JOIN refs c ON {_LIVE_CONCEPT_SQL}
+        WHERE {_CARD_SCOPE_SQL}
         ORDER BY a.created_at DESC, a.ref_id DESC, c.ref_id
     """
     cards: dict[int, dict[str, Any]] = {}
@@ -221,6 +250,8 @@ def _card_groups(
             mastery,
             state,
             match,
+            origin,
+            origin_date,
         ) in conn.execute(
             sql, (owner, _FOREIGN_SOURCE, _FORGE_AUTHOR, forge_only)
         ).fetchall():
@@ -230,6 +261,8 @@ def _card_groups(
                     "id": int(card_id),
                     "text": cloze or "",
                     "boosted": bool(boost_due),
+                    "source": origin if origin in _ORIGINS else "",
+                    "date": origin_date,
                     "concepts": {},
                 },
             )
@@ -273,6 +306,22 @@ def _card_groups(
     return out
 
 
+def _origin_batches(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Distinct ``(source, date)`` batches among the listed cards, newest
+    day first, with their live card counts — the bulk-drop buttons."""
+    seen: dict[tuple[str, str], set[int]] = {}
+    for g in groups:
+        for card in g["cards"]:
+            if card["source"]:
+                seen.setdefault((card["source"], card["date"]), set()).add(card["id"])
+    return [
+        {"source": src, "date": day, "count": len(ids)}
+        for (src, day), ids in sorted(
+            seen.items(), key=lambda kv: (kv[0][1], kv[0][0]), reverse=True
+        )
+    ]
+
+
 def _render(
     request: Request,
     *,
@@ -282,6 +331,7 @@ def _render(
 ) -> HTMLResponse:
     store = get_store(request)
     today = datetime.now(UTC).date()
+    groups = _card_groups(store, user.login, forge_only=True)
     return templates.TemplateResponse(
         request,
         "anki/index.html.j2",
@@ -291,7 +341,8 @@ def _render(
             "error": error,
             "notice": notice,
             "counts": _counts(store, user.login),
-            "groups": _card_groups(store, user.login, forge_only=True),
+            "groups": groups,
+            "origins": _origin_batches(groups),
             "undo_entries": known_undo_entries(store, user),
             "return_to": "anki",
             "cap": effective_cards_per_day(store),
@@ -372,7 +423,9 @@ def restore_known(
 
 
 @router.post("/drop", response_class=HTMLResponse)
-async def drop(request: Request, card: int = Form(...)) -> Response:
+async def drop(
+    request: Request, card: int = Form(...), return_to: str = Form("anki")
+) -> Response:
     """Retire a single card. Only this login's live cards — a posted id
     naming someone else's (or a non-anki) ref is a 404, never a write."""
     user = _require_user(request)
@@ -380,10 +433,102 @@ async def drop(request: Request, card: int = Form(...)) -> Response:
     ref = store.get_ref(kind="anki", id=card)
     if ref is None or getattr(ref, "owner_login", None) != user.login:
         raise HTTPException(status_code=404, detail=f"anki id={card} not found")
-    store.retire_ref(card)
+    await run_in_threadpool(_drop_card, store, card)
+    if return_to == "learning":
+        return _review_redirect(request, "/learning")
     if request.headers.get("HX-Request") == "true":
         return Response(status_code=200)
     return RedirectResponse("/anki?retired=1", status_code=303)
+
+
+def _retire_card(store: Store, conn: Connection, card: int) -> None:
+    # Keep the owner and concept links on the retired card so walk intake
+    # can read the dismissal without writing to a shared concept.
+    store.retire_ref(card, conn=conn)
+    conn.execute(
+        f"""UPDATE refs a
+            SET meta = meta || jsonb_build_object('walk_dropped_at', a.retired_at)
+            WHERE a.ref_id = %s AND {_ORIGIN_SQL} = 'walk'""",
+        (card,),
+    )
+
+
+def _drop_card(store: Store, card: int) -> None:
+    with store.tx() as conn:
+        _retire_card(store, conn, card)
+
+
+def _drop_batch(
+    store: Store,
+    owner: str,
+    source: str,
+    day: str,
+    *,
+    learning: bool,
+    expected_count: int | None = None,
+) -> int:
+    """Retire the same cohort the originating page counts, atomically."""
+    with store.tx() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT a.ref_id FROM refs a
+            WHERE {_CARD_SCOPE_SQL}
+              AND {_ORIGIN_SQL} = %s AND {_ORIGIN_DATE_SQL} = %s
+              AND (%s OR EXISTS (
+                  SELECT 1 FROM links l JOIN refs c ON {_LIVE_CONCEPT_SQL}
+                  WHERE {_CARD_CONCEPT_SQL}
+              ))
+            ORDER BY a.ref_id
+            FOR NO KEY UPDATE OF a
+            """,
+            (
+                owner,
+                _FOREIGN_SOURCE,
+                _FORGE_AUTHOR,
+                not learning,
+                source,
+                day,
+                learning,
+            ),
+        ).fetchall()
+        if expected_count is not None and len(rows) != expected_count:
+            raise HTTPException(
+                status_code=409,
+                detail="This batch changed. Reload the review page to see the new count.",
+            )
+        for (card,) in rows:
+            _retire_card(store, conn, card)
+    return len(rows)
+
+
+@router.post("/drop-source", response_class=HTMLResponse)
+async def drop_source(
+    request: Request,
+    source: str = Form(...),
+    date: str = Form(...),
+    return_to: str = Form("anki"),
+    expected_count: int | None = Form(None, ge=1),
+) -> Response:
+    """Bulk-retire this login's listed cards from one source and UTC mint day."""
+    user = _require_user(request)
+    if source not in _ORIGINS:
+        raise HTTPException(status_code=422, detail=f"unknown source {source!r}")
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD") from None
+    learning = return_to == "learning"
+    count = await run_in_threadpool(
+        _drop_batch,
+        get_store(request),
+        user.login,
+        source,
+        day,
+        learning=learning,
+        expected_count=expected_count,
+    )
+    path = "/learning" if learning else f"/anki?retired={count}"
+    return _review_redirect(request, path)
 
 
 @router.post("/boost", response_class=HTMLResponse)

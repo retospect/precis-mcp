@@ -51,7 +51,10 @@ package holds the concept-graph layer:
   The daily `walk_cards` worker pass (gr743232) is a third door beside the
   what-is grammar and the chip: it queues concepts met on the `/eye` walk
   with `source="walk"` (existing nodes only — never a mint), and the forge
-  stamps the minted card's `meta.source`/`meta.walk_date`.
+  stamps the minted card's `meta.source`/`meta.walk_date` when the walk
+  drives the mint. A pending highlight takes precedence because its text
+  supplies the prompt. Walk intake checks explicit walk-card retirements
+  for the same owner and concept within the walk retention window.
 
 Remaining: graph-edge inference, mastery-from-Anki, embedding routing,
 booklet. Anki is a **renderer, not the brain** — the concept

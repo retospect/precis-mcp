@@ -1,0 +1,16 @@
+{# Bulk drop by origin (gr743235): one button per (source, day) batch. #}
+{% if origins %}
+<div class="mt-3 text-xs text-fg-subtle">
+  <span>Drop a whole batch:</span>
+  {% for o in origins %}
+  <form method="post" action="/anki/drop-source" class="inline"
+        onsubmit="return confirm('Drop {{ o.count }} {{ o.source }} card(s) from {{ o.date }}?')">
+    <input type="hidden" name="source" value="{{ o.source }}" />
+    <input type="hidden" name="date" value="{{ o.date }}" />
+    <input type="hidden" name="expected_count" value="{{ o.count }}" />
+    <input type="hidden" name="return_to" value="{{ return_to }}" />
+    <button type="submit" class="ml-2 hover:text-danger transition">drop all {{ o.source }} from {{ o.date }} ({{ o.count }})</button>
+  </form>
+  {% endfor %}
+</div>
+{% endif %}

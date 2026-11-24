@@ -11,19 +11,21 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from precis.eye_visits import RETENTION_DAYS, EyeVisitStore
-from precis.reading.asked import ASKED_TAG, unqueue_asked_term
+from precis.reading.asked import ASKED_TAG, queue_asked_term, unqueue_asked_term
 from precis.reading.flashcards import author_card, mint_daily_cards
 from precis.reading.promote import create_concept
 from precis.store import Tag
 from precis.user_context import user_scope
 from precis.users import hash_password
 from precis.workers.walk_cards import run_walk_cards_pass
+from precis_web.routes.anki import _drop_card
 
 
 class _FakeClient:
@@ -397,3 +399,70 @@ def test_the_forge_daily_cap_still_bounds_walk_cards(store: Any) -> None:
     assert len(report.minted) == 1
     ref = store.get_ref(kind="anki", id=report.minted[0][1][0])
     assert ref.meta["source"] == "walk" and ref.meta["walk_date"]
+
+
+@pytest.mark.db
+def test_walk_drop_expires_and_is_scoped_to_the_card_owner(store: Any) -> None:
+    first, second = _user(store, "first-walker"), _user(store, "second-walker")
+    cid = _concept(store)
+    _walk(store, first, f"cn{cid}")
+    run_walk_cards_pass(store)
+    client = _FakeClient({"cards": [{"text": "X is {{c1::Y}}."}]})
+    report = mint_daily_cards(store, client=client, per_day=5)
+    [(concept, [card])] = report.minted
+    assert concept == cid
+    _drop_card(store, card)
+
+    assert run_walk_cards_pass(store)["ok"] == 0
+    assert mint_daily_cards(store, client=client, per_day=5).minted == []
+    _walk(store, second, f"cn{cid}")
+    assert run_walk_cards_pass(store)["ok"] == 1
+    assert {s["owner"] for s in _subs(store, cid).values()} == {
+        first.login,
+        second.login,
+    }
+    assert mint_daily_cards(store, client=client, per_day=5).minted[0][0] == cid
+
+    later = datetime.now(UTC) + timedelta(days=RETENTION_DAYS + 1)
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE eye_visits SET visited_at = %s WHERE user_id = %s",
+            (later, first.id),
+        )
+    assert run_walk_cards_pass(store, now=later)["ok"] == 1
+    assert sum(s["owner"] == first.login for s in _subs(store, cid).values()) == 2
+
+    name = store.get_ref(kind="concept", id=cid).meta["name"]
+    queue_asked_term(store, name, owner_login=first.login)
+    [(_, [ordinary])] = mint_daily_cards(store, client=client, per_day=5).minted
+    ref = store.get_ref(kind="anki", id=ordinary)
+    assert ref.owner_login == first.login
+    assert "source" not in ref.meta
+
+
+@pytest.mark.db
+def test_highlight_mint_uses_highlight_provenance_with_a_pending_walk(
+    store: Any,
+) -> None:
+    user = _user(store)
+    name = f"captured-{uuid.uuid4().hex[:8]}"
+    ask = queue_asked_term(
+        store,
+        name,
+        owner_login=user.login,
+        source="highlight",
+        definition="Context text.",
+    )
+    cid = ask["ref_id"]
+    _walk(store, user, f"cn{cid}")
+    assert run_walk_cards_pass(store)["ok"] == 1
+
+    client = _FakeClient({"cards": [{"text": "X is {{c1::Y}}."}]})
+    report = mint_daily_cards(store, client=client, per_day=5)
+    [(concept, [card])] = report.minted
+    assert concept == cid
+    assert "HIGHLIGHT CONTEXT: Context text." in client.calls[0][-1]["content"]
+    meta = store.get_ref(kind="anki", id=card).meta
+    assert meta["source"] == "highlight"
+    assert meta["highlight_submission"] == ask["submission"]
+    assert "walk_date" not in meta

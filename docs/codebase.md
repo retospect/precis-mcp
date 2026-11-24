@@ -102,7 +102,11 @@ walk and queues the concepts they focused or met one graph hop out via
 `queue_asked_term` (`source="walk"` — never a new term, never a carded or
 mastered concept, idempotent per live walk submission); the forge mints
 them under its usual daily cap and stamps the cards `meta.source="walk"`
-+ `meta.walk_date`.
++ `meta.walk_date` when the walk drives the mint. The `/anki` and
+`/learning` reviews badge auto-made cards and retire displayed batches by
+source and UTC mint day. An explicit walk-card drop records its marker in
+the retirement transaction, and walk intake reads the owner's recent
+marked tombstones.
 
 `precis.oauth` adds independently revocable user/app grants backed by the same
 account IDs. Web routes own consent and token exchange; `oauth_transport`

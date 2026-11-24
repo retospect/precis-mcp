@@ -84,6 +84,11 @@ class FakeStore:
         self.refs: dict[int, Any] = {}
         self.queued: list[dict[str, Any]] = []
 
+    @contextmanager
+    def tx(self):
+        with self.pool.connection() as conn:
+            yield conn
+
     # ── the gate's reads ────────────────────────────────────────────
     def count_web_users(self, *, enabled_only: bool = True) -> int:
         return 1
@@ -182,20 +187,17 @@ def test_drop_retires_the_users_own_card() -> None:
     assert store.retired == [9]
 
 
-def test_drop_htmx_returns_empty_ok_for_row_delete() -> None:
-    """The /learning current-context row deletes via htmx ``hx-swap="delete"``:
-    a 303 would swap the whole /anki page into the row, so htmx gets an
-    empty 200 instead."""
+def test_learning_drop_htmx_refreshes_the_batch_counts() -> None:
     store = FakeStore()
     store.refs[9] = SimpleNamespace(id=9, kind="anki", owner_login="reto", meta={})
     r = _client(store).post(
         "/anki/drop",
-        data={"card": "9"},
+        data={"card": "9", "return_to": "learning"},
         headers={**_auth(), "HX-Request": "true"},
         follow_redirects=False,
     )
     assert r.status_code == 200
-    assert r.text == ""
+    assert r.headers["HX-Redirect"] == "/learning"
     assert store.retired == [9]
 
 
@@ -522,3 +524,19 @@ def test_card_this_chip_stays_off_a_logged_out_render() -> None:
     for marker in ("cardthis-chip", "cardthis-pop", "cardthis-toast"):
         assert f'id="{marker}"' not in off
         assert f'id="{marker}"' in on
+
+
+def test_drop_source_rejects_unknown_source_and_bad_date() -> None:
+    c = _client(FakeStore())
+    bad_source = c.post(
+        "/anki/drop-source",
+        data={"source": "anki-foreign", "date": "2026-11-20"},
+        headers=_auth(),
+    )
+    bad_date = c.post(
+        "/anki/drop-source",
+        data={"source": "walk", "date": "yesterday"},
+        headers=_auth(),
+    )
+    assert bad_source.status_code == 422
+    assert bad_date.status_code == 422

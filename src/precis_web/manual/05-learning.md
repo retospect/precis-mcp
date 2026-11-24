@@ -32,7 +32,14 @@ count the attempt. Your answer text is discarded.
 - **boost** queues a card to come up *today*: the next Anki sync brings its
   due date forward. Your review history is never rewritten — only the due
   date moves. A boosted card shows *boost queued* until the sync applies it.
-- **drop** retires that one card (the same retire path as the Anki page).
+- **drop** retires that one card. The next Anki sync removes its note.
+- Automatic cards show a **walk**, **highlight**, or **forge** badge.
+  Use **drop all** for a source and UTC mint date to retire that batch
+  from the page, including matching cards under **No live concept**.
+  The Anki page offers the same controls for its forge cards with a live
+  concept. For a walk card, the date is when the forge made it. Dropping
+  a walk card pauses walk intake for that concept on your account for
+  90 days.
 - **I know this** marks the concept mastered and permanently retires your cards
   for it. The next Anki sync removes those notes. Use **Undo** under
   **Marked as mastered** to restore the cards and reverse the dismissal.

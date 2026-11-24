@@ -14,13 +14,15 @@ from queue import Queue
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
+from psycopg import Connection
 
 from precis.errors import BadInput
 from precis.reading.flashcards import author_card
 from precis.reading.known import known_undo_entries, mark_known, undo_known
 from precis.reading.promote import create_concept
 from precis.users import hash_password
-from precis_web.routes.anki import _card_groups, _counts
+from precis_web.routes.anki import _card_groups, _counts, _drop_batch, _origin_batches
 
 
 def _user(store: Any, login: str = "reto") -> str:
@@ -506,3 +508,86 @@ def test_memory_link_misses_render_nothing() -> None:
         "href": "/eye/fi5",
         "label": "fi5 T",
     }
+
+
+def test_drop_batch_matches_visible_origin_and_utc_mint_day(store: Any) -> None:
+    owner = _user(store)
+    other = _user(store, "alice")
+    cid = create_concept(store, name=f"batch-{uuid.uuid4().hex[:8]}")
+    walk = _forge_card(store, cid, owner)
+    highlight = _forge_card(store, cid, owner)
+    foreign = _agent_card(store, cid, owner, source="anki-foreign")
+    readonly = _agent_card(store, cid, owner, source="walk", readonly=True)
+    orphan = _unlinked_card(store, owner)
+    extra = _forge_card(store, cid, other)
+    older = _forge_card(store, cid, owner)
+    agent = _agent_card(store, cid, owner)
+    for card in (walk, highlight, orphan, extra, older):
+        store.update_ref(card, meta_patch={"source": "walk", "walk_date": "2026-10-31"})
+    store.update_ref(highlight, meta_patch={"highlight_submission": "overlapping-ask"})
+    store.update_ref(orphan, meta_patch={"authored_by": "card_forge"})
+    # More than one concept group still contributes one card to the batch.
+    second = create_concept(store, name=f"also-{uuid.uuid4().hex[:8]}")
+    store.add_link(src_ref_id=second, dst_ref_id=walk, relation="represents")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = '2026-11-21T00:30:00Z' WHERE ref_id = ANY(%s)",
+            ([walk, highlight, foreign, readonly, orphan, extra, agent],),
+        )
+        conn.execute(
+            "UPDATE refs SET created_at = '2026-11-20T23:30:00Z' WHERE ref_id = %s",
+            (older,),
+        )
+
+    day = "2026-11-21"
+    groups = _card_groups(store, owner, forge_only=True)
+    counts = {(b["source"], b["date"]): b["count"] for b in _origin_batches(groups)}
+    assert counts[("walk", day)] == counts[("highlight", day)] == 1
+    assert _drop_batch(store, owner, "walk", "2026-10-31", learning=False) == 0
+    with pytest.raises(HTTPException) as stale:
+        _drop_batch(store, owner, "walk", day, learning=False, expected_count=2)
+    assert stale.value.status_code == 409
+    assert _drop_batch(store, owner, "walk", day, learning=False, expected_count=1) == 1
+    assert store.get_ref(kind="anki", id=walk, include_deleted=True).meta[
+        "walk_dropped_at"
+    ]
+    assert _drop_batch(store, owner, "highlight", day, learning=False) == 1
+    assert (
+        "walk_dropped_at"
+        not in store.get_ref(kind="anki", id=highlight, include_deleted=True).meta
+    )
+    for card in (foreign, readonly, orphan, extra, older, agent):
+        assert store.get_ref(kind="anki", id=card) is not None
+    assert _drop_batch(store, owner, "walk", day, learning=True) == 1
+    assert store.get_ref(kind="anki", id=orphan) is None
+
+
+def test_drop_batch_rolls_back_retirement_and_walk_marker(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = _user(store)
+    cid = create_concept(store, name=f"rollback-{uuid.uuid4().hex[:8]}")
+    first, second = [_forge_card(store, cid, owner) for _ in range(2)]
+    day = "2026-11-21"
+    for card in (first, second):
+        store.update_ref(card, meta_patch={"source": "walk"})
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = '2026-11-21T00:30:00Z' WHERE ref_id = ANY(%s)",
+            ([first, second],),
+        )
+    retire_ref = store.retire_ref
+
+    def fail_second(card: int, *, conn: Connection) -> None:
+        if card == second:
+            raise RuntimeError("second retirement failed")
+        retire_ref(card, conn=conn)
+
+    monkeypatch.setattr(store, "retire_ref", fail_second)
+    with pytest.raises(RuntimeError, match="second retirement failed"):
+        _drop_batch(store, owner, "walk", day, learning=False)
+
+    for card in (first, second):
+        ref = store.get_ref(kind="anki", id=card)
+        assert ref is not None
+        assert "walk_dropped_at" not in ref.meta

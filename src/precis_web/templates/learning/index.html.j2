@@ -58,6 +58,7 @@
         {% for card in g.cards %}
         <li id="study-card-{{ card.id }}" class="py-1 text-sm text-fg-secondary">
           <div class="flex items-center gap-2">
+            {% if card.source %}<span class="shrink-0 rounded border border-line px-1 text-xs text-fg-subtle" title="made {{ card.date }}">{{ card.source }}</span>{% endif %}
             <span class="flex-1">{% if answered == card.id|string %}{{ card.text | render_cloze }}{% else %}{{ card.text | render_cloze_masked }}{% endif %}</span>
             {% if card.boosted %}
             {% include "anki/_boosted.html.j2" %}
@@ -69,8 +70,8 @@
                     class="shrink-0 text-xs text-fg-faint hover:text-info-emphasis transition">boost</button>
             {% endif %}
             <button type="button"
-                    hx-post="/anki/drop" hx-vals='{"card": "{{ card.id }}"}'
-                    hx-target="closest li" hx-swap="delete"
+                    hx-post="/anki/drop" hx-vals='{"card": "{{ card.id }}", "return_to": "learning"}'
+                    hx-swap="none"
                     class="shrink-0 text-xs text-fg-faint hover:text-danger transition">drop</button>
           </div>
           {% if answered == card.id|string %}
@@ -89,6 +90,7 @@
     </li>
     {% endfor %}
   </ul>
+  {% include "anki/_drop_source.html.j2" %}
   {% else %}
   <p class="mt-1 text-xs text-fg-subtle">No active study cards.</p>
   {% endif %}

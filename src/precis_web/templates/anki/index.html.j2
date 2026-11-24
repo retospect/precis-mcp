@@ -47,7 +47,7 @@
         <ul class="ml-6 mt-1 space-y-1">
           {% for card in g.cards %}
           <li class="flex items-start gap-2 text-xs text-fg-secondary">
-            <span class="flex-1"><code class="text-fg-faint">ak{{ card.id }}</code> {{ card.text }}</span>
+            <span class="flex-1"><code class="text-fg-faint">ak{{ card.id }}</code>{% if card.source %} <span class="rounded border border-line px-1 text-fg-subtle" title="made {{ card.date }}">{{ card.source }}</span>{% endif %} {{ card.text }}</span>
             <button form="drop-{{ card.id }}" type="submit"
                     class="shrink-0 text-fg-faint hover:text-danger transition">drop</button>
           </li>
@@ -60,6 +60,7 @@
             class="mt-3 rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
                    hover:bg-info-solid-strong transition">I know this</button>
   </form>
+  {% include "anki/_drop_source.html.j2" %}
   {# Per-card drop forms: a nested <form> is invalid HTML, so each drop
      button submits its own sibling form via the form= attribute. #}
   {% for g in groups %}

@@ -54,8 +54,9 @@ from precis.anki.work_tracking import (
     is_work_title,
 )
 from precis.errors import NotFound
+from precis.eye_visits import RETENTION_DAYS
 from precis.handlers.anki import _split_extra, _strip_cloze
-from precis.reading.asked import LIVE_CARD_SQL, live_card_exists
+from precis.reading.asked import DROPPED_WALK_SQL, LIVE_CARD_SQL, live_card_exists
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
     DEFAULT_MASTERY_THRESHOLD,
@@ -378,20 +379,25 @@ _LATEST_HIGHLIGHT = """
     ORDER BY queued_at DESC, submission DESC
     LIMIT 1
 """
-#: The newest live ``walk`` submission's ``at`` stamp (gr743232): the
-#: ``walk_cards`` pass queues via ``queue_asked_term`` like any capture
-#: door but files no ``anki_highlight_context`` row — its provenance
-#: rides only in ``meta.asked_submissions``. Surfaced so the mint can
-#: stamp the card's ``meta.source``/``meta.walk_date``.
-_LATEST_WALK = """
-    SELECT s.value->>'at' AS walk_at
+_CARD_OWNER = "COALESCE(c.owner_login, c.meta->>'asked_by')"
+_WALK_DROPPED = DROPPED_WALK_SQL.format(
+    concept="c.ref_id",
+    owner=_CARD_OWNER,
+    cutoff=f"now() - make_interval(hours => {24 * RETENTION_DAYS})",
+)
+
+#: The newest non-highlight ask supplies walk provenance only if it came
+#: from a walk. A newer explicit ask uses ordinary forge intake. Pending
+#: highlights are handled separately because they supply mint context.
+_LATEST_WALK = f"""
+    SELECT CASE WHEN s.value->>'source' = 'walk' THEN s.value->>'at' END AS walk_at
     FROM jsonb_each(c.meta->'asked_submissions') s
-    WHERE s.value->>'source' = 'walk'
+    WHERE (s.value->>'source') IS DISTINCT FROM 'highlight'
+      AND s.value->>'owner' = {_CARD_OWNER}
       AND s.value->>'forge_skipped' IS NULL
-    ORDER BY s.value->>'at' DESC
+    ORDER BY s.value->>'at' DESC NULLS LAST, s.key DESC
     LIMIT 1
 """
-_CARD_OWNER = "COALESCE(c.owner_login, c.meta->>'asked_by')"
 
 
 def _cardless_concepts(
@@ -404,8 +410,8 @@ def _cardless_concepts(
     """Pending highlights and unmastered concepts without a live owner card.
 
     Each row is ``(ref_id, name, definition, owner, highlight submission,
-    highlight context, walk-at)`` — ``walk-at`` is the newest live
-    ``source="walk"`` queue stamp (gr743232) or ``None``."""
+    highlight context, walk-at)``. The latter is the newest non-highlight
+    ask's queue stamp if the ask came from a walk."""
     cohort_clause = "AND jsonb_exists(c.meta->'cohorts', %s)" if cohort else ""
     live_card = LIVE_CARD_SQL.format(concept="c.ref_id", owner=_CARD_OWNER)
     sql = f"""
@@ -421,6 +427,7 @@ def _cardless_concepts(
               COALESCE(c.meta->>'state','candidate') != 'mastered'
               AND NOT (c.meta ? 'card_forge_skip')
               AND NOT EXISTS ({live_card})
+              AND (w.walk_at IS NULL OR NOT EXISTS ({_WALK_DROPPED}))
           ))
         ORDER BY EXISTS (
             SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -450,7 +457,11 @@ def _cardless_concepts(
 
 
 def _current_mint_state(
-    conn: Connection, concept_id: int, owner: str | None, submission: str | None
+    conn: Connection,
+    concept_id: int,
+    owner: str | None,
+    submission: str | None,
+    walk_at: str | None,
 ) -> str | None:
     # Get the row lock before reading the current capture. Queue/Undo may
     # have committed while we waited for the lock or for the model.
@@ -468,11 +479,21 @@ def _current_mint_state(
     ):
         return None
     latest = conn.execute(
-        f"SELECT h.submission FROM refs c "
-        f"JOIN LATERAL ({_LATEST_HIGHLIGHT}) h ON true WHERE c.ref_id = %s",
+        f"""
+        SELECT h.submission, w.walk_at,
+               w.walk_at IS NOT NULL AND EXISTS ({_WALK_DROPPED})
+        FROM refs c
+        LEFT JOIN LATERAL ({_LATEST_HIGHLIGHT}) h ON true
+        LEFT JOIN LATERAL ({_LATEST_WALK}) w ON true
+        WHERE c.ref_id = %s
+        """,
         (concept_id,),
     ).fetchone()
-    return str(state) if (latest[0] if latest else None) == submission else None
+    if latest is None or latest[0] != submission:
+        return None
+    if submission is None and (latest[1] != walk_at or latest[2]):
+        return None
+    return str(state)
 
 
 def _concept_is_work_tracking(
@@ -601,8 +622,10 @@ def mint_daily_cards(
                 skip_reason = "the forge declined the captured term"
         minted: list[int] = []
         deferred = False
-        extra_meta = {"highlight_submission": submission} if submission else {}
-        if walk_at:
+        extra_meta: dict[str, str] = {}
+        if submission:
+            extra_meta = {"source": "highlight", "highlight_submission": submission}
+        elif walk_at:
             # gr743232: the concept reached the queue because the owner
             # met it walking /eye — the minted card carries that
             # provenance (contract me743214).
@@ -616,7 +639,7 @@ def mint_daily_cards(
             remaining = min(per_day - used.total(), owner_budget - used[budget_owner])
             if remaining <= 0:
                 continue
-            state = _current_mint_state(conn, concept_id, owner, submission)
+            state = _current_mint_state(conn, concept_id, owner, submission, walk_at)
             if state is None:
                 continue
             for card in cards[:_MAX_CARDS_PER_CONCEPT]:
@@ -919,7 +942,8 @@ def rework_stale_cards(
             if extra:
                 text = f"{text}\n---\n{extra}"
             old = store.get_ref(kind="anki", id=card_id)
-            deck = ((old.meta or {}).get("deck") if old else None) or _deck_for(None)
+            old_meta = (old.meta or {}) if old else {}
+            deck = old_meta.get("deck") or _deck_for(None)
             try:
                 new_id = author_card(
                     store,
@@ -928,6 +952,11 @@ def rework_stale_cards(
                     deck=deck,
                     owner_login=getattr(old, "owner_login", None) if old else None,
                     extra_meta={
+                        **{
+                            key: old_meta[key]
+                            for key in ("source", "walk_date", "highlight_submission")
+                            if key in old_meta
+                        },
                         "rework_of": card_id,
                         "recoverability_check": check or "unchecked",
                     },

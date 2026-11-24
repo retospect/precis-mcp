@@ -147,6 +147,20 @@ LIVE_CARD_SQL = """
 """
 
 
+# Only an explicit drop starts the cooldown; sync, rework and concept
+# retirement also leave tombstones. The owner lives on the dropped card.
+DROPPED_WALK_SQL = """
+    SELECT 1 FROM links l
+    JOIN refs a ON a.kind = 'anki' AND a.owner_login = {owner}
+               AND a.ref_id = CASE WHEN l.src_ref_id = {concept}
+                                   THEN l.dst_ref_id ELSE l.src_ref_id END
+    WHERE ((l.src_ref_id = {concept} AND l.relation = 'represents')
+        OR (l.dst_ref_id = {concept} AND l.relation = 'represented-by'))
+      AND a.retired_at = (a.meta->>'walk_dropped_at')::timestamptz
+      AND a.retired_at >= {cutoff}
+"""
+
+
 def live_card_exists(conn: Connection, concept_id: int, owner: str | None) -> bool:
     sql = LIVE_CARD_SQL.format(concept="%(concept)s", owner="%(owner)s::text")
     return (

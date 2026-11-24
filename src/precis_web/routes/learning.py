@@ -17,8 +17,11 @@ precis (forge, agent, or by hand), read-only projections excepted —
 bar the sync worker applies (gr742681) — plus a trailing "No live
 concept" shelf for cards with no live concept at all (gr742735; drop
 and boost apply, "I know this" does not). That read is owner-scoped by ``refs.owner_login`` and never
-touches the private learning ledger; the card writes it offers
-(drop / known / boost) are the ``/anki`` routes' own.
+touches the private learning ledger. The card actions (drop, known, boost,
+and drop by source and UTC mint date) use the ``/anki`` routes. Source badges
+identify walk, highlight and ordinary forge cards. The batch includes
+matching cards on the orphan shelf, which this page lists and ``/anki``
+omits.
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ from precis.user_context import user_scope
 from precis.users import WebUser
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
-from precis_web.routes.anki import _card_groups
+from precis_web.routes.anki import _card_groups, _origin_batches
 
 router = APIRouter(prefix="/learning", tags=["learning"])
 _NO_STORE = {"Cache-Control": "no-store"}
@@ -164,6 +167,7 @@ def _render(
             "settings": settings,
             "activity": activity,
             "groups": groups,
+            "origins": _origin_batches(groups),
             "walk": _walk_rows(request),
             "answered": answered,
             "attempt": uuid4(),

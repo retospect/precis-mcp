@@ -229,7 +229,7 @@ def test_current_context_lists_live_forge_cards_masked(
 ) -> None:
     """gr664414: /learning shows the learner's live forge cards, grouped by
     concept, each cloze rendered masked with hover reveal, with per-row
-    htmx delete (``/anki/drop``) and boost (``/anki/boost``), and a concept
+    htmx drop (``/anki/drop``) and boost (``/anki/boost``), and a concept
     dismissal (``/anki/known``). Another owner's card on the same concept must
     not leak in."""
     from precis.reading.flashcards import author_card
@@ -335,11 +335,12 @@ def test_current_context_lists_live_forge_cards_masked(
 
     dropped = client.post(
         "/anki/drop",
-        data={"card": str(mine)},
-        headers=_auth(),
+        data={"card": str(mine), "return_to": "learning"},
+        headers={**_auth(), "HX-Request": "true"},
         follow_redirects=False,
     )
-    assert dropped.status_code == 303
+    assert dropped.status_code == 200
+    assert dropped.headers["HX-Redirect"] == "/learning"
     page = client.get("/learning", headers=_auth())
     assert f'"card": "{mine}"' not in page.text
     assert "No active study cards." in page.text

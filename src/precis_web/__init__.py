@@ -1,11 +1,8 @@
 """precis_web — the cluster web surface for precis-mcp.
 
-FastAPI service importing ``precis``, server-rendered (Jinja + HTMX + Alpine),
-on the Tailscale LAN behind **HTTP Basic auth**
-(``auth.py``). :func:`create_app` (``app.py``) wires one router per page,
-error handlers, and a lifespan building the single
-:class:`precis.runtime.PrecisRuntime`. ``precis web`` lazily imports
-the ``[web]`` extra.
+FastAPI renders Jinja, HTMX and Alpine behind HTTP Basic on the Tailscale
+LAN. :func:`create_app` wires routers, errors and one lifespan-owned
+:class:`precis.runtime.PrecisRuntime`. ``precis web`` lazy-loads ``[web]``.
 
 **Ask chat.** Startup logs ``chat_turns.preflight`` warnings and proceeds.
 
@@ -15,12 +12,11 @@ readers recompute (storage/scientific rationale: `routes/rxn.py`).
 **Lists.** ``drive_redirects`` preserves filed rows, modification windows
 and direct quest scope when folding refs lists into Drive.
 
-**Ref readers.** ``linkify.linkify_toon`` renders memory Markdown, preserving
-single newlines and literal code, escaping HTML. ``ref_urls`` maps Drive,
-handle resolution and tag pivots. Stored detail supports optional kinds with
-absent handlers. ORCID reads stored identity and papers. File readers use
-stored chunks: filesystem ``get`` can retire refs on missing mounts.
-``routes.papers.replace_pdf`` preserves identity.
+**Ref readers.** ``linkify.linkify_toon`` renders memory Markdown with
+escaped HTML, literal code and single newlines. ``ref_urls`` maps handles
+and pivots. Stored detail tolerates absent handlers; ORCID uses stored
+identity and papers. File readers use chunks because filesystem ``get``
+can retire refs on missing mounts. ``routes.papers.replace_pdf`` preserves identity.
 
 **Anki cards.** Keep each math span intact so TeX braces and colons stay
 inside cloze answers. KaTeX renders the escaped source.
@@ -28,23 +24,14 @@ inside cloze answers. KaTeX renders the escaped source.
 ``/graph/{kind}/{id}.json`` (``routes/graph.py``) is ``Store.neighbourhood``
 as JSON plus ``ring_group`` buckets.
 
-**Claim approval.** The open-disputes panel reads stored support verdicts
-and reasoning alongside pinned passages, including typed paper, patent
-and finding handles from ``conflict_search``. Pins must name the counterpart
-ref's chunk so an unrelated passage is not attributed. These are advisory
-records, not adjudications. The coverage panel reads the hub's
-``meta.conflict_search`` ledger as a dated statement; pre-approve, a
-missing or stale ledger *queues* a ``conflict_sweep`` refresh (one per
-hub per day, dark unless lit) — the web never runs it;
-neither panel changes the approval gate.
-``disputes`` rows offer a counter-claim mint
-(``workers.conflict_search.mint_counter_claim``).
+**Claim approval.** Disputes show advisory support verdicts, reasoning
+and typed ``conflict_search`` pins to counterpart chunks. Coverage reads the
+dated ``meta.conflict_search`` ledger. Missing or stale coverage queues
+``conflict_sweep`` pre-approval (daily per hub, dark unless lit). Approval
+gates stay independent. Disputes offer ``mint_counter_claim``.
 
-Gripe summary counts link to the list route with exact workflow
-status filters; the live total retains the nonterminal cohort. SQL
-filtering means a clicked count cannot silently show the whole queue.
-Empty exact-status lists name the selected status rather than claiming
-the whole live queue.
+Gripe counts link to exact SQL-filtered statuses. The live total counts
+nonterminal gripes. Empty lists name the selected status.
 
 **Pathway diagram.** ``refs._pathway_graph_payload`` preserves catpath's
 ``link_type`` for folding/annotations: adsorption and desorption keep their
@@ -185,6 +172,11 @@ cards + live-routing header, budget cap/pause controls, and **Now**
 ``kind='job'`` running/queued/recent-terminal lanes and active alerts).
 ``/factory`` and ``/budget`` GETs redirect into their sub-tab; POST
 routes unchanged.
+
+**Card review** — ``/anki`` and ``/learning`` badge automatic cards and
+retire batches by source and UTC mint day for Anki sync to remove.
+Learning includes orphan cards. Walk drops record owner-specific
+suppression on the retired card to preserve shared concept state.
 
 **Recent walk** — ``precis.eye_visits`` records authenticated ``/eye`` visits for ``/learning``.
 
