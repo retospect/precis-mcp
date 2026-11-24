@@ -122,7 +122,7 @@ class PinDecision:
 
 @dataclass(slots=True)
 class _RootPinState:
-    last_fetch_monotonic: float = 0.0
+    last_fetch_monotonic: float = float("-inf")
     last_good: tuple[str, Path] | None = None
 
 
