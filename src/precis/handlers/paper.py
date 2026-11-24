@@ -13924,21 +13924,18 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
             scheme,
             "put(kind='paper', title='<title>')",
         )
-        # Point at the two paths that actually work: mint the stub
-        # directly, or register the claim now in acquisition mode
-        # (``wants=``/``provenance=`` — a bare ``cited_in='doi:'`` is
-        # rejected, the link parser has no 'doi' kind; gr311341).
+        # Keep each action separate so read scope can retain the search
+        # when the two acquisition calls are filtered out.
         raise NotFound(
             f"paper with {scheme.upper()} {base!r} not ingested",
-            next=(
-                f"{mint} to request ingest. To register the claim "
-                "meanwhile: put(kind='finding', title='<short claim>', "
+            next=[
+                mint,
+                "put(kind='finding', title='<short claim>', "
                 "body='<claim>', "
                 f"wants=[{{{scheme!r}: '{ident}'}}], "
-                "provenance='<chunk you read the claim in>')  "
-                "— a bare 'doi:' cited_in is rejected. Held under "
-                "another slug? search(kind='paper', q='<title>')."
-            ),
+                "provenance='<chunk you read the claim in>')",
+                "search(kind='paper', q='<title>')",
+            ],
         )
     return slug + ("~" + sel if sel else "")
 

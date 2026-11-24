@@ -149,7 +149,8 @@ def test_unheld_doi_get_offers_acquisition_without_writing(
 ) -> None:
     with pytest.raises(NotFound, match="not ingested") as miss:
         handler.get(id=DOI, q=q)
-    assert f"put(kind='paper', doi='{DOI}')" in str(miss.value.next)
+    assert isinstance(miss.value.next, list)
+    assert miss.value.next[0] == f"put(kind='paper', doi='{DOI}')"
     assert _jobs(store) == []
     assert _stub_for_doi(store, DOI) is None
 
@@ -337,9 +338,8 @@ class TestViewGetDoesNotQueue:
         with pytest.raises(NotFound, match="not ingested") as excinfo:
             handler.get(id=DOI, view="bibtex")
         nxt = excinfo.value.next
-        assert isinstance(nxt, str)
-        assert "to request ingest" in nxt
-        assert f"put(kind='paper', doi='{DOI}')" in nxt
+        assert isinstance(nxt, list)
+        assert nxt[0] == f"put(kind='paper', doi='{DOI}')"
         assert _jobs(store) == []
 
     def test_view_path_alias_does_not_queue(
@@ -355,7 +355,9 @@ class TestViewGetDoesNotQueue:
     ) -> None:
         with pytest.raises(NotFound, match="not ingested") as excinfo:
             handler.get(id=DOI, view=view)
-        assert "to request ingest" in (excinfo.value.next or "")
+        nxt = excinfo.value.next
+        assert isinstance(nxt, list)
+        assert nxt[0] == f"put(kind='paper', doi='{DOI}')"
         assert _jobs(store) == []
 
     def test_find_in_ref_with_view_does_not_queue(
@@ -796,9 +798,8 @@ class TestGetQueueBounds:
         with pytest.raises(NotFound, match="not ingested") as excinfo:
             handler.get(id=DOI, args={"queue": "bounded"})
         nxt = excinfo.value.next
-        assert isinstance(nxt, str)
-        assert "to request ingest" in nxt
-        assert "put(kind='paper'" in nxt
+        assert isinstance(nxt, list)
+        assert nxt[0] == f"put(kind='paper', doi='{DOI}')"
         assert _jobs(store) == []
 
     def test_retired_doi_does_not_queue(

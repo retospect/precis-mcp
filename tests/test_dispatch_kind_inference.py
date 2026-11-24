@@ -91,6 +91,29 @@ class TestSkillSlugAndDoi:
         assert "not ingested" in out
         assert f"put(kind='paper', doi='{DOI}')" in out
 
+    @pytest.mark.parametrize("read_only", [False, True])
+    def test_unheld_doi_toc_renders_scope_appropriate_next_calls(
+        self,
+        runtime: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+        read_only: bool,
+    ) -> None:
+        from precis.tools.command_parser import parse_command
+
+        if read_only:
+            monkeypatch.setenv("PRECIS_MCP_READ_ONLY", "1")
+        out = runtime.dispatch("get", {"kind": "paper", "id": DOI, "view": "toc"})
+        head, first_next, *_ = out.splitlines()
+        assert head == f"[error:NotFound] paper with DOI '{DOI}' not ingested"
+        verb, kwargs = parse_command(first_next.removeprefix("  next: "))
+        if read_only:
+            assert verb == "search"
+            assert kwargs == {"kind": "paper", "q": "<title>"}
+            assert "put(kind=" not in out
+        else:
+            assert verb == "put"
+            assert kwargs == {"kind": "paper", "doi": DOI}
+
     def test_unknown_string_still_reaches_missing_kind(
         self, runtime: PrecisRuntime
     ) -> None:

@@ -235,9 +235,9 @@ class TestResolveDoi:
     def test_unknown_arxiv_raises_notfound_with_mint_hint(self, store: Store) -> None:
         with pytest.raises(NotFound) as exc_info:
             _maybe_resolve_doi(store, "2401.99999")
-        hint = exc_info.value.next or ""
-        assert isinstance(hint, str)
-        assert "put(kind='paper', arxiv='2401.99999')" in hint
+        hint = exc_info.value.next
+        assert isinstance(hint, list)
+        assert hint[0] == "put(kind='paper', arxiv='2401.99999')"
 
     def test_uningested_arxiv_get_names_the_ingest_call(
         self, store: Store, handler: PaperHandler
@@ -250,8 +250,8 @@ class TestResolveDoi:
             with pytest.raises(NotFound) as exc_info:
                 handler.get(id="1412.6980", view=view)
             hint = exc_info.value.next
-            assert isinstance(hint, str)
-            assert "put(kind='paper', arxiv='1412.6980')" in hint, view
+            assert isinstance(hint, list)
+            assert hint[0] == "put(kind='paper', arxiv='1412.6980')", view
 
     def test_bare_digits_passthrough_to_slug_path(self, store: Store) -> None:
         """Digits look PubMed-shaped but are also the slug resolver's
@@ -289,8 +289,8 @@ class TestResolveDoi:
         with pytest.raises(NotFound) as exc_info:
             _maybe_resolve_doi(store, "10.9999/nope")
         hint = exc_info.value.next
-        assert isinstance(hint, str)
-        assert hint.startswith("put(kind='paper', doi='10.9999/nope') to request")
+        assert isinstance(hint, list)
+        assert hint[0] == "put(kind='paper', doi='10.9999/nope')"
         assert len(store.list_refs(kind="paper", limit=50)) == before
 
     def test_unknown_doi_hint_stays_bounded(self, store: Store) -> None:
@@ -300,8 +300,8 @@ class TestResolveDoi:
         with pytest.raises(NotFound) as exc_info:
             _maybe_resolve_doi(store, "10.9999/nope")
         hint = exc_info.value.next
-        assert isinstance(hint, str)
-        assert len(hint) <= 500
+        assert isinstance(hint, list)
+        assert len("\n".join(hint)) <= 500
 
     def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
