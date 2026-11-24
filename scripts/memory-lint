@@ -84,7 +84,8 @@
 #      review column) is listed as "under review", and as a problem once the
 #      todo is open > 7 days; a manifest without that column skips it.
 #   9. stale thread: a threads node not edited in 14+ days (the daily
-#      memory_thread_sweep cadence retires those; this lists stragglers).
+#      memory_thread_sweep cadence raises its extend/retire/transfer ask
+#      for those; this lists stragglers).
 #  10. thread hygiene: (a) a body that says `supersedes meN` with no such
 #      edge (prose retires nothing — the sweep keys off the edge; the
 #      manifest's supersedes column is the truth); (b) two or more live

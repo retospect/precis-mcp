@@ -168,8 +168,10 @@ link(kind="memory", id=<ruling id>, rel="related-to",
 it bounds.
 
 **Thread node** — `section:threads`, first line `Left: …` with every
-handle on that same line; the 14-day sweep retires an untouched thread
-node that has no carry-over todo.
+handle on that same line. `Left: none` (or a live superseding memory)
+retires it automatically; at 14 days untouched the sweep only raises an
+extend / retire / transfer ask and the node stays in recall until it is
+answered (see `precis-architecture-help`).
 
 **Placement (first conversion wave, 2026-11-05).** A ruling or gotcha
 that concerns one spec is part-of that spec root; only **cross-spec**

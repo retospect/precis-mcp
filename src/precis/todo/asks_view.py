@@ -68,6 +68,7 @@ from precis.store._secret_scope import link_fence, secret_fence, secret_fence_fo
 from precis.todo import blocker_terminal_sql
 from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
+from precis.utils.memory_threads import PENDING_THREAD_ASKS
 from precis.utils.next_block import render_next_section
 
 if TYPE_CHECKING:
@@ -159,6 +160,7 @@ class AskRow:
     #: Bare values saying why it is here: ``ask-user``, ``waiting-for:reto``…
     reasons: tuple[str, ...]
     question: str = ""
+    thread_decision: bool = False
     quest_id: int | None = None
     quest_title: str = ""
     quest_prio: int | None = None
@@ -537,6 +539,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
     with store.pool.connection() as conn:
         cands = conn.execute(
             f"""
+            WITH pending AS ({PENDING_THREAD_ASKS})
             SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at,
                    r.updated_at,
                    COALESCE(
@@ -545,14 +548,14 @@ def _ref_rows(store: Store) -> list[AskRow]:
                            WHERE rt3.ref_id = r.ref_id
                              AND t3.namespace = 'STATUS'
                            LIMIT 1),
-                         'open') AS status
-              FROM refs r
+                         'open') AS status, pending.ask_id IS NOT NULL
+              FROM refs r LEFT JOIN pending ON pending.ask_id = r.ref_id
              WHERE r.kind IN ('todo', 'gripe', 'alert') AND r.retired_at IS NULL
                AND {secret_fence("r", path="asks_view")}
                -- only alerts ever stamp resolved_at: a resolved alert
                -- leaves the list even without a terminal STATUS tag
                AND r.resolved_at IS NULL
-               AND (EXISTS (
+               AND (pending.ask_id IS NOT NULL OR (EXISTS (
                        SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
                           AND (t.value = ANY(%s) OR t.value LIKE 'ask-user:%%'
@@ -587,18 +590,22 @@ def _ref_rows(store: Store) -> list[AskRow]:
                         JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS'
                        LIMIT 1),
-                     'open') <> ALL(%s)
+                     'open') <> ALL(%s))
              ORDER BY r.ref_id
             """,
             (list(_TAGS), list(_TERMINAL)),
         ).fetchall()
     tags_by_ref = _open_tags(store, [int(c[0]) for c in cands])
     rows: list[AskRow] = []
-    for ref_id, kind, title, ask_meta, created, updated, status in cands:
+    for ref_id, kind, title, ask_meta, created, updated, status, pending in cands:
         rid = int(ref_id)
         tags = tags_by_ref.get(rid, [])
         ask = ask_meta if isinstance(ask_meta, dict) else None
-        verdict = _classify(str(kind), tags, ask, status=str(status))
+        verdict = (
+            (DECISION, ("ask-user",))
+            if pending
+            else _classify(str(kind), tags, ask, status=str(status))
+        )
         if verdict is None:
             continue
         klass, reasons = verdict
@@ -623,9 +630,10 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 kind=str(kind),
                 ref_id=rid,
                 handle=_h(str(kind), rid),
-                title=_first_line(title),
+                title=_first_line(title, cap=140 if pending else _TITLE_CAP),
                 reasons=reasons,
-                question=_ask_question(store, rid, tags),
+                question="" if pending else _ask_question(store, rid, tags),
+                thread_decision=pending,
                 quest_id=quest[0] if quest else None,
                 quest_title=_first_line(quest[1]) if quest else "",
                 quest_prio=quest[2] if quest else None,
@@ -686,7 +694,11 @@ def asks_model(store: Store) -> AsksModel:
     ``asks-triage:resolved``/``:routed`` already left the owner's plate
     (closed, parked on the coordinator queue, or folded into a chore
     batch) — the model drops it (gr652333)."""
-    rows = [r for r in _ref_rows(store) if r.triage not in TRIAGE_HIDDEN]
+    rows = [
+        r
+        for r in _ref_rows(store)
+        if r.thread_decision or r.triage not in TRIAGE_HIDDEN
+    ]
     rows.sort(key=lambda r: (_RANK[r.klass], *_blocked_key(r), r.kind, r.ref_id or 0))
     return AsksModel(rows=tuple(rows))
 
@@ -697,7 +709,9 @@ def untriaged_count(rows: Iterable[AskRow]) -> int:
     aren't. The count covers exactly what the sweep can stamp —
     ``asks_triage`` handles ``kind='todo'`` rows only, so gripe, alert
     and synthetic ``kind='release'`` rows never count (gr653289)."""
-    return sum(1 for r in rows if r.kind == "todo" and not r.triage)
+    return sum(
+        1 for r in rows if r.kind == "todo" and not r.triage and not r.thread_decision
+    )
 
 
 def _age(age_days: float) -> str:
@@ -716,6 +730,8 @@ def _line(r: AskRow, indent: str) -> str:
     mark = "[terminal]" if r.needs == NEED_TERMINAL else ""
     head = " ".join(b for b in (r.handle, mark, *r.reasons) if b)
     out = f"{head} — {r.title} · {_age(r.age_days)}"
+    if r.thread_decision:
+        return f"{out} · {r.context} · extend / retire / transfer"
     if r.blocked:
         out += f" · blocks {r.blocked}"
     if r.after:
@@ -1007,6 +1023,9 @@ def render_reto_queue(
             i += 1
             want = r.answer or r.ask_kind or "decision"
             out.append(f"{i}. {r.handle} [{want}] — {r.title}")
+            if r.thread_decision:
+                out[-1] += f" · {r.context} · extend / retire / transfer"
+                continue
             if r.context:
                 out.append(f"   context: {r.context}")
             if r.question and r.question != r.title:

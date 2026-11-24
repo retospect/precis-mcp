@@ -285,6 +285,12 @@ feeds notable filings to the news store used by the morning briefing. Each
 material section delta uses the finding handler with generated trust and
 links to both filings. See `src/precis/jobs/edgar_watch.py`.
 
+The daily memory thread sweep retires empty, finished and superseded
+threads. Stale threads with open work or thinking stay in recall and get
+a decision in the todo review queue. The same worker raises decisions and
+applies answers. The scratch sweep has its own retirement clock.
+See `src/precis/workers/memory_thread_sweep.py`.
+
 ## Subsystems (where the code lives)
 
 Checklist definitions retain their registry names and allocate a graph ref

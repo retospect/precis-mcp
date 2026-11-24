@@ -23,6 +23,7 @@ status: active
 - Edges carry roles: `part-of` the hub, `cites`/`derived-from` for evidence, `qualifies` for scope.
 - Name entities by handle; their current state belongs on their refs, never restated here.
 - Expiry follows shape (gr560763): threads/handoffs/resumes/snapshots 14 days; incidents/campaigns 90 days.
+- Expiry names its outcome: a thread's 14-day date raises the sweep's extend/retire/transfer ask (nothing is deleted); scratch self-retires; other shapes get a garden review flag. See [[precis-architecture-help]].
 - Rulings use `review_by`; reference/gotchas/runbooks have no age expiry; DREAM never expires by age.
 - Expiry means review and compact before retirement, preserving still-true claims.
 - No landed history or children lists; use the graph's links.

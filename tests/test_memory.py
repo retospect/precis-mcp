@@ -1089,28 +1089,84 @@ def test_meta_expires_rejects_unparseable(handler: MemoryHandler) -> None:
 def test_get_and_put_ack_show_expiry(handler: MemoryHandler, store: Store) -> None:
     """The create ack and the single-ref read end with the same computed
     expiry line — writer-set TTL or shape default; standing nodes get none
-    (gr676320)."""
+    (gr676320). The line names the actor and the outcome, not just a bare
+    date (gr746642)."""
     ack = handler.put(text="transient note body", meta={"expires": "2030-12-01"})
-    assert "expires: 2030-12-01 (set by writer)" in ack.body
+    line1 = (
+        "review due 2030-12-01 (writer-set date; garden review/compact) "
+        "— see precis-architecture-help"
+    )
+    assert line1 in ack.body
     memory_id = id_of(ack.body)
     linked_id = id_of(handler.put(text="a linked fact").body)
     store.add_link(src_ref_id=memory_id, dst_ref_id=linked_id, relation="related-to")
     got = handler.get(id=memory_id).body
     assert "Links" in got
     # the record close tag now trails the card's last fact line (gr739333)
-    assert got.rstrip().splitlines()[-2] == "expires: 2030-12-01 (set by writer)"
+    assert got.rstrip().splitlines()[-2] == line1
 
-    ack2 = handler.put(text="thread body text", tags=["section:threads"])
-    thread = store.fetch_refs_by_ids([id_of(ack2.body)])[id_of(ack2.body)]
-    expected = (thread.updated_at + timedelta(days=14)).strftime("%Y-%m-%d")
-    line2 = f"expires: {expected} (default: thread 14d from last edit)"
+    ack2 = handler.put(text="Left: none\n\nthread body text", tags=["section:threads"])
+    line2 = "retires from recall on the next thread sweep (rule a) — see precis-architecture-help"
     assert line2 in ack2.body
     # same close-tag trail as the first card (gr739333)
     assert handler.get(id=id_of(ack2.body)).body.rstrip().splitlines()[-2] == line2
 
+    scratch = handler.put(
+        text="Left: none",
+        tags=["section:threads", "SPACE:scratch"],
+        meta={"expires": "2030-12-01"},
+    )
+    assert (
+        "scratch sweep retires from recall on or after 2030-12-01 (rule s)"
+        in scratch.body
+    )
+
+    active = handler.put(text="Left: carry on", tags=["section:threads"])
+    assert "thread sweep asks extend/retire/transfer; stays in recall" in active.body
+
     ack3 = handler.put(text="a durable standing fact")
     assert "expires:" not in ack3.body
+    assert "review due" not in ack3.body
     assert "expires:" not in handler.get(id=id_of(ack3.body)).body
+
+
+def test_thread_put_without_left_line_warns(handler: MemoryHandler) -> None:
+    """gr746642: a section:threads node without a 'Left: …' first line
+    gets a warning in the create ack — the sweep reads that line as the
+    node's resume state."""
+    ack = handler.put(text="an idea with no resume marker", tags=["section:threads"])
+    assert "warn: section:threads node without a 'Left: …' first line" in ack.body
+
+    ack2 = handler.put(text="Left: port the sync\n\nBody.", tags=["section:threads"])
+    assert "warn:" not in ack2.body
+
+
+def test_stale_thread_with_pending_ask_says_ask_pending_not_a_past_date(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """Review finding on td775760: a thread already past 14 days with a
+    pending decision ask read 'review due <past date>' — the date had
+    passed, so the footer described a deadline that no longer means
+    anything. It names the live state instead: the ask is pending in
+    the daily review."""
+    from precis.workers.memory_thread_sweep import run_memory_thread_sweep_pass
+
+    tid = id_of(
+        handler.put(text="Left: hold\n\nDetail.", tags=["section:threads"]).body
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - make_interval(days => 20) "
+            "WHERE ref_id = %s",
+            (tid,),
+        )
+        conn.commit()
+
+    assert run_memory_thread_sweep_pass(store).ok == 1
+    body = handler.get(id=tid).body
+    assert "ask pending in the daily review" in body
+    assert "extend / retire / transfer" in body
+    assert "review due" not in body
 
 
 @pytest.mark.parametrize("meta", [{}, {"expires": "2020-01-01"}])

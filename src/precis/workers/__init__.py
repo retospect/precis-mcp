@@ -23,11 +23,12 @@ Pass taxonomy
   ``dispatch`` mints jobs for open todos with ``meta.executor``, passing
   parent ``prio`` down the DAG. See ``docs/runbooks/minter-ops.md``.
 
-Rescue clocks breaker waits from the first park because rechecks refresh
+Rescue clocks breaker waits from the first park: rechecks refresh
 status (:mod:`.factory_rescue`). Queued jobs wait only where claim skips them. Mirror fetches avoid receive hooks
 (:mod:`.factory_git_mirror`).
 Gripe intake bounds frozen reports (``precis-work-help``). Todo sweeps
-recheck under lock. Dispatch logs decisions.
+recheck under lock; thread sweeps serialize provenance-checked decisions
+on the target ref.
 
 Runner halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra
 failures and gives task-design failures one repair attempt. :mod:`.halt_recovery`
@@ -36,7 +37,7 @@ cadence halt state when applying a supervisor verdict.
 
 ``run_loop`` rotates serially. Scheduler leases, the GPU lane
 (``deploy/README.md``), and threaded heartbeats isolate slow handlers.
-The rotation heartbeat is an idempotent backstop. :mod:`.activity`
+The rotation heartbeat is idempotent. :mod:`.activity`
 stamps ref passes in ``host_heartbeat.meta.activity`` (Status **Now**)
 to distinguish silent work from worker death. Overdue rescue pauses Claude claims.
 

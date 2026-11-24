@@ -799,23 +799,52 @@ def _ruling_ack(meta: dict[str, Any]) -> str:
     return f"\nruling meta: {stamped}" if stamped else ""
 
 
-def _expiry_line(ref: Ref, tags: list[Tag]) -> str | None:
-    """The ``expires: …`` line a single-ref view/create ack ends with.
+def _expiry_line(store: Store, ref: Ref, tags: list[Tag]) -> str | None:
+    """Render the applicable sweep action or the garden review date."""
+    from precis.utils.memory_threads import STALE_DAYS, expiry_line
+    from precis.workers.memory_thread_sweep import (
+        scratch_retirement_date,
+        thread_has_pending_ask,
+        thread_sweep_rule,
+    )
 
-    The same shared rule the garden's detectors use
-    (:func:`precis.utils.memory_threads.expiry_line`) — the read surface
-    and the sweep must never compute different instants (gr676320).
-    Standing nodes without expiry and DREAM nodes have no footer.
-    """
-    from precis.utils.memory_threads import expiry_line
-
-    if any(t.prefix == "DREAM" for t in tags):
+    if ref.retired_at is not None:
         return None
     sections = frozenset(
         t.value[len("section:") :]
         for t in tags
         if t.namespace == "open" and t.value.startswith("section:")
     )
+    spaces = {t.value for t in tags if t.prefix == "SPACE"}
+    help_ref = "see precis-architecture-help"
+    if "index" not in sections and spaces == {"scratch"}:
+        expires = scratch_retirement_date(
+            store, ref.meta or {}, ref.updated_at, [str(t) for t in tags]
+        )
+        return (
+            f"scratch sweep retires from recall on or after {expires.date().isoformat()} "
+            f"(rule s) — {help_ref}"
+        )
+    if "threads" in sections and "index" not in sections:
+        rule = thread_sweep_rule(store, ref.id)
+        if rule in {"a", "b"}:
+            return f"retires from recall on the next thread sweep (rule {rule}) — {help_ref}"
+        if thread_has_pending_ask(store, ref.id):
+            return (
+                "ask pending in the daily review (thread sweep: extend / retire / "
+                f"transfer; the thread stays in recall until answered) — {help_ref}"
+            )
+        if rule == "s":
+            return (
+                f"thread review deferred while the body has a recent date — {help_ref}"
+            )
+        due = (ref.updated_at + timedelta(days=STALE_DAYS)).date().isoformat()
+        return (
+            f"review due {due} (thread sweep asks extend/retire/transfer; "
+            f"stays in recall) — {help_ref}"
+        )
+    if any(t.prefix == "DREAM" for t in tags):
+        return None
     return expiry_line(ref.title or "", sections, ref.meta or {}, ref.updated_at)
 
 
@@ -3055,15 +3084,32 @@ class MemoryHandler(AuditedRetirementHandler):
         The ack names the node's TTL at birth — a writer-set
         ``meta={'expires': '21d'}`` and a shape default (a fresh
         ``section:threads`` node's 14 days) both read identically here and
-        on ``get`` (gr676320).
+        on ``get`` (gr676320). A ``section:threads`` node whose body does
+        not open with a ``Left: …`` line gets a warning (gr746642): the
+        sweep reads that line as the node's resume state, and an asked-
+        about node with no ``Left:`` line shows the reviewer no open work.
         """
         resp = super()._render_create_ack(ref_id)
         ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
         if ref is None:
             return resp
-        expiry = _expiry_line(ref, self.store.tags_for(ref_id))
+        tags = self.store.tags_for(ref_id)
+        expiry = _expiry_line(self.store, ref, tags)
         if expiry:
             resp = replace(resp, body=resp.body + f"\n{expiry}")
+        from precis.utils.memory_threads import THREADS_TAG, first_left
+
+        if (
+            any(str(t) == THREADS_TAG for t in tags)
+            and first_left(self._body_text(ref)) is None
+        ):
+            resp = replace(
+                resp,
+                body=resp.body
+                + "\nwarn: section:threads node without a 'Left: …' first line "
+                "— the sweep reads that line as its resume state; without it "
+                "an age-out ask shows no open work (see precis-architecture-help)",
+            )
         return resp
 
     # ── edit: in-place body rewrite (+ optional title) ──────────────
@@ -4902,7 +4948,7 @@ class MemoryHandler(AuditedRetirementHandler):
         return "\n".join(out)
 
     def _render_one_footer(self, ref: Ref, tags: list[Tag]) -> str:
-        expiry = _expiry_line(ref, tags)
+        expiry = _expiry_line(self.store, ref, tags)
         return f"\n\n{expiry}" if expiry else ""
 
     def _render_hits_table(

@@ -28,9 +28,29 @@ THREADS_TAG = "section:threads"
 INDEX_TAG = "section:index"
 
 #: Days without an edit after which a thread node is stale. The same
-#: window ``precis memory index --days`` calls "live" — the sweep retires
-#: what the index has already stopped listing.
+#: window ``precis memory index --days`` calls "live".
 STALE_DAYS = 14
+
+# The system-authored edge binds the decision to its thread. Todo metadata
+# alone is writable through the public API. Legacy carry-over edges lack
+# this marker and never participate in the decision lifecycle.
+PENDING_THREAD_ASKS = """
+SELECT a.ref_id AS ask_id, l.dst_ref_id AS thread_id
+  FROM refs a
+  JOIN links l ON l.src_ref_id = a.ref_id
+  JOIN refs m ON m.ref_id = l.dst_ref_id
+ WHERE a.kind = 'todo' AND a.retired_at IS NULL
+   AND jsonb_typeof(a.meta->'ask') = 'object'
+   AND NOT a.meta ? 'thread_sweep_enacted'
+   AND l.relation = 'related-to' AND l.set_by = 'system'
+   AND EXISTS (
+       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+        WHERE rt.ref_id = a.ref_id AND rt.set_by = 'system'
+          AND t.namespace = 'OPEN' AND t.value = 'thread-sweep-decision'
+   )
+   AND m.kind = 'memory' AND m.retired_at IS NULL
+"""
+
 
 #: First-line state marker: ``Left: <what remains>`` (``Left: none`` ends
 #: the campaign).
@@ -181,21 +201,16 @@ def expiry_line(
     meta: dict[str, Any],
     updated_at: datetime,
 ) -> str | None:
-    """The ``expires: …`` line single-ref reads and create acks end with.
-
-    ``expires: 2026-12-01 (set by writer)`` for ``meta.expires``;
-    ``expires: 2026-11-28 (default: thread 14d from last edit)`` for a shape
-    default. ``None`` for standing nodes — no line, no claim of permanence
-    beyond the shape card's "no age expiry".
-    """
+    """Render the garden review date for a memory outside the sweep."""
     expires, source = effective_expiry(title, sections, meta, updated_at)
     if expires is None:
         return None
-    stamp = expires.strftime("%Y-%m-%d")
-    if source == "meta.expires":
-        return f"expires: {stamp} (set by writer)"
-    shape, days = memory_expiry_shape(title, sections)
-    return f"expires: {stamp} (default: {shape} {days}d from last edit)"
+    stamp = expires.date().isoformat()
+    driver = "writer-set date" if source == "meta.expires" else "shape default"
+    return (
+        f"review due {stamp} ({driver}; garden review/compact) "
+        "— see precis-architecture-help"
+    )
 
 
 __all__ = [

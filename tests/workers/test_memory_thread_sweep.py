@@ -9,19 +9,25 @@ itself. No LLM, no network.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
-from precis.store.types import Tag
+from precis.handlers.todo import TodoHandler
+from precis.store.types import ChunkInsert, Tag
+from precis.todo.asks_view import render_asks, render_reto_queue
 from precis.utils.memory_threads import STALE_DAYS
+from precis.workers import memory_thread_sweep
 from precis.workers.memory_thread_sweep import (
     SCRATCH_FLOOR_DAYS,
     SCRATCH_OWNER_GRACE_DAYS,
     SCRATCH_TTL_DAYS,
+    SweepCandidate,
     plan_scratch_sweep,
     plan_thread_sweep,
     run_memory_thread_sweep_pass,
@@ -71,6 +77,13 @@ def test_rule_a_retires_a_left_none_thread(store: Any, handler: MemoryHandler) -
     assert _retired(store, tid)
 
 
+def test_rule_a_retires_an_empty_thread(store: Any) -> None:
+    ref = store.insert_ref(kind="memory", slug=None, title="Empty thread")
+    store.add_tag(ref.id, Tag.open("section:threads"), set_by="agent")
+    assert run_memory_thread_sweep_pass(store).ok == 1
+    assert _retired(store, ref.id)
+
+
 def test_rule_b_retires_a_superseded_thread(store: Any, handler: MemoryHandler) -> None:
     old = _thread(handler, "Left: port the sync\n\nV1 of the campaign.")
     new = _thread(handler, "Left: ship the sync\n\nV2, picking up.", title="Campaign")
@@ -104,53 +117,415 @@ def test_rule_b_ignores_a_prose_only_supersedes(
     assert not _retired(store, old)
 
 
-def test_rule_c_retires_a_stale_thread_and_files_the_leftover(
+def test_rule_c_raises_an_extend_retire_transfer_ask(
     store: Any, handler: MemoryHandler
 ) -> None:
+    """gr746642: a stale thread is not retired — the sweep raises one
+    decision ask (extend / retire / transfer) and the node stays in
+    recall until one is chosen."""
     tid = _thread(handler, "Left: land the parser slice\n\nDetail.")
     _age(store, tid, 20)
 
     result = run_memory_thread_sweep_pass(store)
 
     assert result.ok == 1
-    assert _retired(store, tid)
-    # the Left: line became a todo linked back to the retired node
+    assert not _retired(store, tid)
+    # the ask carries the Left: line and links back to the thread node
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT r.ref_id, r.title FROM refs r WHERE r.kind = 'todo' "
+            "SELECT r.ref_id, r.title, r.meta FROM refs r WHERE r.kind = 'todo' "
             "AND r.retired_at IS NULL "
             "AND (r.meta->>'memory_thread_sweep_from')::int = %s",
             (tid,),
         ).fetchone()
     assert row is not None
-    todo_id = int(row[0])
-    assert "land the parser slice" in row[1]
-    tags = {str(t) for t in store.tags_for(todo_id)}
+    ask_id = int(row[0])
+    assert "Campaign" in row[1] and "untouched 20d" in row[1]
+    ask_meta = row[2] or {}
+    options = [str(o) for o in (ask_meta.get("ask") or {}).get("options") or []]
+    assert any(o.startswith("extend") for o in options)
+    assert any(o.startswith("retire") for o in options)
+    assert any(o.startswith("transfer") for o in options)
+    tags = {str(t) for t in store.tags_for(ask_id)}
     assert "STATUS:open" in tags
+    assert "ask-user" in tags
     with store.pool.connection() as conn:
         link = conn.execute(
             "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
             "AND relation = 'related-to'",
-            (todo_id, tid),
+            (ask_id, tid),
+        ).fetchone()
+        body = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'todo_body'",
+            (ask_id,),
         ).fetchone()
     assert link is not None
+    assert body is not None and "land the parser slice" in str(body[0])
 
 
-def test_rule_c_without_a_left_line_mints_no_todo(
+def test_rule_c_without_a_left_line_still_asks_and_stays_in_recall(
     store: Any, handler: MemoryHandler
 ) -> None:
+    """The trap from gr746642: a thread with no Left: line was silently
+    dropped from recall. Now it still gets an ask — saying so — and
+    stays live until answered."""
     tid = _thread(handler, "Stale body with no Left marker.")
     _age(store, tid, 30)
 
     result = run_memory_thread_sweep_pass(store)
 
     assert result.ok == 1
-    assert _retired(store, tid)
+    assert not _retired(store, tid)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r WHERE r.kind = 'todo' "
+            "AND r.retired_at IS NULL "
+            "AND (r.meta->>'memory_thread_sweep_from')::int = %s",
+            (tid,),
+        ).fetchone()
+        body = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'todo_body'",
+            (int(row[0]),),
+        ).fetchone()
+    assert row is not None
+    assert body is not None and "no Left: line" in str(body[0])
+
+
+def _answer_ask(store: Any, ask_id: int, answer: str) -> None:
+    """The human answer flow: an ``answer: …`` comment, then the ask
+    closes (terminal STATUS)."""
+    ords = [int(c.ord) for c in store.chunks.list_chunks_for_ref(ask_id)]
+    store.chunks.insert_chunks(
+        ask_id,
+        [
+            ChunkInsert(
+                ord=max(ords, default=0) + 1,
+                text=f"answer: {answer}",
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+    store.add_tag(
+        ask_id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+
+
+def _pending_ask_for(store: Any, tid: int) -> int | None:
+    """The thread's ask that is still pending review — an old ask closed
+    out by the sweep carries ``thread_sweep_enacted`` and does not count."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r WHERE r.kind = 'todo' "
+            "AND r.retired_at IS NULL "
+            "AND (r.meta->>'memory_thread_sweep_from')::int = %s "
+            "AND NOT r.meta ? 'thread_sweep_enacted' "
+            "ORDER BY r.ref_id DESC",
+            (tid,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _open_ask_for(store: Any, tid: int) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r WHERE r.kind = 'todo' "
+            "AND r.retired_at IS NULL "
+            "AND (r.meta->>'memory_thread_sweep_from')::int = %s",
+            (tid,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def test_rule_c_second_fire_mints_no_second_ask(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """gr746642: no answer means the item stays in the review — an
+    unanswered ask is never a retire reason and never duplicated."""
+    tid = _thread(handler, "Left: keep holding\n\nStale.")
+    _age(store, tid, 20)
+
+    first = run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    second = run_memory_thread_sweep_pass(store)
+
+    assert (first.ok, second.claimed, second.ok) == (1, 0, 0)
+    assert not _retired(store, tid)
     with store.pool.connection() as conn:
         n = conn.execute(
             "SELECT count(*) FROM refs WHERE kind='todo' AND retired_at IS NULL"
         ).fetchone()
-    assert n is not None and int(n[0]) == 0
+    assert n is not None and int(n[0]) == 1
+
+
+def test_rule_c_answer_extend_resets_the_clock(
+    store: Any, handler: MemoryHandler
+) -> None:
+    tid = _thread(handler, "Left: long-running campaign\n\nDetail.")
+    _age(store, tid, 20)
+    run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    _answer_ask(store, ask_id, "extend")
+    before = store.fetch_refs_by_ids([tid])[tid].updated_at
+    result = run_memory_thread_sweep_pass(store)
+
+    assert not _retired(store, tid)
+    assert store.fetch_refs_by_ids([tid])[tid].updated_at > before
+    # the enactment itself is this fire's action; the stamp keeps the
+    # answered ask from re-firing
+    assert (result.claimed, result.ok) == (1, 1)
+    assert (store.fetch_refs_by_ids([ask_id])[ask_id].meta or {}).get(
+        "thread_sweep_enacted"
+    ) == "extend"
+    # the clock restarted: a fire far in the future asks again
+    later = datetime.now(UTC) + timedelta(days=STALE_DAYS + 1)
+    again = run_memory_thread_sweep_pass(store, now=later)
+    assert again.ok == 1
+    assert not _retired(store, tid)
+
+
+def test_rule_c_answer_retire_soft_retires_the_node(
+    store: Any, handler: MemoryHandler
+) -> None:
+    tid = _thread(handler, "Left: nothing left to hold\n\nDetail.")
+    _age(store, tid, 20)
+    run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    _answer_ask(store, ask_id, "retire")
+    result = run_memory_thread_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, tid)
+    # soft delete: the tombstone still answers a post-mortem get()
+    got = handler.get(id=tid, view="retired")
+    assert "Campaign" in got.body
+
+
+def test_rule_c_answer_transfer_closes_out_then_re_raises_until_promoted(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """Transfer waits for a linked, live successor before retirement.
+    Answered without one, the ask is not a zombie: the sweep closes it
+    out ``transfer-no-successor`` and re-raises the decision the same
+    fire, quoting the reason. Once the successor exists, the re-raised
+    ask enacts."""
+    tid = _thread(handler, "Left: promote the claim\n\nDetail.")
+    _age(store, tid, 20)
+    run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    _answer_ask(store, ask_id, "transfer")
+    result = run_memory_thread_sweep_pass(store)
+
+    assert not _retired(store, tid)
+    assert (store.fetch_refs_by_ids([ask_id])[ask_id].meta or {}).get(
+        "thread_sweep_enacted"
+    ) == "transfer-no-successor"
+    re_ask = _pending_ask_for(store, tid)
+    assert re_ask is not None and re_ask != ask_id
+    with store.pool.connection() as conn:
+        body = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'todo_body'",
+            (re_ask,),
+        ).fetchone()
+    assert body is not None and "derived-from" in str(body[0])
+
+    _answer_ask(store, re_ask, "transfer")
+    successor = _thread(handler, "Left: continue the promoted claim")
+    store.add_link(src_ref_id=successor, dst_ref_id=tid, relation="derived-from")
+    result = run_memory_thread_sweep_pass(store)
+
+    assert result.ok == 1
+    assert (
+        store.fetch_refs_by_ids([re_ask])[re_ask].meta.get("thread_sweep_enacted")
+        == "transfer"
+    )
+    assert _retired(store, tid)
+
+
+def test_rule_c_answered_ask_without_a_choice_is_closed_out_and_reraised(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """A closed ask whose ``answer:`` comment names no valid choice used
+    to sit in the review forever, blocking any new ask. Now the sweep
+    closes it out ``answer-unrecognised`` and re-raises the decision the
+    same fire, quoting the reason; the old line leaves the review views."""
+    tid = _thread(handler, "Left: unclear\n\nDetail.")
+    _age(store, tid, 20)
+    run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    _answer_ask(store, ask_id, "retire if the campaign lands")
+
+    result = run_memory_thread_sweep_pass(store)
+
+    assert not _retired(store, tid)
+    assert (store.fetch_refs_by_ids([ask_id])[ask_id].meta or {}).get(
+        "thread_sweep_enacted"
+    ) == "answer-unrecognised"
+    re_ask = _pending_ask_for(store, tid)
+    assert re_ask is not None and re_ask != ask_id
+    with store.pool.connection() as conn:
+        body = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'todo_body'",
+            (re_ask,),
+        ).fetchone()
+    assert body is not None and "did not name one of extend / retire / transfer" in str(
+        body[0]
+    )
+    for rendered in [render_asks(store).body, render_reto_queue(store).body]:
+        assert f"td{ask_id}" not in rendered
+        row = next(line for line in rendered.splitlines() if f"td{re_ask}" in line)
+        assert "extend / retire / transfer" in row
+
+
+def test_a_touched_thread_closes_its_ask_as_no_longer_stale(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """An ask whose thread was edited back into currency is obsolete —
+    its premise is false. The sweep closes it ``thread-no-longer-stale``,
+    the zombie line leaves the review views, and no replacement ask is
+    minted until the clock runs again."""
+    tid = _thread(handler, "Left: unclear\n\nDetail.")
+    _age(store, tid, 20)
+    run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    handler.edit(id=tid, text="Left: fresh work\n\nResumed today.")
+    result = run_memory_thread_sweep_pass(store)
+
+    assert not _retired(store, tid)
+    assert (store.fetch_refs_by_ids([ask_id])[ask_id].meta or {}).get(
+        "thread_sweep_enacted"
+    ) == "thread-no-longer-stale"
+    assert _pending_ask_for(store, tid) is None
+    for rendered in [render_asks(store).body, render_reto_queue(store).body]:
+        assert f"td{ask_id}" not in rendered
+    assert (result.claimed, result.ok) == (0, 1)
+    # the clock simply runs again: another full stale window re-asks
+    _age(store, tid, STALE_DAYS + 1)
+    assert run_memory_thread_sweep_pass(store).ok == 1
+    assert _pending_ask_for(store, tid) is not None
+
+
+def test_silently_closed_ask_stays_in_the_review_as_a_record(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """A closed ask with no ``answer:`` comment at all is a deliberate
+    human close — it stays in the review as a record and is never
+    re-raised."""
+    tid = _thread(handler, "Left: unclear\n\nDetail.")
+    _age(store, tid, 20)
+    run_memory_thread_sweep_pass(store)
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+
+    store.add_tag(
+        ask_id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+    store.remove_tag(ask_id, Tag.open("ask-user"))
+    store.add_tag(ask_id, Tag.open("asks-triage:routed"), set_by="agent")
+    for rendered in [render_asks(store).body, render_reto_queue(store).body]:
+        row = next(line for line in rendered.splitlines() if f"td{ask_id}" in line)
+        assert "Campaign" in row
+        assert "Left: unclear" in row
+        assert "extend / retire / transfer" in row
+
+    result = run_memory_thread_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, tid)
+    assert (store.fetch_refs_by_ids([ask_id])[ask_id].meta or {}).get(
+        "thread_sweep_enacted"
+    ) is None
+    assert _pending_ask_for(store, tid) == ask_id
+
+
+def test_caller_meta_and_legacy_carryover_cannot_enact_or_block_asks(
+    store: Any, handler: MemoryHandler, hub: Hub
+) -> None:
+    tid = _thread(handler, "Left: keep the original thread")
+    _age(store, tid, 20)
+    legacy = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Legacy carry-over",
+        meta={"memory_thread_sweep_from": tid},
+    )
+    store.add_link(
+        src_ref_id=legacy.id, dst_ref_id=tid, relation="related-to", set_by="system"
+    )
+    forged = TodoHandler(hub=hub).put(
+        text="Caller-authored decision",
+        tags=["ask-user"],
+        meta={
+            "memory_thread_sweep_from": tid,
+            "ask": {
+                "kind": "design-verdict",
+                "blocks": "nothing",
+                "options": ["extend — preserve", "retire — remove"],
+            },
+        },
+    )
+    forged_id = id_of(forged.body)
+    store.add_link(src_ref_id=forged_id, dst_ref_id=tid, relation="related-to")
+    _answer_ask(store, forged_id, "retire")
+
+    assert run_memory_thread_sweep_pass(store).ok == 1
+    assert not _retired(store, tid)
+
+
+def test_overlapping_passes_mint_one_decision(
+    store: Any, handler: MemoryHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    barrier = Barrier(2, timeout=5)
+    mint = memory_thread_sweep._mint_thread_ask
+
+    def overlap(
+        store: Any, item: SweepCandidate, now: datetime, *, prior: str | None = None
+    ) -> int | None:
+        barrier.wait()
+        return mint(store, item, now, prior=prior)
+
+    monkeypatch.setattr(memory_thread_sweep, "_mint_thread_ask", overlap)
+    tid = _thread(handler, "Left: hold open work")
+    _age(store, tid, 20)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run_memory_thread_sweep_pass, store)
+        second = pool.submit(run_memory_thread_sweep_pass, store)
+        results = (first.result(), second.result())
+    assert sum(result.failed for result in results) == 0
+    assert sum(result.ok for result in results) == 1
+
+
+def test_answered_retire_rechecks_thread_eligibility(
+    store: Any, handler: MemoryHandler
+) -> None:
+    tid = _thread(handler, "Left: preserve this as a reference")
+    _age(store, tid, 20)
+    assert run_memory_thread_sweep_pass(store).ok == 1
+    ask_id = _open_ask_for(store, tid)
+    assert ask_id is not None
+    _answer_ask(store, ask_id, "retire")
+    store.remove_tag(tid, Tag.open("section:threads"))
+
+    result = run_memory_thread_sweep_pass(store)
+
+    # the retire answer was not enacted on an ineligible thread; the ask
+    # it rode in on closed out as no-longer-stale instead of rotting
+    assert (result.claimed, result.ok) == (0, 1)
+    assert not _retired(store, tid)
+    assert (store.fetch_refs_by_ids([ask_id])[ask_id].meta or {}).get(
+        "thread_sweep_enacted"
+    ) == "thread-no-longer-stale"
 
 
 def test_a_fresh_thread_node_is_untouched(store: Any, handler: MemoryHandler) -> None:
@@ -247,9 +622,10 @@ def test_rule_s_never_retires_a_currency_suspect(
     assert not _retired(store, tid)
 
 
-def test_rule_c_still_retires_when_dates_are_all_old(
-    store: Any, handler: MemoryHandler
-) -> None:
+def test_rule_c_asks_when_dates_are_all_old(store: Any, handler: MemoryHandler) -> None:
+    """gr746642: old dated sections no longer make rule c retire — the
+    ask fires either way (the currency-suspect guard is rule s's job,
+    which only *defers* the ask while a date is fresh)."""
     old = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
     tid = _thread(handler, f"Left: carry\n\n## {old}\nStale state.")
     _age(store, tid, 20)
@@ -257,7 +633,8 @@ def test_rule_c_still_retires_when_dates_are_all_old(
     result = run_memory_thread_sweep_pass(store)
 
     assert result.ok == 1
-    assert _retired(store, tid)
+    assert not _retired(store, tid)
+    assert _open_ask_for(store, tid) is not None
 
 
 def test_a_retired_thread_leaves_no_links(store: Any, handler: MemoryHandler) -> None:
@@ -536,7 +913,8 @@ def test_scratch_ownership_boundary_between_the_passes(
     scratch thread (``Left: none`` waits out the TTL — scratch means
     self-cleaning), and a second ``SPACE:`` value puts the node back
     under thread rules — the scratch pass refuses ambiguous space tags,
-    so nothing falls between the passes."""
+    so nothing falls between the passes. A stale mixed node gets the
+    rule-c ask, not a retirement (gr746642)."""
     done = _scratch(handler, "Left: none\n\nFinished probe.", tags=["section:threads"])
     _age(store, done, SCRATCH_TTL_DAYS + 1)
     mixed = _scratch(
@@ -549,7 +927,8 @@ def test_scratch_ownership_boundary_between_the_passes(
 
     assert (thread.claimed, thread.ok) == (1, 1)
     assert not _retired(store, done)
-    assert _retired(store, mixed)
+    assert not _retired(store, mixed)
+    assert _open_ask_for(store, mixed) is not None
 
     scratch = run_scratch_sweep_pass(store)
 

@@ -477,24 +477,24 @@ def _sweep_eligible(
     stale_cut: datetime,
     suspect_cut: date,
 ) -> bool:
-    """Whether the thread sweep's rules a–c would retire this node.
+    """Whether the thread sweep would act on this node.
 
     Mirrors :func:`precis.workers.memory_thread_sweep.plan_thread_sweep`:
     ``section:threads`` (never ``section:index``), not scratch-owned, and
-    'Left: done' / superseded / untouched ≥ STALE_DAYS without a fresh
+    'Left: none' / empty / superseded / untouched ≥ STALE_DAYS without a fresh
     dated section (a fresh date makes it a currency suspect — listed by
-    the sweep but never retired, so not this smell's evidence either).
+    the sweep but never acted on, so not this smell's evidence either).
     """
     if child.section != "threads" or INDEX_TAG in child.tags:
         return False
     if {t for t in child.tags if t.startswith("SPACE:")} == {"SPACE:scratch"}:
         return False
     left = first_left(child.body)
-    if left is not None and left_is_done(left):
+    if not child.body.strip() or (left is not None and left_is_done(left)):
         return True
     if child.ref_id in superseded:
         return True
-    if child.updated_at is not None and child.updated_at < stale_cut:
+    if child.updated_at is not None and child.updated_at <= stale_cut:
         fresh = newest_body_date(child.body)
         if fresh is None or fresh < suspect_cut:
             return True
@@ -650,8 +650,9 @@ def compute_smells(scope: _Scope, now: datetime) -> list[_Smell]:
             _smell(
                 smells,
                 "sweep-ready-children",
-                "part-of children the 14-day thread sweep would retire — "
-                "their resume state rides on this node",
+                "part-of children the thread sweep would act on (retire, or "
+                "raise an extend/retire/transfer ask at 14 days) — their "
+                "resume state rides on this node",
                 n.ref_id,
                 f"{len(sweepable)}: " + ", ".join(c.handle for c in sweepable[:6]),
             )

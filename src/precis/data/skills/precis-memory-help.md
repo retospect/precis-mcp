@@ -358,8 +358,9 @@ put(
 ```
 
 Decisions are conventionally tagged with `confidence-*` and the
-relevant `project:`. `pinned` is a writable marker only: nothing reads it, and it does not
-protect a `section:threads` node from expiry.
+relevant `project:`. `pinned` is a writable marker only: nothing reads it,
+and it exempts nothing — at 14 days untouched a `section:threads` node
+gets its extend/retire/transfer ask either way.
 
 ## Flag an open question to come back to
 ## Park an unresolved problem
@@ -947,10 +948,14 @@ their own `Spec:` / `Programme:` / claim titles.
   `args={'superseded_by': '<handle>'}` when there is no edge.
 - **`section:threads` resume nodes** — one per campaign. First body line
   is `Left: <what remains>` (`Left: none` when done); rewrite it in place
-  at each resume or compact rather than `put`-ing a fresh node. A daily
-  sweep retires `Left: none` nodes, superseded ones, and nodes untouched
-  14 days — a stale node whose `Left:` names open work becomes a linked
-  todo first.
+  at each resume or compact rather than `put`-ing a fresh node. The daily
+  sweep retires `Left: none` nodes and superseded ones; a node untouched
+  14 days is not retired — the sweep raises an `ask-user` todo (options
+  `extend` / `retire` / `transfer`, see [[precis-architecture-help]])
+  and the node stays in recall until one is chosen. An ask the thread
+  has outgrown — edited back into currency — closes as
+  `thread-no-longer-stale`; an unusable answer closes with the reason
+  named and the decision re-raised.
 
 ```python
 delete(kind='memory', id='me42', dry_run=True)

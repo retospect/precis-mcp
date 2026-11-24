@@ -1859,14 +1859,14 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "sweep",
         help=(
             "List (or with --apply, run) the section:threads and "
-            "SPACE:scratch retirement sweeps — the same rules the daily "
-            "memory_thread_sweep cadence applies. Dry-run by default."
+            "SPACE:scratch sweeps, including pending thread decisions. The daily "
+            "memory_thread_sweep cadence uses these rules. Dry-run by default."
         ),
     )
     swp.add_argument(
         "--apply",
         action="store_true",
-        help="Actually retire the listed nodes (default: plan only).",
+        help="Raise due thread asks, enact eligible answers and apply automatic retirements.",
     )
     swp.add_argument("--database-url", default=None, help="Postgres DSN override.")
     prn = msub.add_parser(
@@ -2038,24 +2038,51 @@ def run(args: argparse.Namespace) -> None:
             from precis.utils import handle_registry
             from precis.workers.memory_thread_sweep import (
                 plan_scratch_sweep,
+                plan_thread_decisions,
                 plan_thread_sweep,
                 run_memory_thread_sweep_pass,
                 run_scratch_sweep_pass,
             )
 
-            plan = plan_thread_sweep(store)
-            scratch_plan = plan_scratch_sweep(store)
             if not args.apply:
-                if not plan and not scratch_plan:
-                    print("memory sweep: nothing to retire")
+                decisions = plan_thread_decisions(store)
+                pending = {thread for _, thread, _ in decisions}
+                plan = [
+                    item
+                    for item in plan_thread_sweep(store)
+                    if not (item.rule == "c" and item.ref_id in pending)
+                ]
+                scratch_plan = plan_scratch_sweep(store)
+                if not plan and not scratch_plan and not decisions:
+                    print("memory sweep: nothing to do")
                 else:
-                    print("memory sweep (dry run — pass --apply to retire):")
+                    print("memory sweep (dry run — pass --apply to act):")
+                    for ask, thread, choice in decisions:
+                        ask_handle = (
+                            handle_registry.try_format("todo", ask) or f"td{ask}"
+                        )
+                        thread_handle = (
+                            handle_registry.try_format("memory", thread)
+                            or f"me{thread}"
+                        )
+                        status = (
+                            f"would enact {choice}"
+                            if choice
+                            else "pending an eligible extend/retire/transfer decision"
+                        )
+                        print(f"  {thread_handle} ({ask_handle}) — {status}")
                     for item in plan:
                         handle = (
                             handle_registry.try_format("memory", item.ref_id)
                             or f"me{item.ref_id}"
                         )
-                        carry = "; Left: line becomes a todo" if item.left else ""
+                        if item.rule == "c":
+                            carry = (
+                                "; raises an extend/retire/transfer ask "
+                                "(node stays in recall)"
+                            )
+                        else:
+                            carry = ""
                         print(
                             f"  {handle} {item.title!r} — rule {item.rule}: "
                             f"{item.reason}{carry}"
@@ -2074,7 +2101,7 @@ def run(args: argparse.Namespace) -> None:
                 scratch = run_scratch_sweep_pass(store)
                 print(
                     f"memory sweep: claimed={result.claimed + scratch.claimed} "
-                    f"retired={result.ok + scratch.ok} "
+                    f"done={result.ok + scratch.ok} "
                     f"failed={result.failed + scratch.failed}"
                 )
         elif args.memory_cmd == "prune-links":

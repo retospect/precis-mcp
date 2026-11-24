@@ -906,7 +906,9 @@ def run_asks_triage_pass(
         else env_int(_BATCH_ENV, _DEFAULT_BATCH, lo=1, hi=100)
     )
     candidates = [
-        r for r in asks_view.asks_model(store).rows if r.kind == "todo" and not r.triage
+        r
+        for r in asks_view.asks_model(store).rows
+        if r.kind == "todo" and not r.triage and not r.thread_decision
     ]
     # Oldest first — the longest-unanswered wait triages first.
     candidates.sort(

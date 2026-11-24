@@ -5,6 +5,7 @@ title: precis — retention, decay, recall and lifecycle in quick answers
 summary: architecture Q/A — hard caps and pruning, the pinned flag, decay windows, dreams, recall ranking, SPACE scoping, append-only chunks, gripe↔todo wiring, reading operator switches
 answers:
   - is there a hard cap or forced pruning on memories?
+  - what happens when a thread note expires?
   - what keeps a memory from being pruned or decayed?
   - how does memory decay work — does a decayed memory get deleted?
   - how do dreams and dream consolidation work?
@@ -26,13 +27,68 @@ skill that owns the detail. Verbs and kinds: [[precis-overview]].
 
 ## Is there a hard cap or forced pruning on memories?
 
-No — there is no count cap and no forced pruning. A `memory` ref never
-expires and `delete` is a soft-delete tombstone, not a removal. The one
-automatic retirement is the daily `section:threads` sweep — a
-`Left: none` first line, a live `supersedes` edge, or 14 days
-untouched (open work on the `Left:` line becomes a linked todo
-first). →
-[[precis-memory-help]]
+No — there is no count cap and no forced pruning of the corpus. The
+only automatic retirements are the daily `section:threads` sweep
+retiring a finished or empty thread (a `Left: none` first line, an empty body or a
+live `supersedes` edge) and a `SPACE:scratch` node self-retiring past
+its TTL — plus, at 14 days untouched, a thread gets a decision ask, not
+a retirement (gr746642: Reto's no-silent-removal ruling). Every
+retirement is a soft-delete tombstone, recoverable at the SQL layer —
+`delete` included, never a removal. What each expiry date triggers:
+the next answer. → [[precis-memory-help]]
+
+## What happens when a thread note expires?
+
+The footer on `get` and `put` names the scheduled action. The daily
+`memory_thread_sweep` cadence makes the following decisions.
+Which rule fired decides what happens:
+
+- **rule a** — a `Left: none` first line or an empty body. The thread
+  retires on the next sweep without a question or a 14-day wait.
+- **rule b** — another *live* memory links `supersedes` to it: the
+  replacement is on record. Retires automatically, like rule a.
+- **rule c** — untouched 14 days (the same clock `precis memory
+  index` calls "live"): **no retirement**. The sweep mints one
+  `ask-user` todo — options `extend` / `retire` / `transfer`, titled
+  with the node's title and age and quoting its `Left:` line — and the
+  node stays in recall. The daily review shows it in both the `asks`
+  and `reto-queue` views of todo search. No answer means the item stays in
+  the review and the node stays in recall — an unanswered ask is never
+  a retire reason, and while an ask is open no second one is minted.
+  Answering (`comment answer: …`, then `STATUS:done` + drop
+  `ask-user`) lets a later sweep fire enact the choice: `extend`
+  restarts the 14-day clock, `retire` soft-retires the node, `transfer`
+  requires a live memory or spec linked `derived-from` the thread.
+  An ask the sweep can no longer act on is *closed out*, not left to
+  rot in the review: the thread edited back into currency (or turned
+  currency suspect) closes its ask `thread-no-longer-stale`; a closed
+  ask whose `answer:` names no valid choice closes
+  `answer-unrecognised`; `transfer` with no `derived-from` successor
+  closes `transfer-no-successor`. The last two re-raise the decision
+  the same fire, quoting the reason; closing an ask with no `answer:`
+  comment at all is a deliberate human close — it stays as a record
+  and is never re-raised.
+  A dated section inside the stale window makes the node
+  a *currency suspect* instead — listed (`precis memory sweep`), never
+  acted on. A thread with no `Left:` line is the trap: rule c still
+  asks, but the review line shows no open work — the create ack warns
+  at `put` time.
+- **rule s** — `SPACE:scratch`: self-retires past its TTL (7-day
+  default from `updated_at`, `meta.expires` overrides, a
+  `scratch-for:<task>` tag gives a three-day grace after the last
+  owner closes, capped at 30 days from the last edit). Scratch
+  is the opt-in throwaway space — the one age-out that removes a node
+  without asking.
+
+"Retires" means the soft delete throughout: the node leaves recall
+(`search` stops listing it) but the tombstone stays — `get` still
+answers, the body chunks remain, and the row is recoverable at the SQL
+layer. No clock ever hard-deletes. **Exempt a thread** by keeping it
+edited (the clock runs from `updated_at`), by answering `extend` when
+asked, or by retagging it out of `section:threads`. On a non-thread
+node the same date is when the garden flags it for a review/compact
+pass (rulings and specs are shielded) — still nothing deleted. →
+[[precis-memory-help]] · [[precis-delete-help]]
 
 ## What keeps a memory from being pruned or decayed?
 
@@ -61,10 +117,14 @@ The decay fields are write-only today. `put` accepts
 `args={'auto_refresh_days': N}` and stamps `refreshed_at` at insert;
 DREAM-tagged writes get a default window (60 days, 90 for thread
 dreams) when the writer set none. But nothing ranks or expires on
-them, and re-tagging does not reset `refreshed_at`. `refreshed_at` is
-display only (`view='raw'`, the web ref page) — the preamble's
-recent-thoughts list orders by `updated_at`, not `refreshed_at`.
-Nothing is deleted either way. →
+these fields — that sentence is about `refreshed_at` alone, not the
+retirements that do exist: re-tagging does not reset `refreshed_at`,
+and `refreshed_at` is display only (`view='raw'`, the web ref page) —
+the preamble's recent-thoughts list orders by `updated_at`, not
+`refreshed_at`. The memory retirements are the threads sweep and the
+scratch TTL (see "What happens when a thread note expires?" above) —
+they key off `updated_at`/tags, never off these decay fields, and they
+soft-delete, never remove. →
 [[precis-inner-life-help]]
 
 ## How do dreams and dream consolidation work?
