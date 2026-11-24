@@ -284,6 +284,18 @@ def test_breaker_trip_is_classified_by_gate_kind(
     assert out.paused and out.reason_class == "budget"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_endpoint_marks():
+    """The served-endpoint health mark (gr622031) is module-global: a
+    transport failure in one test would make the next test's loopback
+    dispatch come back "local endpoint is down"."""
+    from precis.utils.llm import local_serving
+
+    local_serving.reset_cache()
+    yield
+    local_serving.reset_cache()
+
+
 # ── SMALL-lane in-process retry (item 3) ──────────────────────────────
 
 
@@ -338,13 +350,30 @@ def test_small_retry_exhausts_at_the_bound_and_surfaces_rate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _flaky_client(
-        monkeypatch, [_http(429, "a"), _http(503, "b"), _http(429, "c")]
+        monkeypatch, [_http(429, "a"), _http(429, "b"), _http(429, "c")]
     )
     waits = _patch_sleep(monkeypatch)
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
     assert out.error is not None and out.reason_class == "rate" and out.paused
     assert len(calls) == 3 and len(waits) == 2
     assert sum(waits) < 30.0 and waits[1] > waits[0] * 1.2
+
+
+def test_small_retry_stops_at_a_5xx_that_marks_the_endpoint_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A 5xx on the loopback endpoint is a dead-wire failure (gr622031): it
+    # marks the endpoint down, so the retried dial would only be skipped.
+    # The loop stops and surfaces the real 503, not "endpoint is down".
+    calls = _flaky_client(monkeypatch, [_http(429, "a"), _http(503, "b"), _Reply("n")])
+    waits = _patch_sleep(monkeypatch)
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    assert out.error is not None and "503" in out.error
+    assert out.reason_class == "transport" and out.paused
+    assert not out.local_endpoint_skipped
+    # The 429 and the 503 each schedule a backoff; the dial after the 503 is
+    # skipped by the endpoint mark, so it never reaches the client.
+    assert len(calls) == 2 and len(waits) == 2
 
 
 def test_small_retry_env_off_and_other_tiers_run_once(
@@ -367,9 +396,14 @@ def test_small_retry_skips_content_and_timeout(monkeypatch: pytest.MonkeyPatch) 
     calls = _flaky_client(
         monkeypatch, [TimeoutError("timed out after 30s"), _Reply("n")]
     )
-    # A raised socket timeout is a plain transport fault: retried, recovers.
+    # A raised socket timeout is a transport fault that proves the loopback
+    # wire dead (gr622031): the endpoint is marked down, so no retry lands
+    # in-process — the real error surfaces for the pass's own backoff. The
+    # loop schedules one backoff, but the retried dial is skipped by the mark
+    # and never reaches the client.
     out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
-    assert out.error is None and len(calls) == 2 and len(waits) == 1
+    assert out.error is not None and "timed out" in out.error
+    assert out.reason_class == "transport" and len(calls) == 1 and len(waits) == 1
     # A transport-flagged wall-clock timeout (LlmResult.timed_out) is never retried.
     prov = _Prov(_errored("stalled", timed_out=True, paused=True))
     out, _attempt_ms = router._run_with_retry(
