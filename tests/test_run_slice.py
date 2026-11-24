@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -4109,17 +4110,22 @@ def test_submit_fails_fast_when_the_mcp_rejects_the_bearer(
     [
         TimeoutError("timed out"),
         ConnectionRefusedError(111, "Connection refused"),
+        http.client.BadStatusLine("garbage"),
+        http.client.IncompleteRead(b""),
     ],
-    ids=["timeout", "refused"],
+    ids=["timeout", "refused", "bad-status", "incomplete-read"],
 )
 def test_submit_mcp_preflight_outage_waits_attempt_free(
     seams: dict[str, Any],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    transport_exc: OSError,
+    transport_exc: Exception,
 ) -> None:
-    """No transport answer at preflight — gr707371's connection refused and
-    gr731751's timed out — is the MCP being down, not the slice's diff:
+    """No usable transport answer at preflight — gr707371's connection
+    refused, gr731751's timed out and gr731840's protocol garbage (an
+    ``http.client.HTTPException`` that is not an ``OSError``, the dying
+    proxy answering bytes no status line parses out of) — is the MCP
+    being down, not the slice's diff:
     the launch is refused attempt-free (``meta.attempt_free =
     "mcp-outage"``), the grant revoked, the todo back to open with no
     ``attempt:`` burned. The tick re-queues with its free-failure backoff

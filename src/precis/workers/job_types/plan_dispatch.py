@@ -868,17 +868,17 @@ _REQUEUE_ON_CANCEL = frozenset({DEFAULT_OP, "ci_verdict_poll"})
 #: (a live git's lock in the lander's own ship folder, gr684320; builders
 #: no longer share a folder, so only a land stamps it),
 #: ``"infra-land"`` (the gate's own machinery killed the land, gr570187),
-#: ``"mcp-outage"`` (the launch's precis MCP preflight got no transport
+#: ``"mcp-outage"`` (the launch's precis MCP preflight got no usable
 #: answer — the server or its proxy was down, gr731751 closing gr707371).
 ATTEMPT_FREE_KEY = "attempt_free"
 
 #: ``run_slice.MCP_OUTAGE_KEY``, restated — the same one-way rule (a test
 #: pins the two spellings equal). The launch's precis MCP preflight got
-#: no transport answer (timed out or connection refused; gr731751 closing
-#: gr707371 — both symptoms live there): infra, not the slice's diff. The
-#: free-failure run (:func:`_free_run`) bounds the wait and backs it off
-#: (gr662077) until the MCP answers; an HTTP answer (the 401 bearer
-#: rejection) never carries this key and still burns the attempt.
+#: no usable answer (timed out, connection refused or an unparseable
+#: reply; gr731751 closing gr707371 — both symptoms live there): infra,
+#: not the slice's diff. The free-failure run (:func:`_free_run`) bounds
+#: the wait and backs it off (gr662077) until the MCP answers; a
+#: parseable non-2xx answer (the 401 bearer rejection) never carries this key and still burns the attempt.
 MCP_OUTAGE_KEY = "mcp-outage"
 
 #: ``run_slice.HUMAN_ONLY_KEY``, restated — the dependency stays

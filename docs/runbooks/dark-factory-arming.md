@@ -935,13 +935,17 @@ The other settings a slice host reads:
   worker sends one `initialize` with the session's bearer to the
   `.mcp.json` URL. An HTTP answer that is not 2xx — the 401 bearer
   rejection above all — fails the attempt in seconds, so a broken grant
-  never costs a session's wall clock. No transport answer at all (a
-  timeout, a refused connection) is the MCP being down, not the grant:
+  never costs a session's wall clock. No usable transport answer (a
+  timeout, a refused connection, a reply the protocol cannot parse) is
+  the MCP being down, not the grant:
   `run_slice._preflight_mcp` raises `_McpPreflightOutage`, `submit`
   gives the lease back with `meta.attempt_free = "mcp-outage"` and the
   tick re-queues with the free-failure backoff, capped by
   `FREE_RUN_CAP`, which parks it behind a coordinator ask
-  (gr731751, closing gr707371).
+  (gr731751 closing gr707371, gr731840). The down class is every
+  transport failure, not only `OSError`: a sick proxy's unparseable
+  reply (`http.client.HTTPException` — `BadStatusLine`,
+  `IncompleteRead`) is the same no-usable-answer outage.
 - `PRECIS_SLICE_READ_MCP`: unset is today's behaviour — Codex and Devin
   code slices launch with no precis MCP. Set to `triage` (the intended
   production value) or `reader` and a `code`-class slice on a `read_mcp`
