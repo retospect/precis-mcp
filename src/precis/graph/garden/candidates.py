@@ -2374,7 +2374,6 @@ class _CompactRow:
     ref_id: int
     title: str
     body: str
-    sha: str
     meta: dict[str, Any]
     sections: frozenset[str]
     open_tags: frozenset[str]
@@ -2386,7 +2385,11 @@ class _CompactRow:
 
 
 def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
-    """Body, expiry inputs and the read counter in one snapshot, no DREAMs."""
+    """Body, expiry inputs and the read counter in one snapshot, no DREAMs.
+
+    No ``precis_target_sha`` here: it hashes the whole node and, run over
+    the full scan window, outran the detector deadline (gr784635); the
+    caller pins it for the rows that fire only."""
     if not ids:
         return []
     with store.pool.connection() as conn:
@@ -2394,7 +2397,7 @@ def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
             "SELECT r.ref_id, r.title, coalesce((SELECT string_agg(c.text, E'\\n' "
             "ORDER BY c.ord, c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
             "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
-            "AND c.retired_at IS NULL), ''), precis_target_sha('ref', r.ref_id), "
+            "AND c.retired_at IS NULL), ''), "
             "r.meta, ARRAY(SELECT substring(t.value FROM 9) "
             "FROM ref_tags rt JOIN tags t USING (tag_id) "
             "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
@@ -2416,7 +2419,6 @@ def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
             int(rid),
             title,
             body,
-            sha,
             meta or {},
             frozenset(sections),
             frozenset(open_tags),
@@ -2426,7 +2428,7 @@ def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
             int(nh),
             last,
         )
-        for rid, title, body, sha, meta, sections, open_tags, updated, created, na, nh, last in rows
+        for rid, title, body, meta, sections, open_tags, updated, created, na, nh, last in rows
     ]
 
 
@@ -2737,7 +2739,7 @@ def compact_candidates(
     firing: list[tuple[_CompactRow, list[str], dict[str, Any]]] = []
     for row in rows:
         reasons: list[str] = []
-        evidence: dict[str, Any] = {"content_sha": row.sha}
+        evidence: dict[str, Any] = {}
         if (hit := expired.get(row.ref_id)) is not None:
             shields = _expiry_shields(row, dependants)
             if shields:
@@ -2795,10 +2797,14 @@ def compact_candidates(
         store,
         sorted(
             {rid for rel in related.values() for ids in rel.values() for rid in ids}
+            | {row.ref_id for row, _, _ in firing}
         ),
     )
     out: list[GardenCandidate] = []
     for row, reasons, evidence in firing:
+        if row.ref_id not in shas:
+            continue
+        evidence = {"content_sha": shas[row.ref_id], **evidence}
         sentences, capped = _compact_sentences(row.body)
         evidence["sentences"] = sentences
         evidence["sentences_capped"] = capped
@@ -2815,7 +2821,7 @@ def compact_candidates(
                 title=f"me{row.ref_id} owes a compaction plan ({', '.join(reasons)})",
                 evidence=evidence,
                 payload={
-                    "base_sha": row.sha,
+                    "base_sha": shas[row.ref_id],
                     "shas": {
                         str(rid): sha
                         for rid, sha in sorted(shas.items())
