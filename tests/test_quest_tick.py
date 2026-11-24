@@ -2335,35 +2335,29 @@ class TestPromptAndView:
         assert "low-mastery" in prompt
         assert f"[cn{cid}]" in prompt
 
-    def test_prompt_without_dialectic_blocks_has_no_dialectic_section(
-        self, store: Any
-    ) -> None:
-        # gr462891 stopgap: nothing to maintain -> no section, no guidance,
-        # no `dialectic_ops` schema, in either quest body.
-        qid = _mk_quest(store, "A striving")
-        quest = store.get_ref(kind="quest", id=qid)
-        for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
-            prompt = build_tick_prompt(store, quest, quest_body=body)
-            assert "dialectic_ops" not in prompt
-            assert "dialectic" not in prompt.lower()
-            assert "ledger_ops" in prompt  # the rest of the schema is intact
-            assert '"dossier_text"' in prompt
-
-    def test_prompt_with_a_dialectic_block_keeps_the_dialectic_section(
-        self, store: Any
-    ) -> None:
-        from precis.quest.dossier import apply_dialectic_op
+    def test_prompt_shows_live_findings_without_dossier(self, store: Any) -> None:
+        from precis.store import Tag
         from tests.workers._helpers import seed_ref
 
         qid = _mk_quest(store, "A striving")
         fid = seed_ref(store, title="Cu is the active site", kind="finding")
-        assert apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
+        refuted = seed_ref(store, title="Fe is the active site", kind="finding")
+        for hid in (fid, refuted):
+            store.stamp_ref_meta(hid, {"artifact_type": "hypothesis"})
+            store.add_link(src_ref_id=hid, dst_ref_id=qid, relation="serves")
+        store.add_tag(refuted, Tag.closed("STATUS", "refuted"))
+        source = seed_ref(store, title="Surface measurement", kind="paper")
+        store.add_link(src_ref_id=source, dst_ref_id=fid, relation="supports")
         quest = store.get_ref(kind="quest", id=qid)
         for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
             prompt = build_tick_prompt(store, quest, quest_body=body)
-            assert "## Dialectic blocks (live hypotheses" in prompt
-            assert f"[fi{fid}] Cu is the active site" in prompt
-            assert "**The dialectic lives in blocks, not prose.**" in prompt
+            assert "## Live hypotheses" in prompt
+            assert (
+                f"[fi{fid}] Cu is the active site — open; supports: 1, disputes: 0"
+                in prompt
+            )
+            assert f"fi{refuted}" not in prompt
+            assert '"hypotheses": [' in prompt
             assert '"dialectic_ops": [' in prompt
 
     def test_prompt_shows_ledger_ruled_out_entries_not_open(self, store: Any) -> None:
@@ -3958,8 +3952,8 @@ class TestQuestBodyInquiry:
         prompt = build_tick_prompt(store, quest, quest_body=QUEST_BODY_INQUIRY)
         for token in self._MATERIALS_ONLY_TOKENS:
             assert token not in prompt, token
-        # still the shared reasoning apparatus — not a stripped-down stub
-        # (the dialectic section is gated on a block existing, gr462891)
+        assert "## Live hypotheses\n- (none)" in prompt
+        assert '"dialectic_ops": [' in prompt
         assert "ledger_ops" in prompt
         assert "no proposal menu and no Pareto frontier" in prompt
 

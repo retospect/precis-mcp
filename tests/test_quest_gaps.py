@@ -151,8 +151,7 @@ class TestGaps:
         assert "open-hypothesis" not in _gap_kinds(store, qid)
 
     def test_dialectic_settled_hypothesis_finding_is_settled(self, store: Any) -> None:
-        """A ``settle`` dialectic op on this quest's dossier settles a served
-        hypothesis finding."""
+        """A ``settle`` dialectic op closes the served hypothesis finding."""
         from precis.quest.dossier import apply_dialectic_op
 
         h = _handler(store)
@@ -164,6 +163,7 @@ class TestGaps:
             qid,
             {
                 "op": "settle",
+                "verdict": "supported",
                 "hypothesis": f"fi{fid}",
                 "text": "settled — [st1] showed the barrier is low",
             },
@@ -224,6 +224,7 @@ class TestGaps:
             qid,
             {
                 "op": "settle",
+                "verdict": "supported",
                 "hypothesis": f"fi{fid}",
                 "text": "settled — [st1] showed the barrier is low",
             },

@@ -176,7 +176,7 @@ A quest keeps an **append-only, dated logbook** (like a lab notebook):
 what happened, when, immutable. Append an entry with a type:
 
 ```python
-put(kind="quest", id=7, text="raised hypothesis [fi42] — try Fe–N₄ single-atom sites", args={"entry": "hypothesis"})
+put(kind="quest", id=7, text="raised fi42", args={"entry": "note"})
 put(kind="quest", id=7, text="Second PCET barrier too high", args={"entry": "dead-end"})
 put(kind="quest", id=7, text="Dual-metal site clears both barriers", args={"entry": "milestone"})
 put(kind="quest", id=7, text="relax batch A", args={"entry": "result", "by": "agent", "cost": 1.5})
@@ -185,11 +185,9 @@ put(kind="quest", id=7, text="relax batch A", args={"entry": "result", "by": "ag
 - `args={'entry': …}` is one of **note · observation · hypothesis ·
   result · decision · dead-end · milestone · reflection · cost**
   (default `note`).
-- A `hypothesis` entry is a **dated pointer to a hypothesis finding,
-  never the hypothesis itself**. The living conjecture is a `finding`
-  minted with `hypothesis=True` (`fi<id>`, `serves` the quest — see the
-  Directions table below); the logbook line only records that it was
-  raised, and names the `fi` handle so the pointer resolves.
+- Mint the conjecture with `finding(hypothesis=True)` and link it with
+  `serves` to the quest. Record a dated logbook `note` naming the `fi`
+  handle.
 - A **`milestone` is a deed** — the honest, medieval sense of progress.
   The deed ledger is a filtered view of the log, not a separate store.
 - **`dead-end` is first-class** — recording *what failed and why* stops
@@ -449,8 +447,8 @@ with two read-time, mechanical reads (no `% done`):
   serves it), **no-literature** (work under way with no `paper`
   grounding), **low-mastery** (a served `concept` you don't understand
   yet), **open-hypothesis** (a hypothesis finding `serves`-linked to the
-  quest that is not yet settled — `STATUS:refuted` or the dialectic's
-  `settle` closes it; **transitional**: a `hypothesis` logbook entry with
+  quest whose verdict is open. `STATUS:refuted` or the open tag `settled`
+  closes it. The gap still tracks a historical `hypothesis` logbook entry with
   no later `result`/`dead-end` still counts until the tick stops logging
   hypotheses as entries, except an `fi`-linked pointer, which defers to
   its finding), **needs-experiment** (a graduated candidate
@@ -534,7 +532,7 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place. To record a rejection, link the hypothesis to the negative ruling with `retracted-by` or `superseded-by` and stamp the hypothesis `STATUS:refuted`. See "Record a rejection" in [[precis-nanopub-help]]. |
+| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own verdict and `supports`/`disputes` edges, updated in place. To record a rejection, link the hypothesis to the negative ruling with `retracted-by` or `superseded-by` and stamp the hypothesis `STATUS:refuted`. See "Record a rejection" in [[precis-nanopub-help]]. |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
 
 ## Directions — state rides `STATUS`, not tags
@@ -591,6 +589,18 @@ momentum + logbook tail), does one increment of reasoning, appends 1–4
 logbook entries, updates its synthesis state (still written to the
 deprecated dossier on quests not yet converted — see above), and may
 **propose candidate materials**.
+
+Both tick bodies show served findings under **Live hypotheses** with their
+verdicts and evidence counts. Raise a new conjecture through `hypotheses`
+with `sentence`, `motivation`, `testable_by`, and `motivated_by` (at least
+two independent sources). A named `direction` todo receives a service
+link alongside the quest. The logbook records `raised fi<id>`.
+
+Use `dialectic_ops` on that finding. `support` and `counter` cite evidence
+handles in square brackets and create `supports` and `disputes` edges.
+`settle` records a `supported` or `inconclusive` verdict with the open tag
+`settled`. A `refuted` verdict requires a negative ruling finding, linked
+with `superseded-by`, and stamps `STATUS:refuted`.
 
 A tick does not edit repo files. To land prose in a repo file (docs, a
 skill, a spec section), file a gripe carrying the text; a session applies it.

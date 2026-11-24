@@ -2247,12 +2247,13 @@ MOTIVATION_RELATION = "motivated-by"
 #: can be provoked by a passage nobody ever minted as a claim, which is why
 #: this is wider than :func:`link_claims`' hub↔hub contract. Also a
 #: ``structure`` — an instrument measurement is an observation a hypothesis
-#: can be provoked by, same as a paper. Memories and quests are deliberately
+#: can be provoked by, same as a paper — and a ``pathway`` (a computed
+#: reaction pathway), counted the same way. Memories and quests are deliberately
 #: absent: a dream may *think* with its own prior notes, but a signed
 #: artifact cites sources, and a note is not one — and a quest is a
 #: container, not an observation.
 MOTIVATION_SRC_KINDS: frozenset[str] = frozenset(
-    {"paper", "patent", "finding", "structure"}
+    {"paper", "patent", "finding", "structure", "pathway"}
 )
 
 
@@ -2288,7 +2289,7 @@ def attach_motivation(
     if hub_ref_id == motivator_ref_id:
         raise BadInput(
             f"a hypothesis cannot be motivated by itself (ref_id={hub_ref_id})",
-            next="name a paper, patent, a different claim hub, or a measured structure",
+            next="name a paper, patent, a different claim hub, a structure, or a pathway",
         )
     validated = validate_relation(MOTIVATION_RELATION, store=store)
 
@@ -2306,8 +2307,7 @@ def attach_motivation(
                 options=sorted(MOTIVATION_SRC_KINDS),
                 next=(
                     "a hypothesis is motivated by a paper, a patent, another "
-                    "claim hub, or a measured structure (an instrument "
-                    "observation) — not by a note"
+                    "claim hub, a measured structure, or a pathway"
                 ),
             )
         existing = c.execute(

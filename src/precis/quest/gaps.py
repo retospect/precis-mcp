@@ -383,9 +383,8 @@ def _answers_hypothesis(b: ChunkRow) -> bool:
     author one: its own are clamped to ``observation`` at apply,
     ``tick._sanitize_model_entry``). A ``dead-end`` answers only when it is
     *supported*: stamped by anyone but the model itself (a human or system
-    kill is trusted) or carrying an inline evidence handle — the same
-    anchor rule the dialectic's support/counter entries obey
-    (:func:`precis.quest.dossier._has_anchor_handle`). A bare ``by=agent``
+    kill is trusted) or carrying an inline evidence handle — an
+    evidence anchor. A bare ``by=agent``
     dead-end is a restatement, not a resolution — the paraphrase-sweep hole
     gr626871 closes: a tick that "killed" its open questions in new words
     each cycle read as progress forever.
@@ -414,19 +413,13 @@ def _open_hypothesis_findings(
     A finding is a hypothesis when ``meta.artifact_type == 'hypothesis'``
     (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE`` — the durable
     marker that survives the ``hypothesis-proposed`` triage tag coming off).
-    *Settled* is two signals: the ``STATUS:refuted`` stamp a rejection
-    ruling lands (the do-not-repropose ledger —
-    ``store/_tag_filter.py::REFUTED_TAG``), or a ``settled`` marker on this
-    quest's dialectic block for the hypothesis
-    (``dossier.py::DialecticBlock.settled`` — the tick's ``settle`` op).
+    ``STATUS:refuted`` or the open tag ``settled`` closes a finding. For
+    historical proposals a settled dialectic block also closes it.
     Retired hypotheses never reach here: ``_live_servers`` drops them.
     """
-    hyps = [
-        r
-        for r in live
-        if r.kind == "finding"
-        and str((r.meta or {}).get("artifact_type") or "") == "hypothesis"
-    ]
+    from precis.quest.hypotheses import is_hypothesis
+
+    hyps = [r for r in live if is_hypothesis(r)]
     if not hyps:
         return [], set()
     settled: set[int] = set()
@@ -434,8 +427,8 @@ def _open_hypothesis_findings(
         rows = conn.execute(
             "SELECT rt.ref_id FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS' "
-            "AND t.value = 'refuted'",
+            "WHERE rt.ref_id = ANY(%s) AND ((t.namespace = 'STATUS' "
+            "AND t.value = 'refuted') OR (t.namespace = 'OPEN' AND t.value = 'settled'))",
             ([r.id for r in hyps],),
         ).fetchall()
     settled.update(int(row[0]) for row in rows)

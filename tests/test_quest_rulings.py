@@ -139,15 +139,22 @@ class TestMint:
         assert mint_measurement_rulings(store, qid) == 0
         assert len(_ruling_ids(store, hyp)) == 1
 
-    def test_settled_block_is_skipped(self, store: Any) -> None:
+    def test_settled_hypothesis_is_skipped(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         hyp = seed_ref(store, kind="finding")
         st = _mk_structure(store, barrier=0.5, trusted=True)
+        store.stamp_ref_meta(hyp, {"artifact_type": "hypothesis"})
+        store.add_link(src_ref_id=hyp, dst_ref_id=qid, relation="serves")
         _preregister(store, qid, hyp, st)
         assert apply_dialectic_op(
             store,
             qid,
-            {"op": "settle", "hypothesis": f"fi{hyp}", "text": "resolved."},
+            {
+                "op": "settle",
+                "hypothesis": f"fi{hyp}",
+                "verdict": "supported",
+                "text": "resolved.",
+            },
         )
         assert mint_measurement_rulings(store, qid) == 0
         # A settled block SKIPS — it never halts the scan for later live

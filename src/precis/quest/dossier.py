@@ -65,11 +65,9 @@ the whole body into one string (``view='dossier'`` + history); only the
 tick prompt separates narrative from ledger (:func:`read_narrative`,
 :func:`read_ledger`).
 
-A third pinned family, the **dialectic blocks** (quest-dossier-dialectic
-§Mechanism), holds the per-hypothesis dialectic — support/counter/
-discriminating-experiment, one block per live hypothesis finding — in the
-same op-mutated, never-rewritten shape as the ledger (:func:`read_dialectic`,
-:func:`apply_dialectic_op`).
+A third pinned family holds historical dialectic blocks and registered
+measurement experiments (:func:`read_dialectic`). New evidence and
+settlement live on served hypothesis findings (:func:`apply_dialectic_op`).
 """
 
 from __future__ import annotations
@@ -1063,18 +1061,8 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
 
 # --- Dialectic blocks (quest-dossier-dialectic §Mechanism) -------------------
 #
-# The per-hypothesis dialectic lives OUTSIDE the rewritable narrative, in the
-# same pinned-chunk shape as the ledger: one `meta.pinned='dialectic'`
-# container per dossier; one child BLOCK chunk per live hypothesis
-# (`meta.pinned='dialectic-hyp'`, `meta.hypothesis=<finding ref id>` — the
-# statement/motivation/testable_by live on the finding ref, never restated);
-# ENTRY chunks as block children (`meta.pinned='dialectic-entry'`,
-# `meta.role=support|counter|experiment`). The model maintains blocks only
-# through `dialectic_ops` (:func:`apply_dialectic_op`) — it never rewrites
-# them, so the structure cannot flatten the way tick-4's ###-skeleton did.
-# `support`/`counter` entries mint real graph edges (`supports` /
-# `disputes` → the hypothesis finding) from their inline handles at apply
-# time, so the dialectic is a queryable graph, not a document shaped like one.
+# Historical blocks keep earlier argument and verdict text readable.
+# Only experiment registration still writes these blocks.
 
 _DIALECTIC_PINNED = "dialectic"
 _DIALECTIC_HYP_PINNED = "dialectic-hyp"
@@ -1245,26 +1233,46 @@ def _render_dialectic(store: Store, blocks: list[DialecticBlock]) -> str:
         for role in _DIALECTIC_ROLES:
             for e in by_role.get(role, []):
                 lines.append(f"  - {role}: {e.text}")
-                # Code-minted measurement rulings on this pre-registration
-                # (:func:`precis.quest.rulings.mint_measurement_rulings`) —
-                # the tick's cue to interpret: support/counter/settle citing
-                # the ruling's handle, per the pre-registered branch.
-                for fid in e.rulings.values():
-                    try:
-                        rid = int(fid)
-                    except (TypeError, ValueError):
-                        continue
-                    rref = store.get_ref(kind="finding", id=rid)
-                    rtitle = (
-                        str(getattr(rref, "title", "") or "").strip()
-                        or "(ruling missing)"
-                    )
-                    lines.append(f"  - measured: [fi{rid}] {rtitle}")
+                lines.extend(_measurement_ruling_lines(store, e))
         if not by_role.get("experiment"):
             lines.append(
                 "  - experiment: (MISSING — every live hypothesis needs its "
                 "discriminating experiment; emit one via `dialectic_ops`)"
             )
+    return "\n".join(lines)
+
+
+def _measurement_ruling_lines(store: Store, entry: DialecticEntry) -> list[str]:
+    lines = []
+    for fid in entry.rulings.values():
+        try:
+            rid = int(fid)
+        except (TypeError, ValueError):
+            continue
+        ref = store.get_ref(kind="finding", id=rid)
+        title = (ref.title or "").strip() if ref is not None else "(ruling missing)"
+        lines.append(f"  - measured: [fi{rid}] {title}")
+    return lines
+
+
+def read_registered_experiments(
+    store: Store, owner_id: int, *, governed: set[int], open_ids: set[int]
+) -> str:
+    """Read active measurement registrations for the tick prompt."""
+    did = dossier_ref_id(store, owner_id)
+    if did is None:
+        return ""
+    lines = []
+    for block in _load_dialectic_blocks(store, did):
+        fid = block.hypothesis_id
+        if block.settled or (fid in governed and fid not in open_ids):
+            continue
+        if fid not in governed and _hypothesis_is_refuted(store, fid):
+            continue
+        for entry in block.entries:
+            if entry.role == "experiment":
+                lines.append(f"- [fi{fid}] {entry.text}")
+                lines.extend(_measurement_ruling_lines(store, entry))
     return "\n".join(lines)
 
 
@@ -1276,14 +1284,6 @@ def read_dialectic(store: Store, owner_id: int) -> str:
     did = dossier_ref_id(store, owner_id)
     assert did is not None  # ensure_dialectic_chunk just guaranteed a dossier
     return _render_dialectic(store, _load_dialectic_blocks(store, did))
-
-
-def has_dialectic_blocks(store: Store, owner_id: int) -> bool:
-    """True when the owner's dossier holds at least one dialectic block.
-    Read-only (no healing, unlike :func:`read_dialectic`) — the tick prompt
-    gates its whole dialectic section on this."""
-    did = dossier_ref_id(store, owner_id)
-    return did is not None and bool(_load_dialectic_blocks(store, did))
 
 
 def _resolve_hypothesis_id(store: Store, raw: object) -> int | None:
@@ -1324,12 +1324,16 @@ def _mint_evidence_edges(store: Store, hypothesis_id: int, role: str, text: str)
     handle in ``text`` → the hypothesis finding. Idempotent (``add_link``'s
     unique-tuple no-op); a handle that doesn't resolve, points at the
     hypothesis itself, or FK-fails is skipped, never a raise. Returns the
-    number of edges written (including re-writes of existing ones)."""
+    number of new edges written."""
     from precis.utils import handle_registry
 
     relation = _DIALECTIC_EDGE_RELATION.get(role)
     if relation is None:
         return 0
+    existing = {
+        edge.src_ref_id
+        for edge in store.links_for(hypothesis_id, direction="in", relation=relation)
+    }
     minted = 0
     # Cap per entry: each handle costs DB round-trips and writes into the
     # corpus-wide links graph — a handle-stuffed model payload must not fan
@@ -1341,16 +1345,20 @@ def _mint_evidence_edges(store: Store, hypothesis_id: int, role: str, text: str)
         parsed = handle_registry.parse(h)
         if parsed is None:
             continue
-        _kind, is_chunk, hid = parsed
-        ev_ref = _chunk_owner_ref_id(store, hid) if is_chunk else hid
-        if ev_ref is None or ev_ref == hypothesis_id:
+        evidence_kind, is_chunk, hid = parsed
+        if is_chunk:
+            ev_ref = _chunk_owner_ref_id(store, hid)
+        else:
+            ref = store.get_ref(kind=evidence_kind, id=hid)
+            ev_ref = ref.id if ref is not None else None
+        if ev_ref is None or ev_ref == hypothesis_id or ev_ref in existing:
             continue
         try:
             store.add_link(
                 src_ref_id=ev_ref,
                 dst_ref_id=hypothesis_id,
                 relation=relation,
-                meta={"dialectic": role},
+                meta={"dialectic": role, "reason": text, "evidence_handle": h},
             )
         except Exception:
             log.info(
@@ -1360,23 +1368,9 @@ def _mint_evidence_edges(store: Store, hypothesis_id: int, role: str, text: str)
                 hypothesis_id,
             )
             continue
+        existing.add(ev_ref)
         minted += 1
     return minted
-
-
-def _has_anchor_handle(text: str) -> bool:
-    """True when ``text`` carries at least one WELL-FORMED inline handle
-    (``[xx123]`` that :func:`handle_registry.parse` accepts). The
-    support/counter anchor gate: an unanchored argument can live in prose
-    but can never enter the dialectic record (operator ruling 2026-08-29 —
-    prose is never a primary source). Well-formed, not necessarily
-    edge-mintable: a ``[ql…]`` logbook anchor is legitimate evidence even
-    though it mints no ref edge."""
-    from precis.utils import handle_registry
-
-    return any(
-        handle_registry.parse(h) is not None for h in _DIALECTIC_HANDLE_RE.findall(text)
-    )
 
 
 def _find_dialectic_block(
@@ -1465,40 +1459,86 @@ def _same_proposed_test(old: str, new: str) -> bool:
 
 
 def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
-    """Apply one ``dialectic_ops`` payload entry; return ``True`` iff it
-    changed something. Ops address blocks by the hypothesis's **fi handle**
-    (stable real ids — no ledger-style quote-the-exact-text ambiguity):
+    """Apply evidence or a verdict to a served hypothesis finding."""
+    from precis.quest.hypotheses import is_hypothesis
+    from precis.quest.logbook import MEASURED_BY, append_entry
 
-    * ``open`` — ensure the block exists (idempotent). On a settled block,
-      re-opens it (clears the settle sentence).
-    * ``support`` / ``counter`` — append one why-clause entry. MUST carry at
-      least one well-formed inline handle (:func:`_has_anchor_handle` — the
-      anchor gate: unanchored argument never enters the record); near-dup
-      text among the block's same-role entries is a no-op
-      (:func:`_is_near_dup`, the ledger's measure). Inline evidence handles
-      mint ``supports``/``contradicts`` edges → the hypothesis finding.
-    * ``experiment`` — upsert IN PLACE (one discriminating experiment per
-      block; ``predicts`` — the pre-registered branch predictions — is
-      folded into the text). Editing keeps the entry chunk's ``dc`` id.
-      A rewrite whose discriminating-parameter signature is unchanged —
-      the same test reworded (:func:`_same_proposed_test`) — is a silent
-      no-op: the record already carries that proposal, and churning its
-      wording is not an advance.
-    * ``settle`` — collapse the block's render to ``text`` (one linked
-      sentence; entries kept as history). Optional ``ruling`` handle is
-      recorded on the block.
-
-    Every CONTRACT failure is a silent ``False`` (bad shape, unresolvable
-    hypothesis, blank text) — the ledger-op degrade-don't-crash convention.
-    A raw DB/store exception does propagate; the tick's ``dialectic_ops``
-    loop wraps each call (same as ``ledger_ops``) so a raise never crashes
-    the tick, and logs unapplied ops for diagnosability.
-    """
-    kind = str(op.get("op") or "").strip()
-    if kind not in {"open", "support", "counter", "experiment", "settle"}:
+    kind = op.get("op")
+    if kind not in ("open", "support", "counter", "experiment", "settle"):
         return False
     hid = _resolve_hypothesis_id(store, op.get("hypothesis"))
     if hid is None:
+        return False
+    ref = store.get_ref(kind="finding", id=hid)
+    if ref is None:
+        return False
+    if not is_hypothesis(ref):
+        # Older dossiers can still maintain their registered experiments.
+        if kind in ("open", "experiment"):
+            return _apply_dialectic_experiment(store, owner_id, hid, op)
+        return False
+    if not any(
+        edge.dst_ref_id == owner_id
+        for edge in store.links_for(hid, direction="out", relation="serves")
+    ):
+        return False
+    if kind == "experiment":
+        # Measurement pre-registration still uses the existing experiment block.
+        return _apply_dialectic_experiment(store, owner_id, hid, op)
+    text = _normalize_node_text(str(op.get("text") or ""))
+    if not text or kind == "open":
+        return False
+    if kind in ("support", "counter"):
+        return _mint_evidence_edges(store, hid, kind, text) > 0
+
+    verdict = op.get("verdict")
+    if verdict not in ("refuted", "supported", "inconclusive"):
+        return False
+    ruling = None
+    if verdict == "refuted":
+        ruling = _resolve_hypothesis_id(store, op.get("ruling"))
+        if ruling is None or ruling == hid:
+            return False
+
+    with store.atomic() as conn:
+        conn.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (hid,))
+        tags = store.tags_for(hid)
+        if Tag.closed("STATUS", "refuted") in tags:
+            return False
+        current = store.get_ref(kind="finding", id=hid, conn=conn)
+        if current is None or (current.meta or {}).get("hypothesis_verdict") == verdict:
+            return False
+        if ruling is not None:
+            store.add_link(
+                src_ref_id=hid, dst_ref_id=ruling, relation="superseded-by", conn=conn
+            )
+            store.add_tag(
+                hid, Tag.closed("STATUS", "refuted"), replace_prefix=True, conn=conn
+            )
+        else:
+            store.add_tag(hid, Tag.open("settled"), conn=conn)
+        store.stamp_ref_meta(
+            hid,
+            {"hypothesis_verdict": verdict, "hypothesis_verdict_reason": text},
+            conn=conn,
+        )
+        append_entry(
+            store,
+            owner_id,
+            text=f"hypothesis [fi{hid}] settled — {verdict}",
+            entry_type="milestone",
+            by=MEASURED_BY,
+        )
+    return True
+
+
+def _apply_dialectic_experiment(
+    store: Store, owner_id: int, hid: int, op: dict[str, Any]
+) -> bool:
+    """Keep the existing material measurement pre-registration path."""
+    kind = op.get("op")
+    text = _normalize_node_text(str(op.get("text") or ""))
+    if kind == "experiment" and not text:
         return False
     container_handle = ensure_dialectic_chunk(store, owner_id)
     did = dossier_ref_id(store, owner_id)
@@ -1512,53 +1552,18 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
             return True
         return created
 
-    text = _normalize_node_text(str(op.get("text") or ""))
-    if not text:
-        # A bare open-by-side-effect: the block now exists even though the
-        # entry op itself carried nothing usable.
-        return created
-
-    if kind == "settle":
-        assert block.handle is not None
-        ruling = str(op.get("ruling") or "").strip().strip("[]")
-        store.drafts.patch_chunk_meta(
-            block.handle, {"settled": text, "settled_ruling": ruling}
-        )
-        # A settled hypothesis is a deed: the tick stamps a `milestone`
-        # (system-authored — the settle op landed, which is a fact of the
-        # ledger even though the settle text is the model's). Momentum and
-        # the deed ledger both read it. Lazy import: logbook sits at the
-        # same layer, kept out of the module header.
-        from precis.quest.logbook import MEASURED_BY, append_entry
-
-        append_entry(
-            store,
-            owner_id,
-            text=f"hypothesis [fi{hid}] settled — {text.splitlines()[0][:200]}",
-            entry_type="milestone",
-            by=MEASURED_BY,
+    predicts = _normalize_node_text(str(op.get("predicts") or ""))
+    if predicts:
+        text = f"{text} (predicts: {predicts})"
+    existing = next((e for e in block.entries if e.role == "experiment"), None)
+    if existing is not None:
+        if existing.text == text or _same_proposed_test(existing.text, text):
+            return False
+        assert existing.handle is not None
+        store.drafts.edit_text(
+            existing.handle, text, source={"reason": "quest-dialectic"}
         )
         return True
-
-    if kind == "experiment":
-        predicts = _normalize_node_text(str(op.get("predicts") or ""))
-        if predicts:
-            text = f"{text} (predicts: {predicts})"
-        existing = next((e for e in block.entries if e.role == "experiment"), None)
-        if existing is not None:
-            if existing.text == text or _same_proposed_test(existing.text, text):
-                return False
-            assert existing.handle is not None
-            store.drafts.edit_text(
-                existing.handle, text, source={"reason": "quest-dialectic"}
-            )
-            return True
-    else:  # support / counter
-        if not _has_anchor_handle(text):
-            return False
-        same_role = [e.text for e in block.entries if e.role == kind]
-        if _is_near_dup(text, same_role) or text in same_role:
-            return False
 
     assert block.handle is not None
     created_chunks = store.drafts.add_chunks(
@@ -1570,9 +1575,8 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
     )
     store.drafts.patch_chunk_meta(
         created_chunks[0].handle,
-        {"pinned": _DIALECTIC_ENTRY_PINNED, "role": kind},
+        {"pinned": _DIALECTIC_ENTRY_PINNED, "role": "experiment"},
     )
-    _mint_evidence_edges(store, hid, kind, text)
     return True
 
 
@@ -1589,7 +1593,6 @@ __all__ = [
     "ensure_dialectic_chunk",
     "ensure_dossier",
     "ensure_ledger_chunk",
-    "has_dialectic_blocks",
     "ledger_do_not_repropose",
     "ledger_open_nodes",
     "mark_attempt",

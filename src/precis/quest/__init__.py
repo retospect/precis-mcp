@@ -97,13 +97,11 @@ Package-level invariants (detail lives on the named module):
   ``narrative_budget.narrative_growth_gate`` (growth beyond 15%+50 words
   needs same-tick progress evidence; ~2500-word ceiling tripwire; one
   compress-retry then keep-previous + logbook entry). Word counts land in
-  logbook meta so thresholds are tuned from data. The per-hypothesis
-  **dialectic** (support / counter / discriminating experiment, one pinned
-  block per live hypothesis finding) is likewise op-mutated, never rewritten
-  (``dossier.apply_dialectic_op`` via the tick's ``dialectic_ops`` key), and
-  mints ``supports``/``contradicts`` evidence edges at apply time —
-  quest-dossier-dialectic §Mechanism. Its sims→findings anchor is
-  ``rulings`` (``mint_measurement_rulings``, a code-only pre-LLM tick pass):
+  logbook meta for tuning. Ticks mint or reuse hypothesis findings and
+  link them to the quest and optional direction. Evidence and verdicts
+  live on the finding so quests share them. The logbook dates the handle.
+  Dossier blocks retain historical dialectic and experiment registrations.
+  The pre-LLM ``rulings.mint_measurement_rulings`` pass scans these tests:
   a trusted measurement matching an experiment entry's pre-registered
   ``[st…]`` structure mints a templated **measurement-ruling finding** (no
   LLM authorship, no STATUS tag — internal only, never nanopub evidence)

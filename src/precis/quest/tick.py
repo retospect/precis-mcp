@@ -5,11 +5,11 @@ seam (``route(LlmRequest)``) that reads the quest's rolling context —
 striving statement, current dossier, slice-3 gaps + momentum, recent
 logbook tail — and returns:
 
-* **logbook entries** — 1-4 dated observations/hypotheses/decisions, one
+* **logbook entries** — 1-4 dated observations/decisions, one
   step of thinking, appended to the WORM logbook;
 * a **rewritten dossier** — the living synthesis, whole-replaced in place.
-  The per-hypothesis dialectic is NOT part of that rewrite: it's op-mutated
-  separately via ``dialectic_ops``
+  Hypothesis findings are proposed via ``hypotheses`` and updated via
+  ``dialectic_ops``
   (:func:`precis.quest.dossier.apply_dialectic_op`).
 
 With ``compute=True`` (rung 4b) the tick also materialises the model's
@@ -44,6 +44,7 @@ import numpy as np
 from precis.quest import commits as commits_mod
 from precis.quest import dossier as dossier_mod
 from precis.quest import gaps as gaps_mod
+from precis.quest import hypotheses as hypotheses_mod
 from precis.quest import narrative_budget
 from precis.quest import needs as needs_mod
 from precis.quest.logbook import (
@@ -372,9 +373,8 @@ class QuestTickOutcome:
     # (:mod:`precis.workers.job_types.quest_tick`): a tick that only pinned/
     # marked a ledger direction still counted as "the model engaged".
     ledger_added: int = 0
-    # Applied `dialectic_ops` (quest-dossier-dialectic §Mechanism) — same
-    # engagement standing as `ledger_added`: maintaining a hypothesis's
-    # support/counter/experiment block is the model engaging, not a dry tick.
+    # Evidence, verdict and experiment updates count as engagement alongside
+    # `ledger_added`.
     dialectic_applied: int = 0
     # Code-minted measurement rulings (:mod:`precis.quest.rulings`) — the
     # pre-LLM pass that turns a trusted measurement matching a
@@ -546,6 +546,8 @@ def _servers_summary(store: Store, quest_id: int) -> list[str]:
     live = gaps_mod._live_servers(store, quest_id)
     by_kind: dict[str, list[tuple[str, str, str]]] = {}
     for r in live:
+        if hypotheses_mod.is_hypothesis(r):
+            continue  # rendered with its verdict in the Live hypotheses section
         title = (r.title or "").splitlines()[0][:50] if r.title else ""
         handle = handle_registry.try_format(r.kind, r.id) or f"{r.kind}:{r.id}"
         snippet = _finding_snippet(store, r) if r.kind == "finding" else ""
@@ -2293,13 +2295,8 @@ def build_tick_prompt(
         if narrative_override is not None
         else dossier_mod.read_narrative(store, qid)
     )
-    # Dialectic prompt parts only for a dossier that already holds a block
-    # (gr462891 stopgap) — the rest is spliced out, nothing dangles.
-    has_blocks = dossier_mod.has_dialectic_blocks(store, qid)
-    dialectic_section = (
-        _DIALECTIC_SECTION.format(dialectic=dossier_mod.read_dialectic(store, qid))
-        if has_blocks
-        else ""
+    dialectic_section = _DIALECTIC_SECTION.format(
+        dialectic=hypotheses_mod.render_tick_hypotheses(store, qid)
     )
     # The forest, not read_ledger's markdown: the open list shows per-node
     # meta (an `add` kept as a root because its parent didn't resolve).
@@ -2337,7 +2334,7 @@ def build_tick_prompt(
         requested_reads=_requested_reads_section(store, quest),
         bench_runs=_bench_runs_listing(),
         skill_injection=_skill_injection_section(stmt),
-        entry_types=", ".join(sorted(ENTRY_TYPES)),
+        entry_types=", ".join(sorted(ENTRY_TYPES - {"hypothesis"})),
         narrative_word_target=narrative_budget.config_from_meta(
             getattr(quest, "meta", None)
         ).target_words,
@@ -2349,8 +2346,8 @@ def build_tick_prompt(
             review_banner=banner,
             read_cap=MAX_READS_PER_TICK,
             fetch_cap=MAX_FETCHES_PER_TICK,
-            dialectic_guidance=_DIALECTIC_GUIDANCE_INQUIRY if has_blocks else "",
-            dialectic_schema=_DIALECTIC_SCHEMA_INQUIRY if has_blocks else "",
+            dialectic_guidance=_DIALECTIC_GUIDANCE,
+            dialectic_schema=_DIALECTIC_SCHEMA,
             **common,
         )
 
@@ -2390,90 +2387,44 @@ def build_tick_prompt(
         neb_cap=MAX_NEB_PER_TICK,
         read_cap=MAX_READS_PER_TICK,
         fetch_cap=MAX_FETCHES_PER_TICK,
-        dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS if has_blocks else "",
-        dialectic_schema=_DIALECTIC_SCHEMA_MATERIALS if has_blocks else "",
+        dialectic_guidance=_DIALECTIC_GUIDANCE,
+        dialectic_schema=_DIALECTIC_SCHEMA,
         **common,
     )
 
 
-#: The dialectic parts of the tick prompt, spliced into the templates below
-#: ONLY when the quest's dossier already holds a dialectic block (gr462891
-#: stopgap: a dossier with none has nothing to maintain, and the section
-#: invites the model to open hypotheses it then fails to anchor). They are
-#: substituted as format VALUES, so braces here are single, not doubled;
-#: ``_DIALECTIC_SECTION`` takes ``.format(dialectic=...)``.
 _DIALECTIC_SECTION = """\
-## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
+## Live hypotheses
 {dialectic}
 
 """
 
-_DIALECTIC_GUIDANCE_MATERIALS = """\
-**The dialectic lives in blocks, not prose.** Each live hypothesis's \
-argument state — its supports, its steelman counter, its ONE discriminating \
-experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
-section above and the field below), addressed by the hypothesis's `[fi…]` \
-handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
-their content — it is the synthesis layer only (what changed, what it \
-means, what to do next). When new evidence bears on a hypothesis, emit a \
-`support` or `counter` op citing that evidence's handle inline; when a \
-hypothesis is resolved either way, emit `settle` with one linked sentence. \
-A block showing "experiment: (MISSING …)" owes a discriminating experiment \
-with pre-registered branch predictions — emit an `experiment` op for it. \
-Pre-register by citing the structure's `[st…]` handle inline: when a trusted \
-measurement lands on it, a code pass mints a **measurement ruling** that \
-appears as a `measured: [fi…]` line under the experiment (templated text — \
-no LLM authored it, so it is a verifiable anchor). Interpreting a ruling is \
-YOUR job: emit `support`/`counter` citing the ruling's `[fi…]` handle, or \
-`settle` the hypothesis, per the experiment's pre-registered branch.
+_DIALECTIC_GUIDANCE = """\
+Raise up to four new conjectures in `hypotheses`. Each needs a falsifiable sentence, \
+an inferential leap, a discriminating test and at least two independent \
+sources (different papers or patents, claim hubs grounded in different \
+sources, or distinct measured structures or pathways). Name a direction \
+todo when the conjecture belongs to that branch. The tick logs the finding \
+handle. For a served finding, use `dialectic_ops` to attach supporting or \
+disputing evidence and record the verdict. Cite evidence handles in square \
+brackets. Refutation requires the finding handle of the negative ruling. \
+Materials ticks may register a structure-linked experiment for automatic measurement rulings.
 
 """
 
-_DIALECTIC_GUIDANCE_INQUIRY = """\
-**The dialectic lives in blocks, not prose.** Each live hypothesis's \
-argument state — its supports, its steelman counter, its ONE discriminating \
-experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
-section above and the field below), addressed by the hypothesis's `[fi…]` \
-handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
-their content — it is the synthesis layer only (what changed, what it \
-means, what to do next). When new evidence bears on a hypothesis, emit a \
-`support` or `counter` op citing that evidence's handle inline; when a \
-hypothesis is resolved either way, emit `settle` with one linked sentence. \
-A block showing "experiment: (MISSING …)" owes a discriminating experiment — \
-name the ONE piece of evidence (a search, a source) that would settle it, \
-with pre-registered branch predictions, via an `experiment` op.
-
-"""
-
-_DIALECTIC_SCHEMA_MATERIALS = """\
-  "dialectic_ops": [
-    {"op": "open", "hypothesis": "fi<id>"},
-    {"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
-with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
-one handle is REQUIRED — an unanchored support/counter is dropped>"},
-    {"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
-against it, evidence handles inline — same anchor requirement>"},
-    {"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
-discriminating experiment>", "predicts": "<pre-registered branch \
-predictions: what each outcome would mean>"},
-    {"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
-sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}
+_DIALECTIC_SCHEMA = """\
+  "hypotheses": [
+    {"sentence": "<falsifiable sentence>", "motivation": "<inferential leap>",
+     "testable_by": "<discriminating test>", "motivated_by": ["<source handle>", "<source handle>"],
+     "direction": "<optional direction todo handle, omit if absent>"}
   ],
-"""
-
-_DIALECTIC_SCHEMA_INQUIRY = """\
   "dialectic_ops": [
-    {"op": "open", "hypothesis": "fi<id>"},
-    {"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
-with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
-one handle is REQUIRED — an unanchored support/counter is dropped>"},
-    {"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
-against it, evidence handles inline — same anchor requirement>"},
-    {"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
-discriminating piece of evidence to gather>", "predicts": "<pre-registered \
-branch predictions: what each outcome would mean>"},
-    {"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
-sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}
+    {"op": "support", "hypothesis": "fi<id>", "text": "<why, with evidence handles inline>"},
+    {"op": "counter", "hypothesis": "fi<id>", "text": "<why, with evidence handles inline>"},
+    {"op": "experiment", "hypothesis": "fi<id>", "text": "<test citing its [st…] structure>",
+     "predicts": "<what each outcome would mean>"},
+    {"op": "settle", "hypothesis": "fi<id>", "verdict": "<refuted|supported|inconclusive>",
+     "text": "<one linked sentence>", "ruling": "<negative ruling fi<id> for refuted>"}
   ],
 """
 
@@ -2542,12 +2493,10 @@ synthesis — label it as such; an inferred step never wears a source's \
 authority.
 
 **Progress means new external evidence, not more restating.** If there are open \
-hypotheses above, your job is to *close* them — resolve one with evidence \
-(a `result`) or kill it (a `dead-end` that cites the evidence doing the \
-killing — an inline `[fi<id>]`/`[pc<id>]`/`[ql<id>]` handle; an uncited \
-`dead-end` is a bare assertion, not a kill, and leaves the question open) \
-— NOT to restate it as a fresh \
-hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
+hypotheses above, seek evidence that bears on them and record the verdict \
+through `dialectic_ops` when the evidence resolves one. For an older gap with \
+no finding handle, cite the resolving evidence in the logbook. Avoid \
+re-proposing a conjecture already listed in the findings. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
 `searches` to go get it instead of hypothesising in a vacuum. Each search \
@@ -2758,9 +2707,8 @@ review landed. Each verdict NEEDS a `reason`; `depth` (default \
 `metadata`) says how far in you read. A cheap title/abstract gate already \
 holds obvious off-topic hits out of the links — use `judgments` for the \
 calls that took a look, not every gated-out name. \
-Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
-state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
-`decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
+Give 1–4 logbook entries, such as an `observation` from the state or a \
+`decision` on direction. Use `hypotheses` to raise conjectures. Aim for roughly {narrative_word_target} \
 words in `dossier_text` — but that's a target, not a hard cap: growth is \
 fine when it reflects genuinely new evidence (a ruling, a result), not when \
 it's restated history. Never carry running tallies in the dossier — a \
@@ -2867,12 +2815,10 @@ synthesis — label it as such; an inferred step never wears a source's \
 authority.
 
 **Progress means new external evidence, not more restating.** If there are open \
-hypotheses above, your job is to *close* them — resolve one with evidence \
-(a `result`) or kill it (a `dead-end` that cites the evidence doing the \
-killing — an inline `[fi<id>]`/`[pc<id>]`/`[ql<id>]` handle; an uncited \
-`dead-end` is a bare assertion, not a kill, and leaves the question open) \
-— NOT to restate it as a fresh \
-hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
+hypotheses above, seek evidence that bears on them and record the verdict \
+through `dialectic_ops` when the evidence resolves one. For an older gap with \
+no finding handle, cite the resolving evidence in the logbook. Avoid \
+re-proposing a conjecture already listed in the findings. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
 `searches` to go get it instead of hypothesising in a vacuum. Each search \
@@ -3036,9 +2982,8 @@ review landed. Each verdict NEEDS a `reason`; `depth` (default \
 `metadata`) says how far in you read. A cheap title/abstract gate already \
 holds obvious off-topic hits out of the links — use `judgments` for the \
 calls that took a look, not every gated-out name. \
-Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
-state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
-`decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
+Give 1–4 logbook entries, such as an `observation` from the state or a \
+`decision` on direction. Use `hypotheses` to raise conjectures. Aim for roughly {narrative_word_target} \
 words in `dossier_text` — but that's a target, not a hard cap: growth is \
 fine when it reflects genuinely new evidence (a ruling, a result), not when \
 it's restated history. Never carry running tallies in the dossier — a \
@@ -3076,6 +3021,7 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
         "logbook",
         "ledger_ops",
         "dialectic_ops",
+        "hypotheses",
         "dossier_text",
         "dossier_markdown",
         "proposals",
@@ -3099,6 +3045,7 @@ _PAYLOAD_TYPES: dict[str, type] = {
     "ledger_add": list,
     "ledger_ops": list,
     "dialectic_ops": list,
+    "hypotheses": list,
     "proposals": list,
     "searches": list,
     "directions": list,
@@ -4095,6 +4042,10 @@ class _TickRun:
             )
 
         raw_text = getattr(res, "raw_text", None)
+        attribution = agentlog.run_result_meta(res)
+        self.st["hypothesis_models"] = attribution.get("models_used") or [
+            attribution.get("model_actual") or model_str
+        ]
         self.st["resp_chars"] = len(getattr(res, "text", "") or "")
         self._park(
             payload=payload,
@@ -4224,16 +4175,8 @@ class _TickRun:
                     op,
                 )
 
-        # dialectic_ops (quest-dossier-dialectic §Mechanism) — maintain the
-        # pinned per-hypothesis dialectic blocks (support/counter/experiment/
-        # settle, addressed by fi handle). Same BEFORE-the-rewrite placement
-        # and degrade-don't-crash contract as ledger_ops: each op is a silent
-        # no-op on a bad shape or an unresolvable hypothesis, logged here so a
-        # persistently-malformed payload stays diagnosable.
-        # Capped per tick: unlike ledger nodes (quest-local markdown), these
-        # ops mint blocks/entries AND corpus-wide evidence edges — a looping
-        # payload must not fan out unboundedly. 16 is generous: a tick
-        # legitimately touches a few hypotheses, not dozens.
+        # Apply evidence and verdicts by finding handle. Cap per-tick graph
+        # writes and keep per-op refusals independent of the rest of the tick.
         dialectic_applied = 0
         dialectic_seen = 0
         for op in (payload.get("dialectic_ops") or [])[:16]:
@@ -4268,6 +4211,14 @@ class _TickRun:
             ledger_ops_seen,
             dialectic_applied,
             dialectic_seen,
+        )
+
+        added += hypotheses_mod.mint_tick_hypotheses(
+            store,
+            quest_id,
+            payload.get("hypotheses") or [],
+            models=self.st.get("hypothesis_models") or [],
+            by=by,
         )
 
         # Proposals — log each candidate as a hypothesis (WORM). The

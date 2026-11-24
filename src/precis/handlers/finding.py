@@ -398,9 +398,9 @@ class FindingHandler(AuditedRetirementHandler):
         (gr676914). See :mod:`precis.handlers._finding_hub_mint`.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
-        ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source
-        papers) and ``llm_models=`` (the authoring model id(s) — an
-        agent-prepared artifact attributes its machine author) to propose a
+        ``testable_by=``, ``motivated_by=`` (≥2 independent sources, including
+        distinct structures or pathways) and ``llm_models=`` (the authoring
+        model id(s)) to propose a
         nanopub hypothesis: a conjecture with no evidence by type, prepared
         and parked for a human to approve. ``tags=``/``link=``/``rel=``
         land on the hypothesis hub in the same write (gr676914). See

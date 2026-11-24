@@ -1,17 +1,4 @@
-"""Tests for the quest-dossier **dialectic blocks** layer
-(quest-dossier-dialectic §Mechanism, ``src/precis/quest/dossier.py``'s
-"Dialectic blocks" section + ``src/precis/quest/tick.py``'s
-``dialectic_ops`` wiring).
-
-Covers: ``apply_dialectic_op``'s op vocabulary (open/support/counter/
-experiment/settle) — block creation, near-dup dedup per role, inline-handle
-evidence-edge minting, the in-place experiment upsert, settle collapsing the
-render, and re-opening a settled block; ``read_dialectic``'s rendering
-(missing-experiment nudge); that ``rewrite_dossier``/``read_narrative``
-leave dialectic blocks untouched; ``read_dossier``'s whole-body join; and
-the tick's ``dialectic_ops`` apply stage (degrade-don't-crash, prompt
-wiring). Runs against real PG (the ``store`` fixture).
-"""
+"""Finding-backed dialectic operations and legacy experiment block readers."""
 
 from __future__ import annotations
 
@@ -23,12 +10,14 @@ from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest.dossier import (
     apply_dialectic_op,
+    dossier_ref_id,
     read_dialectic,
     read_dossier,
     read_narrative,
     rewrite_dossier,
 )
 from precis.quest.tick import run_quest_tick
+from precis.store import Store, Tag
 from tests.workers._helpers import seed_ref
 
 
@@ -51,23 +40,6 @@ def _fake_dispatch(payload: dict[str, Any] | None = None, **kw: Any) -> Any:
         )
 
     return _d
-
-
-def _sequenced_dispatch(
-    payloads: list[dict[str, Any] | None],
-) -> tuple[Any, list[Any]]:
-    """Records every ``LlmRequest`` it's called with (mirrors
-    ``test_quest_tick.py``'s own helper) so a test can inspect the prompt."""
-    calls: list[Any] = []
-
-    def _d(req: Any) -> Any:
-        idx = min(len(calls), len(payloads) - 1)
-        calls.append(req)
-        return SimpleNamespace(
-            data=payloads[idx], text="", error=None, cost_usd=0.01, paused=False
-        )
-
-    return _d, calls
 
 
 def _links(store: Any, dst_ref_id: int, relation: str) -> list[tuple[int, int]]:
@@ -104,227 +76,48 @@ class TestOpen:
         )
 
 
-class TestSupportCounter:
-    def test_support_appends_an_entry(self, store: Any) -> None:
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        text = f"[pa{paper_id}] DFT shows a lower barrier"
-        assert (
-            apply_dialectic_op(
-                store,
-                qid,
-                {"op": "support", "hypothesis": f"fi{fid}", "text": text},
-            )
-            is True
-        )
-        rendered = read_dialectic(store, qid)
-        assert f"support: {text}" in rendered
-
-    def test_near_dup_restatement_same_role_is_a_noop(self, store: Any) -> None:
-        # both texts anchor on the SAME handle so the Jaccard match still
-        # clears the near-dup threshold once the shared handle token is
-        # counted on both sides.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        anchor = f"[pa{paper_id}]"
-        assert (
-            apply_dialectic_op(
-                store,
-                qid,
-                {
-                    "op": "support",
-                    "hypothesis": f"fi{fid}",
-                    "text": f"{anchor} identify the rate-limiting step",
-                },
-            )
-            is True
-        )
-        assert (
-            apply_dialectic_op(
-                store,
-                qid,
-                {
-                    "op": "support",
-                    "hypothesis": f"fi{fid}",
-                    "text": f"{anchor} identify the rate limiting step in the pathway",
-                },
-            )
-            is False
-        )
-
-    def test_counter_with_same_text_as_a_support_is_allowed(self, store: Any) -> None:
-        # dedup is per-role — a counter entry restating a support's exact
-        # text is a distinct claim (arguing the OTHER direction), not a dup.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        text = f"[pa{paper_id}] identify the rate-limiting step"
-        assert (
-            apply_dialectic_op(
-                store, qid, {"op": "support", "hypothesis": f"fi{fid}", "text": text}
-            )
-            is True
-        )
-        assert (
-            apply_dialectic_op(
-                store, qid, {"op": "counter", "hypothesis": f"fi{fid}", "text": text}
-            )
-            is True
-        )
-        rendered = read_dialectic(store, qid)
-        assert f"support: {text}" in rendered
-        assert f"counter: {text}" in rendered
+def _mk_served_hypothesis(store: Store, qid: int) -> int:
+    fid = _mk_finding(store)
+    store.stamp_ref_meta(fid, {"artifact_type": "hypothesis"})
+    store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
+    return fid
 
 
-class TestAnchorGate:
-    """Support/counter ops MUST carry at least one well-formed inline handle
-    (``_has_anchor_handle`` — operator ruling 2026-08-29: prose is never a
-    primary source). Well-formed, not necessarily resolvable/mintable."""
-
-    def test_support_without_any_handle_returns_false_and_renders_nothing(
-        self, store: Any
-    ) -> None:
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        applied = apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": "unanchored prose with no citation at all",
-            },
-        )
-        assert applied is False
-        rendered = read_dialectic(store, qid)
-        assert "unanchored prose" not in rendered
-
-    def test_counter_with_only_a_malformed_bracket_returns_false(
-        self, store: Any
-    ) -> None:
-        # "zz" is not a registered handle code — handle_registry.parse
-        # returns None, so the bracket doesn't count as an anchor.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        applied = apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "counter",
-                "hypothesis": f"fi{fid}",
-                "text": "see [zz123] for details",
-            },
-        )
-        assert applied is False
-        rendered = read_dialectic(store, qid)
-        assert "for details" not in rendered
-
-    def test_support_anchored_only_by_an_unresolvable_handle_still_lands(
-        self, store: Any
-    ) -> None:
-        # the gate checks well-formedness, not resolution — a syntactically
-        # valid handle pointing at nothing still passes the anchor gate.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        text = "[pa999999999] a claim citing a missing paper"
-        applied = apply_dialectic_op(
-            store, qid, {"op": "support", "hypothesis": f"fi{fid}", "text": text}
-        )
-        assert applied is True
-        rendered = read_dialectic(store, qid)
-        assert f"support: {text}" in rendered
+def test_support_and_counter_write_finding_edges_without_dossier(store: Store) -> None:
+    qid = _mk_quest(store, "A striving")
+    fid = _mk_served_hypothesis(store, qid)
+    paper = seed_ref(store, kind="paper")
+    text = f"[pa{paper}] measured the same effect"
+    for op, relation in (("support", "supports"), ("counter", "disputes")):
+        payload = {"op": op, "hypothesis": f"fi{fid}", "text": text}
+        assert apply_dialectic_op(store, qid, payload)
+        assert _links(store, fid, relation) == [(paper, fid)]
+        assert not apply_dialectic_op(store, qid, payload)
+        for invalid in ("unanchored", "[pa999999999]", f"[fi{fid}]", f"[st{paper}]"):
+            assert not apply_dialectic_op(store, qid, {**payload, "text": invalid})
+    assert dossier_ref_id(store, qid) is None
 
 
-class TestEvidenceEdges:
-    def test_support_citing_a_handle_mints_a_supports_link(self, store: Any) -> None:
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] reports the same trend",
-            },
-        )
-        rows = _links(store, fid, "supports")
-        assert (paper_id, fid) in rows
-
-    def test_counter_citing_a_handle_mints_a_disputes_link(self, store: Any) -> None:
-        # `disputes`, not `contradicts` (migration 0151): a dialectic
-        # counter is a question, not an adjudicated conflict — it must
-        # never hard-block the hypothesis's own nanopub mint.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a contrary paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "counter",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] found the opposite",
-            },
-        )
-        rows = _links(store, fid, "disputes")
-        assert (paper_id, fid) in rows
-        assert (paper_id, fid) not in _links(store, fid, "contradicts")
-
-    def test_reapplying_a_cited_op_is_idempotent(self, store: Any) -> None:
-        # a distinct second op (different text) still cites the SAME paper —
-        # re-minting the same edge tuple must not duplicate the row or raise.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] reports the same trend",
-            },
-        )
-        applied = apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] reports the same trend again, differently worded entirely",
-            },
-        )
-        # near-dup guard may or may not accept the second phrasing — either
-        # way, no crash and no duplicate edge row.
-        assert applied in (True, False)
-        rows = _links(store, fid, "supports")
-        assert rows.count((paper_id, fid)) == 1
-
-    def test_edge_minting_skips_bad_chunk_self_and_fk_failing_handles(
-        self, store: Any
-    ) -> None:
-        # one entry citing, together: a nonexistent CHUNK handle (chunk-owner
-        # lookup misses), the hypothesis's OWN handle (self-edge), and a
-        # nonexistent ref handle (add_link FK failure) — every skip path in
-        # `_mint_evidence_edges` fires, and the op itself must still land
-        # (the entry text) with zero links minted for the hypothesis.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        text = (
-            f"cites a stub chunk [pc999999999], itself [fi{fid}], and a "
-            "missing ref [pa999999999]"
-        )
-        applied = apply_dialectic_op(
-            store, qid, {"op": "support", "hypothesis": f"fi{fid}", "text": text}
-        )
-        assert applied is True
-        rendered = read_dialectic(store, qid)
-        assert text in rendered
-        assert _links(store, fid, "supports") == []
+def test_settle_refuted_sets_status_and_ruling_link(store: Store) -> None:
+    qid = _mk_quest(store, "A striving")
+    fid = _mk_served_hypothesis(store, qid)
+    ruling = _mk_finding(store, title="Negative ruling")
+    payload = {
+        "op": "settle",
+        "hypothesis": f"fi{fid}",
+        "verdict": "refuted",
+        "ruling": f"fi{ruling}",
+        "text": f"[fi{ruling}] ruled out the effect",
+    }
+    assert not apply_dialectic_op(store, qid, {**payload, "ruling": f"fi{fid}"})
+    assert apply_dialectic_op(store, qid, payload)
+    assert not apply_dialectic_op(store, qid, payload)
+    assert Tag.closed("STATUS", "refuted") in store.tags_for(fid)
+    edges = store.links_for(fid, direction="out", relation="superseded-by")
+    assert [edge.dst_ref_id for edge in edges] == [ruling]
+    notes = [b.text for b in store.chunks.list_chunks_for_ref(qid)]
+    assert notes.count(f"hypothesis [fi{fid}] settled — refuted") == 1
+    assert dossier_ref_id(store, qid) is None
 
 
 class TestExperiment:
@@ -395,59 +188,6 @@ class TestExperiment:
         assert applied is False
 
 
-class TestSettle:
-    def test_settle_collapses_render_and_hides_entries(self, store: Any) -> None:
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] supporting evidence",
-            },
-        )
-        applied = apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "settle",
-                "hypothesis": f"fi{fid}",
-                "text": "confirmed by DFT + XPS",
-            },
-        )
-        assert applied is True
-        rendered = read_dialectic(store, qid)
-        assert "SETTLED: confirmed by DFT + XPS" in rendered
-        assert "supporting evidence" not in rendered
-
-    def test_later_open_reopens_and_entries_render_again(self, store: Any) -> None:
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] supporting evidence",
-            },
-        )
-        apply_dialectic_op(
-            store, qid, {"op": "settle", "hypothesis": f"fi{fid}", "text": "confirmed"}
-        )
-        applied = apply_dialectic_op(
-            store, qid, {"op": "open", "hypothesis": f"fi{fid}"}
-        )
-        assert applied is True
-        rendered = read_dialectic(store, qid)
-        assert "SETTLED" not in rendered
-        assert f"support: [pa{paper_id}] supporting evidence" in rendered
-
-
 class TestLoadDialecticBlocksInternals:
     def test_returns_empty_when_no_dialectic_container_yet(self, store: Any) -> None:
         from precis.quest.dossier import _load_dialectic_blocks, ensure_dossier
@@ -473,6 +213,25 @@ class TestLoadDialecticBlocksInternals:
         assert reloaded == []
 
 
+def _seed_historical_support(store: Store, qid: int, fid: int, text: str) -> None:
+    from precis.quest.dossier import _load_dialectic_blocks
+
+    apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
+    did = dossier_ref_id(store, qid)
+    assert did is not None
+    block = _load_dialectic_blocks(store, did)[0]
+    chunk = store.drafts.add_chunks(
+        ref_id=did,
+        chunk_kind="paragraph",
+        text=text,
+        at={"into": block.handle},
+        split=False,
+    )[0]
+    store.drafts.patch_chunk_meta(
+        chunk.handle, {"pinned": "dialectic-entry", "role": "support"}
+    )
+
+
 class TestHypothesisIsRefuted:
     def test_returns_false_when_tags_for_raises(self) -> None:
         from precis.quest.dossier import _hypothesis_is_refuted
@@ -489,15 +248,7 @@ class TestHypothesisIsRefuted:
         qid = _mk_quest(store, "A striving")
         fid = _mk_finding(store, title="a refuted hypothesis")
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] some evidence",
-            },
-        )
+        _seed_historical_support(store, qid, fid, f"[pa{paper_id}] some evidence")
         store.add_tag(fid, Tag.closed("STATUS", "refuted"))
         rendered = read_dialectic(store, qid)
         assert (
@@ -514,15 +265,7 @@ class TestMissingExperimentNudge:
         qid = _mk_quest(store, "A striving")
         fid = _mk_finding(store)
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] some evidence",
-            },
-        )
+        _seed_historical_support(store, qid, fid, f"[pa{paper_id}] some evidence")
         rendered = read_dialectic(store, qid)
         assert "experiment: (MISSING" in rendered
 
@@ -533,15 +276,7 @@ class TestNarrativeIsolation:
         fid = _mk_finding(store, title="Fe adatom lowers the barrier")
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
         apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] supporting evidence",
-            },
-        )
+        _seed_historical_support(store, qid, fid, f"[pa{paper_id}] supporting evidence")
         before = read_dialectic(store, qid)
 
         rewrite_dossier(store, qid, "# Understanding\n\nA fresh narrative synthesis.")
@@ -553,14 +288,11 @@ class TestNarrativeIsolation:
         qid = _mk_quest(store, "A striving")
         fid = _mk_finding(store)
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
-        apply_dialectic_op(
+        _seed_historical_support(
             store,
             qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] a distinctive dialectic-only marker phrase",
-            },
+            fid,
+            f"[pa{paper_id}] a distinctive dialectic-only marker phrase",
         )
         rewrite_dossier(store, qid, "# Understanding\n\nA fresh narrative synthesis.")
         narrative = read_narrative(store, qid)
@@ -575,15 +307,7 @@ class TestReadDossier:
         fid = _mk_finding(store, title="Fe adatom lowers the barrier")
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
         apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
-        apply_dialectic_op(
-            store,
-            qid,
-            {
-                "op": "support",
-                "hypothesis": f"fi{fid}",
-                "text": f"[pa{paper_id}] supporting evidence",
-            },
-        )
+        _seed_historical_support(store, qid, fid, f"[pa{paper_id}] supporting evidence")
         _did, _handle, body = read_dossier(store, qid)
         marker = f"[fi{fid}] Fe adatom lowers the barrier"
         assert body.count(marker) == 1
@@ -594,12 +318,11 @@ class TestTickWiring:
         self, store: Any
     ) -> None:
         qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store, title="a live hypothesis")
+        fid = _mk_served_hypothesis(store, qid)
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
         payload = {
             "logbook": [],
             "dialectic_ops": [
-                {"op": "open", "hypothesis": f"fi{fid}"},
                 {
                     "op": "support",
                     "hypothesis": f"fi{fid}",
@@ -611,24 +334,7 @@ class TestTickWiring:
         }
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         assert out.status == "succeeded"
-        assert out.dialectic_applied == 2
-
-    def test_prompt_contains_dialectic_blocks_section(self, store: Any) -> None:
-        # gr462891 stopgap: the section renders only once a block exists.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
-        disp, reqs = _sequenced_dispatch([{"logbook": []}])
-        run_quest_tick(store, qid, dispatch_fn=disp)
-        assert len(reqs) == 1
-        assert "## Dialectic blocks" in reqs[0].prompt
-
-    def test_prompt_omits_dialectic_section_without_blocks(self, store: Any) -> None:
-        qid = _mk_quest(store, "A striving")
-        disp, reqs = _sequenced_dispatch([{"logbook": []}])
-        run_quest_tick(store, qid, dispatch_fn=disp)
-        assert len(reqs) == 1
-        assert "dialectic" not in reqs[0].prompt.lower()
+        assert out.dialectic_applied == 1
 
     def test_non_dict_dialectic_op_entries_never_crash_the_tick(
         self, store: Any
@@ -711,15 +417,3 @@ class TestApplyDialecticOpShapeGuards:
             apply_dialectic_op(store, qid, {"op": "open", "hypothesis": "st123"})
             is False
         )
-
-    def test_blank_text_on_support_is_a_side_effect_open_only(self, store: Any) -> None:
-        # a bare op with no usable text still mints the block (open-by-
-        # side-effect), but appends no entry.
-        qid = _mk_quest(store, "A striving")
-        fid = _mk_finding(store)
-        applied = apply_dialectic_op(
-            store, qid, {"op": "support", "hypothesis": f"fi{fid}", "text": "   "}
-        )
-        assert applied is True
-        rendered = read_dialectic(store, qid)
-        assert "support:" not in rendered

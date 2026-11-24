@@ -108,7 +108,7 @@ put(kind='finding', title='<claim sentence — same grammar as any claim, see be
     args={'hypothesis': True,
           'motivation': '<what each source established; which transfer is unproven>',
           'testable_by': '<the measurement that would settle it either way>',
-          'motivated_by': ['pc293', 'fi1234'],   # >=2 independent sources (papers/structures)
+          'motivated_by': ['pc293', 'fi1234'],   # >=2 independent sources (papers/structures/pathways)
           'llm_models': ['claude-fable-5'],      # required: the model id(s) authoring this
           'from_memory': 'me4567'})              # optional: the note it came from
 ```
@@ -117,13 +117,11 @@ put(kind='finding', title='<claim sentence — same grammar as any claim, see be
 
 Rules the door enforces:
 
-- **≥2 independent motivating sources.** A distinct source paper (papers,
-  patents, and claim hubs count through their underlying source papers) or
-  a distinct measured `structure` ref each count as one; a conjecture that
-  leaps from one source restates that source. Two claim hubs grounded
-  in the same single paper are one source, not two; one structure alone
-  is one source, not two.
-- **Papers, patents, claim hubs, and measured structures only** — a memory
+- **≥2 independent motivating sources.** Each distinct paper, patent,
+  measured `structure`, and `pathway` counts as one source. A claim hub
+  contributes the sources behind its active evidence edges. Two claim
+  hubs grounded in the same single paper count as one source.
+- **Papers, patents, claim hubs, measured structures, and pathways only** — a memory
   is something you thought *with*, not a source an artifact can cite (name
   it in the `motivation` prose instead); a quest is a container, not an
   observation.

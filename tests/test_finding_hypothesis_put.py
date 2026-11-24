@@ -209,6 +209,34 @@ def test_two_structures_are_independent_sources(store: Store) -> None:
     assert set(motivated) == {st1, st2}
 
 
+def test_two_pathways_are_independent_sources(store: Store) -> None:
+    """Two distinct `pathway` refs clear the independence bar, like
+    structures; one pathway named twice is still one source."""
+    pw1 = seed_ref(store, title="Pathway A", kind="pathway")
+    pw2 = seed_ref(store, title="Pathway B", kind="pathway")
+
+    resp = _handler(store).put(
+        title=_SENTENCE,
+        hypothesis=True,
+        motivation="leap",
+        testable_by="experiment",
+        llm_models=["test-model"],
+        motivated_by=[f"pw{pw1}", f"pw{pw2}"],
+    )
+    motivated = dict(_links(store, _hub_id(resp.body), "motivated-by"))
+    assert set(motivated) == {pw1, pw2}
+
+    with pytest.raises(BadInput, match="distinct source paper"):
+        _handler(store).put(
+            title=_SENTENCE,
+            hypothesis=True,
+            motivation="leap",
+            testable_by="experiment",
+            llm_models=["test-model"],
+            motivated_by=[f"pw{pw1}", f"pw{pw1}"],
+        )
+
+
 def test_a_structure_and_a_paper_together_are_independent_sources(
     store: Store,
 ) -> None:

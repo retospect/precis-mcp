@@ -159,7 +159,7 @@ class TestBroadenedProgress:
 
     def test_a_dialectic_settle_resolves_the_finding_count(self, store: Any) -> None:
         # The tick's own `settle` op is the other settlement signal — the
-        # count drops with the dialectic block, not only on a refutation
+        # count drops when the finding is settled with or without a refutation
         # stamp. (The settle also stamps a milestone, so the count is
         # asserted directly rather than through the stall clock.)
         from precis.quest.dossier import apply_dialectic_op
@@ -174,6 +174,7 @@ class TestBroadenedProgress:
             qid,
             {
                 "op": "settle",
+                "verdict": "supported",
                 "hypothesis": f"fi{fid}",
                 "text": "settled — [st1] showed the barrier is low",
             },
@@ -227,6 +228,8 @@ class TestBroadenedProgress:
 
         qid = _mk_quest(store, "A quest with a hypothesis")
         fid = seed_ref(store, title="Fe adatom lowers the barrier", kind="finding")
+        store.stamp_ref_meta(fid, {"artifact_type": "hypothesis"})
+        store.add_link(src_ref_id=fid, dst_ref_id=qid, relation="serves")
         paper_id = seed_ref(store, title="a cited paper", kind="paper")
         cascade.update_cascade_state(store, qid, reviewed=False)
         assert _ticks_since(store, qid) == 1

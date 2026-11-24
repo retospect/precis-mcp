@@ -49,6 +49,7 @@ from precis.quest.dossier import (
     dossier_ref_id,
 )
 from precis.quest.logbook import MEASURED_BY, append_entry
+from precis.store import Tag
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 
@@ -184,7 +185,11 @@ def mint_measurement_rulings(store: Store, quest_id: int) -> int:
     blocks = _load_dialectic_blocks(store, did)
     minted = 0
     for block in blocks:
-        if block.settled or _hypothesis_is_refuted(store, block.hypothesis_id):
+        if (
+            block.settled
+            or _hypothesis_is_refuted(store, block.hypothesis_id)
+            or Tag.open("settled") in store.tags_for(block.hypothesis_id)
+        ):
             continue
         exp = next((e for e in block.entries if e.role == "experiment"), None)
         if exp is None or exp.handle is None:

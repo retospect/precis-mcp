@@ -103,26 +103,26 @@ def _n_paper_servers(store: Store, quest_id: int) -> int:
 
 
 def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, list[str]]:
-    """``(anchored entry count, experiment fingerprints)`` over the quest's
-    dialectic record.
+    """Count finding evidence and historical entries, and fingerprint tests.
 
-    Dialectic *entries* are the anchored record — a support/counter clause
-    only lands past the anchor gate at apply (``_has_anchor_handle``), an
-    ``experiment`` entry is a proposed discriminating test — so a new entry
-    is new evidence (a supported objection), never a restatement. The
-    per-entry fingerprint (:func:`dossier._experiment_key`) is the test's
-    discriminating-parameter signature, so an ``experiment`` upsert that
-    revises an entry in place (the count alone is blind to it) counts only
-    when it proposes a test signature the quest has not tried before —
-    a paraphrase, and a flip back to an already-proposed test, keep the
-    same key. ``(0, [])`` when the quest has no dossier.
+    A new support or dispute advances the quest. Registered experiments
+    still use dossier blocks. Their discriminating-parameter signatures
+    distinguish substantive revisions from paraphrases.
     """
     from precis.quest import dossier as dossier_mod
+    from precis.quest.gaps import _live_servers
+    from precis.quest.hypotheses import is_hypothesis
 
+    n_entries = sum(
+        edge.relation in {"supports", "disputes"}
+        and bool((edge.meta or {}).get("evidence_handle"))
+        for ref in _live_servers(store, quest_id)
+        if is_hypothesis(ref)
+        for edge in store.links_for(ref.id, direction="in")
+    )
     did = dossier_mod.dossier_ref_id(store, quest_id)
     if did is None:
-        return 0, []
-    n_entries = 0
+        return n_entries, []
     exp_keys: set[str] = set()
     for b in store.chunks.list_chunks_for_ref(did):
         meta = b.meta or {}

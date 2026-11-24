@@ -43,8 +43,7 @@ the human queue forever:
 
 * **≥2 motivators across ≥2 distinct independent sources.** A source is a
   distinct source paper (a claim hub motivator resolves through its live
-  evidence edges) or a distinct `structure` ref, counted directly — a
-  measured structure is its own observation. A conjecture that leaps from a
+  evidence edges) or a distinct measured `structure` or `pathway` ref, counted directly. A conjecture that leaps from a
   single source is a restatement of that source, not a cross-binding, and
   the whole point of the type is the unearned transfer between two things.
 * **No hub that already carries a publish row.** `nanopub_reopen` clears
@@ -105,7 +104,7 @@ META_ARTIFACT_TYPE = "artifact_type"
 #: `nanopub/assemble.py` vocabulary, so the two agree on the word.
 ARTIFACT_HYPOTHESIS = "hypothesis"
 
-#: Minimum distinct independent sources (papers and/or structures) behind a
+#: Minimum distinct independent sources (papers, structures, or pathways) behind a
 #: proposal — see the module docstring's first guard.
 MIN_SOURCE_PAPERS = 2
 
@@ -212,6 +211,7 @@ def _propose(
     set_by: str,
     mint_cap: MintCap | None,
     meta: dict[str, Any] | None,
+    reuse_published: bool = False,
 ) -> tuple[Response, int]:
     """The proposal itself — validate, mint, motivate, tag. Returns the
     response and the hypothesis hub's ref id; :func:`put_hypothesis` runs it
@@ -289,16 +289,16 @@ def _propose(
                 options=sorted(hublib.MOTIVATION_SRC_KINDS),
                 next=(
                     "a hypothesis is motivated by a paper, a patent, another "
-                    "claim hub, or a measured structure (an instrument "
-                    "observation) — a memory is something you thought with, "
+                    "claim hub, a measured structure (an instrument "
+                    "observation) or a pathway — a memory is something you thought with, "
                     "not a source you can cite"
                 ),
             )
         if ref_id not in seen:
             seen.add(ref_id)
             resolved.append((ref_id, source_handle))
-        if ref.kind == "structure":
-            # A structure is its own distinct source — counted directly by
+        if ref.kind in ("structure", "pathway"):
+            # A structure or pathway is its own distinct source — counted directly by
             # ref id, not resolved through evidence edges like a claim hub.
             papers.add(ref_id)
         else:
@@ -311,7 +311,7 @@ def _propose(
             next=(
                 "two claim hubs grounded in the same paper are one source, not "
                 "two — the type exists for a binding between separate findings "
-                "(a measured structure also counts as its own source)"
+                "(a measured structure or a pathway also counts as its own source)"
             ),
         )
 
@@ -395,6 +395,9 @@ def _propose(
     # artifact (see the module docstring's second guard).
     existing_row = store.nanopub_publish_row(hub_ref_id)
     if existing_row is not None:
+        if reuse_published and existing_row.artifact_type == ARTIFACT_HYPOTHESIS:
+            handle = handle_registry.format_handle("finding", hub_ref_id)
+            return Response(body=f"reused hypothesis {handle}"), hub_ref_id
         raise BadInput(
             f"fi{hub_ref_id} already has a nanopub publish row "
             f"({existing_row.state}) as artifact_type="
