@@ -7008,7 +7008,7 @@ def test_op_chain_malformed_uses_tier_chain_and_warns_once(
 
     assert [o.text for o in outs] == ["tier chain", "tier chain"]
     assert local.calls == [] and cloud.calls == []
-    warns = [r for r in caplog.records if "tier chain" in r.getMessage()]
+    warns = [r for r in caplog.records if "using the default" in r.getMessage()]
     assert len(warns) == 1  # once per (source, reason), not per call
 
 
