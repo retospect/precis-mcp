@@ -375,6 +375,17 @@ def _run_llm_suitability(store: Store, batch_size: int) -> None:
     log.info("scheduler: llm_suitability cards=%d", run_llm_suitability(store))
 
 
+def _run_competency_check(store: Store, batch_size: int) -> None:
+    """Nightly competency check: run every quest's competency questions
+    against the evidence graph and alert on forbidden hits, regressions and
+    missing handles. ``batch_size`` is unused. spends=False: local search
+    only (an embedder miss degrades to lexical)."""
+    del batch_size
+    from precis.mesh_eval.competency import run_all
+
+    log.info("scheduler: competency_check quests=%d", run_all(store))
+
+
 def _run_call_errors(store: Store, batch_size: int) -> None:
     """One failed-call mining pass (gr484070): cluster the last 24h of
     rejected-before-work ``tool_calls`` errors and file/bump one gripe
@@ -1666,6 +1677,14 @@ CADENCES: tuple[Cadence, ...] = (
         name="call_errors",
         interval_s=24 * 3600 + 47 * 60,
         run=_run_call_errors,
+    ),
+    # Nightly competency check (gr606462): questions with expected and
+    # forbidden record handles on a quest, scored by the retrieval-eval
+    # search. Host-agnostic, off the day boundary. spends=False.
+    Cadence(
+        name="competency_check",
+        interval_s=24 * 3600 + 29 * 60,
+        run=_run_competency_check,
     ),
     # Gripe pipeline v2 slice 3: the LLM triage tick — 15 minutes, one
     # Sonnet-class batch call per fire. `service` gates the claim on the

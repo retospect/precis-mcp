@@ -1816,6 +1816,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr606462: the nightly competency check (mesh_eval/competency.py).
+        # Standing trigger is the daily `competency_check` scheduler
+        # cadence; no `default_profiles`, no rotation wiring.
+        name="competency_check",
+        label="Competency check",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="Nightly: run quest competency questions against the "
+        "evidence graph; alert on forbidden hits and dropped handles.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         # gr513769: the OpenAlex cited-by watch (workers/citer_watch.py).
         # No `default_profiles`: the STANDING trigger is the daily
         # `citer_watch` scheduler cadence, which fires and advances its

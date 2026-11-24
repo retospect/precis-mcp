@@ -37,6 +37,15 @@ Layout:
   arms, ``search`` vs the quest's ``fisheye+1hop`` render — recall@10 and
   tokens-to-first-gold, with a keep/no-effect before/after compare.
 
+- :mod:`.competency` — the nightly competency check (gr606462): a quest's
+  ``meta.competency_questions`` (expected / forbidden record handles) are
+  loaded row by row (bad rows reported, not fatal), answered by the
+  retrieval-eval chunk search mapped to ref handles (``answer_handles``),
+  scored pass/warn/fail/regressed (``score``), and ``run_competency``
+  writes ``meta.competency_last`` and raises ``competency`` alerts; the
+  ``competency_check`` cadence runs every set daily and ``precis mesh
+  competency[-draft]`` reads them. Expected handles live in prod only.
+
 - :mod:`.grounding` — the grounding-auditor false-approval eval
   (gr634496): a replay corpus with adjudicated gold, a DB-free runner over
   the production audit pipeline, and scorers that attribute each miss to

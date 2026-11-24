@@ -4,6 +4,8 @@
         [--judge-endpoint-url <url> --judge-model <id>] [--pack N]
     precis mesh usefulness [--database-url DSN | --prod]
     precis mesh retest <dumpA> <dumpB> [--campaign norr-her-meta]
+    precis mesh competency [--quest HANDLE] [--json]
+    precis mesh competency-draft --quest HANDLE
     precis mesh grounding [--criteria F] [--cases F] [--repairs] [--json]
 
 ``eval`` runs a frozen mesh-eval set against any OpenAI-compatible
@@ -125,6 +127,32 @@ def add_parser(subparsers: Any) -> None:
     )
     rc.add_argument("before", metavar="BEFORE", help="Report JSON before the pass.")
     rc.add_argument("after", metavar="AFTER", help="Report JSON after the pass.")
+
+    for name, helptext in (
+        (
+            "competency",
+            "Per-question pass/warn/fail/regressed for quest "
+            "competency questions (read-only; the nightly cadence alerts).",
+        ),
+        (
+            "competency-draft",
+            "Print model-drafted candidate expected handles "
+            "for a quest's questions; writes nothing.",
+        ),
+    ):
+        cp = sub.add_parser(name, help=helptext)
+        cp.add_argument(
+            "--quest",
+            default=None,
+            metavar="HANDLE",
+            required=name == "competency-draft",
+        )
+        cp.add_argument("--database-url", default=None, help="Postgres DSN override.")
+        cp.add_argument(
+            "--prod", action="store_true", help="Read PROD via the agent_ro role."
+        )
+        if name == "competency":
+            cp.add_argument("--json", action="store_true", help="Emit JSON.")
 
     gr = sub.add_parser(
         "grounding",
@@ -454,6 +482,39 @@ def _cmd_retrieval(args: argparse.Namespace) -> None:
         print(f"report -> {out}", file=sys.stderr)
 
 
+def _cmd_competency(args: argparse.Namespace) -> None:
+    from precis.config import load_config
+    from precis.mesh_eval import competency
+    from precis.store import Store
+
+    if args.prod:
+        dsn = _prod_ro_dsn()
+    else:
+        from precis.cli._common import resolve_dsn
+
+        dsn = resolve_dsn(args.database_url)
+    store = Store.connect(dsn)
+    try:
+        from precis.cli._common import cli_embedder
+
+        embedder = cli_embedder(
+            load_config(), store, needed=False, prog="precis mesh competency"
+        )
+        try:
+            if args.mesh_cmd == "competency-draft":
+                print(competency.draft(store, args.quest, embedder=embedder))
+            else:
+                print(
+                    competency.report(
+                        store, args.quest, as_json=args.json, embedder=embedder
+                    )
+                )
+        except ValueError as exc:
+            raise BadInput(str(exc)) from exc
+    finally:
+        store.close()
+
+
 def _cmd_retrieval_compare(args: argparse.Namespace) -> None:
     from precis.mesh_eval.retrieval import (
         compare,
@@ -586,6 +647,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_retrieval(args)
     elif args.mesh_cmd == "retrieval-compare":
         _cmd_retrieval_compare(args)
+    elif args.mesh_cmd in ("competency", "competency-draft"):
+        _cmd_competency(args)
     elif args.mesh_cmd == "loop":
         _cmd_loop(args)
     else:  # pragma: no cover - argparse enforces required=True

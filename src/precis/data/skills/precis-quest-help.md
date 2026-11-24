@@ -291,6 +291,18 @@ dashboard (header + momentum/tote, the graph neighbourhood + logbook
 tail, frontier/gaps panels, servers-lite) — readable without calling
 `get(view=…)`.
 
+## Competency questions — the nightly check
+
+A quest may carry `meta.competency_questions`: rows of
+`{question, expected: [handle], forbidden: [handle]}` with finding,
+measure, material or paper record handles. The daily `competency_check`
+service runs each question through chunk search: a forbidden handle in the
+answer raises a `competency` alert, an expected handle found before and now
+gone raises a regression alert, and a missing one warns. `precis mesh
+competency [--quest qu..]` prints each question's status; `precis mesh
+competency-draft --quest qu..` prints candidate handles for review and
+writes nothing. Search returns refs only, so a measure row never matches.
+
 ## Read a quest's numbers — results, frontier, series, measures
 
 `view='results'` is one row per candidate across

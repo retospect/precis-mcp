@@ -812,6 +812,19 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "meta.source_url, update proposal todos, then resolve the alert.",
     ),
     AlertRule(
+        "competency",
+        "{kind}:{quest}",
+        "A nightly competency question failed: a forbidden handle in the "
+        "answer (forbidden), an expected handle found before is gone "
+        "(regression), or an expected handle is missing (missing).",
+        "warn",
+        "competency_check",
+        triage="precis mesh competency --quest <quest> lists each question's "
+        "status; a missing handle is often just an un-ingested paper, a "
+        "regression or forbidden hit is an evidence-graph change to chase.",
+        budget="daily check",
+    ),
+    AlertRule(
         "upstream_watch",
         "moved:{item}",
         "An issue/PR we filed on a GitHub repo we do not own moved since "
