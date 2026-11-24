@@ -232,6 +232,54 @@
       when: (item | basename) not in ['asa.md', 'mcp-critic.md']
       become: true
 
+- name: Shadow built-in agents that still over-advertise tools
+  # The sync above only reaches grimoire profiles. Built-ins carry their
+  # own manifests, and the two bare catch-alls — general-purpose (the
+  # Agent-tool default fallback, named in gr761752) and claude — still
+  # report "Tools: *" while the session denies Bash/Edit/Write. A
+  # same-named file in ~/.claude/agents shadows the built-in: the
+  # catalog then reports this declared ceiling, and the effective set is
+  # unchanged because the deny list already caps it (verified on Claude
+  # Code 2.1.311). Scoped built-ins (Explore/Plan/statusline-setup)
+  # still name denied tools inside their longer "All tools except …"
+  # lists; they keep their tuned prompts rather than a hand-rolled
+  # shadow.
+  ansible.builtin.copy:
+    content: |
+      ---
+      name: {{ item.name }}
+      description: {{ item.description }}
+      tools: Read, Glob, Grep, Agent, mcp__precis
+      ---
+
+      {{ item.body }}
+    dest: "/Users/hermes/.claude/agents/{{ item.name }}.md"
+    owner: hermes
+    group: staff
+    mode: "0600"
+  loop:
+    - name: general-purpose
+      description: >-
+        General-purpose agent for multi-step research and code
+        questions — the default fallback when no specialist agent fits.
+      body: >-
+        You are a general-purpose subagent of a Discord session. Do
+        multi-step research and repo inspection with the tools actually
+        available: Read, Glob, Grep, Agent and the precis MCP tools.
+        Bash, gh, Write, Edit, NotebookEdit, WebFetch and WebSearch are
+        denied session-wide — if the brief needs one, return a blocker
+        naming the missing tool instead of attempting the call.
+    - name: claude
+      description: Generic subagent for multi-step tasks.
+      body: >-
+        You are a subagent of a Discord session. Work with the tools
+        actually available: Read, Glob, Grep, Agent and the precis MCP
+        tools. Bash, gh, Write, Edit, NotebookEdit, WebFetch and
+        WebSearch are denied session-wide — if the brief needs one,
+        return a blocker naming the missing tool instead of attempting
+        the call.
+  become: true
+
 - name: Deploy LaunchDaemon
   when: os_family == "darwin"
   ansible.builtin.template:

@@ -26,35 +26,57 @@ import yaml
 _ROLE = Path(__file__).resolve().parent.parent / "deploy" / "roles" / "asa_bot"
 
 
-def _sync_task() -> dict[str, Any]:
+def _find_task(name: str) -> dict[str, Any]:
     tasks = yaml.safe_load((_ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))
     stack = list(tasks)
     while stack:
         task = stack.pop()
         if not isinstance(task, dict):
             continue
-        if task.get("name") == "Copy specialist subagent definition":
+        if task.get("name") == name:
             return task
         for key in ("block", "rescue", "always"):
             nested = task.get(key)
             if isinstance(nested, list):
                 stack.extend(nested)
-    raise AssertionError("Copy specialist subagent definition task not found")
+    raise AssertionError(f"{name!r} task not found")
 
 
-def test_synced_agent_frontmatter_declares_the_deployed_tool_ceiling() -> None:
-    content = _sync_task()["ansible.builtin.copy"]["content"]
+def _declared_tools(content: str) -> set[str]:
     match = re.search(r"^tools:\s*(?P<tools>.+?)\s*$", content, re.MULTILINE)
     assert match, (
-        "synced agent frontmatter declares no tools — the Agent-tool "
-        "catalog reports 'Tools: *' while the session denies Bash/Edit/Write"
+        "agent frontmatter declares no tools — the Agent-tool catalog "
+        "reports 'Tools: *' while the session denies Bash/Edit/Write"
     )
-    declared = {tool.strip() for tool in match["tools"].split(",")}
-    allowed = set(
+    return {tool.strip() for tool in match["tools"].split(",")}
+
+
+def _deployed_ceiling() -> set[str]:
+    return set(
         json.loads(
             (_ROLE / "templates" / "claude_settings.json.j2").read_text(
                 encoding="utf-8"
             )
         )["permissions"]["allow"]
     )
-    assert declared == allowed
+
+
+def test_synced_agent_frontmatter_declares_the_deployed_tool_ceiling() -> None:
+    content = _find_task("Copy specialist subagent definition")["ansible.builtin.copy"][
+        "content"
+    ]
+    assert _declared_tools(content) == _deployed_ceiling()
+
+
+def test_shadowed_builtin_agents_declare_the_deployed_tool_ceiling() -> None:
+    # Built-ins keep their own manifests — the grimoire sync cannot
+    # relabel them — so the two bare "Tools: *" catch-alls are shadowed
+    # by same-named files. general-purpose is the Agent-tool default
+    # fallback and one of the two types the gripe named.
+    task = _find_task("Shadow built-in agents that still over-advertise tools")
+    copy = task["ansible.builtin.copy"]
+    assert _declared_tools(copy["content"]) == _deployed_ceiling()
+    assert {item["name"] for item in task["loop"]} == {
+        "general-purpose",
+        "claude",
+    }
