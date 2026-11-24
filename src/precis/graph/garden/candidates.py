@@ -149,7 +149,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -1217,6 +1217,51 @@ def _is_completed_action_mention(
     return _SCOPING_SUBORDINATORS.isdisjoint(re.findall(r"[a-z]+", tail))
 
 
+_CHECKED_OBJECT = r"\[?`?[a-z]+[0-9]+`?\]?(?:[ \t]+[a-z][a-z-]*)*?"
+_DATED_CHECK = re.compile(
+    r"(?:^|\()\s*(?:(?:\[?\d{4}-\d{2}-\d{2}\]?)[ \t:—–-]+)?"
+    r"(?:we\s+|i\s+)?(?:checked|verified)[ \t]+"
+    rf"(?P<objects>{_CHECKED_OBJECT}(?:[ \t]+and[ \t]+{_CHECKED_OBJECT})?)"
+    r"[ \t]+[—–-][ \t]+\S",
+    re.IGNORECASE,
+)
+_CHECK_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_CHECK_SENTENCE_END = re.compile(r"[.!?\n]")
+
+
+def _is_dated_check_mention(
+    body: str, start: int, end: int, info: dict[str, Any]
+) -> bool:
+    """Keep an explicit record of a check that predates retirement."""
+    if info["successor"] is None:
+        return False
+    lo = max(body.rfind(char, 0, start) for char in ".!?\n") + 1
+    stop = _CHECK_SENTENCE_END.search(body, end)
+    if stop is not None and stop.group() == "?":
+        return False
+    sentence = body[lo : stop.start() if stop else len(body)]
+    for check in _DATED_CHECK.finditer(sentence):
+        first, last = check.span("objects")
+        if first <= start - lo and end - lo <= last:
+            lead = sentence[: check.start()]
+            if not _SCOPING_SUBORDINATORS.isdisjoint(
+                re.findall(r"[a-z]+", lead.lower())
+            ):
+                return False
+            dated = _CHECK_DATE.search(sentence)
+            if dated is None:
+                return False
+            try:
+                checked_on = date.fromisoformat(dated.group())
+            except ValueError:
+                return False
+            retired_on = (
+                datetime.fromisoformat(info["retired_at"]).astimezone(UTC).date()
+            )
+            return checked_on < retired_on
+    return False
+
+
 def dangling_mention_candidates(
     store: Store,
     *,
@@ -1236,6 +1281,8 @@ def dangling_mention_candidates(
     ("never fixed") and attributive ("the closed gr1") phrasing still
     flags, as does a target whose supersede pointer never resolved
     to a live ref — a broken chain, not an outright close.
+    Dated checks with an explicit outcome keep the handles checked before
+    retirement even when a live successor exists (gr786816).
 
     One proposal per memory carries at most ``MENTION_MATCH_CAP`` matching
     spans (zero-based, end exclusive), with ``matches_capped`` in its payload
@@ -1269,8 +1316,10 @@ def dangling_mention_candidates(
         capped = False
         for match in matches[rid]:
             info = retired.get(match.group())
-            if info is None or _is_completed_action_mention(
-                body, match.start(), match.end(), info
+            if (
+                info is None
+                or _is_completed_action_mention(body, match.start(), match.end(), info)
+                or _is_dated_check_mention(body, match.start(), match.end(), info)
             ):
                 continue
             if len(ops) >= MENTION_MATCH_CAP:

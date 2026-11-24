@@ -72,9 +72,9 @@ trust acts retain the original model string.
    ``dangling_mention`` scans memory prose for lowercase handles with
    >=4 digits. Shorter or uppercase handles require citation, complete
    link or selector syntax, excluding GPIO pins (gr761704).
-   Consolidation logs and declarative closure records of successorless
-   retired refs preserve history (gr775677). Questions and conditionals
-   remain eligible. The memory pass also adds
+   Preserve consolidation logs, successorless closure records (gr775677),
+   and dated checks made before retirement (gr786816). Questions and
+   conditionals remain eligible. The memory pass also adds
    ``grab_bag`` (one memory carrying many independent
    claims — a split candidate), ``thread_shape`` (a thread ``Left:``
    missing or done, or a Left-line sha confirmed on ``origin/prod``),

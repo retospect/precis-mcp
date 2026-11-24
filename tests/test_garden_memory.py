@@ -224,6 +224,51 @@ def test_completed_action_with_broken_successor_chain_still_flags(
     assert candidate.target_id == target
 
 
+def test_dated_checks_preserve_the_checked_handles_with_successors(
+    store: Store,
+) -> None:
+    with store.pool.connection() as conn:
+        conn.execute("ALTER SEQUENCE refs_ref_id_seq RESTART WITH 1000")
+    successor = _memory(store, "Current facts")
+    first = _memory(store, "First old hub", meta={"superseded_by": successor})
+    second = _memory(store, "Second old hub", meta={"superseded_by": successor})
+    store.retire_ref(first)
+    store.retire_ref(second)
+    historical = (
+        f"2000-01-01: No tracking found (checked me{first} worker-diagnosis hub "
+        f"and me{second} builder-gotchas — neither covers this). "
+        f"We verified [me{second}] — no match on 2000-01-01. "
+    )
+    current = f"See [me{second}] for current instructions."
+    target = _memory(store, historical + current)
+
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == target
+    (op,) = candidate.payload["ops"]
+    assert op["span"][0] == len(historical) + current.index("me")
+    assert op["text"] == f"me{successor}"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "Checked [me{h}] — no match.",
+        "9999-01-01: Checked [me{h}] — no match.",
+        "2000-01-01: Checked [me{h}].",
+        "2000-01-01: Checked [me{h}] — no match?",
+        "2000-01-01: If we checked [me{h}] — use the result.",
+        "2000-01-01: Fixed [me{h}].",
+    ],
+)
+def test_other_mentions_with_successors_still_flag(store: Store, template: str) -> None:
+    successor = _memory(store, "Current facts")
+    retired = _memory(store, "Old facts", meta={"superseded_by": successor})
+    store.retire_ref(retired)
+    target = _memory(store, template.format(h=retired))
+    (candidate,) = cand.dangling_mention_candidates(store)
+    assert candidate.target_id == target
+
+
 def test_completed_action_with_retired_superseder_still_flags(
     store: Store,
 ) -> None:
