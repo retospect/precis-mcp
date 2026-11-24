@@ -62,6 +62,7 @@ STATUS_RANK: tuple[str, ...] = (
     "user_verify",
     "needs_spec",
     "parked",
+    "held",
     "done",
     "wontfix",
 )

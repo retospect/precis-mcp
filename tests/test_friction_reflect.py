@@ -102,6 +102,7 @@ def test_ro_footer_is_create_only_with_friction_fallback() -> None:
     assert "tags=[" not in fr.FRICTION_REFLECTION_RO
     assert "friction-model" not in fr.FRICTION_REFLECTION_RO
     assert "source:agent_ro" in out
+    assert f"text='{fr.RO_FRICTION_PREFIX}" in out
     assert "put(kind='gripe'" in out
     # The FRICTION-block fallback for when put itself is refused
     # (tier-1 tool deny or a DB cap) — mechanism (b) of the spec.

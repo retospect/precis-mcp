@@ -170,6 +170,21 @@ filer past the per-filer hourly cap gets its over-cap rows tagged
 ``flood`` + folded into ``cluster:flood-<filer>`` (the parents pass and
 this claim both skip ``flood`` rows), and a fleet-wide burst past the
 global cap posts a once-per-hour ``blocked`` board line.
+
+§Friction holding lane (gr764123): a friction gripe — the
+``PRECIS_FRICTION_REFLECT`` footer's channel — files ``STATUS:held``
+instead of ``open`` (migration 0368: the ro footer marks its text for
+``file_gripe_readonly``; a write-capable ``friction``-tagged filing is
+moved by the handler). Model-free, :func:`_friction_sweep` runs on
+every lit tick — halted or not: it ages out stale groups to
+``wontfix``, folds each un-grouped held filing into the live group
+sharing a named tool/skill and enough body terms (never a theme tag
+alone, the gr735596 lesson), seeds a new group otherwise, and releases
+a keeper to ``STATUS:open`` once reports from 3 separate runs land
+inside 30 days. Released keepers absorb later matches until terminal.
+The measure — filed / released / aged out, junk rate =
+aged out ÷ filed — is one query, :func:`friction_stats`, surfaced on
+``get(kind='gripe', id='/stats')``.
 """
 
 from __future__ import annotations
@@ -2959,6 +2974,480 @@ def _flood_sweep(store: Store, *, notify: bool) -> dict[str, int]:
     return {"flood_tagged": tagged, "filed_last_hour": total}
 
 
+# ── friction holding lane (gr764123) ─────────────────────────────────────
+
+#: A friction gripe files ``STATUS:held`` — the lane's intake tag.
+_FRICTION_TAG = "friction"
+#: The group keeper's marker tag; a folded member instead carries
+#: ``cluster:friction-gr<keeper id>`` naming its group. Both live in the
+#: OPEN namespace (the lowercase ``ns:value`` convention).
+_FRICTION_GROUP_TAG = "friction-group"
+_FRICTION_MEMBER_PREFIX = "cluster:friction-gr"
+#: Knobs (spec starting values, Reto 2026-11-22 — revisit 2027-01): a
+#: group releases on reports from this many separate runs inside this
+#: many days of its seed, else it closes quietly — 30 days matches the
+#: agentlog retention.
+_FRICTION_RUNS_ENV = "PRECIS_FRICTION_RELEASE_RUNS"
+_FRICTION_RUNS_DEFAULT = 3
+_FRICTION_DAYS_ENV = "PRECIS_FRICTION_GROUP_DAYS"
+_FRICTION_DAYS_DEFAULT = 30
+#: Sameness (spec: "same tool or skill AND similar bodies; never a
+#: shared theme tag alone" — the gr735596 failure). A filing must name
+#: a tool/skill token its group names AND share this fraction of its
+#: own term set with the group's (containment — leans toward merging,
+#: per Reto: an over-merged wish resurfaces if it matters, an
+#: un-grouped one is one gripe per run).
+_FRICTION_SIM_ENV = "PRECIS_FRICTION_SIM_FLOOR"
+_FRICTION_SIM_DEFAULT = 0.4
+#: New filings grouped per tick — the channel caps ~40/hour, so this
+#: bounds a backlog drain without starving the triage batch.
+_FRICTION_LIMIT_ENV = "PRECIS_FRICTION_SWEEP_LIMIT"
+_FRICTION_LIMIT_DEFAULT = 100
+#: Bounded ``meta.friction`` payloads on the keeper.
+_FRICTION_RUN_CAP = 64
+_FRICTION_TERM_CAP = 400
+
+_FRICTION_VERB_RE = re.compile(
+    r"\b(?:mcp__precis__)?(get|search|put|edit|delete|tag|link)\s*\("
+)
+_FRICTION_SKILL_RE = re.compile(r"\b(precis-[a-z0-9][a-z0-9-]*)\b")
+
+
+def _friction_tools(text: str) -> frozenset[str]:
+    """The tool/skill tokens one friction body names: a seven-verb call
+    (``get(`` … ``link(``, bare or ``mcp__precis__``-prefixed) or a
+    ``precis-*`` skill name. Sameness needs the shared token — two
+    reports that share only words are not the same friction."""
+    return frozenset(
+        {f"verb:{v}" for v in _FRICTION_VERB_RE.findall(text)}
+        | {f"skill:{s}" for s in _FRICTION_SKILL_RE.findall(text)}
+    )
+
+
+def _friction_run_key(ref_id: int, agent_tag: str | None, meta: dict[str, Any]) -> str:
+    """The "separate run" identity one filing adds to its group: the
+    ro ``agent:<label>`` tag when present (the per-run label the definer
+    stamps), else the ``filed_by`` run fields, else the filing itself —
+    an unidentifiable filer counts as its own run."""
+    if agent_tag:
+        return agent_tag
+    filed_by = meta.get("filed_by")
+    if isinstance(filed_by, dict):
+        for key in ("agentlog_id", "session_id", "source", "principal"):
+            if (value := filed_by.get(key)) is not None:
+                return f"{key}:{value}"
+    return f"ref:{ref_id}"
+
+
+@dataclass(slots=True)
+class _FrictionGroup:
+    """A held or released group in memory: the first filing of its kind plus
+    the tools, terms, runs and count every later fold unioned in."""
+
+    ref_id: int
+    created_at: datetime
+    tools: frozenset[str]
+    terms: frozenset[str]
+    runs: list[str]
+    count: int
+    released_at: str | None = None
+
+    def meta_stamp(self) -> dict[str, Any]:
+        """The ``meta.friction`` payload rewritten on every fold/close —
+        capped so a flood can't grow the row without bound."""
+        stamp: dict[str, Any] = {
+            "count": self.count,
+            "runs": self.runs[-_FRICTION_RUN_CAP:],
+            "tools": sorted(self.tools),
+            "terms": sorted(self.terms)[-_FRICTION_TERM_CAP:],
+        }
+        if self.released_at is not None:
+            stamp.update(outcome="released", outcome_at=self.released_at)
+        return stamp
+
+
+def _friction_groups(conn: Any) -> list[_FrictionGroup]:
+    """Held and released nonterminal group keepers,
+    oldest first, with the terms of its seed body as the fold target's
+    base when ``meta.friction`` has none yet."""
+    rows = conn.execute(
+        """
+        SELECT r.ref_id, r.created_at, coalesce(r.meta, '{}'::jsonb),
+               coalesce(r.title, ''),
+               coalesce((SELECT c.text FROM chunks c
+                          WHERE c.ref_id = r.ref_id
+                            AND c.chunk_kind = 'gripe_body'
+                            AND c.retired_at IS NULL
+                          ORDER BY c.ord LIMIT 1), '')
+          FROM refs r
+          JOIN ref_tags st ON st.ref_id = r.ref_id
+          JOIN tags s ON s.tag_id = st.tag_id
+                     AND s.namespace = 'STATUS'
+          JOIN ref_tags grt ON grt.ref_id = r.ref_id
+          JOIN tags g ON g.tag_id = grt.tag_id
+                     AND g.namespace = 'OPEN' AND g.value = %s
+         WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+           AND (s.value = 'held' OR (
+               r.meta->'friction'->>'outcome' = 'released'
+               AND NOT (s.value = ANY(%s))
+           ))
+         ORDER BY r.created_at, r.ref_id
+        """,
+        (_FRICTION_GROUP_TAG, list(_GRIPE_TERMINAL_STATUSES)),
+    ).fetchall()
+    groups: list[_FrictionGroup] = []
+    for ref_id, created_at, meta, title, body in rows:
+        fr_meta = meta.get("friction") if isinstance(meta, dict) else None
+        fr_meta = fr_meta if isinstance(fr_meta, dict) else {}
+        runs = fr_meta.get("runs") or []
+        terms = fr_meta.get("terms")
+        tools = fr_meta.get("tools")
+        seed_text = f"{title}\n{body}"
+        groups.append(
+            _FrictionGroup(
+                ref_id=int(ref_id),
+                created_at=created_at,
+                tools=frozenset(tools) if tools else _friction_tools(seed_text),
+                terms=frozenset(terms) if terms else _terms(seed_text),
+                runs=[str(r) for r in runs],
+                count=int(fr_meta.get("count") or 1),
+                released_at=fr_meta.get("outcome_at")
+                if fr_meta.get("outcome") == "released"
+                else None,
+            )
+        )
+    return groups
+
+
+def _friction_ungrouped(conn: Any, limit: int) -> list[tuple[Any, ...]]:
+    """Held ``friction`` filings with no group marker yet — not
+    ``flood``-tagged within the trailing hour (the claim's windowed
+    skip: a stranded flood row re-enters afterwards), oldest first."""
+    return conn.execute(
+        """
+        SELECT r.ref_id, r.created_at,
+               coalesce(r.title, ''),
+               coalesce((SELECT c.text FROM chunks c
+                          WHERE c.ref_id = r.ref_id
+                            AND c.chunk_kind = 'gripe_body'
+                            AND c.retired_at IS NULL
+                          ORDER BY c.ord LIMIT 1), ''),
+               coalesce(r.meta, '{}'::jsonb),
+               (SELECT t.value FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                   AND t.value LIKE 'agent:%%'
+                 ORDER BY t.value LIMIT 1) AS agent_tag
+          FROM refs r
+          JOIN ref_tags st ON st.ref_id = r.ref_id
+          JOIN tags s ON s.tag_id = st.tag_id
+                     AND s.namespace = 'STATUS' AND s.value = 'held'
+          JOIN ref_tags frt ON frt.ref_id = r.ref_id
+          JOIN tags fr ON fr.tag_id = frt.tag_id
+                     AND fr.namespace = 'OPEN' AND fr.value = %s
+         WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt
+                   JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                    AND t.value = %s)
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt
+                   JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                    AND t.value LIKE %s)
+           AND (r.created_at <= now() - interval '1 hour'
+                OR NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt
+                       JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.value = %s
+                        AND t.namespace IN ('OPEN', 'FLAG')))
+         ORDER BY r.created_at, r.ref_id
+         LIMIT %s
+        """,
+        (
+            _FRICTION_TAG,
+            _FRICTION_GROUP_TAG,
+            f"{_FRICTION_MEMBER_PREFIX}%%",
+            _FLOOD_TAG,
+            limit,
+        ),
+    ).fetchall()
+
+
+def _friction_close_group(
+    conn: Any,
+    store: Store,
+    group: _FrictionGroup,
+    when: datetime,
+    *,
+    days: int,
+    runs_needed: int,
+) -> None:
+    """Age-out: the group never drew its run threshold inside the
+    window — close keeper and members ``wontfix`` quietly (no board
+    line) and stamp ``meta.friction.outcome='aged_out'`` for the
+    measure."""
+    from precis.store.types import Tag
+
+    member_tag = f"{_FRICTION_MEMBER_PREFIX}{group.ref_id}"
+    for (rid,) in conn.execute(
+        """
+        SELECT rt.ref_id FROM ref_tags rt
+          JOIN tags t ON t.tag_id = rt.tag_id
+          JOIN ref_tags st ON st.ref_id = rt.ref_id
+          JOIN tags s ON s.tag_id = st.tag_id
+                     AND s.namespace = 'STATUS' AND s.value = 'held'
+         WHERE t.namespace = 'OPEN' AND t.value = %s
+        """,
+        (member_tag,),
+    ).fetchall():
+        store.add_tag(
+            int(rid),
+            Tag.closed("STATUS", "wontfix"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+    store.add_tag(
+        group.ref_id,
+        Tag.closed("STATUS", "wontfix"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    stamp = group.meta_stamp()
+    stamp.update(
+        outcome="aged_out",
+        outcome_at=when.isoformat(),
+    )
+    conn.execute(
+        "UPDATE refs SET meta = coalesce(meta, '{}'::jsonb) || %s::jsonb "
+        "WHERE ref_id = %s",
+        (Jsonb({"friction": stamp}), group.ref_id),
+    )
+    _add_comment(
+        conn,
+        store,
+        group.ref_id,
+        f"friction group aged out: {group.count} report(s) from "
+        f"{len(group.runs)} run(s) in {days}d — closed "
+        f"(threshold {runs_needed} runs)",
+        _next_ord(conn, group.ref_id),
+        stage="friction",
+    )
+
+
+def _friction_release(
+    conn: Any, store: Store, group: _FrictionGroup, when: datetime
+) -> None:
+    """The group drew its run threshold inside the window — the keeper
+    enters the open queue for the ordinary claim, stamped
+    ``outcome='released'`` for the measure. Members stay held: they are
+    the group's searchable evidence trail, folded under its cluster
+    tag."""
+    from precis.store.types import Tag
+
+    store.add_tag(
+        group.ref_id,
+        Tag.closed("STATUS", "open"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    group.released_at = when.isoformat()
+    conn.execute(
+        "UPDATE refs SET meta = coalesce(meta, '{}'::jsonb) || %s::jsonb "
+        "WHERE ref_id = %s",
+        (Jsonb({"friction": group.meta_stamp()}), group.ref_id),
+    )
+    _add_comment(
+        conn,
+        store,
+        group.ref_id,
+        f"friction group released: {group.count} report(s) from "
+        f"{len(group.runs)} separate runs — entering triage",
+        _next_ord(conn, group.ref_id),
+        stage="friction",
+    )
+
+
+def _friction_sweep(store: Store, *, now: datetime) -> dict[str, int]:
+    """§Friction holding lane (gr764123), run at the top of each lit
+    tick — model-free, so it also runs while the batch call is halted.
+
+    A friction gripe files ``STATUS:held`` (migration 0368) — off every
+    open queue but searchable. Each tick first ages out stale groups (a
+    seed older than :data:`_FRICTION_DAYS_ENV` days that never drew its
+    run threshold closes ``wontfix`` quietly, members included), then
+    folds the oldest un-grouped held filings into live groups — a
+    filing already past the window closes alone rather than seeding a
+    stillborn group — a
+    shared tool/skill token AND a shared-term fraction over
+    :data:`_FRICTION_SIM_ENV`, never a theme tag alone — seeding a new
+    group when nothing matches. The fold that lands the group's
+    :data:`_FRICTION_RUNS_ENV`-th distinct run releases the keeper to
+    ``STATUS:open`` for the ordinary claim. The released keeper accepts
+    later matches until it becomes terminal or is retired. One advisory lock
+    serializes sweepers; the whole pass is one short transaction —
+    no model call is ever held across it. The measure — reports filed,
+    groups released, groups aged out; junk rate = aged out / filed —
+    is one query, :func:`friction_stats`, rendered on the gripe
+    ``/stats`` view.
+    """
+    from precis.store.types import Tag
+
+    days = env_int(_FRICTION_DAYS_ENV, _FRICTION_DAYS_DEFAULT, lo=1)
+    runs_needed = env_int(_FRICTION_RUNS_ENV, _FRICTION_RUNS_DEFAULT, lo=1)
+    floor = env_float(_FRICTION_SIM_ENV, _FRICTION_SIM_DEFAULT, lo=0.0, hi=1.0)
+    limit = env_int(_FRICTION_LIMIT_ENV, _FRICTION_LIMIT_DEFAULT, lo=1)
+    out = {
+        "friction_folded": 0,
+        "friction_seeded": 0,
+        "friction_released": 0,
+        "friction_aged_out": 0,
+    }
+    cutoff = now.timestamp() - days * 86400
+    with store.tx() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('gripe_friction_sweep'))")
+        groups = _friction_groups(conn)
+        live: list[_FrictionGroup] = []
+        for group in groups:
+            if group.released_at is None and group.created_at.timestamp() < cutoff:
+                _friction_close_group(
+                    conn, store, group, now, days=days, runs_needed=runs_needed
+                )
+                out["friction_aged_out"] += 1
+            else:
+                live.append(group)
+        for ref_id, created_at, title, body, meta, agent_tag in _friction_ungrouped(
+            conn, limit
+        ):
+            text = f"{title}\n{body}"
+            tools = _friction_tools(text)
+            terms = _terms(text)
+            run_key = _friction_run_key(int(ref_id), agent_tag, dict(meta or {}))
+            if created_at.timestamp() < cutoff:
+                # Past the window before it ever grouped — close it
+                # alone rather than seeding a stillborn group the next
+                # tick would close. Stamped so the measure counts it.
+                store.add_tag(
+                    int(ref_id),
+                    Tag.closed("STATUS", "wontfix"),
+                    set_by="system",
+                    replace_prefix=True,
+                    conn=conn,
+                )
+                conn.execute(
+                    "UPDATE refs SET meta = coalesce(meta, '{}'::jsonb) "
+                    "|| %s::jsonb WHERE ref_id = %s",
+                    (
+                        Jsonb(
+                            {
+                                "friction": {
+                                    "count": 1,
+                                    "runs": [run_key],
+                                    "tools": sorted(tools),
+                                    "terms": sorted(terms)[-_FRICTION_TERM_CAP:],
+                                    "outcome": "aged_out",
+                                    "outcome_at": now.isoformat(),
+                                }
+                            }
+                        ),
+                        int(ref_id),
+                    ),
+                )
+                out["friction_aged_out"] += 1
+                continue
+            best: _FrictionGroup | None = None
+            best_share = 0.0
+            for group in live:
+                if not (tools & group.tools):
+                    continue
+                share = len(terms & group.terms) / max(1, len(terms))
+                if share >= floor and share > best_share:
+                    best, best_share = group, share
+            if best is None:
+                group = _FrictionGroup(
+                    ref_id=int(ref_id),
+                    created_at=created_at,
+                    tools=tools,
+                    terms=terms,
+                    runs=[run_key],
+                    count=1,
+                )
+                store.add_tag(
+                    int(ref_id),
+                    Tag.open(_FRICTION_GROUP_TAG),
+                    set_by="system",
+                    conn=conn,
+                )
+                conn.execute(
+                    "UPDATE refs SET meta = coalesce(meta, '{}'::jsonb) "
+                    "|| %s::jsonb WHERE ref_id = %s",
+                    (Jsonb({"friction": group.meta_stamp()}), int(ref_id)),
+                )
+                live.append(group)
+                out["friction_seeded"] += 1
+                if runs_needed == 1:
+                    _friction_release(conn, store, group, now)
+                    out["friction_released"] += 1
+                continue
+            best.count += 1
+            best.tools |= tools
+            best.terms |= terms
+            if run_key not in best.runs:
+                best.runs.append(run_key)
+            store.add_tag(
+                int(ref_id),
+                Tag.open(f"{_FRICTION_MEMBER_PREFIX}{best.ref_id}"),
+                set_by="system",
+                conn=conn,
+            )
+            if best.released_at is None and len(best.runs) >= runs_needed:
+                _friction_release(conn, store, best, now)
+                out["friction_released"] += 1
+            else:
+                conn.execute(
+                    "UPDATE refs SET meta = coalesce(meta, '{}'::jsonb) "
+                    "|| %s::jsonb WHERE ref_id = %s",
+                    (Jsonb({"friction": best.meta_stamp()}), best.ref_id),
+                )
+            out["friction_folded"] += 1
+    return out
+
+
+def friction_stats(store: Store) -> dict[str, int]:
+    """The lane's one-query measure (gr764123 §Measure): friction
+    reports filed, groups released, groups aged out — the junk rate is
+    ``aged_out / filed``. A released group keeps its stamp through
+    every later status, so the count survives the group's own fix.
+    Rendered as the last line of ``get(kind='gripe', id='/stats')``."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*) FILTER (
+                     WHERE r.meta->>'footer_friction' = 'true'
+                        OR r.meta->>'write_friction' = 'true') AS filed,
+                   count(*) FILTER (
+                     WHERE r.meta->'friction'->>'outcome' = 'released')
+                       AS released,
+                   count(*) FILTER (
+                     WHERE r.meta->'friction'->>'outcome' = 'aged_out')
+                       AS aged_out
+              FROM refs r
+             WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+            """
+        ).fetchone()
+    assert row is not None
+    return {
+        "filed": int(row[0]),
+        "released": int(row[1]),
+        "aged_out": int(row[2]),
+    }
+
+
 # ── the pass ──────────────────────────────────────────────────────────────
 
 
@@ -2991,6 +3480,14 @@ def run_gripe_triage_pass(
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
     flood = _flood_sweep(store, notify=notify)
+    # The friction lane (gr764123) is model-free — it runs even while
+    # the batch call is halted, and fail-soft: a sweep fault must not
+    # take the whole tick down with it.
+    try:
+        sweep = {**flood, **_friction_sweep(store, now=when)}
+    except Exception:
+        log.warning("gripe_triage: friction sweep failed", exc_info=True)
+        sweep = dict(flood)
     blocked, probe = _blocked_state(store, when)
     if blocked and not probe:
         # Halted by _BATCH_FAIL_LIMIT strikes — no claim, no call,
@@ -3003,7 +3500,7 @@ def run_gripe_triage_pass(
             ok=0,
             failed=0,
             report_only=True,
-            extra={**flood, "llm_blocked": blocked},
+            extra={**sweep, "llm_blocked": blocked},
         )
     base_batch = (
         limit
@@ -3033,7 +3530,7 @@ def run_gripe_triage_pass(
             # An idle tick still sweeps (gr595189): an ask whose gripe
             # shed ``reto:ask`` since the last tick retires here.
             _sync_reto_asks(store, [], when, overflow=0)
-        return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0, extra=flood)
+        return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0, extra=sweep)
     backfill_ids = {i for i, _s in backfill}
     gripes = _batch_rows(store, [*claimed, *backfill], backfill=backfill_ids)
     if threads is None:
@@ -3069,7 +3566,7 @@ def run_gripe_triage_pass(
         released = _release_leases(store, gripes)
         store.set_setting(_TIMEOUT_KEY, str(timeouts + 1))
         extra = {
-            **flood,
+            **sweep,
             "llm_error": kind,
             "released": released,
             "timeouts": timeouts + 1,
@@ -3128,7 +3625,7 @@ def run_gripe_triage_pass(
             ok=0,
             failed=0,
             report_only=True,
-            extra={**flood, "llm_error": "paused"},
+            extra={**sweep, "llm_error": "paused"},
         )
     data = getattr(res, "data", None)
     if not isinstance(data, dict):
@@ -3145,7 +3642,7 @@ def run_gripe_triage_pass(
         released = _release_leases(store, gripes)
         fails = _counter(store, _BATCH_FAIL_KEY) + 1
         extra = {
-            **flood,
+            **sweep,
             "llm_error": str(why),
             "released": released,
             "batch_failures": fails,
@@ -3299,7 +3796,7 @@ def run_gripe_triage_pass(
             reto.append((g, v))
     extra = {
         "stale": stale,
-        **flood,
+        **sweep,
         "misses": len(misses),
         "backfilled": backfilled,
         "dup_suggested": sum(

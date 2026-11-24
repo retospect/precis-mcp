@@ -99,8 +99,15 @@ def rolling_stats(store: Store, *, now: datetime | None = None) -> list[dict[str
     ]
 
 
-def render_stats(rows: list[dict[str, int]]) -> str:
-    """Compact MCP table with the snapshot's counting semantics."""
+def render_stats(
+    rows: list[dict[str, int]], *, friction: dict[str, int] | None = None
+) -> str:
+    """Compact MCP table with the snapshot's counting semantics.
+
+    ``friction`` appends the friction holding lane's lifetime measure
+    (gr764123: filed / released / aged out — ``friction_stats`` in
+    ``workers.gripe_triage``); the junk rate is aged out ÷ filed.
+    """
     lines = [
         "Gripe progress · rolling UTC windows (current cohort)",
         "| Last | Fixed | Verified | Closed as dup |",
@@ -115,4 +122,12 @@ def render_stats(rows: list[dict[str, int]]) -> str:
         "verified: success recorded with that closure. Reopened gripes excluded. "
         "Duplicates: closed as wontfix or retired, with a gripe successor."
     )
+    if friction is not None:
+        filed = friction["filed"]
+        junk = f"{friction['aged_out'] / filed:.0%}" if filed else "n/a — nothing filed"
+        lines.append(
+            f"Friction lane (gr764123): {filed} filed · "
+            f"{friction['released']} released · {friction['aged_out']} aged out "
+            f"· junk rate {junk} (aged out ÷ filed)"
+        )
     return "\n".join(lines)

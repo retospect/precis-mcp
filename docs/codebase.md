@@ -291,6 +291,11 @@ a decision in the todo review queue. The same worker raises decisions and
 applies answers. The scratch sweep has its own retirement clock.
 See `src/precis/workers/memory_thread_sweep.py`.
 
+Friction footer filings stay searchable under `STATUS:held`. The
+`gripe_triage` sweep groups them by tool or skill and body similarity,
+releases groups after three separate runs within 30 days, and closes
+groups that age out. See `src/precis/workers/gripe_triage.py::_friction_sweep`.
+
 ## Subsystems (where the code lives)
 
 Checklist definitions retain their registry names and allocate a graph ref

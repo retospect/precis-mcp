@@ -15,6 +15,9 @@ Gripe themes span unrelated defects. Automatic merges require matching
 project and cluster scope, and filing receipts suggest out-of-scope keepers.
 Write-capable friction gripe creation counts and inserts under one database
 lock across workers. Its filing marker survives later triage tag changes.
+Friction footer reports enter a searchable hold so isolated feedback stays
+off open queues. The gripe triage sweep releases similar reports about
+one tool or skill after three distinct runs within 30 days.
 Gripe batch and cohort exports fit whole UTF-8 blocks against the runtime
 budget so re-fitting preserves the cursor. An oversized block has its own
 character cursor; the cohort cursor still advances to the next gripe.

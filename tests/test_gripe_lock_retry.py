@@ -100,6 +100,40 @@ def test_upsert_tag_takes_no_row_lock_on_existing_tag(
             assert _upsert_tag(second, "STATUS", "open") == status_open
 
 
+def test_friction_filing_does_not_exclusively_lock_shared_tags(store: Store) -> None:
+    # The cap serializes sourced filings on an advisory lock. Hold the
+    # tag rows separately so we test tag contention without taking that lock.
+    with store.tx() as seed:
+        tag_ids = [
+            _upsert_tag(seed, namespace, value)
+            for namespace, value in (
+                ("STATUS", "held"),
+                ("OPEN", "source:agent_ro"),
+                ("OPEN", "friction"),
+                ("OPEN", "agent:lock-test"),
+            )
+        ]
+    with store.tx() as holder:
+        # This lock allows ref_tags' foreign-key check (KEY SHARE) but
+        # conflicts with the old no-op UPDATE on any of the four rows.
+        locked = holder.execute(
+            "SELECT tag_id FROM tags WHERE tag_id = ANY(%s) FOR NO KEY UPDATE",
+            (tag_ids,),
+        ).fetchall()
+        assert len(locked) == len(tag_ids)
+        with store.tx() as filer:
+            filer.execute("SET LOCAL lock_timeout = '500ms'")
+            row = filer.execute(
+                "SELECT public.file_gripe_readonly(%s, %s, NULL)",
+                ("friction: search should preserve filters", "lock-test"),
+            ).fetchone()
+            assert row is not None
+            attached = filer.execute(
+                "SELECT tag_id FROM ref_tags WHERE ref_id = %s", (row[0],)
+            ).fetchall()
+            assert {tag_id for (tag_id,) in attached} == set(tag_ids)
+
+
 def test_upsert_tag_inserts_a_new_tag_once(store: Store) -> None:
     with store.tx() as conn:
         tag_id = _upsert_tag(conn, "OPEN", "gr537784-fresh-tag")

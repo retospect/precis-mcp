@@ -381,10 +381,11 @@ def review_todos(store: Store, ref_ids: list[int]) -> dict[int, str]:
 #: Gripe STATUS values that take a complaint off the gardener's queue —
 #: anything else still shows ``under review`` on the memory's fisheye.
 #: Mirrors ``candidates._GRIPED_CLOSED_STATUS`` (utils must not import the
-#: garden layer): ``parked`` is included even though it is not terminal —
-#: a parked gripe waits on its wake condition and the ``griped`` detector
-#: skips it, so listing it here would falsely claim it is queued.
-_GRIPE_CLOSED_STATUSES = ("done", "wontfix", "parked")
+#: garden layer): ``parked`` and ``held`` are included even though they are
+#: not terminal — a parked gripe waits on its wake condition and a held one
+#: on the friction grouping lane (gr764123), and the ``griped`` detector
+#: skips both, so listing them here would falsely claim they are queued.
+_GRIPE_CLOSED_STATUSES = ("done", "wontfix", "parked", "held")
 
 
 def open_memory_gripes(

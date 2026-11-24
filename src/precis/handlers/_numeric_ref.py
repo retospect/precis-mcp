@@ -479,12 +479,14 @@ _BROWSE_TERMINALS: dict[str, tuple[str, ...]] = {
 
 #: Non-terminal STATUS values the live cohort also excludes — live but
 #: parked off the open queue (gripe: ``STATUS:parked``, gr543711 — it
-#: waits on ``meta.until`` and the ``gripe_parked`` cadence wakes it).
+#: waits on ``meta.until`` and the ``gripe_parked`` cadence wakes it;
+#: ``STATUS:held``, gr764123 — a friction filing parked for the triage
+#: sweep's grouping lane, released by count or closed by age).
 #: :func:`_live_excluded_tags` is the one set queryless browse,
 #: ``status='open'`` and the hidden-count notes subtract; ``status='*'``
 #: still sees everything.
 _BROWSE_PARKED: dict[str, tuple[str, ...]] = {
-    "gripe": ("STATUS:parked",),
+    "gripe": ("STATUS:parked", "STATUS:held"),
 }
 
 

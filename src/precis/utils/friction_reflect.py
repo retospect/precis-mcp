@@ -46,6 +46,9 @@ from precis.utils.env import env_float
 # call-time guard the spec asked for ("skip on tight-budget runs").
 FRICTION_MIN_TURNS = 8
 
+# Kept in sync with file_gripe_readonly's intake marker.
+RO_FRICTION_PREFIX = "friction: "
+
 # The reflection footer. Binary-first, terminal, "none" is the honored
 # default (kills the confabulation pressure of always being asked).
 # Grounded on the actual call sequence + a check-the-skill-first gate,
@@ -87,7 +90,7 @@ this at the expense of finishing your actual task.
 # ``mcp__precis__put``, and the DB caps a ro run at 3 filings, so a ro
 # agent that can't ``put`` still reports in a shape its rw
 # parent/coordinator can file.
-FRICTION_REFLECTION_RO = """
+FRICTION_REFLECTION_RO = f"""
 
 ────────────────────────────────────────────────────────
 Before you finish — one reflection, then stop:
@@ -104,11 +107,12 @@ it; no gripe. If it genuinely does not, file at most THREE gripes (one
 per pain point):
 
     put(kind='gripe',
-        text='<the ideal call you wanted, and the calls you actually '
-             'had to make instead>')
+        text='{RO_FRICTION_PREFIX}<the ideal call you wanted, and the calls '
+             'you actually had to make instead>')
 
 Your run is read-only: the server stamps the gripe source:agent_ro +
 friction + agent:<run> itself — do not pass tags=, link= or an id.
+Keep the "friction: " prefix so the report enters the grouping lane.
 Bodies cap at 4000 chars and the run at 3 filings.
 
 If `put` is refused anyway (tool-level deny, or a cap), end your output

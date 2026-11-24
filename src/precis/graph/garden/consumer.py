@@ -1317,7 +1317,8 @@ def _close_griped_gripe(
             "SELECT 1 FROM refs r WHERE r.ref_id = %s AND r.kind = 'gripe' "
             "AND r.retired_at IS NULL AND NOT EXISTS (SELECT 1 FROM ref_tags rt "
             "JOIN tags t USING (tag_id) WHERE rt.ref_id = r.ref_id "
-            "AND t.namespace = 'STATUS' AND t.value IN ('done', 'wontfix', 'parked'))",
+            "AND t.namespace = 'STATUS' AND t.value IN "
+            "('done', 'wontfix', 'parked', 'held'))",
             (gripe,),
         ).fetchone()
     if still_open is None:

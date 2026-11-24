@@ -1265,6 +1265,13 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
             # ``meta.until``; the ``gripe_parked`` cadence returns it to
             # ``open`` when met. Non-terminal but off every open queue.
             "parked",
+            # ``held`` (gr764123, migration 0368): the friction-gripe
+            # holding lane — a friction filing sits held while the
+            # ``gripe_triage`` sweep groups and dedups it; its group
+            # releases to ``open`` on the third separate run in 30 days,
+            # else ages out to ``wontfix``. Off every open queue like
+            # ``parked``, but machine-managed — no ``meta.until``.
+            "held",
             "done",
             "wontfix",
         }

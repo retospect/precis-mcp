@@ -214,6 +214,10 @@ _STATUS_TOOLTIPS: dict[str, str] = {
     "user_verify": ("STATUS:user_verify — waiting on the human to confirm the fix"),
     "needs_spec": ("STATUS:needs_spec — blocked on a spec or a ruling"),
     "parked": "STATUS:parked — deliberately shelved, off every queue",
+    "held": (
+        "STATUS:held — a friction filing held for the grouping lane "
+        "before it can reach the open queue"
+    ),
     "done": "STATUS:done — fixed and verified",
     "wontfix": "STATUS:wontfix — won't act, kept on record",
     "retired": "soft-deleted gripes — merged, duplicate or junk",
@@ -261,6 +265,7 @@ _STATUS_BADGE: dict[str, str] = {
     "user_verify": "bg-accent-muted text-accent-deep border-accent-strong",
     "needs_spec": "bg-warning-muted text-warning-deep border-warning-strong",
     "parked": "bg-surface-muted text-fg-faint border-line-strong",
+    "held": "bg-surface-muted text-fg-faint border-line-strong",
     "done": "bg-success-muted text-success-deep border-success-strong",
     "wontfix": "bg-danger-muted text-danger-deep border-danger-strong",
     "retired": "bg-surface-muted text-fg-faint border-line",

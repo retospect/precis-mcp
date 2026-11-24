@@ -3633,8 +3633,10 @@ def host_facts_candidates(
 
 #: A live ``project:memory`` gripe carrying none of these STATUS values is
 #: open for the detector — the fixer only replays complaints a reader still
-#: waits on (mirrors the gripe kind's open-listing exclusion).
-_GRIPED_CLOSED_STATUS = ("done", "wontfix", "parked")
+#: waits on (mirrors the gripe kind's open-listing exclusion — ``held`` is
+#: the friction holding lane, gr764123: queued for the grouping sweep, not
+#: for the gardener).
+_GRIPED_CLOSED_STATUS = ("done", "wontfix", "parked", "held")
 
 #: Hit depth a route replay records per recorded search — the same index-view
 #: page the reader ranked off.

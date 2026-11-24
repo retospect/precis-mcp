@@ -164,6 +164,7 @@ from precis.store import Store, Tag
 from precis.store.types import ChunkInsert, Ref
 from precis.utils import gripe_order, record_frame
 from precis.utils.db_retry import retry_locked
+from precis.utils.friction_reflect import RO_FRICTION_PREFIX
 from precis.utils.idem import idem_lock_key, normalize_key, ref_id_for_key
 from precis.utils.secret_scan import mask_secrets
 
@@ -252,10 +253,19 @@ def _is_system_wake(comment: Any) -> bool:
 #: every open queue — /open, the live cohort, the open-count lines and
 #: the fix-loop prefilters all subtract :data:`_OPEN_EXCLUDED_TAGS`.
 PARKED_STATUS_TAG = "STATUS:parked"
-#: The tag set "still open" subtracts: terminals plus parked. Search and
-#: browse reach the same set through
+#: ``STATUS:held`` (gr764123, migration 0368): the friction-gripe
+#: holding lane. A friction filing — the ``PRECIS_FRICTION_REFLECT``
+#: channel — lands here instead of ``open``: grouped and deduped by the
+#: ``gripe_triage`` sweep, released to ``open`` on reports from 3
+#: separate runs inside 30 days, else aged out to ``wontfix``. Off
+#: every open queue like ``parked``, but machine-managed — a held gripe
+#: carries no ``meta.until`` and the ``gripe_parked`` cadence never
+#: wakes it.
+HELD_STATUS_TAG = "STATUS:held"
+#: The tag set "still open" subtracts: terminals plus parked plus held.
+#: Search and browse reach the same set through
 #: :func:`precis.handlers._numeric_ref._live_excluded_tags` — keep equal.
-_OPEN_EXCLUDED_TAGS = _TERMINAL_STATUS_TAGS | {PARKED_STATUS_TAG}
+_OPEN_EXCLUDED_TAGS = _TERMINAL_STATUS_TAGS | {PARKED_STATUS_TAG, HELD_STATUS_TAG}
 #: ``put`` ``args={'until': …}`` / ``tag`` ``meta={'until': …}`` carrier
 #: for the parked wake condition — plumbed from the public verb into the
 #: tag leg via request-scoped slots (the ``_PUT_PRIO`` pattern); a shared
@@ -615,7 +625,8 @@ class GripeHandler(NumericRefHandler):
             "create. Body + append-only comment timeline live as "
             "chunks. Status tracked via the STATUS: tag (one of: open, "
             "triaged, fixing, ready_for_fix, in_review, verify, "
-            "auto_verify, user_verify, needs_spec, parked, done, wontfix)."
+            "auto_verify, user_verify, needs_spec, parked, held, done, "
+            "wontfix)."
         ),
         supports_get=True,
         supports_search=True,
@@ -725,6 +736,8 @@ class GripeHandler(NumericRefHandler):
         # gripes, newest-closed first, with args={'closed_since'/
         # 'closed_until'} bounding the STATUS-tag set-time window.
         # /stats summarizes rolling fixed, verified and duplicate counts.
+        # /held is the friction holding lane's shelf (gr764123): filings
+        # awaiting the grouping sweep or folded into a held group.
         return (
             "recent",
             "open",
@@ -732,12 +745,13 @@ class GripeHandler(NumericRefHandler):
             "queue",
             "batch",
             "parked",
+            "held",
             "done",
             "stats",
         )
 
     paged_list_views: ClassVar[frozenset[str]] = frozenset(
-        {"open", "wontfix", "parked", "done"}
+        {"open", "wontfix", "parked", "done", "held"}
     )
 
     def _list_view(
@@ -2412,6 +2426,7 @@ class GripeHandler(NumericRefHandler):
         # reading says so. (Caller ``tags=``/``link=``/``prio=`` can no
         # longer reach this point under ro; they get Denied upstream.)
         ro = self._is_ro()
+        ro_friction = ro and text.startswith(RO_FRICTION_PREFIX)
         # A keyed put's normalized idem_key (bound by ``_run_idempotent``
         # around this create) rides into the definer as ``p_idem_key`` —
         # stamped on ``meta.idem_key`` inside the owner's privileges at
@@ -2444,6 +2459,10 @@ class GripeHandler(NumericRefHandler):
                 "read-only run: stamped source:agent_ro + friction + "
                 "agent:<run> by file_gripe_readonly"
             )
+        if ro_friction:
+            readings.append(
+                "friction report filed STATUS:held for the friction grouping lane"
+            )
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
         # Capture the reader's replay evidence before opening the write
         # transaction, so a ledger outage cannot abort gripe creation.
@@ -2474,6 +2493,13 @@ class GripeHandler(NumericRefHandler):
         write_friction = not ro and any(
             tag == Tag.open("friction") for tag in parsed_extra_tags
         )
+        if write_friction:
+            readings.append(
+                "friction report filed STATUS:held — the gripe_triage "
+                "sweep groups it with matching reports; it reaches the "
+                "open list only when 3 separate runs hit the same "
+                "friction within 30 days"
+            )
 
         def _write() -> tuple[int, str | None]:
             # One fresh transaction per attempt — the retry_locked contract
@@ -2529,6 +2555,21 @@ class GripeHandler(NumericRefHandler):
                         replace_prefix=(tag.namespace == "closed"),
                         conn=conn,
                     )
+                if write_friction:
+                    # gr764123: a friction filing does not reach the
+                    # open list — it files HELD for the gripe_triage
+                    # sweep's grouping lane, released on 3 separate
+                    # runs in 30 days else aged out. Written last so a
+                    # caller-passed STATUS: can never undo the hold.
+                    # (The ro path's held tag is the definer's job —
+                    # this role holds the ref_tags grant it lacks.)
+                    self.store.add_tag(
+                        ref_id,
+                        Tag.closed("STATUS", "held"),
+                        set_by="system",
+                        replace_prefix=True,
+                        conn=conn,
+                    )
                 if park_until is not None:
                     from psycopg.types.json import Jsonb
 
@@ -2576,13 +2617,23 @@ class GripeHandler(NumericRefHandler):
             and any(t.lower().startswith("thread:") for t in tags or ()),
             short_title=short,
             title_src_len=len(first_line(text)) if short is not None else None,
-            # The ack names the STATUS actually filed: the definer's
-            # ``STATUS:open`` default unless a caller ``STATUS:<v>``
-            # displaced it (the last one wins — the add loop applies
-            # them in order under replace_prefix).
-            status=next(
-                (str(t) for t in reversed(parsed_extra_tags) if t.prefix == "STATUS"),
-                "STATUS:open",
+            # The ack names the STATUS actually filed: ``STATUS:held``
+            # for a friction filing (marked ro or ``friction``-tagged, the
+            # gr764123 holding lane); else the definer's ``STATUS:open``
+            # default unless a caller ``STATUS:<v>`` displaced it (the
+            # last one wins — the add loop applies them in order under
+            # replace_prefix).
+            status=(
+                "STATUS:held"
+                if ro_friction or write_friction
+                else next(
+                    (
+                        str(t)
+                        for t in reversed(parsed_extra_tags)
+                        if t.prefix == "STATUS"
+                    ),
+                    "STATUS:open",
+                )
             ),
         )
 
@@ -3093,8 +3144,16 @@ class GripeHandler(NumericRefHandler):
                     next="get(kind='gripe', id='/stats')",
                 )
             from precis.utils.gripe_stats import render_stats, rolling_stats
+            from precis.workers.gripe_triage import friction_stats
 
-            return Response(body=render_stats(rolling_stats(self.store)))
+            # The one-query measure surface (gr764123 §Measure): the
+            # friction lane's filed / released / aged out counts ride
+            # the same response as the rolling progress table.
+            return Response(
+                body=render_stats(
+                    rolling_stats(self.store), friction=friction_stats(self.store)
+                )
+            )
         if tag_prefixes is not ...:
             _kw["tag_prefixes"] = tag_prefixes
         if page is not None:

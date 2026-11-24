@@ -6,7 +6,7 @@ through this SECURITY DEFINER SQL function instead of hand-rolled insert_ref/
 insert_chunks/add_tag calls, so the function is exercised by the ordinary
 ``TestGripe`` suite in ``test_state_kinds.py`` on every gripe creation. These
 tests pin the function's own contract directly against the DB: exactly one
-gripe (ref + gripe_body chunk + STATUS:open tag) and nothing else, and that a
+gripe (ref + gripe_body chunk + a STATUS tag) and nothing else, and that a
 SECURITY DEFINER function keeps working from a role that holds no direct
 INSERT grant on refs/chunks/tags/ref_tags — the whole point (an
 ``agent_ro``/``write:none`` connection, ``envelope.py::db_role``).
@@ -18,7 +18,8 @@ INSERT grant on refs/chunks/tags/ref_tags — the whole point (an
 client bug or a prompt-injected ro agent cannot bypass them. A caller whose
 *effective* role — outer ``SET ROLE`` else ``session_user`` — cannot INSERT
 ``refs`` takes the stamped+capped path even with ``p_source = NULL`` — no
-cap bypass.
+cap bypass. Ordinary stamped filings land ``STATUS:open``; 0368 adds a
+``STATUS:held`` path for marked footer reports (gr764123).
 """
 
 from __future__ import annotations
@@ -113,8 +114,8 @@ def test_null_source_keeps_the_legacy_shape(store: Store) -> None:
 
 def test_sourced_filing_stamps_ro_tags_and_nothing_else(store: Store) -> None:
     """One sourced call writes exactly one ref + one gripe_body chunk +
-    four ref_tags (STATUS:open, source:agent_ro, friction, agent:<src>) —
-    no links, no other rows."""
+    four ref_tags (STATUS:open,
+    source:agent_ro, friction, agent:<src>) — no links, no other rows."""
     ref_id = _call(store, "put was denied mid-run", source="run-4242")
     assert _tag_strings(store, ref_id) == {
         "STATUS:open",

@@ -197,7 +197,7 @@ q='…')` finds the matching passages inside one gripe (find-in-ref,
 `precis-get-help`).
 
 **`status='open'` means the live cohort** — every non-terminal STATUS
-except `parked` (`open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`,
+except `parked` and `held` (`open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`,
 `verify`, `auto_verify`, `user_verify`, `needs_spec`), not the
 literal `STATUS:open` tag. It's also the implicit default on `q=`
 searches, so a bare `search(kind='gripe', q='…')` searches the backlog,
@@ -215,7 +215,7 @@ search(kind="gripe", q="X", status="*")  # every status, no filter
 `status='open|triaged'` (or a comma list) is an error naming the valid
 values, not a union filter. Run one search per value, or `status='*'`.
 Valid: `open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`, `verify`,
-`auto_verify`, `user_verify`, `needs_spec`, `parked`, `done`, `wontfix`.
+`auto_verify`, `user_verify`, `needs_spec`, `parked`, `held`, `done`, `wontfix`.
 
 **Enumerating vs. searching — a trap.** Adding `q=` to a status/tag
 filter turns a *complete enumeration* into a *ranked filter*: a gripe
@@ -313,6 +313,29 @@ triage runs counts too.
 
 ```python
 search(kind="gripe", tags=["STATUS:wontfix"])
+```
+
+## Show me the held friction filings
+
+`STATUS:held` is the friction-report holding lane (gr764123).
+Write-capable filings use the `friction` tag. The read-only
+`PRECIS_FRICTION_REFLECT` footer prefixes its report with `friction: `
+so ordinary read-only gripes can still file directly into `open`.
+Held reports are searchable and stay off the open queues.
+The `gripe_triage` sweep groups reports that name the same tool or
+skill and have similar bodies. A group releases to `open` once reports
+from 3 separate runs land inside 30 days, else it closes `wontfix`
+quietly. A released keeper continues to count matching reports until
+it closes or is retired. Members of a group carry
+`cluster:friction-gr<keeper id>`; the keeper carries `friction-group`
+plus `meta.friction` (count, runs, outcome).
+
+```python
+search(kind="gripe", status="held")           # the held shelf
+get(kind="gripe", id="/held")                 # same list, browsed
+search(kind="gripe", tags=["friction-group"]) # group keepers only
+get(kind="gripe", id="/stats")                # the measure — its last
+# line reads filed · released · aged out + junk rate (aged out ÷ filed)
 ```
 
 ## Park a gripe until something happens
@@ -1006,6 +1029,9 @@ successor closures — a live `STATUS:wontfix` close timed by that STATUS
 attachment, or a retirement timed by `retired_at`. These are
 current-cohort counts, independent of list
 filters; `/stats` takes neither `q=` nor a detail `view=`.
+Its last line is the friction lane's lifetime measure (gr764123):
+reports filed, groups released, groups aged out, and the junk rate
+(aged out ÷ filed) — the one-query check on the holding lane above.
 
 | Tag                    | Meaning                                 |
 |------------------------|-----------------------------------------|
@@ -1019,6 +1045,7 @@ filters; `/stats` takes neither `q=` nor a detail `view=`.
 | `STATUS:user_verify`   | Same wait, but a human must check the fix (the lander opts the gripe in at ship time). Each deploy keeps ONE ask-user todo listing the cohort; the gripes close when it's answered |
 | `STATUS:needs_spec`    | Ill-specified (size L or `fix: spec`, no `spec:` line in the thread) — parked until a graph spec names it (the deploy verifier closes it then) or a human sends it back to `open` ("move back to new" on the web detail page — writes a comment) |
 | `STATUS:parked`        | Waiting on a `meta.until` wake condition (gr/td ref done, sha in prod, a date, or free text) — off every open queue; the `gripe_parked` pass returns it to `open` when met. Requires `until` on the parking call |
+| `STATUS:held`          | A friction filing held for the `gripe_triage` grouping lane (gr764123) — off every open queue like `parked`, but machine-managed: no `until`, never set by hand. The sweep releases its group to `open` on reports from 3 separate runs inside 30 days, else closes it `wontfix` |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
 | (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |
