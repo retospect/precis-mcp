@@ -535,8 +535,9 @@ def check_relation_constraints(
     ``src_ref_id=None`` is a create-time link whose source node does not
     exist yet (gr753894): pass its would-be ``src_kind`` — the row is
     uncommitted at put time, so the kind cannot be read back — and the
-    check runs before any insert. A new node holds no edge, so it can
-    neither own a taken ``functional`` slot nor close a cycle.
+    check runs before any insert. A new node cannot own a taken slot or
+    close a cycle, but an existing target may already hold the
+    ``functional`` slot.
 
     ``src_may_exist`` is for a create door whose put can resolve onto an
     existing ref of ``src_kind`` (a finding-hub put that converges): a
@@ -576,8 +577,6 @@ def check_relation_constraints(
                     f"id='precis-relations') lists each relation's kinds)"
                 ),
             )
-    if s_id is None or d_id is None:
-        return  # Create-time validation checks only endpoint kinds.
     if s_id == d_id:
         return  # add_link refuses the self-loop with its own message
     if target.pending:
