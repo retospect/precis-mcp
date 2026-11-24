@@ -100,6 +100,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 import uuid
 import warnings
@@ -117,7 +118,7 @@ from precis.dispatch import Hub, boot
 from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
-from tests import _testmon_shim
+from tests import _testmon_shim, _worker_budget
 from tests._network import _no_outbound_network  # noqa: F401 (autouse fixture)
 from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_repo_git)
@@ -420,6 +421,26 @@ def pytest_terminal_summary(
         terminalreporter.write_line(f"  {p} — every thread's stack")
 
 
+_rss_alarmed_mb: float | None = None
+
+
+def _record_worker_rss(item: pytest.Item) -> None:
+    global _rss_alarmed_mb
+    grown = _worker_budget.rss_alarm(_rss_alarmed_mb)
+    if grown is None:
+        return
+    worker = _hang_worker_name(item.config)
+    path = _HANG_DUMP_DIR / f"rss-{worker}-{os.getpid()}.log"
+    # Close each append so the evidence survives a worker kill and pytest capture.
+    message = f"gr788515: {worker} RSS {grown:.0f} MiB after {item.nodeid}"
+    try:
+        with path.open("a", encoding="utf-8") as report:
+            report.write(f"{message}\n")
+    except OSError as exc:
+        item.warn(pytest.PytestWarning(f"{message} (cannot write {path}: {exc})"))
+    _rss_alarmed_mb = grown
+
+
 def pytest_runtest_teardown(item: pytest.Item) -> None:
     """Fail at the exact test that leaves the design-core seed empty.
 
@@ -427,6 +448,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
     it rather than the next innocent one to notice.
     """
     faulthandler.cancel_dump_traceback_later()
+    _record_worker_rss(item)
     if not _WATCH_SEED:
         return
     if _SEED_WATCH_EXEMPT_FIXTURES & set(getattr(item, "fixturenames", ())):
@@ -762,6 +784,11 @@ def pytest_cmdline_main(config: pytest.Config) -> Iterator[None]:
     if os.environ.get(COVERAGE_ENV) == "1" and config.pluginmanager.hasplugin("xdist"):
         requested = config.getoption("maxprocesses")
         config.option.maxprocesses = min(requested, 3) if requested else 3
+    # gr788515: keep workers x ~5 GB inside the container's mem_limit.
+    fit = _worker_budget.max_workers(_worker_budget.cgroup_limit_bytes())
+    if fit is not None and config.pluginmanager.hasplugin("xdist"):
+        requested = config.getoption("maxprocesses")
+        config.option.maxprocesses = min(requested, fit) if requested else fit
     yield
 
 
@@ -1088,7 +1115,6 @@ def _no_host_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     its roots under ``tmp_path``. Patched only where the executor is already
     imported, so this pulls it into no test that does not use it; a module
     that runs a pass imports the executor at its top."""
-    import sys
 
     executor = sys.modules.get("precis.workers.executors.ssh_node")
     if executor is not None:

@@ -115,6 +115,14 @@ derives the host checkout's common dir from its own path, or refuses. A `--fast`
 it starts no Postgres and takes no slot. Each gate/dev container also
 carries a 24 GiB `mem_limit` (`docker/dev/compose.yaml`), so a runaway
 OOMs alone and the kill is reported as OOM rather than a silent death.
+`tests/conftest.py` also caps xdist at `limit / 5 GiB` workers (4 in the
+24 GiB gate; `PRECIS_GATE_WORKER_MB` overrides) whatever `-n` asks for, and
+a worker at 3 GiB RSS (`PRECIS_TEST_RSS_ALARM_MB`, 0 disables) records its
+worker ID, RSS, and test node ID in `.test-hang-stacks/rss-<worker>-<pid>.log`
+under the test checkout (gr788515). The file survives a worker kill. In a
+warm ship gate, retrieve it from `/app/.test-hang-stacks/` before the next
+ship sync replaces `/app`. After the first report, each subsequent report
+requires another 1 GiB of RSS growth.
 Abandoned slots are stolen when the holder pid dies or after 45 min.
 
 ```
