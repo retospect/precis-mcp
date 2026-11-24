@@ -1573,7 +1573,7 @@ def _render_target(
                     uc = ctx.store.drafts.universal_chunk(tgt)
                     if uc:
                         excerpt = uc.get("text") or ""
-                return _source_footnote(slug, kind, excerpt, ctx)
+                return _source_footnote(slug, kind, excerpt, ctx, si=via_si)
             return _cite(slug, ctx, si=via_si)
         if kind == "finding":
             return _render_finding_cite(tgt, pin, ctx)
@@ -1938,8 +1938,8 @@ def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
         return _inline_paper_by_slug(base, ctx)
     if ctx.footnote_refs:
         excerpt = _slug_chunk_excerpt(base, chunk_ord, ctx)
-        key, _ = _resolve_si_slug(base, ctx)
-        return _source_footnote(key, "paper", excerpt, ctx)
+        key, resolved_si = _resolve_si_slug(base, ctx)
+        return _source_footnote(key, "paper", excerpt, ctx, si=si or resolved_si)
     base, resolved_si = _resolve_si_slug(base, ctx)
     group = walker.register_group([(base, si or resolved_si)], ctx.cited, ctx.si_cited)
     return _cite_mark(group, ctx)
@@ -2023,7 +2023,9 @@ def _footnote_excerpt(text: str, ctx: _Ctx) -> str:
     return f"\\emph{{{_render_gap(t, ctx)}}}"
 
 
-def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
+def _source_footnote(
+    slug: str, kind: str, excerpt: str, ctx: _Ctx, *, si: bool = False
+) -> str:
     """reMarkable mode: render a source citation as a **self-contained
     numbered footnote** so a draft reads offline on the tablet without a
     round-trip to the reference list. The footnote is the human cite +
@@ -2040,7 +2042,8 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
         line = (
             _tex(render_paper_inline_citation(ref)) if ref is not None else _tex(base)
         )
-    body = f"{line}~\\cite{{{base}}}" + _retraction_tex(ctx, (base,))
+    postnote = "[SI]" if si else ""
+    body = f"{line}~\\cite{postnote}{{{base}}}" + _retraction_tex(ctx, (base,))
     exc = _footnote_excerpt(excerpt, ctx)
     if exc:
         body += f"\\\\ {exc}"

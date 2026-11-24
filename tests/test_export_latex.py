@@ -3209,6 +3209,24 @@ def test_si_cite_resolves_to_parent_with_postnote(monkeypatch) -> None:
     assert "Parent paper" in bib and "parent24si" not in bib
 
 
+def test_si_footnote_uses_parent_citation_and_supplement_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    store = _si_store(monkeypatch, with_parent=True)
+    store.drafts = SimpleNamespace(
+        chunk_text_at=lambda ref_id, ordinal: f"Paper {ref_id} chunk {ordinal}."
+    )
+    ctx = _fn_ctx(store)
+
+    out = latex._render_inline("see [§parent24si~3] here", ctx)
+
+    assert r"Parent paper{\textquotedblright}~\cite[SI]{parent24}" in out
+    assert r"\emph{Paper 2 chunk 3.}" in out
+    assert ctx.cited == ["parent24"]
+
+
 def test_si_cite_group_uses_cites_with_postnote_on_si_key_only(monkeypatch) -> None:
     store = _si_store(monkeypatch, with_parent=True)
     ctx = _ctx("", store=store)
