@@ -135,8 +135,9 @@ get(kind="quest", id=164903, view="links", args={"of_kind": "pathway"})
 
 `of_kind` keeps only links whose other endpoint is a ref of that kind, in
 both directions. It works on the numeric-id kinds (quest, todo, gripe,
-finding, memory, …); paper, draft, plan, pres, patent, pcb, structure,
-make, cad and se do not accept it yet and reject the key.
+finding, memory, …) and on paper and draft's `view='links'`; plan, pres,
+patent, pcb, structure, make, cad and se do not accept it yet and reject
+the key.
 
 ## Browse what's in a kind without knowing any id
 ## List the default page for a kind
