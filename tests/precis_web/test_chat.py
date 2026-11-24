@@ -395,20 +395,36 @@ def test_streaming_child_has_its_own_process_group() -> None:
 
     from precis.utils._claude_subprocess import ClaudeProcessError, run_claude_async
 
-    def stop_group(pid: int) -> None:
-        assert os.getpgid(pid) == pid
-        os.killpg(pid, signal.SIGKILL)
+    spawned: list[int] = []
+
+    def on_spawn(pid: int) -> None:
+        spawned.append(pid)
+        if sys.platform != "win32":
+            assert os.getpgid(pid) == pid
+            os.killpg(pid, signal.SIGKILL)
+
+    # Windows has no POSIX process groups. Verify the callback's PID against
+    # the child's own report there, and exercise real group cancellation on POSIX.
+    child = (
+        "import os; print(os.getpid()); raise SystemExit(1)"
+        if sys.platform == "win32"
+        else "import time; time.sleep(5)"
+    )
 
     with pytest.raises(ClaudeProcessError) as exc:
         asyncio.run(
             run_claude_async(
-                [sys.executable, "-c", "import time; time.sleep(5)"],
+                [sys.executable, "-c", child],
                 binary=sys.executable,
                 label="chat test child",
                 timeout_s=5,
                 error_cls=ClaudeProcessError,
-                on_process_group=stop_group,
+                on_process_group=on_spawn,
                 bare=True,
             )
         )
-    assert exc.value.returncode == -signal.SIGKILL
+    if sys.platform == "win32":
+        assert exc.value.returncode == 1
+        assert spawned == [int(exc.value.stdout.strip())]
+    else:
+        assert exc.value.returncode == -signal.SIGKILL
