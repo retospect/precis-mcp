@@ -750,7 +750,13 @@ def _lexical_chunk_source(kind: str | None) -> str:
     return "chunks c JOIN refs r ON r.ref_id = c.ref_id"
 
 
-def _or_retry(q: str, scope_ref_id: int | None, *, kind: str | None = None) -> bool:
+def _or_retry(
+    q: str,
+    scope_ref_id: int | None,
+    *,
+    kind: str | None = None,
+    machine_recall: bool = False,
+) -> bool:
     """Whether an empty strict lexical leg retries with its terms OR-ed.
 
     The AND leg's precision contract stands whenever it returns rows:
@@ -758,9 +764,13 @@ def _or_retry(q: str, scope_ref_id: int | None, *, kind: str | None = None) -> b
     Scoped retries any multi-word query (gr510534); unscoped needs
     :data:`_OR_RETRY_MIN_WORDS` words (gr614169). An operator query
     (``-term``, ``"phrase"``) never retries (see :data:`_TSQUERY_OP_RE`).
-    Cross-memory chunk search keeps strict lexical eligibility (gr779000).
+    Cross-memory chunk search keeps strict lexical eligibility on the
+    human-rendered paths (gr779000); the machine recall paths
+    (``semantic_only_cut`` — ``view='index'``, the cross-kind stream)
+    keep the retry, since no human reads the refinement hint there and
+    a paraphrase must still recall (td783125).
     """
-    if kind == "memory" and scope_ref_id is None:
+    if kind == "memory" and scope_ref_id is None and not machine_recall:
         return False
     if _TSQUERY_OP_RE.search(q) is not None:
         return False
@@ -2372,7 +2382,9 @@ class ChunkStore:
         # OR-matched chunk in the corpus on every multi-word query, hit
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
-        or_leg = _or_retry(q, scope_ref_id, kind=kind)
+        # ``semantic_only_cut`` marks the no-human recall paths, which
+        # keep the retry for memory too (see :func:`_or_retry`).
+        or_leg = _or_retry(q, scope_ref_id, kind=kind, machine_recall=semantic_only_cut)
         lexical_source = _lexical_chunk_source(kind)
         from precis.store.pool import apply_checkout_budget
 

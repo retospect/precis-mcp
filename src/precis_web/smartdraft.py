@@ -1493,7 +1493,7 @@ def _prewarm_finding_retractions(
     record stay with the lazy path."""
     from precis.export.latex import _COMBINED_BODY, _iter_refs
     from precis.store.si_links import SI_PDF_ROLE
-    from precis.taproot.cite import hub_cite_keys
+    from precis.taproot.cite import bibliographic_targets, hub_cite_keys
     from precis.taproot.seniority import derive_evidence_bulk, is_claim_hub_bulk
     from precis.utils import mentions
 
@@ -1527,14 +1527,20 @@ def _prewarm_finding_retractions(
     }
     cite_key_map: dict[int, list[str]] = {}
     paper_refs: dict[int, Any] = {}
+    remap: dict[int, int] = {}
     if supporter_ids:
         cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
         paper_refs = store.fetch_refs_by_ids(supporter_ids, include_deleted=False)
+        remap = bibliographic_targets(store, sorted(supporter_ids))
     keys_by_finding: dict[int, list[str]] = {}
     for rid, ref in findings.items():
         if rid in evidence:
             keys, _notes = hub_cite_keys(
-                store, evidence[rid], cite_key_map=cite_key_map, paper_refs=paper_refs
+                store,
+                evidence[rid],
+                cite_key_map=cite_key_map,
+                paper_refs=paper_refs,
+                remap=remap,
             )
         else:
             meta = ref.meta or {}

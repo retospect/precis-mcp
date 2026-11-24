@@ -620,7 +620,7 @@ paper's own reference list), `bibtex` (`cite/bib`), `ris` (`cite/ris`),
 `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
 `comments` (the note timeline — see Add a note to a paper),
 `corrections` (human/inferred fixes of glyph-damaged passages — see
-precis-glyph-correction-help; recorded with `put(id='pa…',
+[[precis-glyph-correction-help]]; recorded with `put(id='pa…',
 args={'correction': {…}})`),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The

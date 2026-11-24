@@ -33,6 +33,8 @@ def _seed_paper(store: Store, *, slug: str, n: int) -> int:
     e = MockEmbedder(dim=1024)
     blocks = store.chunks.insert_chunks(
         ref.id,
+        # Sentence-ended text: a bare fragment tail would trip the
+        # truncated-body banner (gr779217) ahead of the TOC headline.
         [
             ChunkInsert(ord=i, text=f"chunk {i} body text.", embedding=e.embed_one("x"))
             for i in range(n)
@@ -63,7 +65,8 @@ def test_toc_handles_use_universal_handle_and_round_trip(store: Store) -> None:
     # Full TOC: headline + every row handle is the universal handle, and
     # the legacy kind:slug form is gone.
     out = handler.get(id=pa, view="toc").body
-    assert out.startswith(f"# {pa} TOC")
+    # A short-body banner may precede the headline; the headline must follow.
+    assert f"# {pa} TOC" in out
     assert "paper:vaswani17" not in out
     assert "vaswani17~" not in out
 

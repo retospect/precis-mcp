@@ -25,4 +25,4 @@
             'PGPASSFILE': '/Users/deploy/.pgpass',
             'PRECIS_PROCESS': 'precis-edgar-watches',
             'PRECIS_SOURCE': 'precis-edgar-watches',
-          }) }}
+          }) | combine(precis_identity_env | default({})) }}

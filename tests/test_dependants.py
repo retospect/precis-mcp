@@ -38,7 +38,11 @@ def _spec_chain(store: Store) -> tuple[int, int, int]:
 
 class TestDirection:
     def test_figure_in_reports_embedding_draft(self, store: Store) -> None:
-        canvas = _mk_ref(store, "figure", "Editable canvas")
+        # figure is slug-addressed (migration 0057), unlike the numeric
+        # kinds ``_mk_ref`` serves.
+        canvas = store.insert_ref(
+            kind="figure", slug="editablecanvas", title="Editable canvas"
+        ).id
         draft = store.insert_ref(
             kind="draft", slug="embeddingdraft", title="Draft with canvas"
         ).id

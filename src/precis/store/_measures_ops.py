@@ -2593,14 +2593,22 @@ class MeasuresMixin:
                         "kind": a[2],
                         "title": a[3],
                     }
-            r["anchor_ids"] = {
-                position: anchor_id
-                for position, anchor_id in conn.execute(
-                    "SELECT position, anchor_id FROM measure_anchors WHERE measure_id = %s "
-                    "ORDER BY position",
-                    (measure_id,),
-                ).fetchall()
-            }
+            # to_regclass: a pre-0360 DB (a migration-replay test chain)
+            # has no measure_anchors table — no anchors can exist there.
+            r["anchor_ids"] = (
+                {
+                    position: anchor_id
+                    for position, anchor_id in conn.execute(
+                        "SELECT position, anchor_id FROM measure_anchors "
+                        "WHERE measure_id = %s ORDER BY position",
+                        (measure_id,),
+                    ).fetchall()
+                }
+                if conn.execute(
+                    "SELECT to_regclass('measure_anchors') IS NOT NULL"
+                ).fetchone()[0]
+                else {}
+            )
             earlier: list[dict[str, Any]] = []
             later: list[dict[str, Any]] = []
             seen = {measure_id}

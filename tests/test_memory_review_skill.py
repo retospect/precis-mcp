@@ -35,6 +35,7 @@ def test_python_off_review_records_no_stamp() -> None:
         "corroboration, not a repo check",
         "records no `kg-review` verdict, neither `ok` nor `fixed`",
         "Skip step 2",
-        "or step 2 was skipped",
+        "step 2 was skipped because the repo check could not run",
+        "reason='repo-check-unavailable: <why>'",
     ):
         assert phrase in section

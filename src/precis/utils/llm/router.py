@@ -2609,7 +2609,17 @@ class FailoverProvider:
             if rung.profile is not None:
                 call_req = _replace(call_req, profile=rung.profile)
             started = time.monotonic()
-            rung_model = rung.model or model
+            # A chain rung that pins a local-only alias (an operator
+            # ``llm.chain.*`` row naming ``summarizer`` on a hosted wire)
+            # gets the same hosted-small remap the resolved model gets —
+            # ``rung.model or model`` would otherwise hand the alias to a
+            # hosted endpoint that has never heard of it (the 395 class).
+            rung_model = _hosted_small_remap(
+                rung.model or model,
+                rung.transport,
+                has_local_slot=call_req.local_url is not None,
+                profile=rung.profile,
+            )
             rung_profile = resolve_profile(rung.profile) if rung.profile else None
             # A subscription-profile rung gates per call here (ops
             # allowlist, bulk guard, window cap). The refusal is
@@ -4993,6 +5003,32 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     if ladder:
         ladder, _unavail = _drop_unavailable_rungs(ladder, model)
         if not ladder:
+            # A durably oversized call is refused on size before the
+            # availability verdict: "max input" names the real problem,
+            # where "no usable rung" would send the caller debugging the
+            # host (td771804 routes a pinned non-Claude model to
+            # openai_compat, which a base-url-less host always drops).
+            from precis.utils.llm import admit as _admit
+
+            refusal = _admit.check_dispatch(
+                req, model=model, transport=_unavail[0][0].transport
+            )
+            if refusal is not None:
+                return _gate_result(
+                    req,
+                    LlmResult(
+                        text="",
+                        cost_usd=None,
+                        turns_used=None,
+                        model=model,
+                        tier=req.tier,
+                        error=refusal,
+                    ),
+                    entered=entered,
+                    transport=_unavail[0][0].transport,
+                    routed=_routed_placement(routed_rung, None),
+                    account=request_account(req, _unavail[0][0]),
+                )
             return _gate_result(
                 req,
                 LlmResult(
@@ -6383,10 +6419,16 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     it). Reuses ``LlmConfig.from_env`` and overrides only the model +
     ``enabled`` flag so the resolved tier model wins.
 
-    Transport failures open a process-local cooldown shared across models
-    on the same endpoint and with ``served_by`` slot acquisition. After the
-    cooldown, one call checks recovery while concurrent calls skip. A
-    transport failure on the probe renews the cooldown.
+    A slot-pinned ``local_url`` shares the served-endpoint health mark
+    (gr622031) with ``served_by`` slot acquisition: a dead-wire failure
+    marks that endpoint down so dispatch skips it for the cooldown and
+    ``acquire`` stops reserving on it; after the cooldown one call checks
+    recovery while concurrent calls skip. The mark keys on
+    ``req.local_url`` only — a ``None`` endpoint (the env-configured
+    default loopback) never marks, so the SMALL lane's in-process retry
+    keeps dialing through answered transport failures (a 5xx or a socket
+    timeout) instead of being short-circuited by a mark its own previous
+    attempt wrote. ``_dispatch_openai_tools`` keys the same way.
     """
     from dataclasses import replace
 
@@ -6424,7 +6466,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     messages = messages or [{"role": "user", "content": req.prompt}]
     from precis.utils.llm import local_serving as _local
 
-    skip_for, _claimed = _local.endpoint_probe(cfg.url)
+    skip_for, _claimed = _local.endpoint_probe(req.local_url)
     if skip_for > 0:
         return LlmResult(
             text="",
@@ -6466,7 +6508,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         )
     else:
         out = result_from_openai(res, model=model, tier=req.tier)
-    _note_endpoint_result(cfg.url, out)
+    _note_endpoint_result(req.local_url, out)
     return out
 
 

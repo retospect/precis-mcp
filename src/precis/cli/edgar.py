@@ -7,7 +7,7 @@ import json
 import sys
 from datetime import UTC
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 from precis.cli.patent import _parse_interval
 from precis.config import edgar_raw_root, edgar_user_agent
 from precis.errors import PrecisError
@@ -98,6 +98,7 @@ def run_list(args: argparse.Namespace) -> None:
 def run_runner(args: argparse.Namespace) -> None:
     """Execute the CLI or launchd watch pass."""
     store = Store.connect(resolve_dsn(args.database_url))
+    bind_process_store(store)
     try:
         summary = run_one_pass(
             store=store,
