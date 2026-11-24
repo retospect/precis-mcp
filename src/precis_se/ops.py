@@ -4815,6 +4815,9 @@ def _op_import_trace(tree: SeTree, op: dict[str, Any]) -> None:
     linked protein fold's original mmCIF before this pure op runs."""
     from precis_chain import read_trace
 
+    # The validator imports the tree types from this module.
+    from precis_se.atomic.validate import _A_TO_M
+
     raw = op.get("source", op.get("text"))
     if not isinstance(raw, str) or not raw.strip():
         raise OpError("import_trace: needs source= (the PDB / mmCIF text)")
@@ -4851,7 +4854,7 @@ def _op_import_trace(tree: SeTree, op: dict[str, Any]) -> None:
             )
         trace = traces[str(chain_id)]
         lo, hi = _trace_window(op, trace.shape[0])
-        runs = chain_protein.build_runs(trace[lo:hi] * 1e-10, step, tube)
+        runs = chain_protein.build_runs(trace[lo:hi] * _A_TO_M, step, tube)
         for run in runs:
             chain_vocab.vet_path(run.record["path"], "import_trace")
     except (ChainError, chain_protein.TraceError) as exc:
