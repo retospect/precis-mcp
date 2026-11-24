@@ -8,6 +8,11 @@ Board reads apply ref visibility during recursive walks and before
 aggregation. A hidden intermediate ref ends the walk, so a visible
 descendant cannot reveal the path through it.
 
+Flat todo listings apply tag and title filters before limiting results.
+An explicit STATUS filter in index or flat replaces the default live
+scope so callers can list terminal todos. Status-specific lists retain
+their named scope.
+
 Memory review closure checks the trust ledger for the current content
 of the linked memories. Corroboration when the repo could not be checked
 uses an explicit audit reason so it does not count as a trust stamp.

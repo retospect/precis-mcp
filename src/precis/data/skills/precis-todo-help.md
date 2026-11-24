@@ -358,10 +358,17 @@ filter via `search(tags=['due:<date>'])`.
 search(kind="todo", q="abstract draft")
 search(kind="todo", q="precis-v2 review", tags=["STATUS:open"])
 search(kind="todo", q="reviewer", tags=["STATUS:open", "project:precis-v2"])
+search(kind="todo", view="index", tags=["reto:ask"])
 ```
 
-`tags=` filters with AND semantics. Combine with `q=` to rank
-inside the filtered set.
+`tags=` filters with AND semantics. In ordinary search, combine with
+`q=` to rank inside the filtered set. In `index`, `flat`, `active`,
+`doing` and `done`, each whitespace-separated term in `q=` must occur
+in the title (case-insensitive).
+
+A positive or negated `STATUS:` filter (e.g. `STATUS:done` or
+`!STATUS:done`) lifts the live-status default in `index` and `flat`.
+`active`, `doing` and `done` keep their named status scope.
 
 ## Inspect a todo's full record (debug `meta`)
 ## Why isn't this todo dispatching / firing / unblocking?

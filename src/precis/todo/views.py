@@ -1357,8 +1357,55 @@ ACTIVE_STATUSES: frozenset[str] = frozenset(
 )
 
 
+def _status_pinned(tags: list[str] | None) -> bool:
+    """A ``tags=`` entry naming the STATUS axis, either polarity —
+    ``'STATUS:done'`` pins it and ``'!STATUS:done'`` excludes on it;
+    both suppress the listing's implicit live-status filter the same
+    way a positive pin does (the ``_apply_status_default`` reading)."""
+    for t in tags or []:
+        s = t.strip()
+        if s.startswith("!"):
+            s = s[1:].lstrip()
+        if s.startswith("STATUS:"):
+            return True
+    return False
+
+
+def _q_terms_clause(q: str | None) -> tuple[list[str], list[str]]:
+    """``q=`` → per-term title-substring WHERE fragments + params.
+
+    Every whitespace-split term must appear in ``r.title`` — the
+    every-term-must-match reading ``view='reto-queue'`` gives its
+    ``q=`` (a todo's title IS its text). ``position()`` needs no
+    LIKE-wildcard escaping."""
+    clauses: list[str] = []
+    params: list[str] = []
+    for term in (q or "").split():
+        clauses.append("position(lower(%s) in lower(r.title)) > 0")
+        params.append(term)
+    return clauses, params
+
+
+def _filter_note(tags: list[str] | None, q: str | None) -> str:
+    """The ``(tags=[…] · q='…')`` header/empty-message suffix — names
+    the applied filters so a filtered listing can't be misread as the
+    whole queue."""
+    bits = []
+    if tags:
+        bits.append(f"tags={tags!r}")
+    if q and q.strip():
+        bits.append(f"q={q!r}")
+    return f" ({' · '.join(bits)})" if bits else ""
+
+
 def render_status_flat(
-    store: Store, *, statuses: frozenset[str], label: str, limit: int = 200
+    store: Store,
+    *,
+    statuses: frozenset[str],
+    label: str,
+    limit: int = 200,
+    tags: list[str] | None = None,
+    q: str | None = None,
 ) -> Response:
     """Flat status-filtered list — ``view='active'|'doing'|'done'``.
 
@@ -1366,7 +1413,28 @@ def render_status_flat(
     newest first. The tree-aware surfaces (``doable``/``blocked``/…)
     stay separate; this is the plain triage list. The rotation fence
     (retire-dossier) keeps a quest's direction todos out of every one of
-    these status lists — they are the attempt tree, not work."""
+    these status lists — they are the attempt tree, not work.
+
+    ``tags=``/``q=`` narrow the set (gr781824): tags AND through the
+    shared tag filter, ``q``'s terms must each appear in the title."""
+    clauses = [
+        "r.kind = 'todo'",
+        "r.retired_at IS NULL",
+        secret_fence("r", path="todo_views"),
+        f"NOT {direction_todo_sql('r')}",
+        "COALESCE("
+        "(SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
+        " WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),"
+        " 'open') = ANY(%s)",
+    ]
+    params: list[Any] = [sorted(statuses)]
+    tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+    if tag_frag:
+        clauses.append(tag_frag)
+        params.extend(tag_params)
+    q_clauses, q_params = _q_terms_clause(q)
+    clauses.extend(q_clauses)
+    params.extend(q_params)
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
@@ -1378,22 +1446,15 @@ def render_status_flat(
                    ) AS status,
                    r.title
               FROM refs r
-             WHERE r.kind = 'todo'
-               AND r.retired_at IS NULL
-               AND {secret_fence("r", path="todo_views")}
-               AND NOT {direction_todo_sql("r")}
-               AND COALESCE(
-                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) = ANY(%s)
+             WHERE {" AND ".join(clauses)}
              ORDER BY r.ref_id DESC
              LIMIT %s
             """,
-            (sorted(statuses), limit),
+            (*params, limit),
         ).fetchall()
+    note = _filter_note(tags, q)
     if not rows:
-        body = f"no todos with status in {sorted(statuses)}"
+        body = f"no todos with status in {sorted(statuses)}{note}"
         body += render_next_section(
             [
                 ("search(kind='todo', view='roots')", "the strategic dashboard"),
@@ -1401,7 +1462,7 @@ def render_status_flat(
             ]
         )
         return Response(body=body)
-    lines = [f"# {len(rows)} todo ({label})"]
+    lines = [f"# {len(rows)} todo ({label}{note})"]
     sizes = store.chunks.body_byte_counts([r[0] for r in rows])
     for ref_id, status, title in rows:
         first_line = (title or "").split("\n", 1)[0]
@@ -1424,12 +1485,45 @@ def render_status_flat(
     return Response(body=body)
 
 
-def render_flat(store: Store, *, limit: int = 200) -> Response:
+def render_flat(
+    store: Store,
+    *,
+    limit: int = 200,
+    tags: list[str] | None = None,
+    q: str | None = None,
+) -> Response:
     """``view='flat'`` / ``view='index'`` — the plain enumeration:
     every live todo, one row each with status + parent columns
     (gr489581 — finding "parentless open todos whose text starts
-    with …" needed raw SQL because no flat listing existed)."""
-    terminal = sorted(views_terminal())
+    with …" needed raw SQL because no flat listing existed).
+
+    ``tags=``/``q=`` narrow the set (gr781824): tags AND through the
+    shared tag filter, ``q``'s whitespace-split terms must each appear
+    in the title — the every-term-must-match reading
+    ``view='reto-queue'`` gives its ``q=``. A ``STATUS:`` pin (either
+    polarity) lifts the implicit live-status exclusion the way it does
+    the default search's."""
+    clauses = [
+        "r.kind = 'todo'",
+        "r.retired_at IS NULL",
+        secret_fence("r", path="todo_views"),
+    ]
+    params: list[Any] = []
+    if not _status_pinned(tags):
+        clauses.append(
+            "COALESCE("
+            "(SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id"
+            " WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),"
+            " 'open') <> ALL(%s)"
+        )
+        params.append(sorted(views_terminal()))
+    tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+    if tag_frag:
+        clauses.append(tag_frag)
+        params.extend(tag_params)
+    q_clauses, q_params = _q_terms_clause(q)
+    clauses.extend(q_clauses)
+    params.extend(q_params)
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
@@ -1441,23 +1535,17 @@ def render_flat(store: Store, *, limit: int = 200) -> Response:
                    ) AS status,
                    CASE WHEN {secret_fence_for("r.parent_id", path="todo_views")} THEN r.parent_id END, r.title
               FROM refs r
-             WHERE r.kind = 'todo'
-               AND r.retired_at IS NULL
-               AND {secret_fence("r", path="todo_views")}
-               AND COALESCE(
-                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) <> ALL(%s)
+             WHERE {" AND ".join(clauses)}
              ORDER BY r.ref_id DESC
              LIMIT %s
             """,
-            (terminal, limit),
+            (*params, limit),
         ).fetchall()
+    note = _filter_note(tags, q)
     if not rows:
-        return Response(body="no live todos")
+        return Response(body=f"no live todos{note}")
     lines = [
-        f"# {len(rows)} todo (flat)",
+        f"# {len(rows)} todo (flat{note})",
         "",
         "  id | status | parent | title | size",
     ]

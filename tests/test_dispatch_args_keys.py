@@ -977,7 +977,7 @@ def test_args_key_naming_forwarded_kwarg_is_promoted_not_rejected(
 
     bad = _call(runtime_with_store, "todo", "search", {"sort": "bogus"})
     assert "not accepted by todo.search" not in bad, bad
-    assert "sort= is supported" in bad, bad
+    assert "sort='prio'" in bad, bad
 
 
 def test_wrapper_defaulted_page_does_not_shadow_args_page(

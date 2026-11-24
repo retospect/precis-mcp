@@ -1605,6 +1605,95 @@ def test_flat_and_index_views_list_parent_and_status(handler: TodoHandler) -> No
         assert f"{_id_of(done.body)} | done" not in out.body
 
 
+# ── gr781824: view='index'/'flat' honour tags=/q= ────────────────────
+
+
+def test_flat_index_honours_tags(handler: TodoHandler) -> None:
+    """gr781824: ``search(kind='todo', view='index', tags=[...])`` used
+    to drop the filter and return the newest live todos regardless of
+    tag — the call ``me762522``/``me766775`` teach for the
+    waiting-on-Reto list."""
+    tagged = handler.put(text="voice session item", tags=["reto:ask"])
+    tid = _id_of(tagged.body)
+    untagged = handler.put(text="unrelated release poll")
+    uid = _id_of(untagged.body)
+    for spelling in ("flat", "index"):
+        out = handler.search(view=spelling, tags=["reto:ask"])
+        assert f"{tid} | open" in out.body
+        assert "voice session item" in out.body
+        assert f"{uid} | open" not in out.body
+        assert "unrelated release poll" not in out.body
+
+
+def test_flat_index_tags_and_compose(handler: TodoHandler) -> None:
+    """The gripe's second call: tags AND, and both filters apply at once."""
+    hit = handler.put(text="voice session item", tags=["reto:ask", "project:memory"])
+    hid = _id_of(hit.body)
+    handler.put(text="voice session item", tags=["reto:ask"])
+    handler.put(text="voice session item", tags=["project:memory"])
+    out = handler.search(view="index", tags=["reto:ask", "project:memory"])
+    assert f"{hid} | open" in out.body
+    assert out.body.count("voice session item") == 1
+
+
+def test_flat_index_honours_q(handler: TodoHandler) -> None:
+    """``q=`` narrows the flat listing: every whitespace-split term
+    must appear in the title (the view='reto-queue' reading)."""
+    hit = handler.put(text="voice session item for Reto")
+    hid = _id_of(hit.body)
+    handler.put(text="news poll tick")
+    out = handler.search(view="index", q="voice session item")
+    assert f"{hid} | open" in out.body
+    assert "news poll tick" not in out.body
+    # every term must match — a partial-term row stays out
+    out = handler.search(view="index", q="voice nonexistent")
+    assert f"{hid} | open" not in out.body
+
+
+def test_flat_status_pin_lifts_live_exclusion(handler: TodoHandler) -> None:
+    """``tags=['STATUS:done']`` on the flat view is an explicit status
+    reading — the implicit live-status filter lifts rather than making
+    the pin unmatchable (the ``_apply_status_default`` convention)."""
+    done = handler.put(text="a closed item")
+    did = _id_of(done.body)
+    handler.tag(id=did, add=["STATUS:done"])
+    out = handler.search(view="index", tags=["STATUS:done"])
+    assert f"{did} | done" in out.body
+
+
+def test_flat_status_lists_honour_tags(handler: TodoHandler) -> None:
+    """``view='active'|'doing'|'done'`` take the same tags= channel."""
+    tagged = handler.put(text="tagged active item", tags=["reto:ask"])
+    _id_of(tagged.body)
+    handler.put(text="untagged active item")
+    out = handler.search(view="active", tags=["reto:ask"])
+    assert "tagged active item" in out.body
+    assert "untagged active item" not in out.body
+    done = handler.put(text="tagged done item", tags=["reto:ask"])
+    did = _id_of(done.body)
+    handler.tag(id=did, add=["STATUS:done"])
+    out = handler.search(view="done", tags=["reto:ask"])
+    assert "tagged done item" in out.body
+    assert "tagged active item" not in out.body
+
+
+def test_tree_views_refuse_dropped_filters(handler: TodoHandler) -> None:
+    """Views that cannot read q=/tags= refuse rather than silently
+    widen to every live todo — the gr781824 drop, refused loudly."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="tags=.*not supported"):
+        handler.search(view="reto-queue", tags=["reto:ask"])
+    with pytest.raises(BadInput, match="q=.*not supported"):
+        handler.search(view="doable", q="voice")
+    with pytest.raises(BadInput, match="does not read tags="):
+        handler.search(view="waiting", tags=["reto:ask"])
+    with pytest.raises(BadInput, match="does not read q="):
+        handler.search(view="roots", q="voice")
+    with pytest.raises(BadInput, match="does not read"):
+        handler.search(view="asks", q="voice", tags=["reto:ask"])
+
+
 # ── rotation fence (retire-dossier slice 2) ─────────────────────────
 
 

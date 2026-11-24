@@ -559,12 +559,56 @@ def _view_doable(
     )
 
 
-#: Dispatch table: view → renderer ``(store, args, page_size) -> Response``.
-#: Arg-less renderers ignore the trailing two params so the dispatch
-#: stays branch-free. The keys are :class:`TodoView` members; ``search``
-#: resolves the wire string to the enum and looks it up here. The
-#: totality assertion below makes a half-wired view an import-time error
-#: rather than a runtime "unknown view".
+#: Flat views that accept both ``q=`` and ``tags=`` (gr781824).
+_FLAT_FILTER_VIEWS = frozenset(
+    {
+        TodoView.FLAT,
+        TodoView.INDEX,
+        TodoView.ACTIVE,
+        TodoView.DOING,
+        TodoView.DONE,
+    }
+)
+
+
+def _view_flat(
+    store: Store,
+    view: TodoView,
+    page_size: int,
+    *,
+    q: str | None = None,
+    tags: list[str] | None = None,
+) -> Response:
+    """The ``_FLAT_FILTER_VIEWS`` dispatch — normalize ``tags=`` the way
+    ``_view_doable`` does, then call the matching flat renderer."""
+    normalized_tags = Tag.normalize_filter(
+        tags,
+        kind="todo",
+        axis_in_use=lambda prefix: prefix in store.tag_namespaces(),
+    )
+    limit = page_size or 200
+    if view in (TodoView.FLAT, TodoView.INDEX):
+        return views.render_flat(store, limit=limit, tags=normalized_tags, q=q)
+    if view is TodoView.ACTIVE:
+        statuses, label = views.ACTIVE_STATUSES, "active"
+    elif view is TodoView.DOING:
+        statuses, label = frozenset({"doing"}), "doing"
+    else:
+        statuses, label = frozenset({"done"}), "done"
+    return views.render_status_flat(
+        store,
+        statuses=statuses,
+        label=label,
+        limit=limit,
+        tags=normalized_tags,
+        q=q,
+    )
+
+
+#: Map of :class:`TodoView` members to default renderers. ``search``
+#: dispatches flat views, ``doable`` and ``reto-queue`` directly to pass
+#: their supported filters. The totality assertion checks view coverage
+#: at import time.
 _TREE_SEARCH_VIEWS: dict[
     TodoView, Callable[[Any, dict[str, Any] | None, int], Response]
 ] = {
@@ -1117,6 +1161,13 @@ class TodoHandler(NumericRefHandler):
         ids: list[str | int] | None = None,
         **_kw: Any,
     ) -> Response:
+        """Search todos or render a named view.
+
+        The flat views (index, flat, active, doing, done) accept both
+        ``q=`` and ``tags=``. Among these filters, doable accepts only
+        ``tags=`` and reto-queue accepts only ``q=``. Unsupported filters
+        on those views or any other tree view raise BadInput.
+        """
         q = fold_match_all_q(q)
         readings: list[str] = []
         # gr678249: a dict in the q= slot is args= typed in the wrong
@@ -1281,9 +1332,20 @@ class TodoHandler(NumericRefHandler):
                     next=nexts,
                 ) from None
             if view_enum is TodoView.DOABLE:
-                # gr568264: doable is the one tree view that honours
-                # tags= — the table's 3-arg signature has no channel
-                # for it, so it dispatches here with the raw tags.
+                # gr568264: doable honours tags= — the table's 3-arg
+                # signature has no channel for it, so it dispatches here
+                # with the raw tags. q= it does not read — refuse rather
+                # than drop it (gr781824's silent-drop class).
+                if q and q.strip():
+                    raise BadInput(
+                        "q= is not supported with view='doable' on todo "
+                        "search — it would be silently dropped",
+                        next=(
+                            f"search(kind='todo', q={q!r}) · "
+                            f"search(kind='todo', view='index', q={q!r}) "
+                            "for the flat list"
+                        ),
+                    )
                 return interpreted(
                     _view_doable(self.store, args, page_size, tags=tags),
                     readings,
@@ -1293,12 +1355,48 @@ class TodoHandler(NumericRefHandler):
                 # page_size= and page= — the table's 3-arg signature has
                 # no q/page channel, so it dispatches here like DOABLE.
                 # args={'under'} is refused above for every non-doable
-                # view.
+                # view. tags= it does not read — refuse rather than drop
+                # it (gr781824's silent-drop class).
+                if tags:
+                    raise BadInput(
+                        "tags= is not supported with view='reto-queue' "
+                        "on todo search — it would be silently dropped",
+                        next=f"search(kind='todo', tags={list(tags)!r})",
+                    )
                 return asks_view.render_reto_queue(
                     self.store,
                     q=q,
                     page_size=page_size,
                     page=_kw.get("page", 1),
+                )
+            if view_enum in _FLAT_FILTER_VIEWS:
+                # gr781824: the flat listings and status lists honour
+                # q=/tags= — the table's 3-arg signature has no channel
+                # for them, so they dispatch here like DOABLE.
+                return interpreted(
+                    _view_flat(self.store, view_enum, page_size, q=q, tags=tags),
+                    readings,
+                )
+            if (q and q.strip()) or tags:
+                # Every remaining tree view (roots, projects, waiting,
+                # …) reads neither q= nor tags= — refuse rather than
+                # silently widen to every live todo, which is what
+                # view='index' used to do with tags= (gr781824).
+                dropped = []
+                if q and q.strip():
+                    dropped.append(f"q={q!r}")
+                if tags:
+                    dropped.append(f"tags={list(tags)!r}")
+                raise BadInput(
+                    f"view={view!r} does not read {' or '.join(dropped)} "
+                    "on todo search — the filter would be silently "
+                    "dropped",
+                    next=(
+                        "search(kind='todo', view='index'"
+                        + (f", q={q!r}" if q and q.strip() else "")
+                        + (f", tags={list(tags)!r}" if tags else "")
+                        + ") — the flat listing reads both"
+                    ),
                 )
             return interpreted(
                 _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size),

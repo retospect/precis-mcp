@@ -237,6 +237,13 @@ entries AND, `'!<tag>'` excludes — and composes with `under=`. It is
 the way to ask "what's doable in programme/spec X" when the work is
 tagged (e.g. `spec:<slug>`).
 
+| Todo search views | Accepted filters | Filters that raise `BadInput` |
+|---|---|---|
+| `index`, `flat`, `active`, `doing`, `done` | `tags=` and `q=` | |
+| `doable` | `tags=` | `q=` |
+| `reto-queue` | `q=` | `tags=` |
+| Other tree views | | `tags=` and `q=` |
+
 `under=` scopes by subtree: a todo id/handle lists that subtree's
 leaves; a memory handle (`me<N>`) resolves the `plan-of` todos of the
 memory and its `part-of` spec roots, then unions their subtrees — so
