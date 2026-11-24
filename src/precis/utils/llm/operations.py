@@ -27,9 +27,8 @@ Both are surfaced **read-only, with the reason**, in the UI (Phase 2); the resol
 here returns ``None`` for any non-registered source, so today's path is byte-identical
 for them.
 
-**Ships dark.** With :data:`LLM_OPERATIONS` mirroring each migrated call site's former
-``model=`` literal and no ``llm.op.*`` row written, :func:`resolve_op` returns the same
-model the call site pinned before, so ``route()`` resolves byte-identically.
+Registry defaults supply tier and model and can supply an operation-specific
+chain. A valid live operation chain overrides the registry chain.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ from dataclasses import dataclass
 from precis.utils.llm.router import (
     Rung,
     Tier,
+    Transport,
     filter_tool_rungs,
     parse_chain_rungs,
 )
@@ -62,9 +62,10 @@ class OpDefault:
     the tier default"); ``env`` names a legacy per-op ``PRECIS_*_MODEL`` escape
     hatch that still overrides the literal (deploy-time fallback, below the
     runtime DB override) so migrating a call site off its ``model=`` arg loses
-    no capability. ``label`` / ``description`` are the "defaults visible" UI
-    surface; ``note`` is a mouseover shown when the default or grouping took
-    real judgment. ``quota_fallback`` opts the op into the router's
+    no capability. ``chain`` supplies an operation-specific ladder when there
+    is no valid live chain override. ``label`` / ``description`` are the
+    "defaults visible" UI surface; ``note`` is shown when the default or
+    grouping took real judgment. ``quota_fallback`` opts the op into the router's
     subscription-pause escape (:func:`wants_quota_fallback`): when the rung
     the gate pauses draws claude-subscription quota, the call lands on the
     next non-subscription rung its chain already defines instead of pausing —
@@ -79,6 +80,7 @@ class OpDefault:
     env: str | None = None
     note: str | None = None
     quota_fallback: bool = False
+    chain: tuple[Rung, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,20 @@ LOCAL_FIRST_SETS: dict[str, tuple[str, ...]] = {
     "tables": ("survey_extract:table_recipe",),
     "claims": ("dtree:claim_check",),
 }
+
+
+# Both mint-door checks need to run on session hosts without Claude auth.
+_TAPROOT_MINT_CHAIN = (
+    Rung(Transport.CLAUDE_P, label="cloud"),
+    Rung(
+        Transport.LOCAL,
+        model="openai/gpt-oss-120b",
+        label="local",
+        max_tokens=4096,
+        timeout_s=300,
+        reasoning_effort="low",
+    ),
+)
 
 
 #: The steerable allow-list — one entry per operation whose model the operator
@@ -296,17 +312,21 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
         label="Taproot dedup judgment",
         description="Deduplicate taproot claims via the `taproot:dedup` operation.",
         note=(
-            "quota_fallback because a paused judge pauses EVERY mint, not "
-            "just one cast: during the 2026-11-11 norr-her-survey update the "
-            "claude subscription quota window tripped mid-pass and the "
-            "judge returned a pause on every candidate, deferring 21 puts "
-            "for ~17 hours (gr639347). A mint that lands on the chain's "
-            "next non-subscription rung (Opus via OpenRouter, then whatever "
-            "the operator's `llm.op.taproot:dedup` chain offers) beats a "
-            "deferred hub — the dedup prompt already biases toward "
-            "'different', so a weaker rung errs on the recoverable side."
+            "Claude remains the primary judge. Session MCPs without Claude "
+            "credentials can judge on the fleet's gpt-oss-120b serving endpoint "
+            "via its model card (gr610977). Quota-paused calls can also use "
+            "the local fallback (gr639347)."
         ),
         quota_fallback=True,
+        chain=_TAPROOT_MINT_CHAIN,
+    ),
+    "taproot:containment": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Taproot containment judgment",
+        description="Check whether a neighbouring hub already covers the claim.",
+        quota_fallback=True,
+        chain=_TAPROOT_MINT_CHAIN,
     ),
     "taproot:merge-confirm": OpDefault(
         tier=Tier.BIG,
@@ -665,51 +685,52 @@ def _warn_once(source: str, reason: str, msg: str, *args: object) -> None:
 
 
 def resolve_op_chain(source: str | None, *, tools_needed: bool) -> list[Rung] | None:
-    """The per-operation rung list from ``llm.op.<source>``'s ``chain`` key, or
-    ``None`` (→ the caller uses the tier chain).
+    """Resolve a registered operation's live chain over its code default.
 
-    Only a registered source honours it. The rungs use the ``llm.chain.<tier>``
-    grammar and the same parser/validation
-    (:func:`~precis.utils.llm.router.parse_chain_rungs`); a malformed chain is
-    logged and ignored (tier chain), and a tool-using call drops tool-less
-    rungs, an emptied filter also yielding ``None``.
+    Live chains use the tier chain parser. Malformed overrides are logged
+    and ignored. Tool-using calls drop tool-less rungs. An empty result
+    returns ``None``, so the caller uses the tier chain.
     """
-    if not source or source not in LLM_OPERATIONS:
+    if not source or (default := LLM_OPERATIONS.get(source)) is None:
         return None
     from precis.utils.llm import live_config
 
     override = live_config.op_override(source)
-    if not override or "chain" not in override:
-        return None
-    raw = override["chain"]
     key = live_config.op_key(source)
-    if not isinstance(raw, list) or not raw:
-        _warn_once(
-            source,
-            "shape",
-            "operations: %s chain is not a non-empty list — tier chain",
-            key,
-        )
-        return None
-    rungs, bad = parse_chain_rungs(raw)
-    if bad is not None:
-        reason, i, detail = bad
-        _warn_once(
-            source,
-            f"rung {i} {reason}",
-            "operations: %s chain rung %d %s (%r) — using the tier chain",
-            key,
-            i,
-            reason,
-            detail,
-        )
-        return None
+    rungs = list(default.chain)
+    if override and "chain" in override:
+        rungs = _parse_op_chain(source, key, override["chain"]) or rungs
     if tools_needed:
         kept = filter_tool_rungs(rungs, key, warn=(source, "tools") not in _warned)
         if len(kept) != len(rungs):
             _warned.add((source, "tools"))
         rungs = kept
     return rungs or None
+
+
+def _parse_op_chain(source: str, key: str, raw: object) -> list[Rung]:
+    if not isinstance(raw, list) or not raw:
+        _warn_once(
+            source,
+            "shape",
+            "operations: %s chain is not a non-empty list — using the default",
+            key,
+        )
+        return []
+    rungs, bad = parse_chain_rungs(raw)
+    if bad is not None:
+        reason, i, detail = bad
+        _warn_once(
+            source,
+            f"rung {i} {reason}",
+            "operations: %s chain rung %d %s (%r) — using the default",
+            key,
+            i,
+            reason,
+            detail,
+        )
+        return []
+    return rungs
 
 
 __all__ = [

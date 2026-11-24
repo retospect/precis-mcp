@@ -38,7 +38,7 @@ import pytest
 from precis.budget import meter
 from precis.budget import settings as budget_settings
 from precis.utils.claude_agent import AgentResult
-from precis.utils.llm import live_config, operations
+from precis.utils.llm import live_config, local_serving, operations
 from precis.utils.llm import router as llm_router
 from precis.utils.llm.operations import EXCLUDED_OPERATIONS, LLM_OPERATIONS
 from precis.utils.llm.router import LlmRequest, Tier, route
@@ -594,6 +594,55 @@ def test_resolve_op_chain_non_registered_is_none(
 
 
 # ── taproot:dedup quota fallback (gr639347) ─────────────────────────────
+
+
+@pytest.mark.parametrize("judge_name", ["dedup_judge", "containment_judge"])
+def test_taproot_mint_routes_to_local_endpoint_without_claude_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    judge_name: str,
+) -> None:
+    from precis.taproot import canon
+
+    _bind(monkeypatch, None)
+    monkeypatch.setattr(
+        "precis.workers.capability_probe.claude_bin_present", lambda: True
+    )
+    monkeypatch.setattr(
+        "precis.workers.capability_probe.claude_auth_present", lambda: False
+    )
+    monkeypatch.setattr("precis.secrets.get_secret", lambda name, **kwargs: None)
+
+    def acquire(model: str) -> local_serving.LocalSlot:
+        assert model == "openai/gpt-oss-120b"
+        return local_serving.LocalSlot(
+            host="maple",
+            resource=f"llm:{model}",
+            reserved=True,
+            paused=False,
+            endpoint="http://127.0.0.1:11445/v1",
+        )
+
+    def dispatch(req: LlmRequest, model: str) -> llm_router.LlmResult:
+        assert req.local_url == "http://127.0.0.1:11445/v1"
+        assert req.max_tokens == 4096
+        assert req.local_reasoning_effort == "low"
+        return llm_router.LlmResult(
+            text='{"verdict":"different","confidence":0.99,"rationale":"Distinct claims"}',
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+        )
+
+    monkeypatch.setattr(local_serving, "acquire", acquire)
+    monkeypatch.setattr(local_serving, "release", lambda slot: None)
+    monkeypatch.setattr(llm_router, "_dispatch_local", dispatch)
+
+    verdict = getattr(canon, judge_name)("Claim A", "Claim B")
+    assert verdict["verdict"] == "different"
+    assert verdict["rationale"].startswith("Distinct claims")
+    if judge_name == "dedup_judge":
+        assert verdict["judge"] == "local:openai/gpt-oss-120b"
 
 
 def test_taproot_dedup_wants_quota_fallback(

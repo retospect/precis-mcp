@@ -256,6 +256,8 @@ hub (`fi<N>`) and its sentence, with three options:
   the same put, its verdict rides under `dedup_override.containment`
   and the `unjudged` marker is kept for the later re-judge.
 
+`Upstream` with "judge failed … hub not minted" means the judge is unavailable. Pause the mint wave and retry when judging recovers.
+
 Same-passage neighbours (up to 3), and hubs of the same paper whose body
 has no embedding yet (up to 3 more; a restatement from another passage
 minted seconds ago), also go through the ordinary dedup judge, so a `same`

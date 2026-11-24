@@ -45,7 +45,10 @@ Resolution, per dispatch (in order)
    selects the local-serving node's gpt-oss rung, with the endpoint resolved from the
    model card rather than embedded in code.
    An op override may carry a ``chain`` using ``llm.chain.<tier>`` grammar.
-   Malformed chains are logged and ignored. ``resolve_chain`` consumers
+   A valid live chain takes precedence over the registry's chain and the tier
+   chain. The taproot mint judges default to Claude first, with a model-card
+   serving fallback so session hosts without Claude credentials can judge.
+   Malformed overrides are logged and ignored. ``resolve_chain`` consumers
    (the ``/status`` models panel, ``planner_rung0_model``) show the tier chain.
    A saturated local op rung 0 advances to the next rung. Exclusions: functional pins
    (``classify_topics``→``summarizer``, ``classify:escalate``→its Tier-2

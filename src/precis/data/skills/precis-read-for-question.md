@@ -149,10 +149,11 @@ line ([[precis-nanopub-help]]).
 **Cluster proposals before the door, not after.** The door's dedup judge
 does see hubs minted earlier in the same session, and refuses a
 same-paper near-duplicate (attach or force; see
-[[precis-taproot-mint-help]] "Minting at scale"). But it costs quota per
-put, so do not lean on it: group the proposals from all readers by claim
+[[precis-taproot-mint-help]] "Minting at scale"). Claude judging costs quota per
+put. Group the proposals from all readers by claim
 first, using `view='similar'` between proposals or your own judgment, and
 call the door once per group with every group member as a supporter.
+If the door reports `Upstream` with "judge failed … hub not minted", pause the wave and retry when judging recovers.
 
 ## Step 5 — side-facts: cap them
 ## The paper had a useful fact unrelated to the question
