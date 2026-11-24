@@ -417,6 +417,19 @@ def test_memory_review_close_requires_current_stamp(
         else {"add": ["STATUS:done"]}
     )
 
+    def close_todo() -> tuple[str, bool]:
+        return runtime.dispatch_with_status(
+            close_verb, {"kind": "todo", "id": tid, **close}
+        )
+
+    def assert_close_refused() -> None:
+        body, is_error = close_todo()
+        assert is_error, body
+        assert body.startswith(
+            "[error:BadInput] memory review needs a current kg-review trust stamp"
+        ), body
+        assert "STATUS:open" in {str(tag) for tag in store.tags_for(tid)}
+
     def stamp(reason: str) -> None:
         runtime.dispatch(
             "edit",
@@ -434,22 +447,19 @@ def test_memory_review_close_requires_current_stamp(
             },
         )
 
-    with pytest.raises(BadInput, match="current kg-review trust stamp"):
-        runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
-    assert "STATUS:open" in {str(tag) for tag in store.tags_for(tid)}
+    assert_close_refused()
     stamp("plain consideration")
-    with pytest.raises(BadInput, match="current kg-review trust stamp"):
-        runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    assert_close_refused()
     stamp("kg-review:fixture:2026-11-23:ok")
     runtime.dispatch(
         "edit",
         {"kind": "memory", "id": mid, "mode": "replace", "text": "repaired claim"},
     )
     stamp("checked the edited wording")
-    with pytest.raises(BadInput, match="current kg-review trust stamp"):
-        runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    assert_close_refused()
     stamp("kg-review:fixture:2026-11-23:fixed")
-    runtime.dispatch(close_verb, {"kind": "todo", "id": tid, **close})
+    body, is_error = close_todo()
+    assert not is_error, body
     assert "STATUS:done" in {str(tag) for tag in store.tags_for(tid)}
 
 
