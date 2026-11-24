@@ -224,7 +224,14 @@ The scheduled passes and one-off sweeps raise into the same router:
 | `llm_tier_regression` · `watchdog:condition` (`llm-tier-regression:<tier>/<rung>`) | `health_digest` conditions probe, over `app_settings['llm_tier_regression:last']` written by the weekly `llm_tier_regression` cadence | a ladder offering's weekly gold-set pass rate (passed over attempted — errored tasks count) dropped more than `PRECIS_COND_TIER_REGRESSION_DROP` (default 0.05) against the last recorded run (`history[-1]` — prior runs in `history`), or a previously-scored offering came back void ("went dark": every task errored or unscored; void→void stays quiet, recovery auto-closes). Model, wire or provider drift — a silent model-id swap reads as a drop |
 | `secret_check` (`failed:<name>`) | weekly `secret_check` cadence | the credential probe in `precis.secret_status` rejected a configured key — alert carries the name, HTTP status and key URL, never the value |
 | `plan_dispatch` (`plan-moot:<root>`) | `plan_dispatch` tick | a plan closed itself as moot — its open nodes were set to `won't-do`; the detail says why, reopen the root if the call was wrong |
+
+## Producers — slice host and other passes
+
+| source family | raised by | what |
+|---|---|---|
 | `run_slice` (`lane-host-refusal:{lane}`) | `run_slice` launch preflight | a lane refused for a host reason (missing binary, dead login, failed trust seed); the lane backs off 30 minutes with no attempt, the detail carries the refusal's next step, and a successful launch on that lane resolves the alert |
+| `run_slice` (`kept:{host}` / `{folder}`) | the host's slice-folder sweep | a build or land attempt folder was kept because its work is not provably in the hub (a withheld push, a failed push, a scope the user manager still lists, or a folder the sweep could not drop); one alert per folder, clears when the folder is gone — read the folder on the named host, push its HEAD to the attempt ref or keep what is needed, then remove it |
+| `run_slice` (`disk:{host}` / `{path}`) | the same sweep | the filesystem holding the slice folders passed `PRECIS_SLICE_DISK_WARN_PCT` (90%; pages at `PRECIS_SLICE_DISK_CRIT_PCT`, 97%); look for kept folders under the path or free the volume; clears once usage falls back under the warn threshold |
 | `jobstarve` (`control:<executor>`) | `sweeper` | a control-class job (recurring/release-band) sat claimable past `PRECIS_CONTROL_STARVED_MINUTES` (default 15m) while bulk work holds the lane — check `claim.max_running.<job_type>` and the host's claimants ([[precis-job-ops-help]]) |
 | `nanopub_ots` · `nanopub-demote` · `nanopub_mirror` · `watch:*` · `ingest:*` · `inject_scan` · `llm_reconcile:drift` · `scheduler` · `quest_tick` · `admit:oversize` · `fetch_oa:*` · `orcid_enrich` | their owning pass | one or two conditions each — see `/rules` |
 
