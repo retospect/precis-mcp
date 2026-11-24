@@ -530,6 +530,7 @@ def test_the_host_sweep_stops_a_terminal_jobs_slice_scope(
     monkeypatch.setattr(
         run_slice._slice_limits, "stop_scope", lambda unit: stopped.append(unit)
     )
+    monkeypatch.setattr(run_slice._slice_limits, "scope_may_be_live", lambda unit: True)
     tree = _job_tree(tmp_path, 42, 70)
     handle = {"pid": 4242, "pgid": 4242, "slice_scope": "precis-slice-td42-j70-a.scope"}
     _settle_row(monkeypatch, "running", {"compute_handle": handle})
@@ -537,8 +538,13 @@ def test_the_host_sweep_stops_a_terminal_jobs_slice_scope(
     assert stopped == []
     seams["alive"] = False
     _settle_row(monkeypatch, "failed", {"compute_handle": handle})
-    _settle(_Store(), tree)
+    assert _settle(_Store(), tree) is None
     assert stopped == ["precis-slice-td42-j70-a.scope"]
+    assert "finalize" not in _names(seams)
+    monkeypatch.setattr(
+        run_slice._slice_limits, "scope_may_be_live", lambda unit: False
+    )
+    assert _settle(_Store(), tree) is not None
 
 
 def test_the_host_sweep_kills_a_group_once_the_job_has_been_terminal_for_30s(

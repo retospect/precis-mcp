@@ -1537,7 +1537,12 @@ folder. The sweep also raises the alert for each folder it keeps,
 resolves the alert of a folder that is gone and removes failed cuts
 (`*.cut-*`) and half-removed folders (`*.drop-*`) older than an hour.
 
-Three rules decide what the pass may do with a folder:
+Four rules decide what the pass may do with a folder:
+
+- **The sweep settles terminal or abandoned jobs.** An abandoned job has no
+  live lease and has held the same status for at least six hours. The
+  sweep leaves its processes alone and waits for them to exit before
+  saving its work and removing the folder.
 
 - **Deleted only after a save in the same pass.** A folder is removed
   only when a finalize of it in that pass came back `pushed` or
@@ -1551,7 +1556,11 @@ Three rules decide what the pass may do with a folder:
   whose handle was never saved) is looked up there. A session found
   alive keeps its folder, and a relaunch adopts it instead of starting
   a second one. A process whose identity cannot be read in a pass (`ps`
-  timed out) counts as alive in that pass.
+  timed out) counts as alive in that pass. On scoped Linux launches,
+  a child can leave the session's process group and stay in its scope.
+  A recorded scope keeps the folder until the user manager confirms
+  the scope has disappeared. The sweep requests a stop for terminal
+  jobs and checks again on a later pass.
 - **No signal without an identity.** A stop signal goes to a process
   group only when the launch recorded who its leader is and one read in
   that pass confirms it, or the leader is gone and only its group's
@@ -1568,6 +1577,12 @@ message names the earlier job's state; the usual cause is a job row
 that never went terminal or a session process that will not die. A
 folder whose job row is missing, or belongs to another task, is not
 waited for.
+
+The same pass watches the filesystem holding the worktrees directory
+(or the hub before that directory exists). It warns at 90% used and
+pages on entering critical at 97% used. The thresholds are
+`PRECIS_SLICE_DISK_WARN_PCT` and `PRECIS_SLICE_DISK_CRIT_PCT`. A
+successful reading below the warning threshold clears the alert.
 
 **What a kept-folder alert asks for.** The alert `build folder kept:
 <folder>` says which case it is:

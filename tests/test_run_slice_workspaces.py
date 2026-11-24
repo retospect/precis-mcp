@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -883,12 +884,20 @@ def test_a_second_repositorys_attempt_gets_its_excludes_through_open_attempt(
 # ── one sequential place settles a folder: the poll or the sweep (round 6) ──
 
 
-def _tidy(rig: _Rig, status: str, handle: Any, *, job: int = 900, **meta: Any) -> None:
-    """The next watch pass's ``tidy`` over a terminal job's folder."""
+def _tidy(
+    rig: _Rig,
+    status: str,
+    handle: Any,
+    *,
+    job: int = 900,
+    alive: bool = False,
+    **meta: Any,
+) -> None:
+    """The next watch pass's ``tidy`` over a job's folder."""
     from tests.test_run_slice import _Ref
 
     rig.store.refs.setdefault(job, _Ref(job, "job", {}, None))
-    rig.seams["alive"] = False
+    rig.seams["alive"] = alive
     row = (
         status,
         {
@@ -1171,3 +1180,154 @@ def test_a_commit_made_after_the_adopted_record_reaches_the_hub_before_the_poll_
     assert rig.seams["land_kw"] == [{"ref": "refs/factory/build/42/900", "head": later}]
     assert pctx.meta_set["push"]["sha"] == later
     assert any("newer than the stored record" in t for k, t in pctx.chunks)
+
+
+# ── gr782157: a job nobody polls still gets its folder judged ────────────
+
+
+def test_an_abandoned_job_folder_is_saved_and_dropped_by_the_sweep(rig: _Rig) -> None:
+    """gr782157: a job nobody polls sits ``running`` forever — its lease
+    expired and nothing renews it (a dead or renamed node pin, a worker
+    that went away). Past the abandon bound the sweep judges the folder
+    as a terminal job's: the work reaches the hub, the record lands on
+    the job and the task, and the folder goes instead of filling the
+    volume."""
+    _ctx, handle = rig.submit()
+    tree = rig.tree()
+    _work_to_commit(tree)
+    old = "2020-01-01T00:00:00+00:00"
+    _tidy(rig, "running", handle, _status_at=old, lease_until=old)
+    record = rig.store.refs[900].meta["push"]
+    assert record["state"] == "pushed" and record["wip"] is True
+    assert rig.hub_ref() == record["sha"] and not tree.exists()
+    assert rig.store.refs[42].meta["build_ref"]["sha"] == record["sha"]
+    assert _no_lock_files(rig)
+
+
+def test_a_polled_job_keeps_its_folder_however_old_the_status(rig: _Rig) -> None:
+    """The flip side of the abandon bound: a job a poller is minding (a
+    live lease, renewed each pass) keeps its folder however long its
+    status has stood — its own poll judges it."""
+    _ctx, handle = rig.submit()
+    tree = rig.tree()
+    _work_to_commit(tree)
+    before = _folder_state(tree)
+    lease = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    _tidy(
+        rig,
+        "running",
+        handle,
+        _status_at="2020-01-01T00:00:00+00:00",
+        lease_until=lease,
+    )
+    assert tree.is_dir() and _folder_state(tree) == before
+    assert "push" not in rig.store.refs[900].meta and rig.hub_ref() is None
+
+
+def test_a_running_job_inside_the_bound_keeps_its_folder(rig: _Rig) -> None:
+    """Even with no lease, a ``running`` job younger than the bound keeps
+    its folder: a submit or relaunch window holds one only briefly."""
+    _ctx, handle = rig.submit()
+    tree = rig.tree()
+    _work_to_commit(tree)
+    before = _folder_state(tree)
+    _tidy(rig, "running", handle, _status_at=datetime.now(UTC).isoformat())
+    assert tree.is_dir() and _folder_state(tree) == before
+    assert "push" not in rig.store.refs[900].meta
+
+
+def test_an_abandoned_job_with_a_live_session_is_kept_and_never_signalled(
+    rig: _Rig,
+) -> None:
+    """An abandoned job whose session still answers keeps the folder and
+    is never signalled (the row may yet come under a poller that owns
+    it): the sweep reports the stuck group instead, once."""
+    _ctx, handle = rig.submit()
+    tree = rig.tree()
+    old = "2020-01-01T00:00:00+00:00"
+    _tidy(rig, "running", handle, alive=True, _status_at=old, lease_until=old)
+    assert tree.is_dir()
+    assert rig.seams["signals"] == []
+    assert "push" not in rig.store.refs[900].meta
+    raised = [d for k, d in rig.seams["alerts"] if k == "raise"]
+    assert raised and {d["fingerprint"] for d in raised} == {tree.name}
+    assert "still running" in rig.store.comments(42)[-1]
+
+
+def test_abandoned_folder_waits_for_scope_recorded_only_in_baseline(rig: _Rig) -> None:
+    _ctx, handle = rig.submit()
+    tree = rig.tree()
+    _work_to_commit(tree)
+    scope = "precis-slice-td42-j900-test.scope"
+    rig.monkeypatch.setattr(
+        run_slice, "_folder_launch_records", lambda *_: [(tree, {"slice_scope": scope})]
+    )
+    checked: list[str] = []
+
+    def scope_may_be_live(unit: str) -> bool:
+        checked.append(unit)
+        return True
+
+    rig.monkeypatch.setattr(
+        run_slice._slice_limits, "scope_may_be_live", scope_may_be_live
+    )
+    rig.monkeypatch.setattr(
+        run_slice._slice_limits,
+        "stop_scope",
+        lambda _: pytest.fail("stopped an abandoned scope"),
+    )
+    old = "2020-01-01T00:00:00+00:00"
+    _tidy(rig, "running", handle, _status_at=old, lease_until=old)
+    assert checked == [scope]
+    assert tree.is_dir() and rig.hub_ref() is None
+    rig.monkeypatch.setattr(
+        run_slice._slice_limits, "scope_may_be_live", lambda _: False
+    )
+    _tidy(rig, "running", handle, _status_at=old, lease_until=old)
+    assert not tree.exists() and rig.hub_ref() is not None
+
+
+# ── gr782157: the sweep says when the folders volume nears full ──────────
+
+_GiB = 1024**3
+
+
+def test_a_nearly_full_folders_volume_warns_and_resolves(rig: _Rig) -> None:
+    """The sweep's own disk check: ``run_slice:disk`` warns on the
+    filesystem the attempt folders live on and resolves once space
+    returns — the alert the gripe says never came while 198 kept
+    folders filled a builder's volume."""
+    _ctx, handle = rig.submit()
+    _work_to_commit(rig.tree())
+    rig.seams["disk"] = (100 * _GiB, 92 * _GiB, 8 * _GiB)  # 92% used
+    _tidy(rig, "cancelled", handle)
+    raised = [d for k, d in rig.seams["alerts"] if k == "raise"]
+    [disk] = [d for d in raised if d["source"].startswith("run_slice:disk:")]
+    assert disk["severity"] == "warn" and "92%" in disk["title"]
+    rig.seams["disk"] = OSError("disk usage unavailable")
+    _tidy(rig, "cancelled", handle)
+    assert (disk["source"], disk["fingerprint"]) in rig.seams["alert_open"]
+    rig.seams["disk"] = None  # space returned
+    _tidy(rig, "cancelled", handle)
+    stale = [d for k, d in rig.seams["alerts"] if k == "stale"]
+    resolved = [d for d in stale if d["source"].startswith("run_slice:disk:")]
+    assert resolved and resolved[-1]["live"] == set()
+    assert (disk["source"], disk["fingerprint"]) not in rig.seams["alert_open"]
+
+
+def test_a_full_volume_pages_once_on_a_fresh_critical(rig: _Rig) -> None:
+    """Critical pages once: a repeat sighting of the same open critical
+    does not page again."""
+    _ctx, handle = rig.submit()
+    _work_to_commit(rig.tree())
+    rig.seams["disk"] = (100 * _GiB, 99 * _GiB, _GiB)  # 99% used
+    _tidy(rig, "cancelled", handle)
+    raised = [d for k, d in rig.seams["alerts"] if k == "raise"]
+    [disk] = [d for d in raised if d["source"].startswith("run_slice:disk:")]
+    assert disk["severity"] == "critical"
+    notified = [d for k, d in rig.seams["alerts"] if k == "notify"]
+    assert len(notified) == 1
+    # still open at critical: no second page
+    rig.seams["alert_prior"] = "critical"
+    _tidy(rig, "cancelled", handle)
+    assert len([d for k, d in rig.seams["alerts"] if k == "notify"]) == 1

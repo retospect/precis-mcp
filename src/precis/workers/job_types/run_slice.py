@@ -282,19 +282,21 @@ that holds the lane's credentials with ``params.target_node``):
   own poll when its session ends (it needs the push record to mint the
   land; an outage relaunch of the same job also settles that job's own
   previous folder, :func:`_open_attempt`), and the host sweep, :func:`tidy`,
-  the job type's ``tidy`` hook, for every folder whose job is terminal.
-  There is no lock: no two writers meet, because the sweep leaves a running
-  job's folder alone and a job's poll is not run beside the sweep. This
+  the job type's ``tidy`` hook, for folders whose jobs are terminal or
+  abandoned (expired or absent lease and at least six hours in one status).
+  There is no folder lock: the sweep leaves leased jobs to their poller,
+  and a job's poll is not run beside the sweep. This
   rests on the executor's serialisation, and its two documented exceptions
   (the lock connection cannot be opened; a holder stuck past
   ``_WATCH_LOCK_MAX``) can let two passes overlap, as for every job type.
   The sweep's ``settle`` function (:func:`_settle`, handed to
   :func:`_slice_ws.sweep`) sends SIGKILL to a group that still answers once
   the job has been terminal for 30 seconds (when :func:`_may_signal`
-  allows it), finalizes a folder the poll never judged (a cancel, a
-  deadline kill, a crash) and stamps the job's ``meta.push`` and the task's
+  allows it). It waits for recorded scopes to disappear and stops them
+  only for terminal jobs. It finalizes a folder the poll never judged
+  (a cancel, a deadline kill, a crash) and stamps the job's ``meta.push`` and the task's
   ``meta.build_ref``, returns the stored ``meta.push`` of a folder the poll
-  judged, and reads a land folder as empty once its job ended; a folder the
+  judged, and reads an eligible land folder as empty; a folder the
   hub does not hold stays and is reported (:func:`_alert_kept_folders`:
   the task's comment and the alert).
   The sweep settles a folder only by a job row of its own task
@@ -405,6 +407,8 @@ from typing import Any
 
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import (
+    notify_critical_alert,
+    open_alert_severity,
     raise_alert,
     resolve_alert_by_fingerprint,
     resolve_stale_alerts,
@@ -5762,6 +5766,116 @@ def _alert_kept_folders(store: Any, root: Path, notes: list[str]) -> None:
         log.warning("run_slice: kept-folder alert clearing failed", exc_info=True)
 
 
+def _disk_source(host: str) -> str:
+    """The alert source of the volume checks under a host's worktrees
+    dirs (``run_slice:disk:{host}`` in :mod:`precis.alert_ids`; the
+    fingerprint is the watched path)."""
+    return f"run_slice:disk:{host}"
+
+
+def _disk_usage(path: Path) -> Any:
+    """``shutil.disk_usage`` behind a name — tests stand the volume in."""
+    return shutil.disk_usage(path)
+
+
+#: Percent-used thresholds for the filesystem a checkout's attempt folders
+#: live on (gr782157): folders the sweep keeps (or cannot settle yet) only
+#: grow, and a full volume fails every new clone — 198 unjudged folders
+#: took a builder's data volume to 100% before anyone noticed. The
+#: ``disk_check`` worker watches configured paths; this watches the
+#: filesystem that actually holds the folders, on the host that keeps
+#: them. ``warn`` opens an alert, ``critical`` also pages once (the same
+#: pattern as :func:`disk_check.run_disk_check_pass`).
+DISK_WARN_PCT_ENV = "PRECIS_SLICE_DISK_WARN_PCT"
+DISK_CRIT_PCT_ENV = "PRECIS_SLICE_DISK_CRIT_PCT"
+DISK_WARN_DEFAULT = 90.0
+DISK_CRIT_DEFAULT = 97.0
+
+
+def _disk_threshold(env_var: str, default: float) -> float:
+    raw = os.environ.get(env_var, "")
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.info("run_slice: bad %s=%r, falling back to %.1f", env_var, raw, default)
+        return default
+
+
+def _alert_full_volume(store: Any, roots: list[Path]) -> None:
+    """One pass over the filesystems the roots' attempt folders live on
+    (gr782157): ``warn`` at :data:`DISK_WARN_DEFAULT` percent used,
+    ``critical`` — and one page on a fresh critical, as
+    :func:`disk_check.run_disk_check_pass` does — at
+    :data:`DISK_CRIT_DEFAULT`. The worktrees dir is watched, else the hub's
+    (a checkout that never built still has a volume the first clone needs
+    room on). Alerts resolve when usage falls under the warn line."""
+    host = _slice_park.node_name()
+    source = _disk_source(host)
+    warn_pct = _disk_threshold(DISK_WARN_PCT_ENV, DISK_WARN_DEFAULT)
+    crit_pct = max(_disk_threshold(DISK_CRIT_PCT_ENV, DISK_CRIT_DEFAULT), warn_pct)
+    live: set[str] = set()
+    for root in roots:
+        target = worktrees_dir(root)
+        if not target.is_dir():
+            target = _slice_ws.hub_path(root)
+        fingerprint = str(target)
+        try:
+            usage = _disk_usage(target)
+        except OSError:
+            usage = None
+        if usage is None or usage.total <= 0:
+            # The probe says nothing about space returning. Keep either
+            # fingerprint this checkout could have used on a previous pass.
+            live.update((str(worktrees_dir(root)), str(_slice_ws.hub_path(root))))
+            continue
+        used_pct = usage.used / usage.total * 100.0
+        if used_pct < warn_pct:
+            continue
+        live.add(fingerprint)
+        free_gib = usage.free / (1024**3)
+        total_gib = usage.total / (1024**3)
+        critical = used_pct >= crit_pct
+        line = crit_pct if critical else warn_pct
+        title = f"[slice] {host}:{target} at {used_pct:.0f}% full"
+        detail = (
+            f"{free_gib:.1f} GiB free of {total_gib:.1f} GiB total "
+            f"({used_pct:.1f}% used, {'crit' if critical else 'warn'} "
+            f"threshold {line:.0f}%). Attempt folders the host sweep keeps "
+            "only grow, and a full volume fails every new slice clone. On "
+            f"the host, look under {target} for kept folders — each has "
+            f"its own {_kept_source(host)} alert naming what to do — or "
+            "free the volume another way. The alert clears under the warn "
+            "threshold."
+        )
+        if critical:
+            # Page on a fresh critical OR a warn→crit escalation: the same
+            # open row is bumped, so is_new alone would never fire it
+            # (disk_check's gr191008 lesson).
+            prior = open_alert_severity(store, source=source, fingerprint=fingerprint)
+            _ref_id, is_new = raise_alert(
+                store,
+                source=source,
+                fingerprint=fingerprint,
+                title=title,
+                detail=detail,
+                severity="critical",
+            )
+            if is_new or prior != "critical":
+                notify_critical_alert(store, title, detail, fingerprint=fingerprint)
+        else:
+            raise_alert(
+                store,
+                source=source,
+                fingerprint=fingerprint,
+                title=title,
+                detail=detail,
+                severity="warn",
+            )
+    resolve_stale_alerts(store, source=source, live_fingerprints=live)
+
+
 def _report_kept(
     ctx: Any,
     todo_id: int,
@@ -6051,6 +6165,19 @@ SETTLE_KILL_AFTER_S = 30.0
 #: across sweeps) and goes on returning ``None``.
 SETTLE_STUCK_AFTER_S = 900.0
 
+#: A job nobody polls — its ``target_node`` pin names a node no executor of
+#: this database claims, or the worker that owned it is gone — sits
+#: non-terminal forever, and an unjudged folder holds ~1.5 GiB apiece
+#: (gr782157: 198 such folders filled a builder's volume before the first
+#: alert). The job row stays the judge: the sweep settles a non-terminal
+#: job's folder once the job has no live lease (``meta.lease_until`` absent
+#: or past — the poll renews it every pass) and its STATUS has stood at
+#: least this long. The bound is above every bounded hold a folder can be
+#: under (the lane-wait and outage park budgets are ~6h each, and every
+#: such job is still polled, so its lease is live anyway); what it catches
+#: is only the unminded case.
+SETTLE_ABANDON_AFTER_S = 6 * 3600.0
+
 
 #: The status :func:`_job_row` reports for a job that is not there, as against
 #: ``None`` (the database could not be read).
@@ -6217,6 +6344,20 @@ def _build_ref_may_take(store: Any, todo_id: int, job_id: int) -> bool:
     return True
 
 
+def _abandoned(meta: Mapping[str, Any]) -> bool:
+    """A non-terminal job nobody is minding (gr782157): no live lease —
+    ``meta.lease_until`` absent, unparseable or past (the poll renews it
+    every pass, so a live lease means an owner that judges its own
+    folder) — and the STATUS tag has stood at least
+    :data:`SETTLE_ABANDON_AFTER_S`. A ``_status_at`` the sweep cannot read
+    keeps the folder: judge nothing on a guess."""
+    lease = _seconds_since(meta.get("lease_until"))
+    if lease is not None and lease < 0:
+        return False
+    age = _seconds_since(meta.get("_status_at"))
+    return age is not None and age >= SETTLE_ABANDON_AFTER_S
+
+
 def _unowned_folder(store: Any, tree: Path, todo_id: int) -> None:
     """A folder whose job row is absent, or is another task's (a worker
     reading another database than the one the folder was cut under, or a job
@@ -6236,8 +6377,8 @@ def _settle(
     store: Any, root: Path, tree: Path, todo_id: int, job_id: int, role: str
 ) -> _slice_ws.Pushed | None:
     """The sweep's judgement of one folder from its job row (gr741695,
-    ``settle`` of :func:`_slice_ws.sweep`), the only path of a terminal
-    job's folder: ``release`` touches no folder, so everything it used to do
+    ``settle`` of :func:`_slice_ws.sweep`), for terminal and abandoned jobs.
+    ``release`` touches no folder, so everything it used to do
     for one (the push record, the task's ``build_ref``, the kept reports)
     happens here and in :func:`_alert_kept_folders`:
 
@@ -6248,7 +6389,15 @@ def _settle(
       A worker pointed at another database than the one the folder was cut
       under would otherwise judge, signal and delete by a stranger's row
       that happens to share the id;
-    * the job still runs: ``None``;
+    * the job still runs: ``None``, until the job is abandoned
+      (:func:`_abandoned` — no live lease and the STATUS tag at least
+      :data:`SETTLE_ABANDON_AFTER_S` old). A job nobody polls can never
+      end, so its folder would sit unjudged forever (gr782157); an
+      abandoned job's folder is judged as a terminal job's is, except a
+      still-answering group or scope is left alone — the row may yet come
+      under a poller that owns it;
+    * a recorded scope still exists or its state is unknown: ``None``.
+      Terminal jobs request a stop and a later pass confirms disappearance;
     * the job is terminal and its process group still answers: ``None``,
       after a SIGKILL once it has been terminal for
       :data:`SETTLE_KILL_AFTER_S` (a later pass then finds it gone; the
@@ -6284,14 +6433,27 @@ def _settle(
     if status == ROW_ABSENT or row_todo != todo_id:
         _unowned_folder(store, tree, todo_id)
         return None
-    if status not in JOB_TERMINAL_STATUSES:
+    terminal = status in JOB_TERMINAL_STATUSES
+    if not terminal and not _abandoned(meta):
         return None
     row_handle = meta.get("compute_handle")
+    # A child can leave the process group while remaining in its scope.
+    # Baselines also name scopes for launches whose job handle was never saved.
+    scopes = {
+        scope
+        for _, record in _folder_launch_records(todo_id, tree)
+        if isinstance(scope := record.get("slice_scope"), str) and scope
+    }
     if isinstance(row_handle, dict):
-        # gr762463: a terminal job's scope goes, whatever its process group
-        # says — the executor's deadline and cancel skip ``kill`` once the
-        # group is gone, and the scope's escaped processes are not in it.
-        _slice_limits.stop_scope(row_handle.get("slice_scope"))
+        scope = row_handle.get("slice_scope")
+        if isinstance(scope, str) and scope:
+            scopes.add(scope)
+    live_scopes = sorted(
+        scope for scope in scopes if _slice_limits.scope_may_be_live(scope)
+    )
+    if terminal:
+        for scope in live_scopes:
+            _slice_limits.stop_scope(scope)
     # A live process in the folder keeps it: the row's handle, or — a handle
     # that was never saved (a launch that raised, a relaunch whose handle save
     # failed, a parked relaunch) leaves the row naming a dead one — the session
@@ -6331,27 +6493,32 @@ def _settle(
         if age is None:
             age = _seconds_since(meta.get("_status_at"))
         signalled = True
-        if alive_handle is not None:
-            pgid = _handle_pgid(alive_handle)
-            signalled = _may_signal(alive_handle)
+        if terminal:
+            # A dead job's live group gets SIGKILL once it has outlived the
+            # stop's own TERM and the poll's escalation; a live job's group
+            # is never signalled — the row may yet come under a poller that
+            # owns it.
+            if alive_handle is not None:
+                pgid = _handle_pgid(alive_handle)
+                signalled = _may_signal(alive_handle)
+                if (
+                    pgid
+                    and age is not None
+                    and age >= SETTLE_KILL_AFTER_S
+                    and signalled
+                    and _signal_target_ok(alive_handle)
+                ):
+                    try:
+                        _signal_group(pgid, signal.SIGKILL)
+                    except OSError:
+                        pass
             if (
-                pgid
+                acceptance_alive
+                and isinstance(row_handle, dict)
                 and age is not None
                 and age >= SETTLE_KILL_AFTER_S
-                and signalled
-                and _signal_target_ok(alive_handle)
             ):
-                try:
-                    _signal_group(pgid, signal.SIGKILL)
-                except OSError:
-                    pass
-        if (
-            acceptance_alive
-            and isinstance(row_handle, dict)
-            and age is not None
-            and age >= SETTLE_KILL_AFTER_S
-        ):
-            _kill_acceptance(row_handle)  # gated on one identity read inside
+                _kill_acceptance(row_handle)  # gated on one identity read inside
         if age is not None and age >= SETTLE_STUCK_AFTER_S:
             # The group still answers a long while after the job ended
             # (uninterruptible, or a handle with no identity to signal by):
@@ -6361,16 +6528,39 @@ def _settle(
                 if alive_handle is not None
                 else "its acceptance-test group"
             )
+            if terminal:
+                why = f"{what} still answers after the job ended" + (
+                    ""
+                    if signalled
+                    else " and cannot be signalled (no recorded identity)"
+                )
+            else:
+                why = (
+                    f"{what} still answers; the job is still {status}, and "
+                    "the group of a job that is not terminal is never signalled"
+                )
             _report_kept(
                 None,
                 todo_id,
                 tree,
-                f"{what} still answers after the job ended"
-                + (
-                    ""
-                    if signalled
-                    else " and cannot be signalled (no recorded identity)"
-                ),
+                why,
+                _slice_park.node_name(),
+                store=store,
+                kind="stuck",
+            )
+        return None
+    if live_scopes:
+        age = _seconds_since(
+            meta.get("finished_at") if terminal else meta.get("_status_at")
+        )
+        if age is None:
+            age = _seconds_since(meta.get("_status_at"))
+        if age is not None and age >= SETTLE_STUCK_AFTER_S:
+            _report_kept(
+                None,
+                todo_id,
+                tree,
+                f"cannot confirm its slice scope is gone: {', '.join(live_scopes)}",
                 _slice_park.node_name(),
                 store=store,
                 kind="stuck",
@@ -6403,7 +6593,7 @@ def _settle(
         hub=_slice_ws.hub_path(root),
         base=base,
         start_sha=start.sha if start is not None else None,
-        reason="run ended",
+        reason="run ended" if terminal else "the job never ended",
     )
     if (
         confirming
@@ -6431,6 +6621,14 @@ def _settle(
             store,
             job_id,
             f"run_slice: the folder {tree.name} {_confirm_words(stored, pushed)}",
+        )
+    if not terminal:
+        _job_event(
+            store,
+            job_id,
+            f"run_slice: nobody is minding this job (still {status}, no "
+            f"live lease) — the host sweep settled its folder {tree.name}: "
+            f"{pushed.state}",
         )
     return pushed
 
@@ -8748,14 +8946,10 @@ def _same_path(recorded: str, tree: Path) -> bool:
         return Path(recorded) == tree
 
 
-def _live_session_for(todo_id: int, tree: Path) -> dict[str, Any] | None:
-    """The handle of a session of the job that owns the folder ``tree`` that
-    is still running (or whose process group still answers), found the way
-    :func:`_recover_launch` finds one: the newest run dir of the task whose
-    launch record names this folder, its pid and its identity check. Used
-    where a handle with no pid (an outage park, a launch whose handle was
-    never saved) would otherwise read as "no session": nothing finalizes or
-    drops a folder under a live session."""
+def _folder_launch_records(
+    todo_id: int, tree: Path
+) -> Iterable[tuple[Path, dict[str, Any]]]:
+    """Launch baselines naming this folder, newest first."""
     try:
         task_dir = ops_root() / f"td{todo_id}"
         attempts = sorted(
@@ -8764,13 +8958,21 @@ def _live_session_for(todo_id: int, tree: Path) -> dict[str, Any] | None:
             reverse=True,
         )
     except OSError:
-        return None
+        return
     for attempt_dir in attempts:
         record = _read_launch_record(attempt_dir / "baseline")
-        if record is None or not _same_path(str(record.get("worktree") or ""), tree):
-            continue
+        if record is not None and _same_path(str(record.get("worktree") or ""), tree):
+            yield attempt_dir, record
+
+
+def _live_session_for(todo_id: int, tree: Path) -> dict[str, Any] | None:
+    """Recover a live session or group from the newest matching run dir.
+
+    The launch record, pid and identity check cover launches whose handle
+    was never saved to the job and parked handles that no longer name a pid.
+    """
+    for attempt_dir, _ in _folder_launch_records(todo_id, tree):
         handle = _recover_attempt(attempt_dir)
-        # the newest run dir that names this folder is the one that counts
         return handle if handle is not None and _session_alive(handle) else None
     return None
 
@@ -11039,8 +11241,8 @@ def _poll_look(
     writes nothing, not even an outage park or a usage stamp. ``record``: the
     push this launch already stored — the poll's own earlier pass, which died
     between the record and the land, or between the drop and the end (the
-    sweep only settles terminal jobs, so nobody else writes one while the job
-    runs); it is adopted, nothing is judged or written again. ``meta`` is the
+    sweep leaves the folder to the poller while its lease is live); it is
+    adopted, nothing is judged or written again. ``meta`` is the
     row's meta (empty when the row could not be read)."""
     from precis.workers._mint import JOB_TERMINAL_STATUSES
 
@@ -12564,7 +12766,9 @@ def tidy(store: Any, node: str | None) -> None:
     with neither a hub nor a folders directory is passed over before any
     database read. After the folders, the same call reaps the launches'
     run dirs under :func:`ops_root` (:func:`_sweep_run_dirs`, gr743294) —
-    a pass on a host that builds nothing still sweeps those.
+    a pass on a host that builds nothing still sweeps those. The same call
+    also watches the filesystem under each root's folders dir and alerts
+    when it nears full (:func:`_alert_full_volume`, gr782157).
 
     One call has a shared budget, :data:`TIDY_BUDGET_S`: each root is given
     what is left as its sweep's ``budget_s`` and a root reached with nothing
@@ -12605,6 +12809,10 @@ def tidy(store: Any, node: str | None) -> None:
                     root,
                     exc_info=True,
                 )
+        try:
+            _alert_full_volume(store, roots)
+        except Exception:
+            log.warning("run_slice: the volume check failed", exc_info=True)
     try:
         for note in _sweep_run_dirs(store):
             log.info("run_slice: run dirs: %s", note)

@@ -122,6 +122,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
+from precis.workers.capability_probe import LOGIN_GATED_TOKENS
 from precis.workers.executors._common import (
     _DEFAULT_JOB_PRIO,
     CLAIMABLE,
@@ -894,6 +895,13 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         if gap and any(unmet_set <= tokens for tokens in dark_hosts):
             continue
         unmet = sorted(unmet_set)
+        # gr782157: a login-gated lane token reads as "binary missing"
+        # when the deficit is usually a logged-out CLI — say so.
+        logins = [
+            f"{tok} needs {LOGIN_GATED_TOKENS[tok]}, not only the binary"
+            for tok in unmet
+            if tok in LOGIN_GATED_TOKENS
+        ]
         requires = {**requires, **{tok: 1 for tok in placement_requires(meta)}}
         where = f"target_node={pin}" if pin else "no target_node pin"
         fingerprint = f"unschedulable:{ref_id}"
@@ -904,7 +912,8 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             title=f"Job #{ref_id} needs {', '.join(unmet)} — no host advertises it",
             detail=(
                 f"requires={requires}; unmet={unmet}; {where}. "
-                "Provision the capability (a host must advertise it via the "
+                + (". ".join(logins) + ". " if logins else "")
+                + "Provision the capability (a host must advertise it via the "
                 "heartbeat probe) or the job waits forever."
             ),
             severity="warn",

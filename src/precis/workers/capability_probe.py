@@ -109,6 +109,19 @@ RETRACTABLE_SOFT_SIGNALS = frozenset(
 #: so each host advertises the lane subset it carries.
 LANE_BIN_TOKENS = frozenset({"claude_bin", "codex_bin", "kimi_bin", "devin_bin"})
 
+#: Lane-bin tokens whose probe folds a vendor login into the binary check
+#: (gr782157): a host can carry the binary on PATH and still not advertise
+#: the token — ``_probe_codex_bin`` also wants ``codex login status``,
+#: ``_probe_devin_bin`` a ``devin auth`` login, ``_probe_claude_lane`` a
+#: credential the CLI accepts. The sweeper's unschedulable alert annotates
+#: these so "no host advertises codex_bin" reads as a missing login, not a
+#: missing binary. ``kimi_bin`` is binary-only.
+LOGIN_GATED_TOKENS: dict[str, str] = {
+    "claude_bin": "a credential the claude CLI accepts (env token or login)",
+    "codex_bin": "a `codex login` session",
+    "devin_bin": "a `devin auth` login",
+}
+
 
 #: The per-repo checkout tokens a second-repo slice job asks for: no
 #: ServiceSpec declares them statically — ``placement_requires`` adds one

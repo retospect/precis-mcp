@@ -32,6 +32,8 @@ brick the worker.
 ``reap_worktrees`` uses the host's existing reaper for eligibility and the
 grace re-check. Its before/after inventories are used only for reporting.
 
+Slice cleanup safety lives in :func:`run_slice._settle`.
+
 A pre-land coordinator ask holds the builder and reviewer together.
 Builds can be done with a pending land, so a review checks the build's
 ask separately from sequencing on the build's status.

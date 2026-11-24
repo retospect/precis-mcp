@@ -906,6 +906,20 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "about a minute of the folder being gone.",
     ),
     AlertRule(
+        "run_slice:disk:{host}",
+        "{path}",
+        "The filesystem holding a host's slice attempt folders is filling: "
+        "folders the host sweep keeps (or cannot settle yet) only grow, "
+        "and a full volume fails every new slice clone.",
+        "warn",
+        "run_slice",
+        triage="On the named host, look under the named path for kept "
+        "attempt folders (each has its own run_slice:kept alert saying "
+        "what to do) or free the volume another way; the host sweep "
+        "clears this within about a minute of usage falling under the "
+        "warn threshold.",
+    ),
+    AlertRule(
         "repo_lease",
         "stale-holder:{repo}/{job_id}",
         "A job still holds a second repo's land/release lease but its "

@@ -400,6 +400,40 @@ def containment(label: str) -> Containment:
     return Containment(None, (), None, f"process group only ({why})")
 
 
+def scope_may_be_live(unit: str) -> bool:
+    """Require a successful user-manager listing that omits this scope.
+
+    Slice scopes are collected after exit. A listed scope or an unavailable
+    manager keeps the folder, including while an asynchronous stop drains it.
+    """
+    if not _UNIT_RE.fullmatch(unit):
+        return True
+    if sys.platform != "linux" or shutil.which("systemctl") is None:
+        return True
+    try:
+        proc = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "list-units",
+                "--all",
+                "--plain",
+                "--no-legend",
+                "--no-pager",
+                unit,
+            ],
+            env=_systemd_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return proc.returncode != 0 or bool(proc.stdout.strip())
+
+
 def stop_scope(unit: object) -> bool:
     """Stop the slice's scope without waiting: systemd TERMs every process
     in it and KILLs what remains after :data:`STOP_TIMEOUT_S`. ``True``
@@ -435,6 +469,7 @@ __all__ = [
     "nproc_limit",
     "nproc_preexec",
     "scope_launch_failed",
+    "scope_may_be_live",
     "scope_props",
     "scope_runner",
     "scope_unit",

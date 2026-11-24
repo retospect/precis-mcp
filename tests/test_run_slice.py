@@ -414,16 +414,57 @@ def _fake_workspaces(
     alerts: list[tuple[str, Any]] = []
     calls["alerts"] = alerts
 
+    calls["alert_open"] = set()
+
     def fake_raise(store: Any, **kw: Any) -> tuple[int, bool]:
         alerts.append(("raise", kw))
-        return 1, True
+        key = (kw["source"], kw["fingerprint"])
+        is_new = key not in calls["alert_open"]
+        calls["alert_open"].add(key)
+        return 1, is_new
 
     def fake_stale(store: Any, *, source: str, live_fingerprints: Any) -> int:
         alerts.append(("stale", {"source": source, "live": set(live_fingerprints)}))
+        # like the real resolve: fingerprints not in the live set are gone
+        calls["alert_open"] = {
+            k
+            for k in calls["alert_open"]
+            if k[0] != source or k[1] in live_fingerprints
+        }
         return 0
 
     monkeypatch.setattr(run_slice, "raise_alert", fake_raise)
     monkeypatch.setattr(run_slice, "resolve_stale_alerts", fake_stale)
+    # the severity a previous pass left on the alert (gr782157's volume
+    # check pages on a fresh critical or a warn→crit escalation only)
+    calls["alert_prior"] = None
+    monkeypatch.setattr(
+        run_slice,
+        "open_alert_severity",
+        lambda store, **kw: calls["alert_prior"],
+    )
+    monkeypatch.setattr(
+        run_slice,
+        "notify_critical_alert",
+        lambda store, title, detail, **kw: alerts.append(
+            ("notify", {"title": title, "detail": detail})
+        ),
+    )
+    # the sweep's volume check (gr782157): a healthy volume by default —
+    # a test stands (total, used, free) bytes in ``calls["disk"]``
+    calls["disk"] = None
+
+    def fake_disk_usage(path: Path) -> Any:
+        if isinstance(calls["disk"], OSError):
+            raise calls["disk"]
+        total, used, free = calls["disk"] or (
+            10 * 1024**3,
+            1024**3,
+            9 * 1024**3,
+        )
+        return types.SimpleNamespace(total=total, used=used, free=free)
+
+    monkeypatch.setattr(run_slice, "_disk_usage", fake_disk_usage)
     for name, fn in (
         ("attempt_dir", attempt_dir),
         ("hub_path", hub_path),
@@ -667,6 +708,17 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         )
 
     monkeypatch.setattr(run_slice, "_process_alive", fake_process_alive)
+    # The release-plan defer (d19ceddf78, ``plan_disposition``): the fake
+    # store has no ``pool`` for its SQL, so the seam answers ``(False,
+    # None)`` — the generic path every test here was written against; a
+    # test of the defer stands the answer in ``calls["plan_disposition"]``.
+    calls["plan_disposition"] = None
+    monkeypatch.setattr(
+        run_slice.release_test_fixes,
+        "plan_disposition",
+        lambda store, root, state=None: calls["plan_disposition"] or (False, None),
+        raising=False,
+    )
     # the job row the host sweep and the poll re-read: none unless a test says
     # (the fake store has no pool; a real read would only log)
     calls["job_row"] = None
@@ -6829,8 +6881,10 @@ def _fix_norepro_env(
             },
             newest_red_run=lambda _s, _sha: rid,
             ci_rerun_fired=lambda _s, _rid: fired,
-            # The real reader: a fix node without meta.land_target is cut
+            # The real readers: plan_root runs on the fake store's tags;
+            # a fix node without meta.land_target is cut
             # from origin/main as before release-train T1.
+            plan_root=_release_real.plan_root,
             land_target_of=_release_real.land_target_of,
         ),
     )

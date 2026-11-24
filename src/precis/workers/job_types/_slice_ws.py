@@ -1088,12 +1088,13 @@ def sweep(
     except ``keep``.
 
     ``settle(tree, todo_id, job_id, role)`` is the caller's judgement and
-    action for one folder: ``None`` while its job still runs (or cannot
-    be judged), else the :class:`Pushed` of a :func:`finalize` it ran, or
+    action for one folder: ``None`` until its job is terminal or abandoned
+    and the recorded scopes and process groups are gone, else the
+    :class:`Pushed` of a :func:`finalize` it ran, or
     a stored one. A :attr:`~Pushed.safe` folder is dropped; any other
     stays and yields a note that begins ``"kept"`` and names the folder,
     for the caller's alert. A land folder holds no work of its own:
-    ``settle`` returns an ``EMPTY`` record once its job ended.
+    ``settle`` returns an ``EMPTY`` record once the folder is eligible.
 
     Attempt folders and legacy slice worktrees are checked for empty index
     locks older than an hour. The process checks in land_slice keep locks

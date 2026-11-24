@@ -47,13 +47,19 @@ def _upsert_host_heartbeat(store: Store, host: str, *, age_minutes: float) -> No
 
 def _alert_open(store: Store, fingerprint: str) -> bool:
     """True iff an unresolved alert with this fingerprint exists."""
+    return bool(_alert_detail(store, fingerprint) is not None)
+
+
+def _alert_detail(store: Store, fingerprint: str) -> str | None:
+    """The stored detail of the open alert with this fingerprint, if any."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM refs WHERE kind = 'alert' AND retired_at IS NULL "
-            "AND resolved_at IS NULL AND meta->>'fingerprint' = %s LIMIT 1",
+            "SELECT meta->>'detail' FROM refs WHERE kind = 'alert' AND "
+            "retired_at IS NULL AND resolved_at IS NULL AND "
+            "meta->>'fingerprint' = %s LIMIT 1",
             (fingerprint,),
         ).fetchone()
-    return row is not None
+    return str(row[0]) if row else None
 
 
 def test_unpinned_unadvertised_job_is_flagged(store: Store) -> None:
@@ -122,6 +128,26 @@ def test_no_requires_not_flagged(store: Store) -> None:
     jid = _queue(store, {"job_type": "demo", "executor": "x", "params": {}})
     _alert_unschedulable_jobs(store)
     assert _alert_open(store, f"unschedulable:{jid}") is False
+
+
+def test_login_gated_lane_token_names_the_missing_login(store: Store) -> None:
+    """gr782157: a ``codex_bin`` token no host advertises usually means the
+    builder's CLI is logged out, not that the binary is absent — the probe
+    folds the login in. The alert detail says so, so a reader provisions a
+    login rather than a binary."""
+    jid = _queue(
+        store,
+        {
+            "job_type": "run_slice",
+            "executor": "ssh_node",
+            "adapter": "codex_exec",
+            "params": {},
+        },
+    )
+    _alert_unschedulable_jobs(store)
+    assert _alert_open(store, f"unschedulable:{jid}") is True
+    detail = _alert_detail(store, f"unschedulable:{jid}") or ""
+    assert "codex_bin" in detail and "codex login" in detail
 
 
 def test_alert_resolves_once_capability_is_advertised(store: Store) -> None:

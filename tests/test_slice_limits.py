@@ -325,6 +325,26 @@ def test_scope_launch_failed_reads_only_systemd_runs_own_failure(
     assert sl.scope_launch_failed(scope, log, code) is want
 
 
+@pytest.mark.parametrize(
+    ("code", "stdout", "may_be_live"),
+    [(0, "", False), (0, "scope loaded deactivating stop", True), (1, "", True)],
+)
+def test_scope_liveness_requires_a_successful_empty_listing(
+    monkeypatch: pytest.MonkeyPatch, code: int, stdout: str, may_be_live: bool
+) -> None:
+    monkeypatch.setattr(sl.sys, "platform", "linux")
+    monkeypatch.setattr(sl.shutil, "which", lambda name: f"/usr/bin/{name}")
+    unit = "precis-slice-td7-j9-0a1b2c3d.scope"
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        assert argv[:3] == ["systemctl", "--user", "list-units"]
+        assert argv[-1] == unit
+        return subprocess.CompletedProcess(argv, code, stdout, "")
+
+    monkeypatch.setattr(sl.subprocess, "run", fake_run)
+    assert sl.scope_may_be_live(unit) is may_be_live
+
+
 def test_stop_scope_stops_only_slice_scopes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sl.sys, "platform", "linux")
     monkeypatch.setattr(sl.shutil, "which", lambda name: f"/usr/bin/{name}")
