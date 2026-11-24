@@ -12,6 +12,7 @@ hog can be hunted down.
 from __future__ import annotations
 
 import os
+import resource
 from pathlib import Path
 
 #: Per-worker budget the ceiling divides the cgroup limit by (MiB). Sized for
@@ -69,7 +70,7 @@ def rss_mb() -> float | None:
             pages = int(fh.read().split()[1])
     except (OSError, IndexError, ValueError):
         return None
-    return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+    return pages * resource.getpagesize() / (1024 * 1024)
 
 
 def rss_alarm(last_alarm_mb: float | None) -> float | None:
