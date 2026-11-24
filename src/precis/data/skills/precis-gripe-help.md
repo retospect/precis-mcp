@@ -78,7 +78,8 @@ result; no diagnosis or proposed fix is needed. Dogfooding reports add
 `tags=['dogfood', 'topic:<area>']`. A read-only agent reports `FRICTION`
 with those details to its coordinator, who files it. A title is optional: `title=` is accepted and
 becomes the first line of the body (the title is just the first line). The system tags it
-`STATUS:open` automatically.
+`STATUS:open` automatically (a `friction`-tagged filing is held instead — see
+"Show me the held friction filings").
 
 A longer filing can split the way `todo` does: `text=` is the title /
 first line and `body=` the details — they join as `text` + blank line +
