@@ -30,6 +30,7 @@ _CGROUP_LIMIT_FILES = (
 )
 #: cgroup v1 reports "no limit" as a huge page-rounded number, not "max".
 _UNLIMITED_BYTES = 1 << 60
+_PROC_STATM = Path("/proc/self/statm")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -66,8 +67,9 @@ def max_workers(
 def rss_mb() -> float | None:
     """This process's resident set in MiB (Linux), else None."""
     try:
-        with open("/proc/self/statm", encoding="ascii") as fh:
-            pages = int(fh.read().split()[1])
+        # The teardown hook samples RSS while tests' builtins.open mocks
+        # can still be active. Path.read_text uses io.open.
+        pages = int(_PROC_STATM.read_text(encoding="ascii").split()[1])
     except (OSError, IndexError, ValueError):
         return None
     return pages * resource.getpagesize() / (1024 * 1024)

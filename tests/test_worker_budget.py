@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from tests import _worker_budget as wb
@@ -27,6 +30,21 @@ def test_tiny_limit_keeps_one_worker(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_budget_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(wb.WORKER_BUDGET_ENV, "4096")
     assert wb.max_workers(24 * GIB) == 6
+
+
+def test_rss_ignores_builtin_open_mock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    statm = tmp_path / "statm"
+    statm.write_text("1024 512 0 0 0 0 0\n", encoding="ascii")
+    monkeypatch.setattr(wb, "_PROC_STATM", statm)
+
+    def fake_open(path: str, *_args: object, **_kwargs: object) -> None:
+        raise KeyError(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("builtins.open", fake_open)
+        assert wb.rss_mb() == 512 * os.sysconf("SC_PAGE_SIZE") / 1024**2
 
 
 def test_alarm_is_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
