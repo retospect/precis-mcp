@@ -5830,13 +5830,6 @@ def _alert_kept_folders(store: Any, root: Path, notes: list[str]) -> None:
         log.warning("run_slice: kept-folder alert clearing failed", exc_info=True)
 
 
-def _disk_source(host: str) -> str:
-    """The alert source of the volume checks under a host's worktrees
-    dirs (``run_slice:disk:{host}`` in :mod:`precis.alert_ids`; the
-    fingerprint is the watched path)."""
-    return f"run_slice:disk:{host}"
-
-
 def _disk_usage(path: Path) -> Any:
     """``shutil.disk_usage`` behind a name — tests stand the volume in."""
     return shutil.disk_usage(path)
@@ -5876,7 +5869,7 @@ def _alert_full_volume(store: Any, roots: list[Path]) -> None:
     (a checkout that never built still has a volume the first clone needs
     room on). Alerts resolve when usage falls under the warn line."""
     host = _slice_park.node_name()
-    source = _disk_source(host)
+    source = f"run_slice:disk:{host}"
     warn_pct = _disk_threshold(DISK_WARN_PCT_ENV, DISK_WARN_DEFAULT)
     crit_pct = max(_disk_threshold(DISK_CRIT_PCT_ENV, DISK_CRIT_DEFAULT), warn_pct)
     live: set[str] = set()

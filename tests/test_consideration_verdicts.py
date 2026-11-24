@@ -1620,19 +1620,20 @@ def test_garden_rewrite_undo_restores_remapped_verdict(store: Store) -> None:
     assert [(v.verdict, v.valid) for v in found] == [("not-useful", True)]
     assert src in store.consideration_exclusions(target).excluded
     # …and a later cascade loss still queues the reconsideration the
-    # stamped withdrawal would have swallowed.
+    # stamped withdrawal would have swallowed. The loss probe deletes the
+    # restored body chunk outright: since gr782951 a body rewrite re-homes
+    # chunk-pinned edges onto the replacement instead of cascade-dropping
+    # them, so ``replace_body_chunk`` would leave the edge live (stale on
+    # the scope sha), never lost.
+    restored = store.chunks.list_chunks_for_ref(target)[0].id
     with revision_context(
-        "re-ingest replaces the body chunk",
+        "chunk lost after the undo",
         actor="fixture",
         trust_origin="generated",
         trust_actor_type="agent",
     ):
-        store.chunks.replace_body_chunk(
-            target,
-            "Replacement body after the undo.",
-            chunk_kind="memory_body",
-            source="fixture",
-        )
+        with store.pool.connection() as c:
+            c.execute("DELETE FROM chunks WHERE chunk_id = %s", (restored,))
     assert [v.stale for v in store.scoped_considerations(target)] == ["edge-lost"]
 
 

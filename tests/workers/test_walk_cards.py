@@ -39,9 +39,10 @@ class _FakeClient:
 
 
 def _user(store: Any, login: str | None = None) -> Any:
+    token = uuid.uuid4().hex[:8]
     return store.create_web_user(
-        login=login or f"w{uuid.uuid4().hex[:8]}",
-        abbrev=f"{(login or 'w')[:2]}{uuid.uuid4().hex[:1]}",
+        login=login or f"w{token}",
+        abbrev=f"{(login or 'w')[:2]}{token[:4]}",
         password=hash_password("pw"),
     )
 

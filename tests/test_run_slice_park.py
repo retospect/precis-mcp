@@ -532,6 +532,7 @@ def test_the_host_sweep_stops_a_terminal_jobs_slice_scope(
     )
     monkeypatch.setattr(run_slice._slice_limits, "scope_may_be_live", lambda unit: True)
     tree = _job_tree(tmp_path, 42, 70)
+    tree.mkdir(parents=True)
     handle = {"pid": 4242, "pgid": 4242, "slice_scope": "precis-slice-td42-j70-a.scope"}
     _settle_row(monkeypatch, "running", {"compute_handle": handle})
     assert _settle(_Store(), tree) is None
@@ -786,8 +787,14 @@ def test_tidy_sweeps_every_checkout_this_host_builds_in_and_reports_what_it_keep
         folder = run_slice.worktrees_dir(root) / "slice-td7-j3"
         assert sum(str(folder) in c for c in kept) == 1
     assert {a["fingerprint"] for a in _alerts(seams, "raise")} == {"slice-td7-j3"}
-    [stale, _stale2] = _alerts(seams, "stale")
-    assert stale["source"] == f"run_slice:kept:{_slice_park_node()}"
+    # each checkout also clears its volume check (gr782157): tell them apart
+    stale = _alerts(seams, "stale")
+    kept_source = f"run_slice:kept:{_slice_park_node()}"
+    assert [a["source"] for a in stale].count(kept_source) == 2
+    assert {a["source"] for a in stale} == {
+        kept_source,
+        f"run_slice:disk:{_slice_park_node()}",
+    }
 
 
 def test_tidy_passes_over_a_checkout_that_never_built(
