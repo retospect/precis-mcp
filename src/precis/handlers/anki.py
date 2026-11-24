@@ -59,6 +59,7 @@ from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
+from precis.utils import handle_registry
 from precis.utils.link_target import parse_link_target
 
 #: A lone ``---`` line separating the cloze body from an optional Back Extra.
@@ -190,6 +191,78 @@ class AnkiHandler(NumericRefHandler):
         # Only the typed attachment option feeds the numeric create hook.
         kw["meta"] = {"image": image} if image is not None else None
         return super().put(auto_refresh_days=auto_refresh_days, **kw)
+
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        reason: str | None = None,
+        superseded_by: str | int | None = None,
+        dry_run: bool = False,
+        **_kw: Any,
+    ) -> Response:
+        """Soft-delete a card; ``superseded_by=`` names the replacing card.
+
+        The successor (``ak<N>`` or a bare id) is validated up front —
+        on ``dry_run`` too, so the preview refuses what the real call
+        would — and recorded as ``meta.superseded_by`` inside the delete
+        transaction, so a duplicate fold keeps its trail.
+        """
+        succ = None
+        if superseded_by is not None:
+            if id is None:
+                raise BadInput(
+                    "delete requires id=",
+                    next=f"delete(kind={self.kind!r}, id=N)",
+                )
+            ref_id = self._coerce_id(id)
+            self._resolve_ref_for_delete(ref_id)
+            raw = str(superseded_by).strip()
+            parsed = handle_registry.parse(handle_registry.normalize(raw))
+            if parsed is not None:
+                succ_kind, is_chunk, succ_id = parsed
+                if succ_kind != self.kind or is_chunk:
+                    raise BadInput(
+                        "superseded_by must name an anki card",
+                        next="superseded_by='ak<N>'",
+                    )
+                succ = succ_id
+            else:
+                succ = self._coerce_id(raw)
+            if succ == ref_id:
+                raise BadInput(
+                    "superseded_by must name a different card",
+                    next="superseded_by='ak<other card>'",
+                )
+            self._resolve_ref_for_delete(succ)
+        if succ is None or dry_run:
+            return self._delete(id, reason=reason, dry_run=dry_run)
+        # ``store.atomic()`` pins the connection, so the stamp, the liveness
+        # recheck and the retire tx inside ``_delete`` commit or roll back
+        # as one — a failed delete can't leave a lone ``superseded_by``
+        # tombstone. Both rows lock in ref_id order first: ``delete A
+        # superseded_by B`` racing ``delete B superseded_by A`` serialises
+        # on the lower row instead of both passing an unlocked check (or
+        # deadlocking), so the loser re-reads the winner's committed retire
+        # and refuses instead of minting a redirect cycle with no live
+        # survivor (review td781074). NO KEY UPDATE, matching ``retire_ref``
+        # — it conflicts with a concurrent retire/stamp yet stays compatible
+        # with the FOR KEY SHARE a ref_tags FK check holds on the card
+        # (``_after_tag_mutation`` explains the upgrade deadlock).
+        with self.store.atomic() as conn:
+            for rid in sorted((ref_id, succ)):
+                conn.execute(
+                    "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                    (rid,),
+                )
+            self._resolve_ref_for_delete(ref_id)
+            self._resolve_ref_for_delete(succ)
+            self.store.stamp_ref_meta(
+                ref_id,
+                {"superseded_by": handle_registry.format_handle(self.kind, succ)},
+                conn=conn,
+            )
+            return self._delete(id, reason=reason, dry_run=False)
 
     def _merge_put_meta(
         self, text: str, initial_meta: dict[str, Any], put_meta: dict[str, Any]

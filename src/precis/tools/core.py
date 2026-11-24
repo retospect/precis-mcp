@@ -2976,7 +2976,8 @@ def delete(
     # later get()'s Gone names the survivor ('merged into meNNN').
     reason: str | None = None,
     # memory/finding: preview memory prose mentions, name any-kind successor,
-    # or explicitly leave successor-less mentions for the gardener.
+    # or explicitly leave successor-less mentions for the gardener. anki takes
+    # superseded_by too — a same-kind 'ak<N>' successor for a duplicate fold.
     dry_run: bool | None = None,
     superseded_by: str | None = None,
     force: bool | None = None,

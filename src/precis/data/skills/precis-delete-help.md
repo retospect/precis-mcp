@@ -56,6 +56,9 @@ merging still uses the Taproot merge door. A claim hub past `candidate`
 `args={'retire_published': True}` and a `reason=`, which keeps its publish
 record: see `precis-taproot-hub-edit-help` "Retire a hub past candidate".
 
+An anki card takes `superseded_by='ak<N>'` too, recorded as the successor
+when a duplicate card is folded away.
+
 Pass `reason=` to say why — it lands as an
 `agent/deleted` row on the ref's `ref_events` log, the audit line a
 mass cleanup otherwise lacks (`kind='draft'` accepts it too: the same

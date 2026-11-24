@@ -10,11 +10,17 @@ hides ``{{c1::capital}}``). No AnkiWeb dependency yet.
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from queue import Queue
 
 import pytest
+from psycopg import Connection
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.anki import AnkiHandler, _split_extra, _strip_cloze
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
@@ -358,3 +364,156 @@ class TestLeeches:
         assert f"ak{leech}" in out.body
         assert f"ak{good}" not in out.body
         assert "fix the cloze" in out.body
+
+
+class TestAnkiDeleteSupersededBy:
+    def _put_card(self, handler: AnkiHandler, text: str) -> int:
+        return int(_search(r"id=(\d+)", handler.put(text=text).body).group(1))
+
+    def test_delete_accepts_superseded_by(self, store: Store) -> None:
+        handler = _make_handler(store)
+        ids = [self._put_card(handler, f"A {{{{c1::dup{i}}}}} card.") for i in range(2)]
+        handler.delete(id=ids[0], superseded_by=f"ak{ids[1]}", reason="duplicate")
+        ref = store.get_ref(kind="anki", id=ids[0], include_deleted=True)
+        assert ref is not None
+        assert ref.meta["superseded_by"] == f"ak{ids[1]}"
+
+    def test_delete_through_dispatch(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """The gr780836 call shape: superseded_by + reason must clear the
+        dispatch strictness gate, not just the handler's own signature."""
+        handler = _make_handler(store)
+        ids = [self._put_card(handler, f"A {{{{c1::dup{i}}}}} card.") for i in range(2)]
+        out = runtime_with_store.dispatch(
+            "delete",
+            {
+                "kind": "anki",
+                "id": ids[0],
+                "superseded_by": f"ak{ids[1]}",
+                "reason": "duplicate",
+            },
+        )
+        assert f"deleted anki card id={ids[0]}" in out
+        ref = store.get_ref(kind="anki", id=ids[0], include_deleted=True)
+        assert ref is not None
+        assert ref.meta["superseded_by"] == f"ak{ids[1]}"
+
+    def test_delete_through_dispatch_args_extras(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        handler = _make_handler(store)
+        ids = [self._put_card(handler, f"A {{{{c1::dup{i}}}}} card.") for i in range(2)]
+        out = runtime_with_store.dispatch(
+            "delete",
+            {
+                "kind": "anki",
+                "id": ids[0],
+                "__extras__": {"superseded_by": f"ak{ids[1]}", "reason": "dup"},
+            },
+        )
+        assert f"deleted anki card id={ids[0]}" in out
+
+    def test_delete_refuses_self_successor(self, store: Store) -> None:
+        handler = _make_handler(store)
+        rid = self._put_card(handler, "A {{c1::solo}} card.")
+        with pytest.raises(BadInput):
+            handler.delete(id=rid, superseded_by=rid)
+
+    def test_delete_dry_run_validates_successor(self, store: Store) -> None:
+        """dry_run previews the real call: a dead successor refuses, a live
+        one writes nothing."""
+        handler = _make_handler(store)
+        rid = self._put_card(handler, "A {{c1::solo}} card.")
+        succ = self._put_card(handler, "A {{c1::other}} card.")
+        with pytest.raises(NotFound):
+            handler.delete(id=rid, superseded_by=2_000_000_000, dry_run=True)
+        out = handler.delete(id=rid, superseded_by=f"ak{succ}", dry_run=True)
+        assert "dry run" in out.body
+        ref = store.get_ref(kind="anki", id=rid)
+        assert ref is not None
+        assert "superseded_by" not in ref.meta
+
+    def test_delete_gone_target_not_stamped(self, store: Store) -> None:
+        """The successor stamp must not outlive a refused delete: a Gone
+        target fails before meta.superseded_by can be written."""
+        handler = _make_handler(store)
+        rid = self._put_card(handler, "A {{c1::solo}} card.")
+        succ = self._put_card(handler, "A {{c1::other}} card.")
+        handler.delete(id=rid)
+        with pytest.raises(Gone):
+            handler.delete(id=rid, superseded_by=f"ak{succ}")
+        ref = store.get_ref(kind="anki", id=rid, include_deleted=True)
+        assert ref is not None
+        assert "superseded_by" not in ref.meta
+
+    def test_delete_mutual_supersede_refuses_cycle(self, store: Store) -> None:
+        """The state the losing racer re-reads under the row locks: A is
+        already retired pointing at B, so ``delete B superseded_by A``
+        must refuse and leave B live and unstamped — no two-card redirect
+        cycle with no live survivor (review td781074)."""
+        handler = _make_handler(store)
+        a = self._put_card(handler, "A {{c1::first}} card.")
+        b = self._put_card(handler, "A {{c1::second}} card.")
+        handler.delete(id=a, superseded_by=f"ak{b}")
+        with pytest.raises(Gone):
+            handler.delete(id=b, superseded_by=f"ak{a}")
+        ref = store.get_ref(kind="anki", id=b)
+        assert ref is not None
+        assert "superseded_by" not in ref.meta
+
+    def test_delete_mutual_supersede_overlapped_txs(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The losing delete must wait at its row lock before rechecking liveness."""
+        handler = _make_handler(store)
+        a = self._put_card(handler, "A {{c1::first}} card.")
+        b = self._put_card(handler, "A {{c1::second}} card.")
+
+        loser_pid: Queue[int] = Queue()
+        real_atomic = store.atomic
+
+        @contextmanager
+        def observe_loser() -> Iterator[Connection]:
+            with real_atomic() as conn:
+                conn.execute("SET LOCAL lock_timeout = '20s'")
+                loser_pid.put(conn.info.backend_pid)
+                yield conn
+
+        def delete_loser() -> None:
+            _make_handler(store).delete(id=b, superseded_by=f"ak{a}")
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with real_atomic() as winner:
+                handler.delete(id=a, superseded_by=f"ak{b}")
+                monkeypatch.setattr(store, "atomic", observe_loser)
+                loser = executor.submit(delete_loser)
+                pid = loser_pid.get(timeout=10)
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if winner.execute(
+                        "SELECT %s = ANY(pg_blocking_pids(%s))",
+                        (winner.info.backend_pid, pid),
+                    ).fetchone() == (True,):
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("the second delete never waited for the first")
+
+                # Without the explicit lock the loser can instead block on
+                # its successor stamp after passing the liveness checks.
+                activity = winner.execute(
+                    "SELECT query FROM pg_stat_activity WHERE pid = %s",
+                    (pid,),
+                ).fetchone()
+                assert activity is not None
+                assert "FOR NO KEY UPDATE" in activity[0], activity[0]
+            with pytest.raises(Gone):
+                loser.result(timeout=10)
+
+        ref = store.get_ref(kind="anki", id=b)
+        assert ref is not None
+        assert "superseded_by" not in ref.meta
+        tomb = store.get_ref(kind="anki", id=a, include_deleted=True)
+        assert tomb is not None
+        assert tomb.meta["superseded_by"] == f"ak{b}"

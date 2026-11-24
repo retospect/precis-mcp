@@ -1,12 +1,11 @@
 """Handlers — kind adapters.
 
-Handlers register :class:`precis.protocol.KindSpec` with
-:class:`precis.dispatch.Hub` at boot. Shared adapters use underscore-prefixed
-modules (:mod:`precis.handlers._numeric_ref`).
-Plaintext and Markdown take the links view as an explicit argument so paths
-ending in ``/links`` keep addressing files across verbs.
-LLM diagnostics bound call-log scans to recent windows and report the
-effective decide modes through the same memo used by live routing.
+At boot, handlers register :class:`precis.protocol.KindSpec` with
+:class:`precis.dispatch.Hub`. Shared adapters use underscore prefixes.
+Plaintext and Markdown take an explicit links view, preserving file paths
+ending in ``/links``.
+LLM diagnostics scan recent calls and report decide modes from the live
+routing memo.
 Schema introspection reads the live public catalog in a bounded read-only
 transaction. Column statistics project only numeric fields. JSONB key
 counts scan one ordinary table and use the database role's row visibility.
@@ -29,6 +28,9 @@ section handles, and tag changes follow find validation.
 Cache eyes apply injection verdicts while retaining link rings.
 Comment visibility previews share target and state validation with apply.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
+Anki locks both cards in ref ID order before rechecking liveness to prevent
+deadlocks and redirect cycles. The successor stamp commits with retirement
+so failed deletes leave no redirect.
 Memory's audit view uses the retired view so a superseded handle exposes
 its own tombstone through the same read path.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
