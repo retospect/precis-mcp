@@ -60,7 +60,8 @@ def test_toc_handles_use_universal_handle_and_round_trip(store: Store) -> None:
     # Full TOC: headline + every row handle is the universal handle, and
     # the legacy kind:slug form is gone.
     out = handler.get(id=pa, view="toc").body
-    assert out.startswith(f"# {pa} TOC")
+    # A short-body banner may precede the headline; the headline must follow.
+    assert f"# {pa} TOC" in out
     assert "paper:vaswani17" not in out
     assert "vaswani17~" not in out
 

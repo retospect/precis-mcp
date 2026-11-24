@@ -172,11 +172,11 @@ A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain
 
 Collapse \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}\\ \emph{Chunk 1 of paper 1.}} \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}\\ \emph{Chunk 2 of paper 1.}} and \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}\\ \emph{Chunk 1 of paper 1.}}\textsuperscript{,}\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}\\ \emph{Chunk 4 of paper 1.}} then \footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}\textsuperscript{,}\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{,}\footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}} stop.\label{chunk:dc4}
 
-Handles \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}\\ \emph{Passage of pc10.}}\textsuperscript{,}\footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}, SI \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}\\ \emph{Passage of pc50.}} and \footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}, alias \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{alias4}}, then \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}\textsuperscript{,}\footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}\textsuperscript{,}\footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}.\label{chunk:dc5}
+Handles \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}\\ \emph{Passage of pc10.}}\textsuperscript{,}\footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}, SI \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}\\ \emph{Passage of pc50.}} and \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}, alias \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}, then \footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}\textsuperscript{,}\footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}\textsuperscript{,}\footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}.\label{chunk:dc5}
 
 \section{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
 
-Finding \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending] hub \footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{?}[unverified: source pending] mixed \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{,}\footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}\textsuperscript{?}[unverified: source pending] repeat \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]) and (also \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
+Finding \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending] hub \footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{?}[unverified: source pending] mixed \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{,}\footnote{{\textquotedblleft}Parent paper{\textquotedblright}~\cite{parent24}}\textsuperscript{?}[unverified: source pending] repeat \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]) and (also \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
 Prose \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}} and doi:10.1/x and \href{https://precis.example.test/r/structure/12}{st12} and \footnote{nobody99~\cite{nobody99}} and patent \footnote{Patent No. US123~\cite{us123}}. See \cref{chunk:dc2,chunk:dc11}~(\cpageref{chunk:dc2}).\label{chunk:dc8}
 
@@ -251,7 +251,7 @@ Thanks to all; see \cref{chunk:dc2}~(\cpageref{chunk:dc2}).\label{chunk:dc18}
 \par\noindent Claim 9 (unverified) {\textemdash} source pending
 \par\noindent Claim 10 (unverified) {\textemdash} source pending
 \section*{Retraction coverage}
-\textcolor{red}{Retraction coverage: 0 of 7 checked within 30 d. No retraction checks requested for this export. 7 cited papers have never been checked.}
+\textcolor{red}{Retraction coverage: 0 of 5 checked within 30 d. No retraction checks requested for this export. 5 cited papers have never been checked.}
 
 
 \clearpage
@@ -343,24 +343,6 @@ B     -0.4
   pages = {4-13},
 }
 
-@article{parent24si,
-  title = {Supplement},
-  author = {Author5, A. and Second5, B.},
-  year = {2024},
-  journaltitle = {J. Golden},
-  volume = {5},
-  pages = {5-14},
-}
-
-@article{alias4,
-  title = {Parent paper},
-  author = {Author4, A. and Second4, B.},
-  year = {2024},
-  journaltitle = {J. Golden},
-  volume = {4},
-  pages = {4-13},
-}
-
 @patent{us123,
   title = {Capture device},
   year = {2019},
@@ -370,8 +352,6 @@ smith20
 jones21
 lee22
 parent24
-parent24si
-alias4
 nobody99
 us123
 == warnings ==
