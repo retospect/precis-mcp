@@ -515,6 +515,49 @@ class TestGapViews:
         assert "exploration queue" in body
         assert "Striving alpha" in body
 
+    def test_dashboard_includes_server_momentum_and_totals_full_counts(
+        self, store: Store
+    ) -> None:
+        from tests.workers._helpers import seed_ref
+
+        h = _handler(store)
+        quiet = _created_id(h.put(text="Quiet active quest", prio=5))
+        busy = _created_id(h.put(text="Quest with server activity", prio=3))
+        inactive = _created_id(h.put(text="Quiet dormant quest"))
+        for qid in (busy, inactive):
+            h.tag(id=qid, add=["STATUS:dormant"])
+        server = seed_ref(store)
+        store.add_link(src_ref_id=server, dst_ref_id=busy, relation="serves")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event) "
+                "SELECT %s, 'system', 'updated' FROM generate_series(1, 3)",
+                (server,),
+            )
+            conn.commit()
+        for i in range(5):
+            h.put(id=busy, text=f"Unanswered hypothesis {i}", entry="hypothesis")
+
+        busy_view = h.get(id=busy, view="gaps").body
+        assert "momentum: active · 0 recent log" in busy_view
+        expected = []
+        for qid in (busy, quiet):
+            view = h.get(id=qid, view="gaps").body
+            count = re.search(r"── gaps \((\d+)\)", view)
+            assert count is not None
+            expected.append((str(qid), int(count[1])))
+        assert expected[0][1] > 4
+
+        body = h.get(id="/gaps").body
+        rows = re.findall(r"^◆ qu(\d+) .* — (\d+) gaps?$", body, re.MULTILINE)
+        counts = [(qid, int(count)) for qid, count in rows]
+        assert counts == expected
+        assert body.count("    ▫ ") == 5
+        assert (
+            f"2 active quests · {sum(count for _, count in counts)} gaps total\n\n◆ "
+            in body
+        )
+
 
 class TestUnknownViewError:
     """An unrecognised ``view=`` on a concrete quest id must enumerate the

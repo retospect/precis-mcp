@@ -233,7 +233,7 @@ get(
     kind="quest", id=7, view="log"
 )  # raw ref-events audit trail (generic, not logbook-specific)
 get(kind="quest", id="/active")  # every active striving
-get(kind="quest", id="/gaps")  # gaps across ALL active quests
+get(kind="quest", id="/gaps")  # cross-quest gaps
 search(kind="quest", view="roots")  # top-level strivings + serves DAG (id="/roots" too)
 get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-ref)
 ```
@@ -458,9 +458,9 @@ with two read-time, mechanical reads (no `% done`):
   tick filed for a capability that doesn't exist — see the next section).
   Gaps *are* where to look next.
 
-`view='gaps'` focuses one quest; `id='/gaps'` rolls the queue up across
-every active quest, hottest first. All degrade to empty until quests +
-servers exist.
+`view='gaps'` focuses one quest. `id='/gaps'` rolls the queue up across live
+quests with `STATUS:active` or active momentum, in priority order. All degrade
+to empty until quests + servers exist.
 
 ## A tick can ask for a tool that doesn't exist — `needs`
 

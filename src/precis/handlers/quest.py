@@ -3681,41 +3681,51 @@ class QuestHandler(NumericRefHandler):
         return "\n".join(lines)
 
     def _render_gaps_dashboard(self) -> Response:
-        """`id='/gaps'` — the exploration queue across every active quest."""
+        """`id='/gaps'` — the exploration queue across every active quest.
+
+        Lifecycle-active quests stay visible during quiet periods. The same
+        momentum calculation as the per-quest view also surfaces open ends on
+        live quests with recent progress even when their lifecycle tag differs.
+        """
         from precis.quest import gaps as gapmod
 
         with self.store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT r.ref_id FROM refs r "
-                "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
-                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "SELECT r.ref_id, EXISTS ("
+                "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = r.ref_id "
+                "AND t.namespace = 'STATUS' AND t.value = 'active'"
+                ") FROM refs r "
                 "WHERE r.kind = 'quest' AND r.retired_at IS NULL "
-                "AND t.namespace = 'STATUS' AND t.value = 'active' "
                 "ORDER BY COALESCE(r.prio, 5) ASC, r.ref_id ASC"
             ).fetchall()
-        ids = [int(r[0]) for r in rows]
-        if not ids:
-            return Response(body="no active quests — nothing to surface gaps for.")
         lines = ["# gaps across active quests — the exploration queue", ""]
-        total = 0
-        for qid in ids:
-            ref = self._resolve_live_ref(qid)
+        counts: list[int] = []
+        for ref_id, active_status in rows:
+            qid = int(ref_id)
             live = gapmod._live_servers(self.store, qid)
-            gs = gapmod.quest_gaps(self.store, qid, servers=live)
             m = gapmod.quest_momentum(self.store, qid, servers=live)
-            total += len(gs)
+            if not active_status and m.label != "active":
+                continue
+            ref = self._resolve_live_ref(qid)
+            gs = gapmod.quest_gaps(self.store, qid, servers=live)
+            count = len(gs)
+            counts.append(count)
             handle = handle_registry.try_format("quest", qid) or f"quest:{qid}"
-            plural = "" if len(gs) == 1 else "s"
+            plural = "" if count == 1 else "s"
             lines.append(
                 f"◆ {handle} [{m.label}] {ref.title.splitlines()[0]} "
-                f"— {len(gs)} gap{plural}"
+                f"— {count} gap{plural}"
             )
             for g in gs[:4]:
                 where = f"  [{g.handle}]" if g.handle else ""
                 lines.append(f"    ▫ {g.kind}: {g.detail[:80]}{where}")
-        qn = "" if len(ids) == 1 else "s"
+        if not counts:
+            return Response(body="no active quests — nothing to surface gaps for.")
+        total = sum(counts)
+        qn = "" if len(counts) == 1 else "s"
         gn = "" if total == 1 else "s"
-        lines.insert(1, f"{len(ids)} active quest{qn} · {total} gap{gn} total")
+        lines.insert(1, f"{len(counts)} active quest{qn} · {total} gap{gn} total")
         return Response(body="\n".join(lines))
 
     def _roots_forest(

@@ -1,9 +1,9 @@
 """Quest layer runtime — the striving's autonomous research loop.
 
 Surface in :mod:`precis.handlers.quest`. Submodules: `reweight` (priority down the
-``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
-exploration queue), `logbook` (WORM entries), `synthesis` (writer's graph
-linearisation with live frontier figures), `dossier` (deprecated living
+``serves`` DAG into rotation/acquisition/reading), `gaps` (health and queue
+for quiet lifecycle-active quests), `logbook` (WORM entries), `synthesis` (graph
+linearisation with frontier figures), `dossier` (deprecated living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank),
 `results_table` (objective basis and pathway credit), `protocol` (per-quest
