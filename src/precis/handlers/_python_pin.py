@@ -122,7 +122,7 @@ class PinDecision:
 
 @dataclass(slots=True)
 class _RootPinState:
-    last_fetch_monotonic: float = 0.0
+    last_fetch_monotonic: float | None = None
     last_good: tuple[str, Path] | None = None
 
 
@@ -236,8 +236,10 @@ class RootPinner:
         state = self._state.setdefault(root, _RootPinState())
 
         fetch_note: str | None = None
-        if time.monotonic() - state.last_fetch_monotonic >= self._fetch_ttl_s:
-            state.last_fetch_monotonic = time.monotonic()
+        now = time.monotonic()
+        last_fetch = state.last_fetch_monotonic
+        if last_fetch is None or now - last_fetch >= self._fetch_ttl_s:
+            state.last_fetch_monotonic = now
             fetched, _ = self._git(
                 root, "fetch", "origin", "main", timeout=self._fetch_timeout_s
             )

@@ -11,11 +11,13 @@ from __future__ import annotations
 import subprocess
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub
+from precis.handlers import _python_pin
 from precis.handlers._python_pin import (
     PIN_ROOTS_ENV,
     RootPinner,
@@ -265,25 +267,33 @@ def test_disabled_cache_answers_working_tree(tmp_path: Path) -> None:
 
 
 def test_fetch_is_ttl_bounded(
-    remote_and_clone: tuple[Path, Path], tmp_path: Path, monkeypatch
+    remote_and_clone: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Within the TTL the remote-tracking ref is used as-is — no fetch."""
+    """Fetch on first access, then reuse the tracking ref until the TTL expires."""
     _, clone = remote_and_clone
     pinner = _pinner(tmp_path, fetch_ttl_s=3600.0)
     real_git = pinner._git
     fetches = 0
+    now = 0.0
 
-    def counting(root: Path, *args: str, timeout: float):
+    def counting(root: Path, *args: str, timeout: float) -> tuple[bool, str]:
         nonlocal fetches
         if args and args[0] == "fetch":
             fetches += 1
         return real_git(root, *args, timeout=timeout)
 
     monkeypatch.setattr(pinner, "_git", counting)
+    monkeypatch.setattr(_python_pin, "time", SimpleNamespace(monotonic=lambda: now))
     assert pinner.resolve(clone).pinned
     assert fetches == 1
+    now = 3599.0
     assert pinner.resolve(clone).pinned
     assert fetches == 1
+    now = 3600.0
+    assert pinner.resolve(clone).pinned
+    assert fetches == 2
 
 
 def test_archive_failure_falls_back_to_working_tree(
