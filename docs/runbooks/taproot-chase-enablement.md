@@ -127,3 +127,32 @@ a confirmed MCP flip or revert and its audit history, see
 
 Candidate caps are `PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER` (25)
 and `PRECIS_INBOUND_CHASE_DAILY_LIMIT` (200/day).
+
+## Run grounding over older papers
+
+Enable the claims-first backfill on a worker that can reach the local
+verifier. The runtime switch is a `service_config` priority, exactly like
+the passes above:
+
+```sh
+precis service prio <host> inbound_ground_backfill 1
+precis logs --pass inbound_ground_backfill --payload
+```
+
+`PRECIS_INBOUND_GROUND_BACKFILL_ENABLED` (the registry entry's
+`enable_env`) is the seed-time name only — since the §L cutover
+`_should_register` never reads an `enable_env` *value*, the flag's mere
+presence registers the pass; the prio row turns it on. Pick ONE host: the
+pass holds row locks per pair and its retraction drains assume a single
+drainer.
+
+The digest includes claims visited, pairs checked, new supports and
+denials, and reserved tokens. The backfill reuses
+`PRECIS_INBOUND_GROUND_MAX_AGE_DAYS` (30 by default) for the age cutoff
+and `PRECIS_INBOUND_GROUND_TOPK` (5) for papers per claim visit.
+`PRECIS_INBOUND_GROUND_BACKFILL_PAIRS_PER_PASS` defaults to 20.
+`PRECIS_INBOUND_GROUND_DAILY_TOKENS` (250,000) is a **new ceiling on the
+existing recent-paper pass as well as the backfill**: both passes reserve
+against the one shared `inbound_ground_budget` ledger (UTC day) before
+dispatch, so the two passes cannot each spend the old implicit amount —
+one pool caps the pair.

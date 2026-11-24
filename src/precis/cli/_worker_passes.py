@@ -437,6 +437,12 @@ def build_ref_passes(
         _inbound_ground_pass = _build_inbound_ground_pass(args, store, handlers)
         ref_passes.append(_inbound_ground_pass)
 
+    if _register("inbound_ground_backfill"):
+        _inbound_ground_backfill_pass = _build_inbound_ground_pass(
+            args, store, handlers, backfill=True
+        )
+        ref_passes.append(_inbound_ground_backfill_pass)
+
     # plan_tick — the dark-factory tick as a pass for a dedicated lane
     # (``--only plan_tick``, deploy 20g). No default_profiles/enable_env, so
     # nothing else registers it: exactly one claimant by construction.

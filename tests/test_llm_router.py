@@ -4186,6 +4186,69 @@ def test_failover_empty_rungs_rejected() -> None:
         FailoverProvider([])
 
 
+def test_failover_admit_refusal_returns_budget_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LlmRequest.admit_attempt`` refusing stops the walk BEFORE dispatch:
+    no provider runs, and the refusal carries ``reason_class='budget'`` so
+    the grounding budget's caller reads it as an exhausted daily ceiling."""
+    primary = _FakeProv(_ok("unused"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+
+    prov = FailoverProvider([Rung(Transport.OPENAI_TOOLS)])
+    out = prov.run(
+        LlmRequest(
+            tier=Tier.FRONTIER,
+            prompt="x",
+            admit_attempt=lambda: False,
+        ),
+        model="oss-model",
+    )
+
+    assert out.error == "provider attempt budget exhausted"
+    assert out.reason_class == "budget"
+    assert primary.calls == 0
+
+
+def test_failover_admit_is_consulted_per_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reservation is taken before EVERY provider attempt — a failover
+    rung included: rung 0 failing must not let rung 1 dispatch unadmitted."""
+    primary = _FakeProv(_err("backend down"))
+    fallback = _FakeProv(_ok("fallback out"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, fallback)
+
+    admits = iter([True, False])
+    prov = FailoverProvider(
+        [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
+    )
+    out = prov.run(
+        LlmRequest(
+            tier=Tier.FRONTIER,
+            prompt="x",
+            admit_attempt=lambda: next(admits),
+        ),
+        model="oss-model",
+    )
+
+    assert out.error == "provider attempt budget exhausted"
+    assert out.reason_class == "budget"
+    assert primary.calls == 1 and fallback.calls == 0
+
+
+def test_dispatch_provider_wraps_admitted_requests_in_failover() -> None:
+    """``admit_attempt`` forces the ladder through :class:`FailoverProvider`
+    even for a single rung — the admission is evaluated per attempt inside
+    the walk, not once at dispatch."""
+    ladder = [Rung(Transport.OPENAI_TOOLS)]
+    admitted = LlmRequest(tier=Tier.FRONTIER, prompt="x", admit_attempt=lambda: True)
+    assert isinstance(router._dispatch_provider(ladder, admitted), FailoverProvider)
+    plain = LlmRequest(tier=Tier.FRONTIER, prompt="x")
+    assert not isinstance(router._dispatch_provider(ladder, plain), FailoverProvider)
+
+
 # ── the default ladder + claude-default resolution ─────────────────────
 
 

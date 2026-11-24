@@ -34,11 +34,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from precis.taproot.support import setup_mismatch
-from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
 
 if TYPE_CHECKING:
     from precis.workers.chase import _NextHopTarget
@@ -363,6 +364,7 @@ def _verify_support_with_caveats(
     source_identity: SourceIdentity | None = None,
     with_request_hash: bool = False,
     timeout_s: float | None = None,
+    dispatch: Callable[[LlmRequest], LlmResult] | None = None,
 ) -> dict[str, Any] | None:
     """Run the verifier LLM hook. Returns the parsed JSON dict or None.
 
@@ -408,7 +410,7 @@ def _verify_support_with_caveats(
             source_identity=source_identity,
         ),
     )
-    res = route(
+    res = (dispatch or route)(
         LlmRequest(
             tier=Tier.BIG,
             prompt=prompt,

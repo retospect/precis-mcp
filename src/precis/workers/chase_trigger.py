@@ -23,7 +23,12 @@ without having been matched):
     ``(hub_ref_id, embedder)``, ``claim_sha`` gating re-embed the same way
     ``hub_refine`` gates a reopen off the same hash (:func:`taproot.canon.claim_sha`
     — the two passes share the helper so "changed" means the same thing to
-    both).
+    both). The table's scope is findings **only** for this pass; the
+    claims-first backfill (``workers/inbound_ground_backfill.py``) may
+    additionally refresh ``TAPROOT:claim`` **memory** rows under the same
+    embedder (``include_memories=True``), and step (c)'s probe filters
+    those back out — a memory claim is the backfill's target, never a
+    ``TAPROOT_DUE`` mark for ``hub_refine``.
 
 (b) **Claim a chunk batch** — up to ``batch_size`` embedded ``paper``/
     ``patent`` body chunks that don't yet carry a ``CHASETRIG:<version>``
@@ -167,8 +172,29 @@ def _claim_refresh_limit_default() -> int:
 # ── (a) claim_embeddings refresh ──────────────────────────────────────
 
 
+def claim_embedding_target_sql(*, include_memories: bool) -> str:
+    """Canonical finding hubs and, for backfill, explicitly tagged claim memories."""
+    finding = f"(r.kind = 'finding' AND {_CLAIM_HUB_SQL})"
+    if not include_memories:
+        return finding
+    return f"""(
+        {finding}
+        OR (r.kind = 'memory' AND EXISTS (
+            SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+             WHERE rt.ref_id = r.ref_id
+               AND t.namespace = %(taproot_ns)s AND t.value = %(taproot_claim)s
+               AND (rt.expires_at IS NULL OR rt.expires_at > now())
+        ))
+    )"""
+
+
 def _refresh_claim_embeddings(
-    conn: Connection, embedder: Any, embedder_model: str, *, limit: int
+    conn: Connection,
+    embedder: Any,
+    embedder_model: str,
+    *,
+    limit: int,
+    include_memories: bool = False,
 ) -> int:
     """Upsert a fresh vector for every canonical claim hub whose stored
     ``claim_embeddings`` row is missing or stale (``claim_sha`` mismatch).
@@ -178,6 +204,13 @@ def _refresh_claim_embeddings(
     :func:`taproot.canon.claim_sha`), and migration 0101's own comment
     already sizes this table (~1.2k rows) as trivial to scan whole.
 
+    ``include_memories=True`` (the inbound-grounding backfill's refresh)
+    widens the target set to live ``TAPROOT:claim`` memory refs and stops
+    refreshing a claim once the backfill watermarks it complete
+    (``inbound_ground_backfilled``); this pass always refreshes findings
+    only; see the module docstring's step (a) for why the two scopes share
+    one table and how step (c) keeps memory rows out of the due-mark.
+
     Excludes **composite** claim hubs (docs/backlog/taproot-atomic-claims.md
     -- see the module docstring's "Composite exclusion" note): a composite's
     ``claim_embeddings`` row is never refreshed, so it never becomes a probe
@@ -185,15 +218,22 @@ def _refresh_claim_embeddings(
     claim-type policy forbids widening (``landscape``;
     :func:`~precis.taproot.claim_type.widenable_predicate_sql`).
     """
+    claim_kind = claim_embedding_target_sql(include_memories=include_memories)
+    unfinished = (
+        "AND NOT EXISTS (SELECT 1 FROM inbound_ground_backfilled b "
+        "WHERE b.claim_ref_id = r.ref_id)"
+        if include_memories
+        else ""
+    )
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, ce.claim_sha
           FROM refs r
           LEFT JOIN claim_embeddings ce
             ON ce.hub_ref_id = r.ref_id AND ce.embedder = %(embedder)s
-         WHERE r.kind = 'finding'
-           AND r.retired_at IS NULL
-           AND {_CLAIM_HUB_SQL}
+         WHERE r.retired_at IS NULL
+           AND {claim_kind}
+           {unfinished}
            AND {_NOT_HYPOTHESIS_SQL}
            AND {_WIDENABLE_SQL}
            AND NOT EXISTS (
@@ -323,6 +363,12 @@ def _near_claims(
     when it *becomes* composite (a decomposition landing between passes)
     must still never surface here, since ``hub_refine`` would never claim
     it to pop the due-mark this function would otherwise write.
+
+    The ``EXISTS (... r.kind = 'finding' AND widenable ...)`` guard also
+    filters out **memory** rows: the backfill refreshes ``TAPROOT:claim``
+    memories into ``claim_embeddings`` under the same embedder, and they
+    must never be marked ``TAPROOT_DUE`` — ``hub_refine`` claims findings,
+    the backfill consumes memory claims itself.
     """
     rows = conn.execute(
         f"""
@@ -343,10 +389,11 @@ def _near_claims(
                    AND a.kind = 'finding'
                    AND a.retired_at IS NULL
                )
-           AND NOT EXISTS (
+           AND EXISTS (
                  SELECT 1 FROM refs r
                   WHERE r.ref_id = cl.hub_ref_id
-                    AND NOT {_WIDENABLE_SQL}
+                    AND r.kind = 'finding'
+                    AND {_WIDENABLE_SQL}
                )
         """,
         {"floor": floor, "chunk_ids": chunk_ids, "embedder": embedder_model},

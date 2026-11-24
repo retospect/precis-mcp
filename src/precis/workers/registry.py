@@ -1172,6 +1172,17 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-taproot-help",
     ),
     ServiceSpec(
+        name="inbound_ground_backfill",
+        label="Inbound claim grounding backfill",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_INBOUND_GROUND_BACKFILL_ENABLED",
+        uses_model=True,
+        one_line="Verify older papers against live claims on demand, resuming by pair.",
+        doc_skill="precis-taproot-help",
+    ),
+    ServiceSpec(
         # S9 (td568212): past the ship-dark period — defaults on
         # everywhere now (default_profiles), same as the other _SYS
         # passes; a service_config row still overrides either way.

@@ -317,6 +317,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_conflict_search_pass": PassPriority.BACKGROUND,
     "_chase_trigger_pass": PassPriority.BACKGROUND,
     "_inbound_ground_pass": PassPriority.BACKGROUND,
+    "_inbound_ground_backfill_pass": PassPriority.BACKGROUND,
     "_fetch_pass": PassPriority.BACKGROUND,
     "_gp_fetch_pass": PassPriority.BACKGROUND,
     "_stub_rank_pass": PassPriority.BACKGROUND,
@@ -383,6 +384,7 @@ _PASS_CHOICES: tuple[str, ...] = (
     "chase_trigger",
     "inbound_chase",
     "inbound_ground",
+    "inbound_ground_backfill",
     "hub_refine",
     "plan_tick",
     "fetch",
@@ -1301,7 +1303,11 @@ def _build_plan_tick_pass(
 
 
 def _build_inbound_ground_pass(
-    args: argparse.Namespace, store: Store, handlers: list[WorkerHandler]
+    args: argparse.Namespace,
+    store: Store,
+    handlers: list[WorkerHandler],
+    *,
+    backfill: bool = False,
 ) -> RefPass:
     """Build the inbound_ground pass (``workers/inbound_ground.py``). Mirrors
     :func:`_build_chase_trigger_pass`: lazy embedder resolution with the
@@ -1313,6 +1319,7 @@ def _build_inbound_ground_pass(
     """
     from precis.workers.embed import EmbedHandler as _InboundGroundEmbedHandler
     from precis.workers.inbound_ground import run_inbound_ground_pass
+    from precis.workers.inbound_ground_backfill import run_inbound_ground_backfill_pass
     from precis.workers.runner import BatchResult as _InboundGroundBatchResult
 
     _inbound_ground_embed_handler = next(
@@ -1343,7 +1350,23 @@ def _build_inbound_ground_pass(
         )
         return _InboundGroundBatchResult.from_dict("inbound_ground", r)
 
-    return _inbound_ground_pass
+    def _inbound_ground_backfill_pass(batch_size: int) -> _InboundGroundBatchResult:
+        result = run_inbound_ground_backfill_pass(
+            store, embedder=_inbound_ground_get_embedder()
+        )
+        claimed = result.pop("claimed")
+        ok = result.pop("ok")
+        failed = result.pop("failed")
+        return _InboundGroundBatchResult(
+            handler="inbound_ground_backfill",
+            claimed=claimed,
+            ok=ok,
+            failed=failed,
+            extra=result,
+            report_only=claimed == 0,
+        )
+
+    return _inbound_ground_backfill_pass if backfill else _inbound_ground_pass
 
 
 def _build_handlers(

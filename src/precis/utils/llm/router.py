@@ -1531,6 +1531,8 @@ class LlmRequest:
     #: that profile's ``base_url``/key instead of the process-wide
     #: ``PRECIS_LLM_BASE_URL``/host-keyed default. ``None`` ⇒ unchanged.
     profile: str | None = None
+    #: Optional synchronous budget reservation before each provider attempt.
+    admit_attempt: Callable[[], bool] | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on. Free-form; empty if unset.
     source: str = ""
@@ -2621,6 +2623,16 @@ class FailoverProvider:
             if refusal is not None:
                 last = refusal
             else:
+                if req.admit_attempt is not None and not req.admit_attempt():
+                    return LlmResult(
+                        text="",
+                        cost_usd=None,
+                        turns_used=None,
+                        model=rung_model,
+                        tier=req.tier,
+                        error="provider attempt budget exhausted",
+                        reason_class="budget",
+                    )
                 last = _classified(
                     _empty_length_is_failure(
                         provider_for(rung.transport, bare=rung.bare).run(
@@ -4113,14 +4125,14 @@ def _provider_for_ladder(ladder: list[Rung]) -> LlmProvider:
     return provider_for(ladder[0].transport, bare=ladder[0].bare)
 
 
-def _dispatch_provider(ladder: list[Rung], accept: AcceptFn | None) -> LlmProvider:
+def _dispatch_provider(ladder: list[Rung], req: LlmRequest) -> LlmProvider:
     """The provider a resolved ladder dispatches through, with the
     caller's hard gate threaded in when it has one: a gated call always
     walks a :class:`FailoverProvider` — even a single rung — so every
     attempt's verdict is evaluated, stamped, and on a rejection walked
     past to the next rung (gr595543)."""
-    if accept is not None:
-        return FailoverProvider(ladder, accept=accept)
+    if req.accept is not None or req.admit_attempt is not None:
+        return FailoverProvider(ladder, accept=req.accept)
     return _provider_for_ladder(ladder)
 
 
@@ -5025,7 +5037,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     if _applied is not None:
         return _applied
     transport = ladder[0].transport
-    provider: LlmProvider = _dispatch_provider(ladder, req.accept)
+    provider: LlmProvider = _dispatch_provider(ladder, req)
     # Global circuit breaker: refuse a *new paid* call once its resource is
     # exhausted (only free local tiers pass; dark when no store is bound).
     # Folds into the normalized error result so callers degrade gracefully.
@@ -5070,7 +5082,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
         paused_rung = ladder[0]
         ladder = fallback_ladder
         transport = ladder[0].transport
-        provider = _dispatch_provider(ladder, req.accept)
+        provider = _dispatch_provider(ladder, req)
         # Which rung ran, recorded on the route-log row's features — the
         # cast's traceable record of composing off the subscription lane
         # (and the row the op's UTC-day fallback spend cap sums).

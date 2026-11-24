@@ -27,8 +27,10 @@ One pass, per claimed paper:
    done-marker idiom: the tag IS the claim), and (iv) were created inside
    the :func:`_max_age_days` window. Newest first, ``FOR UPDATE SKIP
    LOCKED``. The age window is what makes this *inbound*: enabling the
-   pass sweeps the recent intake, not the corpus — the full papers x claims
-   backfill is part (c), a separate batch backstop.
+   pass sweeps the recent intake, not the corpus. Papers older than the
+   window belong to the claims-first backfill sibling
+   (:mod:`workers.inbound_ground_backfill`, part (c) of ``gr693782``),
+   which reuses this module's :func:`_ground_pair` seam.
 2. **Match** (:func:`_near_hubs`) — one set-based query crosses the paper's
    embedded body chunks against ``claim_embeddings`` (flat scan; migration
    0101 sizes the table as trivial), keeps the few nearest chunks per hub
@@ -45,14 +47,21 @@ One pass, per claimed paper:
 4. **Verify** — the sanctioned shared seam
    ``workers/_chase_llm._verify_support_with_caveats`` (never forked; it
    dispatches through ``utils/llm/router.route``), with the chunk's
-   neighbours, section path and the paper's identity block. At most
-   :func:`_max_llm_default` calls per paper (default 5) — the second cost
-   bound; a per-pass bound of ``papers_per_pass x max_llm`` follows.
-   :func:`classify_verdict` folds the verifier's ``supports``/``contradicts``
-   into the three-way vocabulary this pass acts on: ``support`` (the
-   corroboration rule ``_chase_llm.is_corroborating`` — ``yes``, or a
-   scoping ``partial``), ``deny`` (``contradicts`` true), ``neutral``
-   (on-topic, doesn't test the claim).
+   neighbours, section path and the paper's identity block. With no test
+   stub injected the call goes through
+   :class:`~precis.workers._grounding_budget.GroundingBudget.verify`
+   instead: the request reserves its conservative token charge against the
+   shared UTC-day ceiling (``PRECIS_INBOUND_GROUND_DAILY_TOKENS``) before
+   each provider attempt — failover attempts included — and is forced to
+   ``max_tokens=2048``, so one paper can never bill an open-ended
+   completion. At most :func:`_max_llm_default` calls per paper (default 5)
+   — the second cost bound; a per-pass bound of ``papers_per_pass x
+   max_llm`` follows. :func:`classify_verdict` folds the verifier's
+   ``supports``/``contradicts`` into the three-way vocabulary this pass
+   acts on: ``support`` (the corroboration rule
+   ``_chase_llm.is_corroborating`` — ``yes``, or a scoping ``partial``),
+   ``deny`` (``contradicts`` true), ``neutral`` (on-topic, doesn't test
+   the claim).
 5. **Write** — ``support`` → ``taproot.hub.attach_evidence`` (role
    ``corroborates``, never ``establishes``: originators are derived at read
    time), with the full verified stamp (``support``/``support_reason``/
@@ -78,6 +87,30 @@ One pass, per claimed paper:
 Retraction checks (``attach_evidence`` trigger 1) are collected via
 ``pending_checks`` and drained after the commit (``run_retraction_checks``)
 — never inside the held transaction.
+
+Budget + the backfill sibling
+-----------------------------
+Both grounding passes share :mod:`~precis.workers._grounding_budget`:
+one ``inbound_ground_budget`` ledger row per UTC day caps the reserved
+tokens of the recent-paper pass (cloud placement) and the backfill
+(local placement) together. When the budget reports ``exhausted``
+:func:`_ground_one_paper` breaks out of its match loop **without**
+marking the paper: the done-marker is the grounded claim, so the paper is
+re-claimed next pass and settled pairs skip through the step-3 filter at
+no LLM cost.
+
+:func:`_ground_pair` is the shared verify-and-write seam this pass and
+``inbound_ground_backfill`` both call. Its ``source`` argument
+distinguishes the two passes' provenance on the rejection memo and the
+``disputes`` edge (``inbound_ground`` here, ``inbound_ground_backfill``
+there — the support edge's ``verified_by`` fingerprint follows the same
+split); its ``claim_kind`` argument routes ``memory`` claims onto a bare
+``store.add_link`` because ``attach_evidence`` requires a ``TAPROOT:claim``
+finding hub. This pass always passes the defaults (finding hubs only) —
+:func:`_near_hubs` guards ``r.kind = 'finding'`` precisely because the
+``claim_embeddings`` index can also hold memory-claim rows refreshed by
+the backfill under the same embedder, and those are the backfill's
+targets, never this pass's.
 
 Ship dark: a **service**, flipped with ``precis service prio <host>
 inbound_ground 1`` (live, no redeploy; ``PRECIS_INBOUND_GROUND_ENABLED`` is
@@ -122,9 +155,9 @@ from precis.utils import handle_registry
 from precis.utils.relations import validate_relation
 from precis.workers._chase_llm import (
     SourceIdentity,
-    _verify_support_with_caveats,
     is_corroborating,
 )
+from precis.workers._grounding_budget import GroundingBudget
 from precis.workers.chase_trigger import _refresh_claim_embeddings
 from precis.workers.embed import EmbedHandler
 
@@ -308,7 +341,12 @@ def _near_hubs(
     topk: int,
 ) -> list[_HubMatch]:
     """The ``topk`` claim hubs nearest to any evidence-eligible body chunk of
-    ``paper_ref_id``, each paired with that chunk (module docstring step 2)."""
+    ``paper_ref_id``, each paired with that chunk (module docstring step 2).
+
+    Finding hubs only (``r.kind = 'finding'``): the ``claim_embeddings``
+    index can also hold ``TAPROOT:claim`` memory rows refreshed by the
+    backfill under the same embedder, and those are the backfill's targets,
+    never this pass's."""
     rows = conn.execute(
         f"""
         WITH near AS (
@@ -338,6 +376,7 @@ def _near_hubs(
           FROM near n
           JOIN refs r ON r.ref_id = n.hub_ref_id
          WHERE n.rn <= {_CHUNKS_PER_HUB}
+           AND r.kind = 'finding'
            AND r.retired_at IS NULL
            AND {_CLAIM_HUB_SQL}
            AND {_NOT_HYPOTHESIS_SQL}
@@ -467,6 +506,7 @@ def _memo_rejection(
     paper_ref_id: int,
     verdict: str,
     verification: dict[str, Any],
+    source: str,
 ) -> None:
     """Append this paper to the hub's rejection memo (``meta.taproot_rejected``,
     the key ``hub_refine`` reads) under a row lock, so the pair is judged
@@ -480,7 +520,7 @@ def _memo_rejection(
         "terminal": verification.get("terminal"),
         "support_reason": verification.get("support_reason"),
         "verdict": verdict,
-        "via": _SOURCE,
+        "via": source,
     }
     conn.execute(
         """
@@ -503,6 +543,136 @@ def _memo_rejection(
     )
 
 
+def _ground_pair(
+    conn: Connection,
+    store: Store,
+    paper_ref_id: int,
+    m: _HubMatch,
+    *,
+    verify_fn: VerifyFn,
+    identity: SourceIdentity,
+    pending_checks: list[int] | None = None,
+    claim_kind: str = "finding",
+    source: str = _SOURCE,
+) -> tuple[str, bool] | None:
+    """Verify one eligible passage and file the verdict in the caller's
+    transaction.
+
+    The shared write seam between this pass and
+    ``inbound_ground_backfill``: run the verifier on the matched chunk,
+    classify the verdict, then write the edge (``support``), the ``disputes``
+    link + rejection memo (``deny``), or the memo alone (``neutral``).
+
+    Returns ``(verdict, dispute_link_written)`` — the second element is
+    ``True`` only when a ``disputes`` edge was filed by this call, never
+    for a support attach (callers counting fresh supports/denies must not
+    read it as "newly judged"). ``None`` when the verifier raised or
+    returned nothing: nothing was written, so the pair stays retryable.
+
+    ``source`` distinguishes the two passes' provenance on the memo entry
+    and the ``disputes`` edge; ``claim_kind == "memory"`` takes the bare
+    ``store.add_link`` path because ``attach_evidence`` requires a
+    ``TAPROOT:claim`` finding hub (memory claims carry no retraction
+    trigger). ``pending_checks`` (when not ``None``) opts the finding path
+    into the deferred retraction check (trigger 1), queued for
+    ``run_retraction_checks`` after the caller commits — never drained
+    inside the transaction."""
+    try:
+        verification = verify_fn(
+            claim=m.title,
+            scope=m.scope,
+            target_cite_key=f"paper:{paper_ref_id}",
+            target_chunk_ord=m.chunk_ord,
+            target_chunk_text=m.chunk_text,
+            source_kind="paper",
+            section_path=m.section_path,
+            neighbours=_chunk_neighbours(conn, paper_ref_id, m.chunk_ord),
+            source_identity=identity,
+        )
+    except Exception:
+        log.warning(
+            "inbound_ground: verify hook raised for paper #%d hub #%d",
+            paper_ref_id,
+            m.hub_ref_id,
+            exc_info=True,
+        )
+        verification = None
+    if verification is None:
+        return None
+
+    verdict = classify_verdict(verification)
+    handle = handle_registry.try_format("paper", m.chunk_id, chunk=True)
+    sha = claim_sha(m.title)
+    if verdict == "support":
+        meta = {
+            "support": verification.get("supports"),
+            "support_reason": verification.get("support_reason"),
+            "caveats": list(verification.get("caveats") or []),
+            "source_handle": handle,
+            "verified_by": _VERIFIED_BY
+            if source == _SOURCE
+            else "inbound-ground-backfill",
+            "verified_at": datetime.now(UTC).isoformat(),
+            "verified_claim_sha": sha,
+            _SOURCE: {
+                "version": INBOUND_GROUND_VERSION,
+                "distance": round(m.distance, 4),
+                "same_setup": verification.get("same_setup"),
+                "terminal": verification.get("terminal"),
+            },
+        }
+        if claim_kind == "memory":
+            store.add_link(
+                src_ref_id=paper_ref_id,
+                dst_ref_id=m.hub_ref_id,
+                relation=validate_relation(_ROLE, store=store),
+                src_pos=m.chunk_ord,
+                meta=meta,
+                set_by="system",
+                conn=conn,
+            )
+        else:
+            attach_evidence(
+                store,
+                hub_ref_id=m.hub_ref_id,
+                paper_ref_id=paper_ref_id,
+                role=_ROLE,
+                meta=meta,
+                set_by="system",
+                conn=conn,
+                check_retraction=pending_checks is not None,
+                pending_checks=pending_checks,
+            )
+        return verdict, False
+
+    _memo_rejection(
+        conn,
+        hub=m,
+        paper_ref_id=paper_ref_id,
+        verdict=verdict,
+        verification=verification,
+        source=source,
+    )
+    if verdict == "deny" and _disputes_allowed(verification):
+        store.add_link(
+            src_ref_id=paper_ref_id,
+            dst_ref_id=m.hub_ref_id,
+            relation=validate_relation("disputes", store=store),
+            set_by="system",
+            meta={
+                "support": "no",
+                "support_reason": verification.get("support_reason"),
+                "caveats": list(verification.get("caveats") or []),
+                "source_handle": handle,
+                "via": source,
+                "verified_claim_sha": sha,
+            },
+            conn=conn,
+        )
+        return verdict, True
+    return verdict, False
+
+
 @dataclass
 class _PaperResult:
     matched: int = 0
@@ -523,12 +693,18 @@ def _ground_one_paper(
     max_llm: int,
     verify_fn: VerifyFn,
     pending_checks: list[int],
+    budget: GroundingBudget | None,
 ) -> _PaperResult:
     """Match → filter → verify → write → mark, for one paper, inside the
     caller's transaction (module docstring steps 2-6). Re-locks the paper
     row and re-checks the done-marker first: the claim query's lock was
     released at its commit, so a sibling instance may have grounded the
-    paper in between."""
+    paper in between.
+
+    A ``budget`` that reports ``exhausted`` mid-loop breaks the match loop
+    without writing the done-marker: the paper is re-claimed next pass and
+    its settled pairs skip through the filter, so the stop costs no
+    re-verification."""
     result = _PaperResult()
     conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (paper_ref_id,))
     if store.has_tag(paper_ref_id, _MARKER_NS, INBOUND_GROUND_VERSION):
@@ -539,7 +715,6 @@ def _ground_one_paper(
     result.matched = len(matches)
     settled = _settled_hub_ids(conn, paper_ref_id, [m.hub_ref_id for m in matches])
     identity = _paper_identity(conn, paper_ref_id)
-    paper_key = f"paper:{paper_ref_id}"
 
     for m in matches:
         if result.verified >= max_llm:
@@ -547,85 +722,22 @@ def _ground_one_paper(
         if m.hub_ref_id in settled or str(paper_ref_id) in m.rejected:
             continue
         result.verified += 1
-        try:
-            verification = verify_fn(
-                claim=m.title,
-                scope=m.scope,
-                target_cite_key=paper_key,
-                target_chunk_ord=m.chunk_ord,
-                target_chunk_text=m.chunk_text,
-                source_kind="paper",
-                section_path=m.section_path,
-                neighbours=_chunk_neighbours(conn, paper_ref_id, m.chunk_ord),
-                source_identity=identity,
-            )
-        except Exception:
-            log.warning(
-                "inbound_ground: verify hook raised for paper #%d hub #%d",
-                paper_ref_id,
-                m.hub_ref_id,
-                exc_info=True,
-            )
-            verification = None
-        if verification is None:
-            result.llm_errors += 1
-            continue
-
-        verdict = classify_verdict(verification)
-        handle = handle_registry.try_format("paper", m.chunk_id, chunk=True)
-        sha = claim_sha(m.title)
-        if verdict == "support":
-            attach_evidence(
-                store,
-                hub_ref_id=m.hub_ref_id,
-                paper_ref_id=paper_ref_id,
-                role=_ROLE,
-                meta={
-                    "support": verification.get("supports"),
-                    "support_reason": verification.get("support_reason"),
-                    "caveats": list(verification.get("caveats") or []),
-                    "source_handle": handle,
-                    "verified_by": _VERIFIED_BY,
-                    "verified_at": datetime.now(UTC).isoformat(),
-                    "verified_claim_sha": sha,
-                    _SOURCE: {
-                        "version": INBOUND_GROUND_VERSION,
-                        "distance": round(m.distance, 4),
-                        "same_setup": verification.get("same_setup"),
-                        "terminal": verification.get("terminal"),
-                    },
-                },
-                set_by="system",
-                conn=conn,
-                pending_checks=pending_checks,
-            )
-            result.attached += 1
-            continue
-
-        _memo_rejection(
+        verdict = _ground_pair(
             conn,
-            hub=m,
-            paper_ref_id=paper_ref_id,
-            verdict=verdict,
-            verification=verification,
+            store,
+            paper_ref_id,
+            m,
+            verify_fn=verify_fn,
+            pending_checks=pending_checks,
+            identity=identity,
         )
-        if verdict == "deny" and _disputes_allowed(verification):
-            store.add_link(
-                src_ref_id=paper_ref_id,
-                dst_ref_id=m.hub_ref_id,
-                relation=validate_relation("disputes", store=store),
-                set_by="system",
-                meta={
-                    "support": "no",
-                    "support_reason": verification.get("support_reason"),
-                    "caveats": list(verification.get("caveats") or []),
-                    "source_handle": handle,
-                    "via": _SOURCE,
-                    "verified_claim_sha": sha,
-                },
-                conn=conn,
-            )
-            result.disputes += 1
+        if verdict is None:
+            result.llm_errors += 1
+            if budget is not None and budget.exhausted:
+                break
+            continue
+        result.attached += int(verdict[0] == "support")
+        result.disputes += int(verdict[1])
 
     if result.llm_errors == 0:
         store.add_tag(
@@ -698,7 +810,9 @@ def run_inbound_ground_pass(
     resolved_max_llm = max_llm if max_llm is not None else _max_llm_default()
     resolved_floor = min_sim if min_sim is not None else _min_sim_default()
     resolved_age = max_age_days if max_age_days is not None else _max_age_days()
-    verify = verify_fn or _verify_support_with_caveats
+    budget = GroundingBudget(store) if verify_fn is None else None
+    verify = budget.verify if budget is not None else verify_fn
+    assert verify is not None
 
     try:
         with store.pool.connection() as conn:
@@ -715,9 +829,11 @@ def run_inbound_ground_pass(
             max_age_days=resolved_age,
         )
         conn.commit()
-    result["claimed"] = len(papers)
 
     for paper_ref_id in papers:
+        if budget is not None and budget.exhausted:
+            break
+        result["claimed"] += 1
         pending_checks: list[int] = []
         try:
             with store.pool.connection() as conn:
@@ -731,6 +847,7 @@ def run_inbound_ground_pass(
                     max_llm=resolved_max_llm,
                     verify_fn=verify,
                     pending_checks=pending_checks,
+                    budget=budget,
                 )
                 conn.commit()
         except Exception:

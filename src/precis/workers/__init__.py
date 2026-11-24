@@ -44,7 +44,7 @@ Job digests
 -------------
 :func:`run_loop` logs one :class:`.runner.BatchResult` per pass to
 ``worker_logs.payload`` (``precis logs --pass <name> --payload``). Counters
-use ``extra`` and blocked claims set ``report_only``. Crashes log under the
+use ``extra``; blocked claims set ``report_only``. Crashes log under the
 same ``payload.handler`` so the pass-dead probe sees them (gr328589).
 
 Profiles + service registry

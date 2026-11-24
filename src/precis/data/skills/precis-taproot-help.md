@@ -120,6 +120,19 @@ carries an `INBOUND_GROUND:<version>` tag once grounded; its
 `ref_events` row (`source='inbound_ground'`) says how many hubs matched
 and were verified.
 
+## How older papers are checked against claims
+
+Ask a human operator to enable `inbound_ground_backfill` to cover papers
+older than the recent intake window. The pass visits canonical finding
+hubs and live `TAPROOT:claim` memories in quest priority order, with fewer
+evidence sources first within a priority. It ranks unchecked papers by
+their nearest embedded body passage and uses the local verifier.
+
+Each verdict commits with its pair watermark. A restart retries any
+unfinished pair and skips claims whose candidate lists were exhausted.
+Both passes share a UTC-day token budget. The backfill also limits pair
+attempts per run.
+
 ## The evidence model — composite hubs
 
 **A composite hub holds no direct evidence.** When a claim decomposes into

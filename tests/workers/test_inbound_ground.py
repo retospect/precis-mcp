@@ -16,14 +16,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from precis.store.types import ChunkInsert
+import pytest
+
+from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import META_REJECTED, mint_hub
+from precis.utils.llm import router as llm_router
+from precis.workers import _grounding_budget as grounding_budget
+from precis.workers._grounding_budget import GroundingBudget
 from precis.workers.inbound_ground import (
     INBOUND_GROUND_VERSION,
     classify_verdict,
     run_inbound_ground_pass,
 )
+from precis.workers.inbound_ground_backfill import run_inbound_ground_backfill_pass
 from tests.workers._helpers import make_mock_bge_m3
 
 _MIN_SIM = 0.45
@@ -368,3 +374,234 @@ def test_verifier_failure_leaves_the_paper_unmarked_for_retry(store: Any) -> Non
     result = _run(store, embedder, ok)
     assert result["claimed"] == 1 and result["attached"] == 1
     assert _marked(store, paper)
+
+
+def test_backfill_resumes_after_interruption_and_skips_completed_claim(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store)
+    old = [
+        _seed_paper(store, embedder, slug=f"backfill-old-{i}", texts=[_CLAIM])[0]
+        for i in range(2)
+    ]
+    _seed_paper(store, embedder, slug="backfill-recent", texts=[_CLAIM])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '31 days' "
+            "WHERE ref_id = ANY(%s)",
+            (old,),
+        )
+        conn.commit()
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_MAX_AGE_DAYS", "30")
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_TOPK", "5")
+    calls: list[int] = []
+
+    class Interrupted(BaseException):
+        pass
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        calls.append(int(kwargs["target_cite_key"].split(":")[1]))
+        if len(calls) == 2:
+            raise Interrupted
+        if len(calls) == 1:
+            return _verdict("yes")
+        return _verdict("no")
+
+    with pytest.raises(Interrupted):
+        run_inbound_ground_backfill_pass(store, embedder=embedder, verify_fn=verify)
+
+    assert _edges(store, paper=old[0], hub=hub, relation="corroborates")
+    resumed = run_inbound_ground_backfill_pass(
+        store, embedder=embedder, verify_fn=verify
+    )
+    assert resumed["pairs_checked"] == 1
+    assert calls == [old[0], old[1], old[1]]
+
+    run_inbound_ground_backfill_pass(store, embedder=embedder, verify_fn=verify)
+    done = run_inbound_ground_backfill_pass(store, embedder=embedder, verify_fn=verify)
+    assert done["claims_visited"] == done["pairs_checked"] == done["tokens"] == 0
+    with store.pool.connection() as conn:
+        assert conn.execute(
+            "SELECT paper_ref_id, verdict FROM inbound_grounded "
+            "WHERE claim_ref_id = %s ORDER BY paper_ref_id",
+            (hub,),
+        ).fetchall() == [(old[0], "support"), (old[1], "no-relation")]
+
+
+def test_grounding_token_reservations_share_the_daily_ceiling(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_DAILY_TOKENS", "10")
+    recent = GroundingBudget(store)
+    backfill = GroundingBudget(store, local=True)
+
+    assert recent._reserve(6)
+    assert not backfill._reserve(5)
+    assert GroundingBudget(store)._reserve(4)
+    assert not GroundingBudget(store)._reserve(1)
+    assert recent.tokens == 6
+    assert backfill.tokens == 0
+
+
+# ── the shared budget, end to end minus the wire ────────────────────────
+
+
+def test_budget_verify_reserves_and_caps_through_dispatch(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production seam with the wire faked: ``budget.verify`` composes
+    the verifier prompt, and the dispatch forces the completion cap, pins
+    local placement and attaches the admission the FailoverProvider
+    consults before every attempt."""
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_DAILY_TOKENS", "1000000")
+    seen: dict[str, Any] = {}
+
+    def fake_route(request: Any) -> Any:
+        seen["request"] = request
+        return llm_router.LlmResult(
+            text="{}",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=llm_router.Tier.BIG,
+            data={"supports": "yes"},
+        )
+
+    monkeypatch.setattr(grounding_budget, "route", fake_route)
+    budget = GroundingBudget(store, local=True)
+
+    out = budget.verify(
+        claim=_CLAIM,
+        scope={},
+        target_cite_key="paper:1",
+        target_chunk_ord=0,
+        target_chunk_text=_CLAIM,
+    )
+    assert out == {"supports": "yes"}
+    request = seen["request"]
+    assert request.max_tokens == 2048
+    assert request.placement == "local"
+    assert request.admit_attempt is not None
+    assert request.admit_attempt()  # the reservation lands in the ledger
+    assert budget.tokens > 0
+
+
+def test_budget_refusal_folds_to_none_without_dispatching(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ceiling below one reservation refuses the attempt BEFORE any
+    provider runs; the verifier's ``res.error`` contract folds the
+    ``budget``-class refusal to ``None``, so a pass counts the pair as
+    failed and retries it next run."""
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_DAILY_TOKENS", "100")
+    dispatched: list[Any] = []
+
+    def counting_route(request: Any) -> Any:
+        dispatched.append(request)
+        return llm_router.FailoverProvider(
+            [llm_router.Rung(llm_router.Transport.OPENAI_TOOLS)]
+        ).run(request, model="oss-model")
+
+    monkeypatch.setattr(grounding_budget, "route", counting_route)
+    budget = GroundingBudget(store)
+
+    out = budget.verify(
+        claim=_CLAIM,
+        scope={},
+        target_cite_key="paper:1",
+        target_chunk_ord=0,
+        target_chunk_text=_CLAIM,
+    )
+    assert out is None
+    assert len(dispatched) == 1
+    assert budget.exhausted
+
+
+# ── memory claims ────────────────────────────────────────────────────────
+
+
+def _seed_memory_claim(store: Any, sentence: str = _CLAIM) -> int:
+    """A live ``TAPROOT:claim`` memory ref — the backfill's non-finding target."""
+    ref = store.insert_ref(kind="memory", slug=None, title=sentence, meta={})
+    store.add_tag(ref.id, Tag.closed("TAPROOT", "claim"), set_by="system")
+    return ref.id
+
+
+def _age_paper(store: Any, paper: int, *, days: int = 31) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - make_interval(days => %s) "
+            "WHERE ref_id = %s",
+            (days, paper),
+        )
+        conn.commit()
+
+
+def test_backfill_grounds_a_memory_claim_through_a_bare_link(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``TAPROOT:claim`` memory ref is the backfill's own target: no
+    finding-hub gate, no retraction trigger — the verdict lands as a bare
+    ``corroborates`` link stamped with the backfill's verifier fingerprint,
+    and a fresh support is counted as new."""
+    embedder = make_mock_bge_m3()
+    claim = _seed_memory_claim(store)
+    paper, chunk_ids = _seed_paper(store, embedder, slug="mem-old", texts=[_CLAIM])
+    _age_paper(store, paper)
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_MAX_AGE_DAYS", "30")
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_TOPK", "5")
+    verifier = _Verifier(_verdict("yes"))
+
+    result = run_inbound_ground_backfill_pass(
+        store, embedder=embedder, verify_fn=verifier
+    )
+
+    assert result["claims_visited"] == 1
+    assert result["supports"] == 1
+    (call,) = verifier.calls
+    assert call["claim"] == _CLAIM
+    (edge,) = _edges(store, paper=paper, hub=claim, relation="corroborates")
+    assert edge.src_chunk_id == chunk_ids[0]
+    assert edge.meta["verified_by"] == "inbound-ground-backfill"
+    assert edge.meta["inbound_ground"]["distance"] == 0.0
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT verdict FROM inbound_grounded WHERE claim_ref_id = %s "
+            "AND paper_ref_id = %s",
+            (claim, paper),
+        ).fetchone()
+    assert row == ("support",)
+
+
+def test_backfill_retries_a_pair_whose_verifier_keeps_failing(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persistently failing verifier writes nothing, so the pair is never
+    watermarked: each run re-ranks the same top-K and re-spends on it
+    (bounded by the per-run pair cap), and the claim is never marked
+    backfilled — pinned so the retry contract is explicit, not accidental."""
+    embedder = make_mock_bge_m3()
+    _seed_hub(store)
+    paper, _ = _seed_paper(store, embedder, slug="stuck", texts=[_CLAIM])
+    _age_paper(store, paper)
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_MAX_AGE_DAYS", "30")
+    monkeypatch.setenv("PRECIS_INBOUND_GROUND_TOPK", "5")
+    calls: list[int] = []
+
+    def failing(**kwargs: Any) -> None:
+        calls.append(int(kwargs["target_cite_key"].split(":")[1]))
+        return None
+
+    for _ in range(2):
+        result = run_inbound_ground_backfill_pass(
+            store, embedder=embedder, verify_fn=failing
+        )
+        assert result["failed"] == 1 and result["pairs_checked"] == 0
+
+    assert calls == [paper, paper]  # retried each run, never advanced
+    with store.pool.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM inbound_grounded").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT count(*) FROM inbound_ground_backfilled"
+        ).fetchone() == (0,)
