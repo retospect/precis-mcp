@@ -1116,7 +1116,12 @@ class RefsMixin:
 
         ``kind`` is the kind decoded from the chunk code; we confirm the
         owning ref's kind matches so e.g. ``pc10`` only resolves when chunk
-        10 really belongs to a paper.
+        10 really belongs to a paper. A chunk whose row is gone (a body
+        move re-mints ids and deletes the donor's) or lives under a
+        tombstone follows the ``chunk_supersede`` map written at merge
+        time (gr690836) — the same transparent redirect a record handle's
+        ``meta.superseded_by`` gives, with ``redirected_from`` set so the
+        caller can nudge the agent to re-pin the new handle.
         """
         sql = (
             "SELECT c.ref_id, c.ord, r.kind, "
@@ -1129,8 +1134,8 @@ class RefsMixin:
             + secret_fence("r", path="resolve")
         )
 
-        def _do(c: Connection) -> ResolvedHandle | None:
-            row = c.execute(sql, (chunk_id,)).fetchone()
+        def _lookup(c: Connection, cid: int) -> ResolvedHandle | None:
+            row = c.execute(sql, (cid,)).fetchone()
             if row is None:
                 return None
             ref_id, ord_, row_kind, slug = (
@@ -1145,18 +1150,18 @@ class RefsMixin:
                 # (the chunk code mints dk<id> now).
                 if (row[5] or "") != kind:
                     return None  # prefix/kind mismatch — not this handle
-                old_handle = handle_registry.format_handle(kind, chunk_id, chunk=True)
+                old_handle = handle_registry.format_handle(kind, cid, chunk=True)
                 self.emit_hint(
                     converted_redirect_hint(
                         old_handle,
-                        handle_registry.format_handle(row_kind, chunk_id, chunk=True),
+                        handle_registry.format_handle(row_kind, cid, chunk=True),
                     )
                 )
                 return ResolvedHandle(
                     ref_id=ref_id,
                     kind=row_kind,
                     public_id=slug if slug is not None else str(ref_id),
-                    chunk_id=chunk_id,
+                    chunk_id=cid,
                     chunk_ord=ord_,
                     cite_public_id=_si_cite_slug(c, ref_id, row_kind, row[4]),
                     redirected_from=old_handle,
@@ -1166,10 +1171,47 @@ class RefsMixin:
                 ref_id=ref_id,
                 kind=row_kind,
                 public_id=public_id,
-                chunk_id=chunk_id,
+                chunk_id=cid,
                 chunk_ord=ord_,
                 cite_public_id=_si_cite_slug(c, ref_id, row_kind, row[4]),
             )
+
+        def _do(c: Connection) -> ResolvedHandle | None:
+            resolved = _lookup(c, chunk_id)
+            if resolved is not None:
+                return resolved
+            # The chunk row is gone or sits under a tombstone — walk the
+            # ``chunk_supersede`` map a merge/body-move wrote (gr690836).
+            # Chains (a survivor merged again, ids re-minted each time)
+            # follow transitively; the seen-set breaks a cycle.
+            cur = chunk_id
+            seen = {cur}
+            for _ in range(8):
+                row = c.execute(
+                    "SELECT new_chunk_id FROM chunk_supersede WHERE old_chunk_id = %s",
+                    (cur,),
+                ).fetchone()
+                if row is None:
+                    return None
+                cur = int(row[0])
+                if cur in seen:
+                    return None
+                seen.add(cur)
+                resolved = _lookup(c, cur)
+                if resolved is not None:
+                    old_handle = handle_registry.format_handle(
+                        kind, chunk_id, chunk=True
+                    )
+                    self.emit_hint(
+                        merged_redirect_hint(
+                            old_handle,
+                            handle_registry.format_handle(
+                                resolved.kind, cur, chunk=True
+                            ),
+                        )
+                    )
+                    return replace(resolved, redirected_from=old_handle)
+            return None
 
         if conn is not None:
             return _do(conn)

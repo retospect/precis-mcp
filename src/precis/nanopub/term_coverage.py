@@ -333,7 +333,10 @@ def passage_texts(store: Store, grounding: dict[str, Any]) -> list[str]:
         if not str(p.get("quote") or "").strip()
         and (cid := integral_chunk_id(p.get("chunk_id"))) is not None
     ]
-    by_id = {c.chunk_id: c.text for c in evidence.fetch_chunks(store, blank_ids)}
+    by_id = {
+        c.resolved_from or c.chunk_id: c.text
+        for c in evidence.fetch_chunks(store, blank_ids)
+    }
     out: list[str] = []
     for p in passages:
         text = str(p.get("quote") or "").strip()

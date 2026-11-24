@@ -53,9 +53,12 @@ Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
   `chunks.keywords` (KeyBERT, F20). To "update" a chunk's text you DELETE +
   INSERT so that cascade re-runs — an in-place UPDATE strands the derived
   rows. This is the single most load-bearing invariant in the codebase.
-  (Body-less stubs have no chunks to cascade from; the `stub_rank` pass
-  embeds title+abstract into `ref_embeddings`, keyed on `refs`, to rank
-  the acquisition queue via `refs.prio` — 1=hottest.)
+  A merge's body move re-mints every `chunk_id`, so it writes
+  `chunk_supersede` (old → new) for `resolve_handle`/`fetch_chunks` to
+  follow — a pinned `pc<old>` redirects like a merged record handle
+  (gr690836). (Body-less stubs have no chunks to cascade from; the
+  `stub_rank` pass embeds title+abstract into `ref_embeddings`, keyed on
+  `refs`, to rank the acquisition queue via `refs.prio` — 1=hottest.)
 
 Web, Wikipedia, YouTube and all Sonar tiers use versioned cache refs.
 Query lookups resolve the current result. Each snapshot keeps its own ref,

@@ -374,7 +374,7 @@ def _freeze_source_anchor(
         if cid is not None
     ]
     chunks = evidence.fetch_chunks(store, chunk_ids)
-    ref_by_chunk = {c.chunk_id: c.ref_id for c in chunks}
+    ref_by_chunk = {c.resolved_from or c.chunk_id: c.ref_id for c in chunks}
     refs = store.fetch_refs_by_ids(set(ref_by_chunk.values())) if ref_by_chunk else {}
     stamped: list[dict[str, Any]] = []
     for p in passages:
@@ -488,7 +488,11 @@ def _freeze_contiguity(
         if len(chunks) != len(set(chunk_ids)) or len(ref_ids) != 1:
             continue  # a vanished chunk, or (shouldn't happen) mixed refs
         (ref_id,) = ref_ids
-        flags[key] = evidence.passages_contiguous(store, ref_id, chunk_ids)
+        # The position check wants the LIVE ids — a merge redirect can
+        # answer an approved (stale) pin with its re-minted copy.
+        flags[key] = evidence.passages_contiguous(
+            store, ref_id, [c.chunk_id for c in chunks]
+        )
 
     if not flags:
         return list(passages)

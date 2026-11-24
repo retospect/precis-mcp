@@ -149,7 +149,12 @@ name (gr732612) — though a genuine mononym is possible, so it's a human
 check against the printed article, not an auto-repair. Repair on the record
 with `edit(kind='paper', id=…)` — `authors=[…]` / `year=` / `journal=`, or a
 chapter's `booktitle=` + `editors=` + `publisher=`
-([[precis-paper-ref-help]]). Start with the outline
+([[precis-paper-ref-help]]). The same view also flags **dead or merged
+chunk pins**: a `[fi<id>>pc<id>]` pin or bare `[pc<id>]` cite whose chunk
+vanished under a paper merge's id re-mint shows as `⚠ … dead chunk
+pin(s)` (nothing resolves it — re-ground the sentence and pin a live
+`pc<id>`) or `⚠ … merged chunk pin(s)` (the old handle still redirects
+through `chunk_supersede` — re-pin the new handle it names). Start with the outline
 (`get(kind='draft', id=…)`); its hygiene footer shows up to 8 items per list.
 For complete lists without the body, use
 `get(kind='draft', id=…, view='hygiene')`.

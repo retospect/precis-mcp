@@ -208,7 +208,7 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
         if chunk_id is not None:
             chunk_ids_by_link[link_id] = chunk_id
     chunks_by_id = {
-        c.chunk_id: c
+        c.resolved_from or c.chunk_id: c
         for c in evidence.fetch_chunks(store, list(set(chunk_ids_by_link.values())))
     }
 

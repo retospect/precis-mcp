@@ -751,7 +751,10 @@ def report_source_verdicts(
     ]
     if not chunk_ids:
         return []
-    chunk_ref = {c.chunk_id: c.ref_id for c in ev.fetch_chunks(store, chunk_ids)}
+    chunk_ref = {
+        c.resolved_from or c.chunk_id: c.ref_id
+        for c in ev.fetch_chunks(store, chunk_ids)
+    }
     refs = store.fetch_refs_by_ids(set(chunk_ref.values())) if chunk_ref else {}
     out: list[ReportSourceVerdict] = []
     seen: set[int] = set()

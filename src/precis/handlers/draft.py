@@ -6936,6 +6936,12 @@ class DraftHandler(Handler):
         * **one-word byline authors** — a cited ``paper`` whose byline
           holds a single-token author name (gr732612); this cite-time
           line is the only signal — see :meth:`_hygiene_mononym_line`.
+        * **dead or merged chunk pins** — a ``pc<id>`` chunk token (a
+          ``[fi<id>>pc<id>]`` pin or a bare ``[pc<id>]`` cite) whose chunk
+          vanished under a merge's id re-mint: either it redirects
+          through ``chunk_supersede`` (re-pin the new handle) or it
+          resolves to nothing — nothing else in the surface says the pin
+          is dead (gr690836 item 5) — see :meth:`_hygiene_dead_pin_lines`.
         * **drifted cites** — a ``cites`` edge whose pinned hub version
           (``cited_pub_id``/``cited_title``, ``handlers/draft.py::
           sync_draft_links``) no longer matches the hub's live version —
@@ -7060,6 +7066,8 @@ class DraftHandler(Handler):
                 "precision matters — [pc<id>] via search(kind='paper', …) "
                 "or get(kind='paper', id='<slug>~lo..hi', view='toc')."
             )
+
+        out.extend(self._hygiene_dead_pin_lines(chunks, limit=limit))
 
         hub_posture = self._hygiene_hub_posture_lines(ref_id, limit=limit)
         out.extend(hub_posture)
@@ -7581,6 +7589,89 @@ class DraftHandler(Handler):
                 target = resolve_handle_target(self.store, tok)
                 if target is not None:
                     out.append(target.dst_ref_id)
+        return out
+
+    def _hygiene_dead_pin_lines(
+        self, chunks: list[Any], *, limit: int | None
+    ) -> list[str]:
+        """gr690836 item 5: chunk-handle pins/cites that a merge's id
+        re-mint killed or redirected.
+
+        Every ``[fi<id>>pc<id>]`` pin handle and every bare ``[pc<id>]``
+        cite in the draft resolves once through
+        :meth:`Store.resolve_handle`: a miss is a *dead* pin (the chunk
+        row is gone and no ``chunk_supersede`` row covers it — nothing
+        else in the surface says so); a ``redirected_from`` hit is a
+        *moved* pin whose text still works but names the pre-merge id —
+        re-pin the new handle so the cite survives any later repair that
+        retires the map entry's readability. Resolve failures are
+        advisory-only (a DB blip must never block a draft read).
+        """
+        from precis.nanopub import pin_lint
+        from precis.utils import mentions
+
+        dead: list[str] = []
+        moved: list[str] = []
+        seen: set[str] = set()
+        for c in chunks:
+            if not c.text or c.chunk_kind == "code":
+                continue
+            handles = [h for pin in pin_lint.find_pins(c.text) for h in pin.handles]
+            handles.extend(
+                m.group("bare")
+                for m in mentions.BARE_BRACKET_REF_PATTERN.finditer(c.text)
+            )
+            for handle in handles:
+                if handle in seen:
+                    continue
+                seen.add(handle)
+                parsed = handle_registry.parse(handle)
+                if parsed is None or not parsed[1]:
+                    continue
+                try:
+                    resolved = self.store.resolve_handle(handle)
+                except Exception:
+                    continue
+                if resolved is None:
+                    dead.append(f"{c.dc}:{handle}")
+                elif resolved.redirected_from is not None:
+                    new_h = (
+                        handle_registry.try_format(
+                            resolved.kind, resolved.chunk_id, chunk=True
+                        )
+                        if resolved.chunk_id is not None
+                        else None
+                    )
+                    moved.append(f"{c.dc}:{handle} → {new_h or resolved.public_id}")
+        out: list[str] = []
+        if dead:
+            shown = ", ".join(dead if limit is None else dead[:limit])
+            tail = (
+                f" (+{len(dead) - limit} more — see "
+                "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+                if limit is not None and len(dead) > limit
+                else ""
+            )
+            out.append(
+                f"⚠ {len(dead)} dead chunk pin(s): {shown}{tail}. The "
+                "pinned passage is gone (its paper merged with no "
+                "same-text survivor) — re-ground the sentence: "
+                "search(kind='paper', q=…) for the passage and re-pin "
+                "its pc<id>."
+            )
+        if moved:
+            shown = ", ".join(moved if limit is None else moved[:limit])
+            tail = (
+                f" (+{len(moved) - limit} more — see "
+                "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+                if limit is not None and len(moved) > limit
+                else ""
+            )
+            out.append(
+                f"⚠ {len(moved)} merged chunk pin(s): {shown}{tail}. The "
+                "old pc<id> still resolves via chunk_supersede — re-pin "
+                "the new handle so the cite reads what you meant."
+            )
         return out
 
     def _hygiene_hub_posture_lines(

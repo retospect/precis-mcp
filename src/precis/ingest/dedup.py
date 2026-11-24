@@ -17,6 +17,12 @@ migrate external identifiers + graph edges to the survivor, record a
 ``probe_existing`` already filters soft-deleted refs, so a retired
 duplicate can't resurrect.
 
+Chunk handles get the record handle's courtesy too (gr690836): every
+loser body chunk writes a ``chunk_supersede`` redirect — onto its
+re-minted copy when the body moves, onto the survivor's
+same-``ord``/same-text chunk when the body stays behind under the
+tombstone — so a pinned ``pc<id>`` keeps resolving instead of dangling.
+
 Why a sweep at all: ingest-time dedup (``db_writer.probe_existing`` on
 pdf_sha256 / doi / arxiv / s2 / content_hash / paper_id) only misses a
 second copy that shares *none* of those keys — a different file of the
@@ -201,6 +207,16 @@ def _move_body_to_survivor(
     move_body = bool(du[5]) and not sv[5]
     move_pdf = du[1] is not None and sv[1] is None
     moved: list[str] = []
+    if du[5] and sv[5]:
+        # Both hold a body, so the loser's chunks stay behind under its
+        # tombstone — map each onto the survivor's same-position,
+        # same-text chunk so a pinned pc<id> redirects instead of
+        # dying (gr690836). Runs even when nothing else moves.
+        from precis.ingest.body_ops import map_unmoved_body_chunks
+
+        map_unmoved_body_chunks(
+            conn, src_ref_id=duplicate_ref_id, dst_ref_id=survivor_ref_id
+        )
     if not (move_body or move_pdf):
         return moved
     links_repointed = 0
@@ -221,6 +237,7 @@ def _move_body_to_survivor(
             src_ref_id=duplicate_ref_id,
             dst_ref_id=survivor_ref_id,
             conn=conn,
+            redirect_chunks=True,
         )
         links_repointed = report.chunk_links
         if move_pdf:
@@ -698,6 +715,16 @@ def merge_duplicate(
         source=source,
         conn=conn,
     )
+    # pc<old> handles the merge just made resolvable: every copied
+    # body chunk (the move) and every tombstoned chunk the survivor
+    # holds the same text for (the no-move map) wrote a
+    # ``chunk_supersede`` row (gr690836).
+    row = conn.execute(
+        "SELECT count(*) FROM chunk_supersede "
+        "WHERE src_ref_id = %s AND dst_ref_id = %s",
+        (duplicate_ref_id, survivor_ref_id),
+    ).fetchone()
+    chunk_redirects = int(row[0]) if row else 0
     # (a3) Notes → survivor, on every merge (gr521094): the ord<0 band
     # never moves with a body, and the loser retires either way — left
     # behind, its notes become unreachable.
@@ -791,6 +818,7 @@ def merge_duplicate(
             "reason": reason,
             **({"moved": moved} if moved else {}),
             **({"notes": notes_carried} if notes_carried else {}),
+            **({"chunk_redirects": chunk_redirects} if chunk_redirects else {}),
         },
         conn=conn,
     )

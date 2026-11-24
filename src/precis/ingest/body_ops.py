@@ -29,6 +29,15 @@ Two hard rules the module holds:
   are orphaned and expire under the claim cooldown. The
   ``chunk_embeddings`` trigger fills the denormalised ``ref_id``/``kind``
   from the new parent chunk itself (migration 0226).
+- **Merge redirects** (gr690836): a merge's body carry writes a
+  ``chunk_supersede`` row for each copied chunk before deleting the
+  originals. When both papers have bodies,
+  :func:`map_unmoved_body_chunks` maps same-position, identical passages.
+  It replaces earlier mappings so remerging a restored paper leaves
+  unmatched handles dangling. ``resolve_handle`` and
+  ``nanopub.evidence.fetch_chunks`` follow these redirects. Standalone
+  body moves and splits clear earlier redirects for their live donor
+  chunks as those chunks are removed.
 
 The mutating doors run under ``@trust_door("computed")`` — dedup's
 choice for its own ref/link moves (``merge_duplicate``,
@@ -144,6 +153,9 @@ class BodyReport:
     #: True when ``kept_pdf`` re-pointed ``refs.pdf_sha256`` (and cleared
     #: ``pdf_pages``, the dropped file's span).
     pdf_repointed: bool = False
+    #: ``chunk_supersede`` rows the op wrote — the ``pc<old>`` →
+    #: ``pc<new>`` redirects ``resolve_handle`` follows (gr690836).
+    chunk_redirects: int = 0
 
     @property
     def is_stub(self) -> bool:
@@ -412,6 +424,75 @@ def _copy_body_chunks(conn: Any, *, src_ref_id: int, dst_ref_id: int) -> int:
     return cur.rowcount
 
 
+def _record_chunk_supersede(conn: Any, *, src_ref_id: int, dst_ref_id: int) -> int:
+    """Map every live donor body chunk onto its fresh copy — the
+    ``chunk_supersede`` rows ``resolve_handle`` follows so a ``pc<old>``
+    handle keeps answering after the move re-mints the ids (gr690836).
+
+    Runs after the copies land and before the donor delete: the
+    ``(ref_id, ord)`` join pairs each donor row with its copy (the copy
+    preserves ``ord`` and the door guarantees the target held no
+    ``ord >= 0`` chunk). A donor chunk id CAN already own a map row —
+    the loser was a kept-body merge source earlier, got restored, and
+    is now being merged for real — so the conflict updates: the newest
+    merge is the redirect's truth, not the stale first survivor."""
+    cur = conn.execute(
+        "INSERT INTO chunk_supersede (old_chunk_id, new_chunk_id, "
+        "src_ref_id, dst_ref_id) "
+        "SELECT o.chunk_id, n.chunk_id, %s, %s FROM chunks o "
+        "JOIN chunks n ON n.ref_id = %s AND n.ord = o.ord "
+        " AND n.retired_at IS NULL "
+        "WHERE o.ref_id = %s AND o.ord >= 0 AND o.retired_at IS NULL "
+        "ON CONFLICT (old_chunk_id) DO UPDATE SET "
+        "new_chunk_id = EXCLUDED.new_chunk_id, "
+        "src_ref_id = EXCLUDED.src_ref_id, "
+        "dst_ref_id = EXCLUDED.dst_ref_id, "
+        "created_at = now()",
+        (src_ref_id, dst_ref_id, dst_ref_id, src_ref_id),
+    )
+    return cur.rowcount
+
+
+def _clear_live_chunk_redirects(conn: Any, src_ref_id: int) -> None:
+    """Remove redirects a previous merge wrote for now-live body chunks."""
+    conn.execute(
+        "DELETE FROM chunk_supersede s USING chunks o "
+        "WHERE s.old_chunk_id = o.chunk_id AND o.ref_id = %s "
+        "AND o.ord >= 0 AND o.retired_at IS NULL",
+        (src_ref_id,),
+    )
+
+
+def map_unmoved_body_chunks(conn: Any, *, src_ref_id: int, dst_ref_id: int) -> int:
+    """Redirect a tombstoned loser's kept chunks onto the survivor's
+    identical passages (gr690836).
+
+    A merge only moves the loser's body when the survivor holds none;
+    when both carry a body the loser's chunks stay behind under the
+    tombstone and their ``pc<id>`` handles die. For each loser chunk the
+    survivor already holds the *same* passage — this maps it by the
+    ``(ord, md5(text))`` pair (position + text hash, the spec's match
+    rule): a ``pc<old>`` then resolves to the survivor's identical-text
+    chunk. A loser chunk with no exact match gets no row — a
+    same-position different-text guess would redirect a pin onto a
+    passage it never meant, and a dangling pin is the honest report.
+
+    Replace mappings for the live source chunks on each merge. After
+    restore and remerge, a passage without a match must stop redirecting
+    to the previous survivor."""
+    _clear_live_chunk_redirects(conn, src_ref_id)
+    cur = conn.execute(
+        "INSERT INTO chunk_supersede (old_chunk_id, new_chunk_id, "
+        "src_ref_id, dst_ref_id) "
+        "SELECT o.chunk_id, n.chunk_id, %s, %s FROM chunks o "
+        "JOIN chunks n ON n.ref_id = %s AND n.ord = o.ord "
+        " AND n.retired_at IS NULL AND md5(n.text) = md5(o.text) "
+        "WHERE o.ref_id = %s AND o.ord >= 0 AND o.retired_at IS NULL",
+        (src_ref_id, dst_ref_id, dst_ref_id, src_ref_id),
+    )
+    return cur.rowcount
+
+
 def _copy_derived_rows(
     conn: Any, *, src_ref_id: int, dst_ref_id: int
 ) -> dict[str, int]:
@@ -639,7 +720,9 @@ def _restore_link_stamp(conn: Any, link_id: int) -> bool:
 
 
 @trust_door("computed")
-def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
+def move_body(
+    *, src_ref_id: int, dst_ref_id: int, conn: Any, redirect_chunks: bool = False
+) -> BodyReport:
     """Move the donor's body, derived rows, pdf pointers, content ids and
     body-owned meta keys to the target — which the door guarantees holds
     no ``ord >= 0`` chunk. DELETE + INSERT only.
@@ -655,9 +738,22 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
     ``paper_id``/``pub_id`` move only onto a target that holds none of
     that kind — they are single-valued per ref (``v_refs`` reads them as
     scalars), so a target carrying its own keeps it.
+
+    With ``redirect_chunks`` (a merge or its deferred body carry), every
+    copied chunk records a ``chunk_supersede`` row
+    (``report.chunk_redirects``) so a ``pc<old>`` handle — a draft pin, a
+    ``links.meta['source_handle']``, any stored citation — redirects to
+    its copy instead of dangling once the donor row deletes (gr690836).
     """
     report = probe_body(conn, src_ref_id)
     _copy_body_chunks(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
+    redirects = 0
+    if redirect_chunks:
+        redirects = _record_chunk_supersede(
+            conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id
+        )
+    else:
+        _clear_live_chunk_redirects(conn, src_ref_id)
     _copy_derived_rows(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
     repointed = _repoint_chunk_links(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
     # Judgment pins re-anchor with the edges they were judged against;
@@ -717,6 +813,7 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
     )
     report = replace(
         report,
+        chunk_redirects=redirects,
         identifiers=[
             i
             for i in report.identifiers

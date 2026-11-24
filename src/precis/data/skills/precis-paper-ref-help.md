@@ -237,6 +237,17 @@ previews. A bodiless survivor takes the duplicate's body, `pdf_sha256`
 and content ids, so a wanted stub can survive a merge with a bodied twin
 — pick the side whose handle/identifiers people use.
 
+A merged paper's `pc<id>` handles redirect to their copies when the body
+moves. When both sides hold a body, a handle redirects to the survivor's
+same-position, same-text passage. Handles without a match dangle.
+`dry_run` counts redirects and pins (anchored links, `meta.source_handle`,
+stored groundings, and `pc<id>` tokens in other chunks). The count includes
+handles from earlier merges that resolve through the loser. When any pin
+exists the write refuses
+until you pass `confirm_chunk_pins: True` — the refusal's `next=` line is
+the paste-ready call. The preview and acknowledgment count pins targeting
+redirecting and dangling handles.
+
 Refuses, naming the fix: a self-merge; a missing `reason`; a loser
 already merged (re-point with `redirect_to`, below) or plain-retired
 (`retire: False` restores first); a target that isn't live (an

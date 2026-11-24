@@ -418,8 +418,9 @@ def apply_merge(
         # Body first: its chunk-anchored links re-point onto the copies
         # the move lands on the winner, so the repoint below finds
         # them already on the winner instead of de-grounding them
-        # against a chunkless winner.
-        if body_moves:
+        # against a chunkless winner. Even when nothing moves, map
+        # identical passages so their old chunk handles still resolve.
+        if loser_kind == "paper":
             from precis.ingest.dedup import _move_body_to_survivor
 
             _move_body_to_survivor(

@@ -1119,6 +1119,7 @@ class PaperHandler(Handler):
                 "retire",
                 "force",
                 "merge_into",
+                "confirm_chunk_pins",
                 "clear_stamp",
                 "drop_body",
                 "reextract",
@@ -6959,6 +6960,7 @@ class PaperHandler(Handler):
                     raw_args["merge_into"],
                     reason=reason,
                     dry=bool(dry_mode),
+                    confirm_chunk_pins=_args_truthy(raw_args.get("confirm_chunk_pins")),
                 )
             elif door == "drop_body":
                 keep_raw = raw_args.get("keep_pdf")
@@ -7751,7 +7753,13 @@ class PaperHandler(Handler):
         )
 
     def _merge_duplicate_into(
-        self, id: str | int, target: Any, *, reason: str, dry: bool
+        self,
+        id: str | int,
+        target: Any,
+        *,
+        reason: str,
+        dry: bool,
+        confirm_chunk_pins: bool = False,
     ) -> Response:
         """``edit(args={'merge_into': <live paper>})`` — fold this live
         ref into the named survivor (gr509659).
@@ -7786,6 +7794,16 @@ class PaperHandler(Handler):
         ``short-title`` refusal on titles identical after normalisation
         also names the identical-title waiver leg that failed
         (:meth:`_identical_title_waiver_gap`, gr634191).
+
+        Body chunk handles (gr690836) get a
+        ``chunk_supersede`` redirect where a corresponding passage exists — onto its re-minted copy when the
+        body moves, onto the survivor's same-``ord``/same-text chunk when
+        it stays under the tombstone. The dry-run names how many handles
+        move and how many dependants pin them (chunk-anchored links,
+        ``meta.source_handle`` pins, stored groundings, ``pc<id>`` tokens
+        in other chunks);
+        when any pin exists the write refuses without
+        ``args['confirm_chunk_pins']: True``.
         """
         from precis.ingest.dedup import merge_duplicate
 
@@ -7887,18 +7905,157 @@ class PaperHandler(Handler):
                     "call"
                 ),
             )
-        if dry:
-            return Response(
-                body=(
-                    f"DRY RUN (no write) - would fold {loser_h} into "
-                    f"{winner_h}: identifiers, links and bib holds migrate "
-                    f"to {winner_h}, its missing body/PDF move over, "
-                    f"{loser_h} is soft-deleted with a supersede redirect "
-                    "and ref_events 'duplicate_merged' / "
-                    "'soft_deleted_duplicate' are logged."
+        # Chunk-handle surface (gr690836): a body move re-mints every
+        # pc<id> on the loser (each copy writes a chunk_supersede
+        # redirect); a body the loser keeps stays under the tombstone and
+        # only same-text handles redirect. The dependants below are what
+        # silently died before the map existed — the merge spec asks the
+        # dry-run and ack to name them, and a merge with pinned
+        # dependants wants an explicit confirm.
+        from precis.ingest.body_ops import probe_body
+        from precis.ingest.dedup import pending_body_move
+
+        with self.store.tx() as conn:
+            if not dry:
+                locked = conn.execute(
+                    "SELECT retired_at FROM refs WHERE ref_id = ANY(%s) "
+                    "ORDER BY ref_id FOR NO KEY UPDATE",
+                    ([loser.id, winner.id],),
+                ).fetchall()
+                if len(locked) != 2 or any(row[0] is not None for row in locked):
+                    raise BadInput(
+                        "the merge pair changed while the merge was being prepared",
+                        next="resolve both live refs again and retry merge_into",
+                    )
+            moves = pending_body_move(
+                conn, survivor_ref_id=winner.id, duplicate_ref_id=loser.id
+            )
+            probe = probe_body(conn, loser.id)
+            # Walk backward from the loser so earlier aliases inherit
+            # the destination status of the passage they currently pin.
+            # The next hop must fit within resolve_handle's eight-hop cap.
+            rows = conn.execute(
+                "WITH RECURSIVE pins(id, redirects, depth) AS ("
+                " SELECT o.chunk_id, %s OR EXISTS ("
+                "   SELECT 1 FROM chunks n WHERE n.ref_id = %s"
+                "   AND n.ord = o.ord AND n.retired_at IS NULL"
+                "   AND md5(n.text) = md5(o.text)), 0"
+                " FROM chunks o WHERE o.ref_id = %s"
+                " AND o.ord >= 0 AND o.retired_at IS NULL"
+                " UNION ALL"
+                " SELECT s.old_chunk_id, p.redirects, p.depth + 1"
+                " FROM chunk_supersede s JOIN pins p ON s.new_chunk_id = p.id"
+                " WHERE p.depth < 8 AND NOT EXISTS ("
+                "   SELECT 1 FROM chunks c JOIN refs r USING (ref_id)"
+                "   WHERE c.chunk_id = s.old_chunk_id AND r.retired_at IS NULL)"
+                ") SELECT id, redirects AND depth < 8, depth FROM pins",
+                ("body" in moves, winner.id, loser.id),
+            ).fetchall()
+            redirects = sum(1 for _, mapped, depth in rows if mapped and depth == 0)
+            pin_rows = [
+                (str(cid), handle, mapped)
+                for cid, mapped, _ in rows
+                if (handle := handle_registry.try_format(kind, cid, chunk=True))
+                is not None
+            ]
+            pin_counts: dict[tuple[str, bool], int] = {}
+            if pin_rows:
+                ids, handles, mapped_flags = zip(*pin_rows, strict=True)
+                pin_counts = {
+                    (source, mapped): count
+                    for source, mapped, count in conn.execute(
+                        "WITH pins AS ("
+                        " SELECT * FROM unnest(%s::text[], %s::text[], %s::bool[])"
+                        " AS p(id, handle, redirects)"
+                        "), affected AS ("
+                        " SELECT 'anchor' AS source, p.redirects FROM links l"
+                        " JOIN pins p ON p.id::bigint = l.src_chunk_id"
+                        " UNION ALL"
+                        " SELECT 'anchor', p.redirects FROM links l"
+                        " JOIN pins p ON p.id::bigint = l.dst_chunk_id"
+                        " UNION ALL"
+                        " SELECT 'stored', p.redirects FROM links l"
+                        " JOIN pins p ON l.meta->>'source_handle' = p.handle"
+                        " UNION ALL"
+                        " SELECT 'grounding', coalesce(h.redirects, i.redirects)"
+                        " FROM groundings g CROSS JOIN LATERAL"
+                        " jsonb_array_elements(g.pins) AS gp(pin)"
+                        " LEFT JOIN pins h ON h.handle = gp.pin->>'handle'"
+                        " LEFT JOIN pins i ON gp.pin->>'kind' = 'chunk'"
+                        "                 AND i.id = gp.pin->>'id'"
+                        " WHERE g.retired_at IS NULL"
+                        " AND (h.id IS NOT NULL OR i.id IS NOT NULL)"
+                        " UNION ALL"
+                        " SELECT 'text', p.redirects FROM pins p JOIN chunks c"
+                        " ON c.tsv @@ to_tsquery('english', p.handle)"
+                        " JOIN refs r ON r.ref_id = c.ref_id"
+                        " WHERE c.ref_id <> %s AND c.retired_at IS NULL"
+                        " AND r.retired_at IS NULL"
+                        ") SELECT source, redirects, count(*) FROM affected"
+                        " GROUP BY source, redirects",
+                        (list(ids), list(handles), list(mapped_flags), loser.id),
+                    ).fetchall()
+                }
+            pinned_redirects = sum(n for (_, mapped), n in pin_counts.items() if mapped)
+            pinned_dangling = sum(
+                n for (_, mapped), n in pin_counts.items() if not mapped
+            )
+            pinned = pinned_redirects + pinned_dangling
+            pin_detail = ", ".join(
+                f"{pin_counts.get((source, True), 0) + pin_counts.get((source, False), 0)}"
+                f" {label}"
+                for source, label in (
+                    ("anchor", "chunk-anchored link pin(s)"),
+                    ("stored", "stored-handle pin(s)"),
+                    ("grounding", "grounding pin(s)"),
+                    ("text", "text pin(s)"),
                 )
             )
-        with self.store.tx() as conn:
+            pin_outcome = (
+                f"{pinned_redirects} pin(s) target redirecting handles, "
+                f"{pinned_dangling} pin(s) target dangling handles"
+            )
+            if "body" in moves:
+                chunk_note = (
+                    f"{probe.chunks} chunk handle(s) re-mint under {winner_h} "
+                    "(each pc<old> redirects to its copy via chunk_supersede)"
+                )
+            elif probe.chunks:
+                chunk_note = (
+                    f"{loser_h} keeps its {probe.chunks} chunk(s) under the "
+                    f"tombstone — {redirects} pc<id>(s) redirect onto "
+                    f"{winner_h}'s identical passages (ord + text hash), "
+                    "the rest dangle"
+                )
+            else:
+                chunk_note = "the loser has no body chunks"
+            if dry:
+                pin_note = (
+                    f" {pinned} dependant(s) pin {loser_h}'s chunks "
+                    f"({pin_detail}; {pin_outcome}) — the write needs "
+                    "args['confirm_chunk_pins']: True."
+                    if pinned
+                    else ""
+                )
+                return Response(
+                    body=(
+                        f"DRY RUN (no write) - would fold {loser_h} into "
+                        f"{winner_h}: identifiers, links and bib holds migrate "
+                        f"to {winner_h}, its missing body/PDF move over, "
+                        f"{loser_h} is soft-deleted with a supersede redirect "
+                        "and ref_events 'duplicate_merged' / "
+                        f"'soft_deleted_duplicate' are logged. {chunk_note}."
+                        f"{pin_note}"
+                    )
+                )
+            if pinned and not confirm_chunk_pins:
+                raise BadInput(
+                    f"{loser_h}'s chunks carry {pinned} pinned dependant(s) "
+                    f"({pin_detail}; {pin_outcome}). Confirm the merge to proceed",
+                    next=f"edit(kind='{kind}', id='{loser_h}', args="
+                    f"{{'merge_into': '{winner_h}', 'reason': '{reason}', "
+                    "'confirm_chunk_pins': True})",
+                )
             merge_duplicate(
                 self.store,
                 survivor_ref_id=winner.id,
@@ -7907,17 +8064,18 @@ class PaperHandler(Handler):
                 reason=reason,
                 conn=conn,
             )
-        merged_events = self.store.events_for(
-            winner.id, event="duplicate_merged", limit=1
+        moved_note = f"; {'/'.join(moves)} moved to {winner_h}" if moves else ""
+        redirect_note = (
+            f"; {redirects} pc<old> handle(s) now redirect via chunk_supersede"
+            if redirects
+            else ""
         )
-        moved: list[str] = []
-        if merged_events:
-            moved = merged_events[0].payload.get("moved") or []
-        moved_note = f"; {'/'.join(moved)} moved to {winner_h}" if moved else ""
+        dependant_note = f"; {pin_outcome}" if pinned else ""
         return Response(
             body=(
                 f"merged {loser_h} into {winner_h}: external identifiers, "
-                f"links and bib holds migrated{moved_note}; {loser_h} "
+                f"links and bib holds migrated{moved_note}{redirect_note}"
+                f"{dependant_note}; {loser_h} "
                 "retired (supersede redirect; ref_events "
                 "'duplicate_merged' / 'soft_deleted_duplicate' logged). "
                 f"{loser_h} now resolves to {winner_h}."
@@ -8760,7 +8918,10 @@ class PaperHandler(Handler):
                     conn, survivor_ref_id=tgt.id, duplicate_ref_id=donor.id
                 )
             report = body_ops.move_body(
-                src_ref_id=donor.id, dst_ref_id=tgt.id, conn=conn
+                src_ref_id=donor.id,
+                dst_ref_id=tgt.id,
+                conn=conn,
+                redirect_chunks=tombstone_surv is not None,
             )
             if moves:
                 # The carry's audit, stamped the way apply_merge would

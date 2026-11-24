@@ -240,13 +240,21 @@ def citation_markers(text: str) -> list[str]:
 
 @dataclass(frozen=True, slots=True)
 class ChunkInfo:
-    """One body chunk's mint-relevant facts (internal coordinates)."""
+    """One body chunk's mint-relevant facts (internal coordinates).
+
+    ``chunk_id`` is always the LIVE row's id. When the caller asked for a
+    chunk a merge re-minted, :func:`fetch_chunks` follows the
+    ``chunk_supersede`` map and ``resolved_from`` names the stale id the
+    caller pinned — key request→result maps on
+    ``resolved_from or chunk_id`` (gr690836)."""
 
     chunk_id: int
     ref_id: int
     ord: int
     text: str
     section_path: list[str]
+    #: The stale requested id a merge redirect answered, else ``None``.
+    resolved_from: int | None = None
 
     @property
     def is_hearsay_section(self) -> bool:
@@ -681,7 +689,12 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
     # read from (fi19981's shape — the Moore paper's §IV chunk). Inbound
     # edges carry theirs via ``seniority``'s GroundingRef handles; lineage
     # edges have no GroundingRef, so fold their pins in here.
-    seen_chunk_ids = {c.chunk_id for c in grounding_chunks}
+    seen_chunk_ids = {
+        cid
+        for c in grounding_chunks
+        for cid in (c.chunk_id, c.resolved_from)
+        if cid is not None
+    }
     lineage_pins = [
         link.dst_chunk_id
         for link in outbound
@@ -882,15 +895,66 @@ def _resolve_grounding(
 
 
 def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
-    """Chunk facts by id, deleted chunks silently absent."""
+    """Chunk facts by id, deleted chunks silently absent.
+
+    A merge's body move deletes the donor rows outright — a pinned
+    ``pc<id>`` then names nothing; a kept-under-tombstone chunk still has
+    a row but its ref is dead, which would short-circuit the redirect.
+    The ``chunk_supersede`` map written at merge time (gr690836) is
+    followed here too — through chains, to a bounded depth — so a pin
+    keeps reading the passage it meant. The returned :class:`ChunkInfo`
+    carries the live copy's ids with ``resolved_from`` naming the stale
+    id the caller asked for. Each distinct request can have an answer,
+    even when several ids resolve to the same chunk. A request→result map keys on
+    ``resolved_from or chunk_id``. A tombstoned chunk with NO live
+    redirect keeps its pre-map answer (its text is still the passage a
+    pin meant); a deleted row with a dead-end chain stays absent.
+    """
     if not chunk_ids:
         return []
+    request_ids = list(dict.fromkeys(int(c) for c in chunk_ids))
+    found: dict[int, tuple[Any, int | None]] = {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT chunk_id, ref_id, ord, text, section_path FROM chunks "
-            "WHERE chunk_id = ANY(%s)",
-            (chunk_ids,),
+            "SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path, "
+            "r.retired_at IS NULL AS live FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE c.chunk_id = ANY(%s)",
+            (request_ids,),
         ).fetchall()
+        frontier = {cid: cid for cid in request_ids}
+        for row in rows:
+            cid = int(row[0])
+            found[cid] = (row[:5], None)
+            if row[5]:
+                del frontier[cid]
+        # Track each request independently while batching the queries by
+        # current target. Two origins can reach the same target at
+        # different depths. The hop bound also terminates cycles.
+        for _ in range(8):
+            if not frontier:
+                break
+            rows = conn.execute(
+                "SELECT s.old_chunk_id, s.new_chunk_id, c.chunk_id, "
+                "c.ref_id, c.ord, c.text, c.section_path, "
+                "r.retired_at IS NULL FROM chunk_supersede s "
+                "LEFT JOIN chunks c ON c.chunk_id = s.new_chunk_id "
+                "LEFT JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE s.old_chunk_id = ANY(%s)",
+                (list(set(frontier.values())),),
+            ).fetchall()
+            hops = {int(row[0]): row[1:] for row in rows}
+            nxt: dict[int, int] = {}
+            for origin, current in frontier.items():
+                hop = hops.get(current)
+                if hop is None:
+                    continue
+                new_id, cid, ref_id, ord_, text, section_path, live = hop
+                if cid is not None and live:
+                    found[origin] = ((cid, ref_id, ord_, text, section_path), origin)
+                else:
+                    nxt[origin] = int(new_id)
+            frontier = nxt
     return [
         ChunkInfo(
             chunk_id=int(r[0]),
@@ -898,8 +962,9 @@ def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
             ord=int(r[2]),
             text=str(r[3] or ""),
             section_path=list(r[4] or []),
+            resolved_from=origin,
         )
-        for r in rows
+        for r, origin in found.values()
     ]
 
 
