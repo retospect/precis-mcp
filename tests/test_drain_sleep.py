@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -20,14 +21,42 @@ import pytest
 
 import precis.utils.rate_limit as rate_limit_mod
 import precis.workers.bib_parse as bib_parse_mod
+from precis import settings
+from precis.budget import meter
 from precis.liveness import drain_sleep, request_drain
-from precis.utils import http
+from precis.utils import http, outbound_policy
 from tests._timing import budget
 
 _NEEDS_FCNTL = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only: precis.utils.stall_capture (crossref limiter) imports fcntl",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_bound_store() -> Iterator[None]:
+    """Keep the module's "no DB" promise inside the timed region.
+
+    ``_crossref_query`` has two ambient reads that reach for a
+    process-bound store: ``polite_user_agent`` consults
+    ``settings.get_str`` and ``with_backoff`` resolves the
+    outbound-policy snapshot (``outbound_policy._refresh_snapshot``).
+    A store left bound by an earlier test in the same pytest worker
+    turns the timed call into a DB read that can block for seconds on a
+    contended or torn-down test postgres (r353 gate-fast red: 7.2 s
+    under a ``budget(1.0)`` assert). Unbind both stores and drop the
+    snapshot cache; restore afterwards.
+    """
+    prior_meter = meter.active_store()
+    prior_settings = settings._STORE
+    meter.bind_store(None)
+    settings.bind_store(None)
+    outbound_policy.reset_cache()
+    yield
+    meter.bind_store(prior_meter)
+    settings.bind_store(prior_settings)
+    outbound_policy.reset_cache()
+
 
 # ── liveness.drain_sleep ────────────────────────────────────────────────
 
