@@ -4043,12 +4043,14 @@ class _TickRun:
 
         raw_text = getattr(res, "raw_text", None)
         attribution = agentlog.run_result_meta(res)
-        self.st["hypothesis_models"] = attribution.get("models_used") or [
-            attribution.get("model_actual") or model_str
-        ]
         self.st["resp_chars"] = len(getattr(res, "text", "") or "")
         self._park(
             payload=payload,
+            # Model attribution for the apply stage's hypothesis mints —
+            # a list, so it rides the agentlog checkpoint like the payload,
+            # never the scalar-only ``st`` that crosses the slice boundary.
+            hypothesis_models=attribution.get("models_used")
+            or [attribution.get("model_actual") or model_str],
             raw_text=_cap_transcript_raw(str(raw_text)) if raw_text else None,
         )
         self.st["stage"] = "apply"
@@ -4213,11 +4215,12 @@ class _TickRun:
             dialectic_seen,
         )
 
+        models = self._load_stash().get("hypothesis_models")
         added += hypotheses_mod.mint_tick_hypotheses(
             store,
             quest_id,
             payload.get("hypotheses") or [],
-            models=self.st.get("hypothesis_models") or [],
+            models=[str(m) for m in models] if isinstance(models, list) else [],
             by=by,
         )
 
