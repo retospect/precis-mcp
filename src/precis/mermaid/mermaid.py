@@ -190,6 +190,8 @@ _SHAPE_TAG = {
 _SHAPE_DECL = re.compile(
     r"(?:^|[\s>|.=-])([A-Za-z][\w-]*)\s*(\[\[|\(\[|\(\(|\[\(|\{\{|\[|\(|\{|>)"
 )
+# Match comments as whole lines so quotes in them cannot consume diagram source.
+_GRAPH_TEXT = re.compile(r'^[^\S\n]*%%[^\n]*|"(?:[^"\\]|\\[\s\S])*"|`[^`]*`', re.M)
 #: A mermaid edge operator (a run of ``-.=`` with optional arrow/x/o heads).
 _EDGE_OP = re.compile(r"<?[-.=]{2,}[->xo]?|--[xo]|[ox]--[ox]")
 #: A sequence-diagram message arrow (``->>``, ``-->>``, ``-x``, ``-)`` …).
@@ -327,7 +329,9 @@ def _graph_nodes(source: str) -> list[Element]:
             order.append(node)
             edges.setdefault(node, [])
 
-    for raw in source.splitlines():
+    # Mask labels before splitting lines so a multiline label and its trailing
+    # edge stay on the same statement for both scans.
+    for raw in _GRAPH_TEXT.sub(" ", source).splitlines():
         line = raw.strip()
         if not line or _is_skip(line):
             continue

@@ -43,6 +43,19 @@ def test_extract_flowchart_nodes_with_shape_and_topology() -> None:
     assert set(els["review"].coords.lstrip("→").split(",")) == {"ship", "intake"}
 
 
+@pytest.mark.parametrize(
+    "label",
+    ['"x pa3 (y)"', '"`first line\npa3 [text] --> ghost\nlast line`"'],
+)
+def test_extract_flowchart_ignores_quoted_label_text(label: str) -> None:
+    src = f'flowchart TD\n  %% unmatched "\n  a[{label}] --> b'
+    nodes = LANG.elements(src)
+    assert [node.id for node in nodes] == ["a", "b"]
+    assert nodes[0].tag == "rect"
+    assert nodes[0].coords == "→b"
+    assert [f.node for f in LANG.lint_bindings(src, {"a", "b", "pa3"})] == ["pa3"]
+
+
 def test_extract_sequence_participants() -> None:
     seq = "sequenceDiagram\n  participant A as Alice\n  A->>B: Hi\n  B-->>A: Yo"
     assert [e.id for e in LANG.elements(seq)] == ["A", "B"]
