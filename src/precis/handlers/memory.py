@@ -184,7 +184,6 @@ from precis.corrected_call import retry_call
 from precis.errors import (
     BadInput,
     Gone,
-    Internal,
     NotFound,
     Unsupported,
     Upstream,
@@ -4083,13 +4082,20 @@ class MemoryHandler(AuditedRetirementHandler):
         discard a closed connection (UNKNOWN). Both callers own an explicit
         transaction, so only INTRANS may reach their commit boundary. This
         check does not guarantee success if the connection fails later.
+        A refused create can be retried as submitted. An edit should reread
+        the existing memory first because another writer may have changed it.
         """
         added = super()._sync_mention_links(ref_id, text, conn=conn, replace=replace)
         if conn.info.transaction_status != TransactionStatus.INTRANS:
-            raise Internal(
-                "memory mention synchronization left an unhealthy write transaction; "
-                "write not acknowledged",
-                next="get the current memory, then retry the write",
+            raise Upstream(
+                "memory mention synchronization failed in the database; "
+                "the memory write did not commit",
+                next=(
+                    f"get(kind='memory', id={ref_id}), then retry the edit "
+                    "against the current memory"
+                    if replace
+                    else "retry the original put(kind='memory', ...) with the same arguments"
+                ),
             )
         return added
 

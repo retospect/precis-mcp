@@ -18,7 +18,6 @@ from precis.dispatch import Hub
 from precis.errors import (
     BadInput,
     Gone,
-    Internal,
     NotFound,
     Unsupported,
     Upstream,
@@ -2804,7 +2803,7 @@ def test_mention_sql_failure_cannot_return_success(
 
     monkeypatch.setattr(store, "add_link", sql_failure)
     body = f"new body mentioning memory:{target}"
-    with pytest.raises(Internal, match="mention.*transaction"):
+    with pytest.raises(Upstream, match="mention.*write did not commit"):
         if mode == "put":
             handler.put(text=body, meta={"hook": "must not land"})
         else:
@@ -3156,7 +3155,7 @@ def test_mention_connection_loss_cannot_return_success(
 
     def insert_then_disconnect(**kwargs: Any) -> Any:
         result = add_link(**kwargs)
-        if kwargs["dst_ref_id"] == new_target:
+        if kwargs["dst_ref_id"] == new_target and not closed:
             conn = kwargs["conn"]
             assert conn.info.transaction_status == TransactionStatus.INTRANS
             conn.close()
@@ -3183,14 +3182,27 @@ def test_mention_connection_loss_cannot_return_success(
             handler.edit(
                 id=mid, mode=mode, text=text, meta={"hook": "changed hook"}, **kwargs
             )
-    except Internal as exc:
+    except Upstream as exc:
         failure = exc
 
     assert len(closed) == 1
     assert closed[0].info.transaction_status == TransactionStatus.UNKNOWN
     assert persisted_state() == before
     assert failure is not None, "closed mention connection returned false success"
-    assert "transaction" in str(failure)
+    assert "the memory write did not commit" in failure.cause
+    assert isinstance(failure.next, str)
+    if mode == "put":
+        assert "retry the original put" in failure.next
+        retried = handler.put(text=text, title="new title", meta={"hook": "new hook"})
+        new_id = id_of(retried.body)
+        assert len(persisted_state()[0]) == len(before[0]) + 1
+        assert _body(handler, store, new_id) == text
+        assert [
+            link.dst_ref_id
+            for link in store.links_for(new_id, direction="out", relation="related-to")
+        ] == [new_target]
+    else:
+        assert failure.next.startswith(f"get(kind='memory', id={mid})")
 
 
 # ---------------------------------------------------------------------------
