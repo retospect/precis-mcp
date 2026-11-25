@@ -12,10 +12,13 @@ layer) wrap this core.
 
 Surface endpoint edits use ``move_atom`` to place an existing atom at a
 named site while preserving its label for NEB correspondence and retaining
-its declared bonds; a Cartesian/fractional delta is ``displace`` (also
-label-preserving) — named-site placement vs vector displacement — and a
-guessed ``move_atom`` + ``vector`` refusal names it. Catalyst cards replay
-the recorded placement by label.
+its declared bonds; it also takes ``frac`` (absolute fractional
+coordinates) or ``onto`` (another atom's position) — the substitutional
+lattice hop aN1→aC7's site a migration-endpoint FS needs (gr791146). A
+Cartesian/fractional delta is ``displace`` (also label-preserving) —
+target placement vs vector displacement — and a guessed ``move_atom`` +
+``vector`` refusal names it. Catalyst cards replay the recorded placement
+by label.
 
 Exact completion transport lives in ``completion_codec``: tagged integer IDs
 and reduced rational numbers avoid client float rounding. It provides no

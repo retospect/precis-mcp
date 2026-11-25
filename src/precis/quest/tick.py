@@ -1993,9 +1993,11 @@ _GENERIC_NEB_CONTEXT = (
     '"structure": {"derive_from": "<is-slug or st<id>>", "ops": [...]}. '
     "`transfer` moves one atom onto an acceptor (the bond-swap step); "
     "`move_group` rigidly relocates a fragment; `move_atom` repositions "
-    "ONE atom onto a named site with its label kept — the "
-    "laterally-displaced-adsorbate edit (vacancy+add_atom would remint "
-    "the label and break the pairing); `displace` nudges one atom by a "
+    "ONE atom with its label kept — onto a named site, to absolute "
+    "fractional coordinates (`frac`), or onto another atom's position "
+    "(`onto` — the lattice hop aN1→aC7's site) — where "
+    "vacancy+add_atom would remint the label and break the pairing; "
+    "`displace` nudges one atom by a "
     "vector. A fresh non-clone spec is NEVER NEB-pairable (its own atom "
     "order), and neither is a clone whose ops change the atom set "
     "(vacancy, add_atom).\n"
@@ -2123,11 +2125,15 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '{"op":"move_group","atom":"aC1","site":{"type":"top",'
         '"anchors":["aPd1"]}} (refuses if the fragment holds a fixed or '
         "slab atom)\n"
-        "- move_atom — reposition ONE existing atom onto a named site, "
-        "its label kept (a laterally displaced adsorbate in an FS — never "
-        "vacancy+add_atom, which remints the label and breaks IS/FS "
-        'pairing): {"op":"move_atom","atom":"aO1","site":{"type":"top",'
-        f'"anchors":["{top_label}"]}}}} (refuses a fixed atom; declared bonds stay '
+        "- move_atom — reposition ONE existing atom, its label kept (an "
+        "endpoint edit — never vacancy+add_atom, which remints the label "
+        "and breaks IS/FS pairing): onto a named site "
+        '{"op":"move_atom","atom":"aO1","site":{"type":"top",'
+        f'"anchors":["{top_label}"]}}, to absolute fractional coordinates '
+        '"frac":[fa,fb,fc], or onto another atom\'s position '
+        '"onto":"<label>" (the lattice-hop endpoint — a dopant moving to '
+        "a neighbour's site has no named site to resolve) (refuses a "
+        "fixed atom; declared bonds stay "
         "as authored — transfer re-bonds, move_group carries a fragment)\n"
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'

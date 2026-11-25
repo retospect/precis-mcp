@@ -278,7 +278,10 @@ declared-bond fragment rigidly and refuses when it holds a fixed or slab
 atom (slab = the largest connected metal cluster — a dopant inside it
 counts as slab); `move_atom` repositions ONE atom onto a named site with
 its label kept — the laterally-displaced-adsorbate edit, where
-`vacancy`+`add_atom` would remint the label and break the pairing (it
+`vacancy`+`add_atom` would remint the label and break the pairing — and
+also takes `frac:[fa,fb,fc]` (absolute fractional coordinates) or
+`onto:"<label>"` (copy another atom's position — the lattice-hop
+endpoint where no named site exists) (it
 refuses a fixed atom and leaves declared bonds as authored). Site labels
 come from the design TOC. All land
 starting-guess geometry — `relax` each endpoint at `fidelity:"ml"` first.

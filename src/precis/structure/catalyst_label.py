@@ -164,13 +164,14 @@ def _formula_counts(species: str) -> dict[str, int] | None:
 def _near_label(op: dict[str, Any]) -> str | None:
     """The atom label an op names as its placement neighbour — ``near``
     inside the ``site`` object (``set_element`` / ``add_atom_site`` /
-    ``add_adsorbate`` / ``move_group`` / ``move_atom``) or an op-level
-    ``near``. Only label-shaped values count: an element name means 'any
+    ``add_adsorbate`` / ``move_group`` / ``move_atom``), an op-level
+    ``near``, or ``move_atom``'s ``onto`` (the moved atom lands exactly on
+    it). Only label-shaped values count: an element name means 'any
     atom of it', never one recorded neighbour."""
     site = op.get("site")
     near = site.get("near") if isinstance(site, dict) else None
     if near is None:
-        near = op.get("near")
+        near = op.get("near", op.get("onto"))
     return near if isinstance(near, str) and _LABEL_RE.match(near) else None
 
 

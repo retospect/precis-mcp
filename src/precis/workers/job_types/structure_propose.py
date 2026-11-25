@@ -59,7 +59,7 @@ _OP_VOCAB = (
     "remove_bond{i,j} · constrain{atoms:[…],kind:fixed-x|y|z|all} · "
     "transfer{atom|from,to,distance?} · "
     "move_group{atom,site:{type,anchors:[…]},height?} · "
-    "move_atom{atom,site:{type,anchors:[…]},height?} · "
+    "move_atom{atom,site:{type,anchors:[…]}|frac:[fa,fb,fc]|onto:<label>,height?} · "
     "set_cell{a,b,c,pbc?} · eye{name,atoms:[…],reach?,for?} · "
     "measure{kind:distance|angle|coordination|bond_length,atoms:[…],"
     "direction?,goal?,strength?,for?} · unmark{name} · remove_measure{kind,atoms:[…]}"

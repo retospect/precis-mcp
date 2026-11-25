@@ -42,11 +42,15 @@ coordination direction — the elementary bond-swap step of a surface
 reaction (CH4 + O* → CH3* + OH* is one transfer of an H from C to O);
 ``move_group`` rigidly moves a whole declared-bond fragment (an adsorbate)
 so its named atom lands on a new site; ``move_atom`` repositions ONE
-existing atom onto a named site with only its ``frac`` rewritten (gr788526)
-— the laterally-displaced-adsorbate edit the ``vacancy`` + ``add_atom``
+existing atom with only its ``frac`` rewritten (gr788526) — the
+laterally-displaced-adsorbate edit the ``vacancy`` + ``add_atom``
 workaround got wrong, minting a fresh label and breaking the IS/FS label
-correspondence CI-NEB interpolates by. All three keep atom labels stable,
-so the edited design stays pairable with its pre-edit parent.
+correspondence CI-NEB interpolates by. Its target is a named ``site``, an
+absolute ``frac`` coordinate triple, or ``onto`` another atom's position
+(gr791146 — the substitutional lattice hop aN1→aC7's site a CI-NEB
+migration endpoint needs, where no named surface site exists). All three
+keep atom labels stable, so the edited design stays pairable with its
+pre-edit parent.
 
 **Fragment-building ops** (built for the molecule-mode fragment library the
 retired ``nm`` kind — now ``se`` atomic mode, docs/backlog/nm-se-merge.md —
@@ -155,6 +159,20 @@ _DISPLACE_HINT = (
     "'cartesian': false for a fractional delta) and KEEPS its label — use it "
     "instead of vacancy + add_atom, which mints a new label (breaks "
     "label-matched IS/FS pairs for NEB)"
+)
+
+#: The working op a move_atom target refusal leads with, and the ``next=``
+#: hint after it (gr791146: the lattice-hop endpoint — the N dopant moving
+#: onto aC7's site — has no named surface site, so the target is absolute
+#: fractional coordinates or the site atom's own label).
+_MOVE_EXAMPLE = '{"op":"move_atom","atom":"aN1","onto":"aC7"}'
+_MOVE_HINT = (
+    "move_atom keeps the atom's label and element and takes ONE target: "
+    "'site' {'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: "
+    "[labels]} (a named surface site), 'frac' [fa,fb,fc] (absolute "
+    "fractional coordinates — a lattice hop aN1→aC7's site), or 'onto': "
+    "'<label>' (copy another atom's position exactly). Never "
+    "vacancy+add_atom — that remints the label and breaks IS/FS pairing"
 )
 
 
@@ -2212,12 +2230,21 @@ def _op_move_group(scene: Scene, op: dict[str, Any]) -> None:
 
 
 def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
-    """Reposition ONE existing atom onto a named site, keeping its label
-    (gr788526) — the single-atom, label-preserving move a laterally
-    displaced adsorbate FS needs.
+    """Reposition ONE existing atom, keeping its label (gr788526) — the
+    single-atom, label-preserving move a NEB final state needs.
 
-    ``{"op": "move_atom", "atom": "aO1", "site": {"type": "top",
-    "anchors": ["aCu34"]}, "height": <optional Å>}``
+    The target is exactly one of:
+
+    - ``site``: ``{"op": "move_atom", "atom": "aO1", "site": {"type": "top",
+      "anchors": ["aCu34"]}, "height": <optional Å>}`` — a named surface
+      site, for a laterally displaced adsorbate.
+    - ``frac``: ``{"op": "move_atom", "atom": "aN1", "frac": [fa,fb,fc]}``
+      — absolute fractional coordinates, wrapped into the cell
+      (gr791146: the substitutional lattice hop aN1→aC7's site has no
+      named surface site to resolve).
+    - ``onto``: ``{"op": "move_atom", "atom": "aN1", "onto": "aC7"}`` —
+      copy another atom's position exactly, by label rather than by
+      transcribing its coordinates.
 
     Only ``frac`` is written: label, element, charge and declared bonds
     carry over, so an FS derived off an IS stays label-matched for NEB
@@ -2230,11 +2257,12 @@ def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
     blocks the target. Refuses a fixed atom (release it with constrain
     kind='none' first).
 
-    A ``vector`` supplied without a ``site`` is a guessed ``displace``:
-    after the atom and fixed checks above the refusal names ``displace``
-    (the label-preserving vector move) with its valid form — the
-    ``move_atom`` guess a model makes for a delta move (gr788533) learns
-    the real op instead of falling back to vacancy + add_atom.
+    A ``vector`` is a guessed ``displace``: the refusal names
+    ``displace`` (the label-preserving vector move) with its valid form —
+    the ``move_atom`` guess a model makes for a delta move (gr788533)
+    learns the real op instead of falling back to vacancy + add_atom. A
+    ``to`` names ``onto`` (position copy) and ``transfer`` (bond swap)
+    so the caller picks the semantics it meant.
     """
     atom_label = op.get("atom")
     if not atom_label:
@@ -2246,16 +2274,69 @@ def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
             f"move_atom can't move {atom_label!r} — it is constrained "
             "('fixed'); release it with constrain kind='none' first"
         )
+    if "vector" in op:
+        raise OpError(
+            "move_atom repositions onto a 'site'/'frac'/'onto' target, not "
+            "by 'vector' — 'displace' is the label-preserving atom-move op "
+            "for a 'vector' [dx,dy,dz]",
+            example=_DISPLACE_EXAMPLE,
+            next=_DISPLACE_HINT,
+        )
+    if "to" in op:
+        raise OpError(
+            "move_atom has no 'to' — 'onto': '<label>' copies that atom's "
+            "position exactly; 'transfer' is the bond-swap move onto an "
+            "acceptor (it re-bonds)",
+            example=_MOVE_EXAMPLE,
+            next=_MOVE_HINT,
+        )
+    targets = [k for k in ("site", "frac", "onto") if k in op]
+    if len(targets) != 1:
+        raise OpError(
+            f"move_atom needs exactly one target — 'site', 'frac' or "
+            f"'onto' — got {sorted(targets) or 'none'}",
+            example=_MOVE_EXAMPLE,
+            next=_MOVE_HINT,
+        )
+    if "frac" in op:
+        if "height" in op:
+            raise OpError(
+                "move_atom 'height' applies only to a 'site' target — "
+                "'frac' is already the exact position",
+                example=_MOVE_EXAMPLE,
+                next=_MOVE_HINT,
+            )
+        try:
+            frac = np.asarray(op["frac"], dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"move_atom 'frac' must be [fa,fb,fc], got {op['frac']!r}",
+                example=_MOVE_EXAMPLE,
+                next=_MOVE_HINT,
+            ) from exc
+        if frac.shape != (3,):
+            raise OpError(
+                f"move_atom 'frac' must be [fa,fb,fc], got {op['frac']!r}",
+                example=_MOVE_EXAMPLE,
+                next=_MOVE_HINT,
+            )
+        atom.frac = scene.cell.wrap(frac)
+        return
+    if "onto" in op:
+        if "height" in op:
+            raise OpError(
+                "move_atom 'height' applies only to a 'site' target — "
+                "'onto' lands exactly on the other atom",
+                example=_MOVE_EXAMPLE,
+                next=_MOVE_HINT,
+            )
+        onto_label = str(op["onto"])
+        if onto_label == atom_label:
+            raise OpError(f"move_atom can't move {atom_label!r} onto itself")
+        atom.frac = scene.cell.wrap(_require_atom(scene, onto_label).frac)
+        return
     site = op.get("site")
     if not isinstance(site, dict):
-        if "vector" in op:
-            raise OpError(
-                "move_atom repositions onto a named 'site', not by 'vector' "
-                "— 'displace' is the label-preserving atom-move op for a "
-                "'vector' [dx,dy,dz]",
-                example=_DISPLACE_EXAMPLE,
-                next=_DISPLACE_HINT,
-            )
         raise OpError(
             "move_atom needs a 'site' object: "
             "{'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: [labels]}",

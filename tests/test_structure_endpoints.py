@@ -514,6 +514,114 @@ def test_move_atom_displaces_the_adsorbate_laterally_keeping_the_pair() -> None:
     assert o_near[2] == pytest.approx(mg_cart[2] + _O_HEIGHT, abs=1e-6)
 
 
+def test_move_atom_frac_sets_absolute_fractional_coordinates() -> None:
+    """gr791146: a ``frac`` target writes absolute fractional coordinates
+    (wrapped into the cell on periodic axes) with label and element kept —
+    the raw-coordinate form of the same label-preserving move."""
+    scene = _o_over_pd()
+    apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "frac": [1.1, -0.2, 0.4]}])
+    assert scene.atoms["aO1"].frac == pytest.approx([0.1, 0.8, 0.4])
+    assert scene.atoms["aO1"].element == "O"
+
+
+def test_move_atom_onto_copies_the_target_atoms_position() -> None:
+    """``onto`` lands exactly on the named atom's site — the lattice-hop
+    target a dopant moves to without the model transcribing fracs."""
+    scene = _o_over_pd()
+    apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "onto": "aH1"}])
+    assert scene.atoms["aO1"].frac == pytest.approx(scene.atoms["aH1"].frac)
+
+
+def test_move_atom_onto_and_frac_build_the_lattice_hop_fs() -> None:
+    """gr791146 / qu161907: the substitutional hop endpoint — the dopant
+    aN1 moves onto a neighbour carbon's site keeping its label, and the
+    displaced carbon back-fills the dopant's old site by ``frac``. Labels
+    and the atom set are untouched, so IS/FS stay NEB-pairable."""
+    scene = Scene(cell=_molecule_cell())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "C", "cart": [1.42, 0.0, 0.0]},
+            {"op": "add_atom", "element": "N", "cart": [2.84, 0.0, 0.0]},
+            {"op": "add_atom", "element": "C", "cart": [4.26, 0.0, 0.0]},
+        ],
+    )
+    scene_is, scene_fs = scene, copy.deepcopy(scene)
+    n_old = scene_is.atoms["aN1"].frac.copy()
+    c_old = scene_is.atoms["aC2"].frac.copy()
+    apply_ops(
+        scene_fs,
+        [
+            {"op": "move_atom", "atom": "aN1", "onto": "aC2"},
+            {"op": "move_atom", "atom": "aC2", "frac": list(n_old)},
+        ],
+    )
+    assert scene_fs.atoms["aN1"].frac == pytest.approx(c_old)
+    assert scene_fs.atoms["aN1"].element == "N"
+    assert scene_fs.atoms["aC2"].frac == pytest.approx(n_old)
+    _assert_pair(scene_is, scene_fs)
+
+
+def test_move_atom_takes_exactly_one_target() -> None:
+    scene = _o_over_pd()
+    for op in (
+        {"op": "move_atom", "atom": "aO1"},
+        {"op": "move_atom", "atom": "aO1", "frac": [0.1, 0.2, 0.3], "onto": "aPd1"},
+        {
+            "op": "move_atom",
+            "atom": "aO1",
+            "site": {"type": "top", "anchors": ["aPd1"]},
+            "frac": [0.1, 0.2, 0.3],
+        },
+    ):
+        with pytest.raises(OpError, match="exactly one target"):
+            apply_ops(scene, [op])
+
+
+def test_move_atom_frac_and_onto_validate_their_shapes() -> None:
+    scene = _o_over_pd()
+    with pytest.raises(OpError, match="frac"):
+        apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "frac": [0.1, 0.2]}])
+    with pytest.raises(OpError, match="frac"):
+        apply_ops(
+            scene,
+            [{"op": "move_atom", "atom": "aO1", "frac": ["x", "y", "z"]}],
+        )
+    with pytest.raises(OpError, match="height"):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "move_atom",
+                    "atom": "aO1",
+                    "frac": [0.1, 0.2, 0.3],
+                    "height": 2.0,
+                }
+            ],
+        )
+    with pytest.raises(OpError, match="height"):
+        apply_ops(
+            scene, [{"op": "move_atom", "atom": "aO1", "onto": "aPd1", "height": 2.0}]
+        )
+    with pytest.raises(OpError, match="onto itself"):
+        apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "onto": "aO1"}])
+    with pytest.raises(OpError, match="no such atom"):
+        apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "onto": "aXe1"}])
+
+
+def test_move_atom_guessed_to_names_onto_and_transfer() -> None:
+    """A model reaching for transfer's ``to`` key learns the two real
+    moves: ``onto`` (position copy) vs ``transfer`` (bond swap)."""
+    scene = _o_over_pd()
+    with pytest.raises(OpError, match="onto"):
+        apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "to": "aPd1"}])
+    try:
+        apply_ops(scene, [{"op": "move_atom", "atom": "aO1", "to": "aPd1"}])
+    except OpError as exc:
+        assert "transfer" in str(exc)
+
+
 # -- the acceptance pair: Cu(111)/O/CH4 IS -> FS ---------------------------
 
 _CH4_HEIGHT = 2.5  # physisorbed guess: H-down sits ~1.4 Å over the surface
