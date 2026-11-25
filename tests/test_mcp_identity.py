@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import threading
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
@@ -17,13 +18,18 @@ import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
 from precis import mcp_identity, server
+from precis.config import PrecisConfig
+from precis.dispatch import Hub
 from precis.errors import BadInput, Denied, Upstream
+from precis.handlers.skill import SkillHandler
 from precis.mcp_identity import (
     list_user_tokens,
     mint_user_token,
     resolve_user_token,
     revoke_user_token,
 )
+from precis.oauth.store import OAuthIdentity
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store.revision_context import current_revision_context, revision_context
 from precis.tools import core, get_tool_names
@@ -551,6 +557,50 @@ def test_personal_request_guard_only_offloads_personal_callers(
     else:
         assert refusal_threads == []
     assert current_principal() is None
+
+
+@pytest.mark.parametrize("scopes", [("mcp:full",), ("learning",)])
+def test_toc_prompt_respects_oauth_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    scopes: tuple[str, ...],
+) -> None:
+    from mcp import types
+
+    from precis.mcp_modalities import register_skill_prompts
+
+    identity = OAuthIdentity(
+        7, 11, 13, "test-client", scopes, datetime.now(UTC) + timedelta(hours=1)
+    )
+    request_scope = {mcp_identity.SCOPE_OAUTH_IDENTITY: identity}
+    ctx = cast(
+        Context,
+        SimpleNamespace(
+            request_context=SimpleNamespace(
+                request=SimpleNamespace(scope=request_scope)
+            )
+        ),
+    )
+    hub = Hub()
+    SkillHandler(hub=hub)._register_with(hub)
+    runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+    mcp = FastMCP("oauth-prompt-test")
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime)
+    register_skill_prompts(mcp, runtime)
+    request = types.GetPromptRequest(
+        method="prompts/get", params=types.GetPromptRequestParams(name="toc")
+    )
+    refusal = server._personal_request_refusal(request, ctx)
+    if scopes == ("mcp:full",):
+        assert refusal is None
+        result = asyncio.run(mcp.get_prompt(request.params.name))
+        assert len(result.messages) == 1
+        content = result.messages[0].content
+        assert isinstance(content, types.TextContent)
+        expected = runtime.dispatch("get", {"kind": "skill", "id": "toc"}, fold=True)
+        assert expected.startswith("# precis-toc")
+        assert content.text == expected
+    else:
+        assert refusal is not None and "[error:Denied]" in refusal
 
 
 @pytest.mark.parametrize("profile", ["typed", "command"])

@@ -54,6 +54,9 @@ plugins and bridges sharing the repo:
   The seven verbs publish ``anthropic/alwaysLoad`` in their MCP tool metadata
   so clients that honor the hint keep their schemas available across calls
   without repeated tool discovery (gr778763).
+  The personal request gate treats skill prompts as skill reads for full
+  OAuth grants so both entry points can serve the same content. Narrow
+  personal connections reach their allowlisted help through tools.
 - *Storage.* ``store/`` (psycopg3 pool, forward-only ``Migrator``, composed
   sub-stores) over ``migrations/``; ``settings.py`` / ``secrets.py`` are the
   DB-resident config and vault layers.

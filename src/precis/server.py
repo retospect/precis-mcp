@@ -1668,7 +1668,8 @@ def _personal_request_refusal(request: Any, ctx: Context) -> str | None:
     from precis.user_context import current_principal, user_actor_scope
 
     with core._ctx_user_scope(ctx):
-        if current_principal() is None:
+        principal = current_principal()
+        if principal is None:
             return None
         verb, payload = "", {}
         if isinstance(request, types.CallToolRequest):
@@ -1684,10 +1685,18 @@ def _personal_request_refusal(request: Any, ctx: Context) -> str | None:
                 except CommandParseError:
                     # An unparseable command cannot establish learning scope.
                     verb, payload = "", {}
+        elif (
+            isinstance(request, types.GetPromptRequest)
+            and principal.oauth is not None
+            and "mcp:full" in principal.oauth.scopes
+        ):
+            # Registered prompts dispatch skill reads. Grant the equivalent
+            # read for full OAuth while keeping the modality fence for
+            # private-only connections.
+            verb, payload = "get", {"kind": "skill", "id": request.params.name}
         store = core._asgi_scope(ctx).get(_STARTUP_STORE)
         if core._personal_call_allowed(verb, payload, store):
-            # The actual tool dispatch revalidates and checks scope again after
-            # normalization.
+            # Tool dispatch checks scope again after argument normalization.
             return None
         runtime = core._get_runtime()
         try:
