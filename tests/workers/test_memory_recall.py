@@ -9,6 +9,7 @@ entries + the mock embedder. Scores land in ``app_settings``
 from __future__ import annotations
 
 import json
+from functools import wraps
 from typing import Any
 
 import pytest
@@ -18,7 +19,6 @@ from precis.cli.memory import SPACE_TAG, render_recall_report
 from precis.cli.memory_recall import CURVE_KS, measure_recall, render_recall_curve
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
-from precis.protocol import tolerates_extra_kwargs
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.workers.memory_recall import (
@@ -410,10 +410,9 @@ def test_curve_cutoffs_count_hits_not_hint_lines(
     rid = _put(hub, title="wanted", hook="zebra quorum")
 
     # Pin rank eight independently of lexical/vector scoring and hint trailers.
-    # The dispatcher's extra-kwarg gate reads the *stub's* signature (and
-    # caches it per class), so a bare ``**kwargs`` would refuse q/tags/view
-    # when no earlier test warmed the cache: opt out as a real handler would.
-    @tolerates_extra_kwargs
+    # Preserve the signature the dispatcher caches per class, even if this
+    # stub is the first search on the worker to populate that cache.
+    @wraps(MemoryHandler.search)
     def ranked(self: MemoryHandler, *, page_size: int = 10, **kwargs: Any) -> Response:
         handles = [f"me{rid + 100 + i}" for i in range(12)]
         handles[7] = f"me{rid}"
