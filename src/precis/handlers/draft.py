@@ -720,6 +720,8 @@ class DraftHandler(Handler):
                 "cols",
                 "rows",
                 "where",
+                # view='raw' single-meta-key door (gr635381)
+                "meta_key",
             }
         ),
         "edit": ArgsSpec(

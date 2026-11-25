@@ -1380,6 +1380,8 @@ class PcbHandler(Handler):
                 # view='links' paging (gr627629)
                 "limit",
                 "cursor",
+                # view='raw' single-meta-key door (gr635381)
+                "meta_key",
             }
         ),
     }

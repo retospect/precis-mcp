@@ -1045,6 +1045,8 @@ class PaperHandler(Handler):
                 # question for the server-side reading.
                 "bbox",
                 "question",
+                # ``view='raw'`` single-meta-key door (gr635381)
+                "meta_key",
             }
         ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
