@@ -426,7 +426,13 @@ _rss_alarmed_mb: float | None = None
 
 def _record_worker_rss(item: pytest.Item) -> None:
     global _rss_alarmed_mb
-    grown = _worker_budget.rss_alarm(_rss_alarmed_mb)
+    try:
+        grown = _worker_budget.rss_alarm(_rss_alarmed_mb)
+    except Exception:
+        # A raise here skips teardown_exact, which cascades "previous item was
+        # not torn down properly" onto every later item — telemetry must never
+        # break teardown (gr788515: a test's os.sysconf patch did exactly that).
+        return
     if grown is None:
         return
     worker = _hang_worker_name(item.config)
@@ -436,7 +442,7 @@ def _record_worker_rss(item: pytest.Item) -> None:
     try:
         with path.open("a", encoding="utf-8") as report:
             report.write(f"{message}\n")
-    except OSError as exc:
+    except Exception as exc:
         item.warn(pytest.PytestWarning(f"{message} (cannot write {path}: {exc})"))
     _rss_alarmed_mb = grown
 

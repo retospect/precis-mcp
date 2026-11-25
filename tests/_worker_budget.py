@@ -12,6 +12,7 @@ hog can be hunted down.
 from __future__ import annotations
 
 import os
+import resource
 from pathlib import Path
 
 #: Per-worker budget the ceiling divides the cgroup limit by (MiB). Sized for
@@ -29,6 +30,7 @@ _CGROUP_LIMIT_FILES = (
 )
 #: cgroup v1 reports "no limit" as a huge page-rounded number, not "max".
 _UNLIMITED_BYTES = 1 << 60
+_PROC_STATM = Path("/proc/self/statm")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -63,13 +65,21 @@ def max_workers(
 
 
 def rss_mb() -> float | None:
-    """This process's resident set in MiB (Linux), else None."""
+    """This process's resident set in MiB (Linux), else None.
+
+    Called from ``pytest_runtest_teardown`` while the calling test's
+    monkeypatches are still live, so it reads through ``Path.read_text``
+    (``io.open`` — a patched ``builtins.open`` can't intercept it) and
+    ``resource.getpagesize`` (a patched ``os.sysconf`` can't bend it).
+    Anything still faked degrades to a skipped reading, never a raise: a
+    teardown error poisons the run and cascades "previous item was not
+    torn down properly" into every later item.
+    """
     try:
-        with open("/proc/self/statm", encoding="ascii") as fh:
-            pages = int(fh.read().split()[1])
-    except (OSError, IndexError, ValueError):
+        pages = int(_PROC_STATM.read_text(encoding="ascii").split()[1])
+        return pages * resource.getpagesize() / (1024 * 1024)
+    except Exception:
         return None
-    return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
 
 
 def rss_alarm(last_alarm_mb: float | None) -> float | None:
