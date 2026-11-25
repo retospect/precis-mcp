@@ -65,14 +65,21 @@ def max_workers(
 
 
 def rss_mb() -> float | None:
-    """This process's resident set in MiB (Linux), else None."""
+    """This process's resident set in MiB (Linux), else None.
+
+    Called from ``pytest_runtest_teardown`` while the calling test's
+    monkeypatches are still live, so it reads through ``Path.read_text``
+    (``io.open`` — a patched ``builtins.open`` can't intercept it) and
+    ``resource.getpagesize`` (a patched ``os.sysconf`` can't bend it).
+    Anything still faked degrades to a skipped reading, never a raise: a
+    teardown error poisons the run and cascades "previous item was not
+    torn down properly" into every later item.
+    """
     try:
-        # The teardown hook samples RSS while tests' builtins.open mocks
-        # can still be active. Path.read_text uses io.open.
         pages = int(_PROC_STATM.read_text(encoding="ascii").split()[1])
-    except (OSError, IndexError, ValueError):
+        return pages * resource.getpagesize() / (1024 * 1024)
+    except Exception:
         return None
-    return pages * resource.getpagesize() / (1024 * 1024)
 
 
 def rss_alarm(last_alarm_mb: float | None) -> float | None:

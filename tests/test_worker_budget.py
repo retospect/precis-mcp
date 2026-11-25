@@ -56,3 +56,28 @@ def test_alarm_is_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
     assert wb.rss_alarm(512.0) == 1536.0
     monkeypatch.setenv(wb.RSS_ALARM_ENV, "0")
     assert wb.rss_alarm(None) is None
+
+
+def test_rss_mb_reads_past_patched_open_and_sysconf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rss_mb runs in ``pytest_runtest_teardown`` while the calling test's
+    monkeypatches are still live, so a fake ``builtins.open`` or
+    ``os.sysconf`` (the thermal-file and darwin-mem probe tests) must not
+    break it: a teardown error poisons the run and cascades "previous item
+    was not torn down properly" into every later item. This test's own
+    teardown re-runs the scenario."""
+    before = wb.rss_mb()
+
+    def _fake_open(*_a: object, **_k: object) -> object:
+        raise KeyError("/proc/self/statm")
+
+    def _fake_sysconf(name: str) -> int:
+        raise ValueError(name)
+
+    monkeypatch.setattr("builtins.open", _fake_open)
+    monkeypatch.setattr(wb.os, "sysconf", _fake_sysconf)
+    after = wb.rss_mb()
+    # Linux: the statm read dodges both fakes and still returns a real
+    # number; elsewhere there is no /proc and both calls are None.
+    assert (after is not None) == (before is not None)

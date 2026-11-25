@@ -436,7 +436,7 @@ def _record_worker_rss(item: pytest.Item) -> None:
     try:
         with path.open("a", encoding="utf-8") as report:
             report.write(f"{message}\n")
-    except OSError as exc:
+    except Exception as exc:
         item.warn(pytest.PytestWarning(f"{message} (cannot write {path}: {exc})"))
     _rss_alarmed_mb = grown
 
