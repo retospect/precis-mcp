@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -81,3 +82,34 @@ def test_rss_mb_reads_past_patched_open_and_sysconf(
     # Linux: the statm read dodges both fakes and still returns a real
     # number; elsewhere there is no /proc and both calls are None.
     assert (after is not None) == (before is not None)
+
+
+def test_rss_reads_none_when_pagesize_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A patched/absent page-size probe is "no reading", not a raise.
+
+    The r355 gate cascade: a capability-probe test monkeypatched the
+    page-size probe to raise ValueError; _record_worker_rss ran at teardown
+    before the undo, the raise skipped teardown_exact, and every later item
+    errored.
+    """
+
+    def getpagesize() -> int:
+        raise ValueError("patched")
+
+    monkeypatch.setattr(wb.resource, "getpagesize", getpagesize)
+    assert wb.rss_mb() is None
+    monkeypatch.setenv(wb.RSS_ALARM_ENV, "100")
+    assert wb.rss_alarm(None) is None
+
+
+def test_teardown_recorder_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whatever the probe does, teardown telemetry must not propagate."""
+    from tests.conftest import _record_worker_rss
+
+    def boom(_last: float | None) -> float | None:
+        raise RuntimeError("patched")
+
+    monkeypatch.setattr(wb, "rss_alarm", boom)
+    _record_worker_rss(cast(pytest.Item, None))
