@@ -77,7 +77,11 @@ hash: 3e287c51a935
   comparisons, `and`/`or`/`not`, `in`; a non-comparable row just fails.
 - `hash:` on the last line is the content hash — feed it back as
   `base=` to guard a `patch=`/`toon=`/structure write.
-- `view='table'` renders the same selection as GFM (humans/export).
+- `view='table'` renders the same selection as GFM (humans/export) and
+  is the paged read for a table too big for one result: it takes
+  `args={'offset': N, 'limit': M}` over the selected rows, and a
+  truncated page ends in a `next:` line carrying the continuation call.
+  `cols=`/`where=` still apply; page through without changing them.
 
 ## patch= — subset edit by ids
 

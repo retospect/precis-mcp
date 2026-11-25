@@ -13,8 +13,9 @@ from typing import Any
 import pytest
 from psycopg.types.json import Jsonb
 
+from precis._result_budget import body_bytes, fit_result_body
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, ResultBudgetExceeded
 from precis.handlers.draft import DraftHandler
 from precis.utils.table_data import normalize_table
 from precis.utils.table_formula import compile_formula
@@ -329,6 +330,101 @@ def test_get_view_table_filtered_and_refusals(draft: DraftHandler, hub: Hub) -> 
     para = hub.live_store.drafts.reading_order(ref.id)[-1]
     with pytest.raises(BadInput, match="chunk_kind='table'"):
         draft.get(id=para.dc, view="toon")
+
+
+def test_large_table_read_continuation(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "2000")
+    draft.put(id="paged", title="Paged", project=_proj(hub))
+    receipt = draft.put(
+        id="paged",
+        chunk_kind="table",
+        table={"header": ["n", "label"], "rows": [[i, "é" * 80] for i in range(20)]},
+        at={"last": True},
+    )
+    assert "exceeds the 1000-byte read budget" in receipt.body
+    dc = receipt.body.split()[2]
+    plain = draft.get(id=dc)
+    assert plain.budget_fit is not None
+    with pytest.raises(ResultBudgetExceeded) as refused:
+        plain.budget_fit(1000)
+    assert "view='table'" in str(refused.value)
+    assert "cols=" in str(refused.value) and "where=" in str(refused.value)
+
+    args: dict[str, Any] = {
+        "where": "n >= 5",
+        "cols": ["n", "label"],
+        "limit": 9,
+        "offset": 2,
+    }
+    seen: list[int] = []
+    while True:
+        page = draft.get(id=dc, view="table", args=args)
+        suffix = "\n" + "suffix " * 20
+        body = fit_result_body(
+            page.body + suffix,
+            verb="get",
+            kind="draft",
+            context_limited=True,
+            targeted_hint=None,
+            structured_fit=page.budget_fit,
+            suffix=suffix,
+        )
+        assert body_bytes(body) <= 1000 and body.endswith(suffix)
+        assert "\nids: rows " in body and "\nhash: " in body
+        seen.extend(int(n) for n in re.findall(r"^\| (\d+) \|", body, re.M))
+        if "\nnext: " not in body:
+            break
+        next_call = body.split("\nnext: ", 1)[1].splitlines()[0]
+        continuation = ast.literal_eval(next_call.split("args=", 1)[1][:-1])
+        assert continuation == {**args, "offset": len(seen) + 2}
+        assert continuation["offset"] > args["offset"]
+        args = continuation
+    assert seen == list(range(7, 20))
+
+
+def test_table_limit_and_offset(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed(draft, hub)
+    first = draft.get(id=tc.dc, view="table", args={"limit": 1})
+    assert "| Si |" in first.body and "| Ge |" not in first.body
+    assert "args={'limit': 1, 'offset': 1}" in first.body
+    page = draft.get(id=tc.dc, view="table", args={"offset": 1, "limit": 1})
+    assert "| Ge |" in page.body and "| Si |" not in page.body
+    for args in ({"offset": -1}, {"limit": 0}, {"limit": True}, {"offset": "1"}):
+        with pytest.raises(BadInput, match="table offset"):
+            draft.get(id=tc.dc, view="table", args=args)
+
+
+def test_oversized_table_write_warnings(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "2000")
+    draft.put(id="d", title="T", project=_proj(hub))
+    gfm = "| n | label |\n|---|---|\n" + "\n".join(
+        f"| {i} | {'é' * 80} |" for i in range(20)
+    )
+    # The batch door warns like put(chunk_kind='table') — gr794781 review.
+    batch = draft.put(id="d", chunks=[{"text": gfm, "chunk_kind": "table"}])
+    assert "exceeds the 1000-byte read budget" in batch.body
+    assert "next: get(kind='draft'" in batch.body and "view='table'" in batch.body
+    dc = re.search(r"(dc\d+) \(table\)", batch.body)
+    assert dc is not None
+
+    small = draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["a"], "rows": [[1]]},
+        at={"last": True},
+    )
+    assert "exceeds the 1000-byte read budget" not in small.body
+    tc_dc = small.body.split()[2]
+    big = {"header": ["n", "label"], "rows": [[i, "é" * 80] for i in range(20)]}
+    reply = draft.edit(id=tc_dc, table=big)
+    assert "exceeds the 1000-byte read budget" in reply.body
+    assert f"id={tc_dc!r}" in reply.body and "view='table'" in reply.body
 
 
 # ── handler: patch/toon/base/dry_run ──────────────────────────────────

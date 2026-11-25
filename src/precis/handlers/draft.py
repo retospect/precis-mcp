@@ -35,6 +35,10 @@ TOON replacement receipts count kept, added and retired live row/column IDs,
 including in dry runs. Filtered grids can otherwise hide accidental retirement;
 omitted calculated columns that survive replacement count as kept.
 
+Draft table pages fit whole rows after runtime reserves suffix bytes.
+Continuation offsets count selected rows so projections and filters survive
+the page boundary.
+
 Text write receipts isolate advisory database reads after commit: losing a
 connection while building hygiene hints must preserve the landed handles and
 revision hash, otherwise callers may retry and duplicate committed prose.
@@ -231,6 +235,28 @@ def _chunk_display_text(chunk: Any) -> str:
     if not tail:
         return text
     return f"{text}\n{tail}" if text else tail
+
+
+def _table_read_hint(dc: str) -> str:
+    return (
+        f"get(kind='draft', id={dc!r}, view='table', args={{'limit': 10}}); "
+        "use cols=['<column>'] to project columns or "
+        "where='<column> == <value>' to filter rows"
+    )
+
+
+def _table_budget_warning(dc: str, *texts: str) -> str:
+    """Trailing ``⚠ …exceeds the read budget`` ack note for a write that
+    lands a grid a whole-chunk ``get`` cannot return — the follow-up read
+    it names is the paginated ``view='table'`` (gr794781)."""
+    read_cap = result_context_cap()
+    size = max(body_bytes(t) for t in texts)
+    if size <= read_cap:
+        return ""
+    return (
+        f"\n⚠ Table is {size} bytes and exceeds the {read_cap}-byte "
+        f"read budget.\nnext: {_table_read_hint(dc)}"
+    )
 
 
 def _landed_sha_line(text: str | None) -> str:
@@ -2479,7 +2505,15 @@ class DraftHandler(Handler):
                 new_chunk_ids.extend(c.chunk_id for c in made_chunks)
                 # Structured markdown lists return their root first.
                 root = made_chunks[0]
-                lines.append(f"{root.dc} ({root.chunk_kind})")
+                line = f"{root.dc} ({root.chunk_kind})"
+                if kind == "table":
+                    # The batch door must warn like put(chunk_kind='table')
+                    # when the landed grid outgrows the read budget — same
+                    # silent-acceptance trap one hop over (gr794781).
+                    line += _table_budget_warning(
+                        root.dc, text, _chunk_display_text(root)
+                    )
+                lines.append(line)
         deferred = self.sync_draft_links(ref.id, restamp_chunk_ids=set(new_chunk_ids))
         self._attribute_touch(new_chunk_ids)
         head = (
@@ -5152,6 +5186,7 @@ class DraftHandler(Handler):
             if eval_notes
             else ""
         )
+        budget_warning = _table_budget_warning(c.dc, md, _chunk_display_text(c))
         return Response(
             body=(
                 f"added table {c.dc} to {slug} ({n_rows} row"
@@ -5159,6 +5194,7 @@ class DraftHandler(Handler):
                 f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
                 f"edit table=/caption=/regen=, not text={eval_tail}"
             )
+            + budget_warning
             + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
             + _draft_lint.pin_hint(self.store, md, table=True)
         )
@@ -6198,6 +6234,18 @@ class DraftHandler(Handler):
             pin_hint = _draft_lint.pin_hint(
                 self.store, c.text or "", chunk.text or "", table=True
             )
+        # A whole-grid replace that lands a table over the read budget
+        # warns like put does — the plain get on it now refuses, so the
+        # ack names the paginated read (gr794781).
+        budget_warn = ""
+        if table is not None or toon is not None:
+            display = table_to_markdown(norm, caption=cap, escape_backslashes=False)
+            tail = "\n".join(
+                line for line in (table_ids_line(norm), table_footer_line(norm)) if line
+            )
+            budget_warn = _table_budget_warning(
+                (c or chunk).dc, md, f"{display}\n{tail}" if tail else display
+            )
         if op_reply is not None:
             return Response(
                 body=self._table_op_reply(
@@ -6211,6 +6259,7 @@ class DraftHandler(Handler):
                 )
                 + label_loss_hint
                 + cap_hint
+                + budget_warn
                 + pin_hint
             )
         n_rows, n_cols = len(norm["rows"]), len(norm["header"])
@@ -6219,7 +6268,7 @@ class DraftHandler(Handler):
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
             f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}{cap_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
-            f"{pin_hint}"
+            f"{budget_warn}{pin_hint}"
         )
 
     def _table_op_reply(
@@ -8309,7 +8358,10 @@ class DraftHandler(Handler):
         (spreadsheet-tables 1b): the id-addressed TOON grid —
         ``{#}`` row-id column, ``<id>:<name> [unit] <from> =formula``
         header cells — or the same selection as GFM. Filters ride
-        ``args={'cols','rows','where'}``; every read ends in the
+        ``args={'cols','rows','where'}``; ``view='table'`` also takes
+        ``offset``/``limit`` over the selected rows, and a page that
+        doesn't fit the result budget shrinks to whole rows with a
+        ``next:`` continuation (gr794781). Every read ends in the
         ``hash:`` line ``base=`` guards a ``patch=`` with."""
         a = dict(args or {})
         chunk = self.store.drafts.get_draft_chunk(handle)
@@ -8338,47 +8390,88 @@ class DraftHandler(Handler):
         cols, rows, where = a.get("cols"), a.get("rows"), a.get("where")
         h = table_content_hash(tbl)
         if view == "table":
-            # The same selection rendered as GFM (humans / export shape)
-            # + the ids: trailer of the filtered grid.
-            from precis.utils.table_toon import (
-                _resolve_col_list,
-                _resolve_row_list,
-                compile_where,
-            )
-
-            columns = tbl.get("columns") or []
-            rowmeta = tbl.get("rowmeta") or []
-            data = tbl.get("rows") or []
-            ci = _resolve_col_list(columns, cols)
-            ri = _resolve_row_list(rowmeta, rows)
-            if where is not None:
-                pred = compile_where(str(where), columns)
-                ri = [i for i in ri if i < len(data) and pred(data[i])]
-            sub = {
-                "header": [columns[i]["name"] for i in ci],
-                "rows": [[data[i][j] for j in ci] for i in ri],
-            }
-            md = table_to_markdown(
-                sub,
-                caption=meta.get("caption") or None,
-                escape_backslashes=False,
-            )
-            ids = table_ids_line(
-                {
-                    "rowmeta": [rowmeta[i] for i in ri],
-                    "columns": [columns[j] for j in ci],
-                }
-            )
-            body = f"{chunk.dc}\n{md}"
-            if ids:
-                body += f"\n{ids}"
-            return Response(body=f"{body}\nhash: {h}")
+            return self._render_table_page(chunk.dc, tbl, meta.get("caption"), h, a)
         body = (
             f"{chunk.dc}\n"
             + table_toon(tbl, cols=cols, rows=rows, where=where)
             + f"\nhash: {h}"
         )
         return Response(body=body)
+
+    @staticmethod
+    def _render_table_page(
+        dc: str, tbl: dict[str, Any], caption: str | None, h: str, args: dict[str, Any]
+    ) -> Response:
+        from precis.utils.table_toon import (
+            _resolve_col_list,
+            _resolve_row_list,
+            compile_where,
+        )
+
+        offset, limit = args.get("offset", 0), args.get("limit")
+        if (
+            type(offset) is not int
+            or offset < 0
+            or ("limit" in args and (type(limit) is not int or limit < 1))
+        ):
+            raise BadInput(
+                "table offset must be a nonnegative integer and limit a positive integer",
+                next=f"get(kind='draft', id={dc!r}, view='table', "
+                "args={'offset': 0, 'limit': 10})",
+            )
+        columns = tbl["columns"]
+        rowmeta = tbl.get("rowmeta") or []
+        data = tbl.get("rows") or []
+        ci = _resolve_col_list(columns, args.get("cols"))
+        ri = _resolve_row_list(rowmeta, args.get("rows"))
+        if (where := args.get("where")) is not None:
+            pred = compile_where(str(where), columns)
+            ri = [i for i in ri if i < len(data) and pred(data[i])]
+        selected_cols = [columns[j] for j in ci]
+        header = [col["name"] for col in selected_cols]
+        page = ri[offset:] if limit is None else ri[offset : offset + limit]
+        selection: dict[str, Any] = {
+            k: args[k] for k in ("cols", "rows", "where", "limit") if k in args
+        }
+
+        def render(count: int) -> str:
+            indices = page[:count]
+            md = table_to_markdown(
+                {"header": header, "rows": [[data[i][j] for j in ci] for i in indices]},
+                caption=caption,
+                escape_backslashes=False,
+            )
+            ids = table_ids_line(
+                {"rowmeta": [rowmeta[i] for i in indices], "columns": selected_cols}
+            )
+            end = offset + count
+            continuation = ""
+            if end < len(ri):
+                next_args = {**selection, "offset": end}
+                continuation = (
+                    f"\n… showing rows {offset + 1}–{end} of {len(ri)} selected rows"
+                    f"\nnext: get(kind='draft', id={dc!r}, view='table', args={next_args!r})"
+                )
+            ids_line = f"\n{ids}" if ids else ""
+            return f"{dc}\n{md}{ids_line}{continuation}\nhash: {h}"
+
+        body = render(len(page))
+
+        def fit(cap: int) -> str:
+            candidate = body
+            count = len(page)
+            while body_bytes(candidate) > cap:
+                if count <= 1:
+                    raise ResultBudgetExceeded(
+                        f"draft table {dc} cannot fit this page under the {cap}-byte budget",
+                        next="select fewer columns with cols= at the same offset; "
+                        + _table_read_hint(dc),
+                    )
+                count //= 2
+                candidate = render(count)
+            return candidate
+
+        return Response(body=body, budget_fit=fit)
 
     def _render_table_stats(self, handle: str) -> Response:
         """``get(id='dc<id>', view='stats')`` (spreadsheet-tables 2) —
@@ -8560,7 +8653,9 @@ class DraftHandler(Handler):
             raise ResultBudgetExceeded(
                 f"draft chunk {window[0].dc} cannot fit whole under the "
                 f"{cap}-byte result budget; no chunks shown",
-                next=(
+                next=_table_read_hint(window[0].dc)
+                if window[0].chunk_kind == "table"
+                else (
                     "increase PRECIS_MAX_BODY_BYTES and "
                     "PRECIS_TOOL_RESULT_CONTEXT_BYTES, then retry "
                     f"get(kind='draft', id={handle!r})"

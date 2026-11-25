@@ -208,13 +208,14 @@ def _env_cap(name: str, default: int, *, zero_disables: bool = False) -> int:
 def result_context_cap() -> int:
     """Byte budget a handler fits a structured render to (gr540851).
 
-    ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` when an operator sets it to a
-    positive value, else the transport cap — size under that is never
+    The lower of the transport cap and a positive
+    ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` — size under that is never
     cut. Handlers that fit by structure (draft level map) read this
     instead of :data:`DEFAULT_CONTEXT_BODY_BYTES`.
     """
     explicit = _env_cap("PRECIS_TOOL_RESULT_CONTEXT_BYTES", 0, zero_disables=True)
-    return explicit or _env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
+    transport = _env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
+    return min(explicit, transport) if explicit else transport
 
 
 def _fit_head(body: str, byte_cap: int) -> tuple[str, list[str]]:
