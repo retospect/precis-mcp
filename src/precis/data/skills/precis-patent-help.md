@@ -8,8 +8,8 @@ answers:
   - how do I find a patent by topic when I don't know its id?
   - how do I list patents already in my local store?
   - how do I get a BibTeX entry for a patent?
-  - how do I tag or cross-link a patent to a paper?
-applies-to: get/search/tag/link (kind='patent')
+  - how do I filter patents by tag or cite one from a paper or memory?
+applies-to: get/search (kind='patent')
 status: active
 tags: [addressing, workflow]
 kinds: [patent]
@@ -22,8 +22,8 @@ from the agent side. Once a patent is held, its canonical address is
 the **record handle** `pt<id>` (e.g. `pt40`); blocks are chunk handles
 `pk<id>`. The DOCDB publication number (`ep1234567b1`) is the *fetch
 key* — like a DOI, it's how you pull the patent the first time and a
-durable external identity, but `pt<id>` is what you copy back into
-`get`/`tag`/`link` afterwards. Both resolve on input.
+durable external identity. Both resolve in `get`. Use `pt<id>` when
+citing a held patent from another record.
 
 ## Look up a patent when I have a handle or a DOCDB id
 ## Open a patent by handle (or DOCDB id)
@@ -143,25 +143,26 @@ ingested last week is recent-new but published-old.
 get(kind="patent", id="pt40", view="bibtex")  # or the DOCDB id
 ```
 
-## Annotate a patent or cross-link it
-## Tag a patent with topics
-## Link a patent to a paper or memory
+## Link a paper or memory to a patent
+
+Patent supports `get` and `search`. To create a link, use the paper
+or memory as the source and the patent handle as the target.
 
 ```python
-tag(kind="patent", id="pt40", add=["topic:photocatalysis"])
-tag(kind="patent", id="pt40", add=["cpc:B01J27/24"])
-tag(kind="patent", id="pt40", remove=["topic:photocatalysis"])
-
-link(kind="patent", id="pt40", target="pa57", rel="cited-by")  # target handle
-link(kind="patent", id="pt40", target="me88", rel="related-to")  # memory handle
+link(kind="paper", id="pa57", target="pt40", rel="cites")
+link(kind="memory", id="me88", target="pt40", rel="related-to")
 ```
+
+## Filter patents by tag
 
 Closed-prefix axes for patent: `SRC:`, `CACHE:`, `cpc:`, `ipc:`,
 `applicant:`, `country:`, `kind:`, `family:`. CPC/IPC/applicant
 auto-apply at ingest from the OPS bibliographic data. Two open
 status tags ride on patents whose full text wasn't available at
-ingest: `awaiting-fulltext` and `fulltext-unavailable`. Open tags
-(`topic:photocatalysis`, ...) are always allowed.
+ingest: `awaiting-fulltext` and `fulltext-unavailable`. Pass existing
+tags to `search(kind='patent', tags=[...])` to filter results.
+
+## Read a patent family stub
 
 **A patent with no body isn't a fetch failure — it's a family stub.**
 When a simple-family sibling of an already-held patent is ingested
