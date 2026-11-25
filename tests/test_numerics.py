@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from precis.utils.numerics import extract_numerics, extract_numerics_wide
+from precis.utils.numerics import (
+    extract_numerics,
+    extract_numerics_wide,
+    normalize_spellings,
+)
 
 # ── trivial ─────────────────────────────────────────────────────────
 
@@ -225,6 +229,57 @@ def test_wide_reads_duplicated_force_selection_inequalities() -> None:
     tokens = extract_numerics_wide(equation + equation)
     assert {"0.15 eV", "0.50 eV"} <= set(tokens)
     assert "0.77 eV" not in tokens
+
+
+def test_wide_reads_doubled_mathml_latex_quantities() -> None:
+    """gr794179: a doubled MathML/LaTeX render writes each quantity twice —
+    ``50\\ \\mathrm{K}50\\ \\mathrm{K}`` — and TeX spacing hides both
+    copies; normalized, one ``50 K`` reads through."""
+    assert "50 K" in extract_numerics_wide(
+        r"less than 50\ \mathrm{K}50\ \mathrm{K} of the reference"
+    )
+    # Sentence-ending period after the second copy: the collapse still
+    # fires (a decimal-leading "." still blocks it).
+    assert "50 K" in extract_numerics_wide(r"less than 50\ \mathrm{K}50\ \mathrm{K}.")
+    assert extract_numerics_wide(r"a 50\ \mathrm{K}50\ \mathrm{K}.5 pair") == []
+    toks = extract_numerics_wide("pressures from 00 to 5\u200bGPa5\\ \\mathrm{GPa}")
+    assert {"00 GPa", "5 GPa"} <= set(toks)
+    # Only identical copies collapse: spaced unequal quantities keep both
+    # readings, and an unequal glued pair stays unread rather than
+    # fabricating a token.
+    assert {"5 GPa", "7 GPa"} <= set(extract_numerics_wide("a 5 GPa 7 GPa pair"))
+    assert extract_numerics_wide("a 5GPa7\\ \\mathrm{GPa} pair") == []
+    # The collapse keeps the source copy's own spacing: a glued pair stays
+    # glued (``130K`` — a thousands count, which the audit's artifact
+    # filters key on), while a ``\mathrm``-spaced copy keeps its space.
+    assert normalize_spellings("a 130K130K molecules set") == "a 130K molecules set"
+    assert normalize_spellings(r"a 50K50\ \mathrm{K} hold") == "a 50 K hold"
+
+
+def test_glued_k_count_filter_reaches_stored_tokens() -> None:
+    """review td794577: a cue-less glued ``K`` is a count, never ``130 K``
+    in the stored ``numerics`` tokens — the doubled collapse
+    (``130K130K`` → ``130K``) must not smuggle one in either."""
+    assert "130 K" not in extract_numerics_wide(
+        "pre-training on 130K130K low-quality molecules"
+    )
+    assert "130 K" not in extract_numerics_wide("130K molecules")
+    assert extract_numerics("a 130K molecules set") == ["130 K"]
+    # A cue keeps the glued K a temperature on the same paths.
+    assert "77 K" in extract_numerics_wide("measured at 77K")
+    assert "4 K" in extract_numerics_wide("cooled to 4K")
+
+
+def test_sim_tilde_cue_survives_normalization() -> None:
+    """review td794577: ``\\sim`` maps to ``~`` — the approximation cue
+    that keeps a glued ``K`` a temperature — not to a TeX space. Only a
+    digit-adjacent ``~`` tie (``50~K``) reads as a space."""
+    assert normalize_spellings(r"cooled to \sim4K") == "cooled to ~4K"
+    assert normalize_spellings(r"warmed by 50~K steps") == "warmed by 50 K steps"
+    assert "4 K" in extract_numerics_wide(r"cooled to \sim4K before the scan")
+    assert "4 K" in extract_numerics_wide(r"near ~4K\sim4\ \mathrm{K} conditions")
+    # The doubled ``\sim`` render reads the same way.
+    assert "4 K" in extract_numerics_wide(r"held \sim4K\sim4K overnight")
 
 
 def test_script_runes_do_not_join_numeric_digits() -> None:

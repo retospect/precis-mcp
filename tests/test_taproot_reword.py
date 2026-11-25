@@ -19,6 +19,7 @@ from typing import Any
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.taproot.reword import (
+    _missing_numeric_tokens,
     _ungrounded_modes,
     _ungrounded_quantities,
     propose_reword,
@@ -815,3 +816,8 @@ def test_cli_bad_hub_handle_exits_nonzero(store: Any) -> None:
     with pytest.raises(SystemExit) as exc:
         taproot_cli.run(_cli_args(hub=handle_registry.format_handle("paper", paper)))
     assert exc.value.code == 1
+
+
+def test_reword_keeps_glued_kelvin_unit() -> None:
+    assert _missing_numeric_tokens("300K anneal", "300 nm anneal") == ["300 K"]
+    assert _missing_numeric_tokens("300K anneal", "300 K anneal") == []

@@ -194,6 +194,38 @@ _GLUE_RUNE_RE = re.compile(
     rf"(?<![\w])({_UNITS_RE_PART})([⁰¹²³⁴⁵⁶⁷⁸⁹⁻₀₁₂₃₄₅₆₇₈₉]+)(?=\d)"
 )
 
+#: TeX spacing a math extraction leaves between a value and its unit
+#: (``50\ \mathrm{K}``): ``\ ``/``\,``/``\;``/``\:``/``\!`` and a ``~``
+#: tie right after a digit (``50~K``) all read as a plain space. A ``~``
+#: anywhere else is the ``\sim`` approximation marker (``~4K``) — a
+#: temperature cue :data:`_TEMP_CUE_RE` reads, so collapsing it to a
+#: space would strip ``4K``'s kelvin reading (review td794577). Commands
+#: that take an argument keep their own handlers (``\%`` → ``%``,
+#: ``\AA`` → ``Å``).
+_TEX_SPACE_RE = re.compile(r"\\[,;:! ]|(?<=\d)~(?!\d)")
+
+#: A doubled MathML/LaTeX equation rendering writes each quantity twice —
+#: ``5​GPa5\ \mathrm{GPa}`` (rendered copy then source copy) or
+#: ``50\ \mathrm{K}50\ \mathrm{K}`` — and the glue between the copies
+#: hides both from the tokenizer (the first unit's ``(?!\w)`` fails on
+#: the second copy's number). Two immediately-adjacent spellings of the
+#: same ``<number> <unit>`` collapse to the *second* copy verbatim — the
+#: source spelling, keeping its own number–unit spacing: ``5​GPa5\
+#: \mathrm{GPa}`` → ``5 GPa`` while ``130K130K`` → ``130K`` stays glued,
+#: so the count filter (``130K molecules`` is a thousands count, not
+#: 130 kelvin — :data:`_GLUED_K_RE`) still sees the shape it keys on
+#: (review td794577). Real prose never
+#: repeats a quantity with only whitespace between the copies. A *bare*
+#: doubled digit run (``00`` for ``0``) is not halved here — reword's
+#: grounding canon folds leading zeros, which is the same value, while
+#: ``11`` halved to ``1`` would not be. A sentence-ending ``.`` may
+#: follow the second copy (``50 K50 K.`` at the end of a clause); only a
+#: ``.`` that starts a decimal fraction blocks the match.
+_DOUBLED_QUANTITY_RE = re.compile(
+    rf"(?<![\w.])(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*"
+    rf"({_UNITS_RE_PART})\s*(\1\s*\2)(?![\w]|\.(?=\d))"
+)
+
 #: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
 #: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
 _HEADER_UNIT_RE = re.compile(rf"[\[(]\s*({_UNITS_RE_PART})\s*[\])]")
@@ -206,6 +238,17 @@ _RANGE_RE = re.compile(
     r"(?<![\w.])(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)"
     rf"\s*({_UNITS_RE_PART})(?!\w)"
 )
+
+#: "130K molecules" is a count, not 130 kelvin: a glued ``K`` counts as a
+#: temperature only after a cue ("at 77K", "T = 4K", "below 20K",
+#: "~300K"). Grounding and evidence indexing opt into the filter. Reword
+#: validation keeps ambiguous tokens so it can catch a unit change.
+_GLUED_K_RE = re.compile(r"\d+K")
+_TEMP_CUE_RE = re.compile(
+    r"(?:\bat|\bT\s*[=~≈<>∼]|\btemperature|\bbelow|\babove|\bto|\bfrom|[~≈<>∼])\s*$",
+    re.IGNORECASE,
+)
+_TEMP_CUE_CHARS = 20
 
 
 #: Spelling variants of one unit that numerics._UNITS lists separately. No
@@ -314,15 +357,26 @@ def extract_numerics(text: str) -> list[str]:
     return out
 
 
-def numeric_spans(text: str) -> list[tuple[str, int, int]]:
+def numeric_spans(
+    text: str, *, filter_glued_k: bool = False
+) -> list[tuple[str, int, int]]:
     """``[(token, start, end), …]`` for every recognized token, in order,
     **not** deduplicated — for callers that need to know *where* a value
     sits (the memory attribution gate). ``token`` is spelled exactly as
-    :func:`extract_numerics` spells it."""
+    :func:`extract_numerics` spells it. With ``filter_glued_k``, a cue-less
+    glued ``K`` such as ``130K molecules`` is treated as a count."""
     if not text:
         return []
     out: list[tuple[str, int, int]] = []
     for m in _NUMERIC_RE.finditer(text):
+        if (
+            filter_glued_k
+            and _GLUED_K_RE.fullmatch(text, m.start(), m.end())
+            and not _TEMP_CUE_RE.search(
+                text, max(0, m.start() - _TEMP_CUE_CHARS), m.start()
+            )
+        ):
+            continue
         number = m.group(1)
         unit = m.group(2)
         # Special-case ``%`` — print without the space between number
@@ -357,7 +411,12 @@ def normalize_spellings(text: str) -> str:
     to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm",
     a super/subscript rune run that glues a duplicated equation rendering's
     number to the previous copy's unit (``Å⁻¹0.15`` → ``Å 0.15``) spaced,
-    and the TeX angstrom macro (``6 \\AA``, ``6\\,\\AA``) → "Å"."""
+    the TeX angstrom macro (``6 \\AA``, ``6\\,\\AA``) → "Å", TeX spacing
+    (``50\\ \\mathrm{K}`` → ``50 K``) mapped to a plain space while a
+    ``\\sim`` cue ``~`` is preserved (``\\sim4K`` → ``~4K``), and a doubled
+    MathML/LaTeX quantity render collapsed to its source copy verbatim
+    (``50\\ \\mathrm{K}50\\ \\mathrm{K}`` → ``50 K``, ``130K130K`` →
+    ``130K`` — the glued count shape is preserved, not respelled)."""
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
     norm = _TEX_MU_RE.sub("µ", norm)
     norm = norm.translate(_ZERO_WIDTH_TRANSLATION)
@@ -370,6 +429,8 @@ def normalize_spellings(text: str) -> str:
     norm = _DEGREE_LIGATURE_RE.sub(lambda m: "°C" if m.group(1) == "℃" else "°F", norm)
     norm = _DEGREE_UNIT_RE.sub("°", norm)
     norm = _DEGREE_LONE_RE.sub("°", norm)
+    norm = _TEX_SPACE_RE.sub(" ", norm)
+    norm = _DOUBLED_QUANTITY_RE.sub(r"\3", norm)
     norm = _PLUS_MINUS_RE.sub(" and ", norm)
     return norm.replace("μ", "µ")  # Greek mu (U+03BC) → micro sign (U+00B5)
 
@@ -385,7 +446,7 @@ def extract_numerics_wide(text: str) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for variant in (text, normalize_spellings(text)):
-        spans = numeric_spans(variant)
+        spans = numeric_spans(variant, filter_glued_k=True)
         toks = [t for t, _s, _e in spans]
         toks += _list_heads(variant, spans)
         for r in _RANGE_RE.finditer(variant):

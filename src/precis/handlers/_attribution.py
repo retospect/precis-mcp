@@ -29,9 +29,14 @@ chunks off is a reading aid, not a mis-sourced number. A chunk range
 generously: "0.44 and 0.26 eV" grounds both numbers, and a markdown table
 whose header names the unit (``Pore aperture [Å]``) grounds its cells;
 zero-width spaces PDF extractors leave inside a value or unit
-(``0.50​ eV​ Å​⁻¹​``) are ignored, and a duplicated equation rendering
+(``0.50​ eV​ Å​⁻¹​``) are ignored, a duplicated equation rendering
 gluing the next copy's number to a superscript unit (``…Å⁻¹0.15 eV…``)
-still reads "0.15 eV" (gr715966). The quantity scan skips exponents in
+still reads "0.15 eV" (gr715966), and a doubled MathML/LaTeX quantity
+render (``50\\ \\mathrm{K}50\\ \\mathrm{K}``, ``00 to 5​GPa5\\
+\\mathrm{GPa}``) collapses to the quantity it writes twice, keeping the
+source copy's spelling — ``130K130K`` reads ``130K``, still a count
+(gr794179, review td794577).
+The quantity scan skips exponents in
 ``10^7 cm/s``, patent reference numerals (``216A-N``), thousands counts
 (``130K molecules``) and shell labels (``In 5s orbitals``). A semicolon
 outside brackets ends a clause: "… at 9nm;
@@ -88,6 +93,7 @@ from precis.utils.numerics import (
     _list_heads,
     _split_token,
     _table_quantities,
+    extract_numerics_wide,
     normalize_spellings,
     numeric_spans,
 )
@@ -182,15 +188,6 @@ _SINK_HANDLE_RE = re.compile(r"\b(?:gr|td|jo|ag|sk)\d{3,}\b")
 #: ``kind:id`` handles, ``Source:`` and times carry them.
 _CLAUSE_BREAK_RE = re.compile(r"[(),;—–]")
 
-#: "130K molecules" is a count, not 130 kelvin: a glued ``K`` counts as a
-#: temperature only after a cue ("at 77K", "T = 4K", "below 20K", "~300K").
-_GLUED_K_RE = re.compile(r"\d+K")
-_TEMP_CUE_RE = re.compile(
-    r"(?:\bat|\bT\s*[=~≈<>]|\btemperature|\bbelow|\babove|\bto|\bfrom|[~≈<>])\s*$",
-    re.IGNORECASE,
-)
-_TEMP_CUE_CHARS = 20
-
 #: A pinpoint written in prose right after a cite: "paper:x (chunks ~97–98:
 #: …)", "paper:x (chunk ~15, …)", "paper:x (~151, ~157)" — read as the
 #: ``~97..98`` / ``~15`` / ``~151`` the cite itself could have carried.
@@ -242,7 +239,7 @@ def _quantities(text: str) -> list[tuple[str, int, int]]:
     (never "-20 nm"); the range replaces the spans it covers."""
     spans = [
         (t, s, e)
-        for t, s, e in numeric_spans(text)
+        for t, s, e in numeric_spans(text, filter_glued_k=True)
         if not _DECADE_RE.fullmatch(text, s, e) and not _artifact(text, t, s, e)
     ]
     ranges = list(_RANGE_RE.finditer(text))
@@ -265,15 +262,12 @@ def _quantities(text: str) -> list[tuple[str, int, int]]:
 def _artifact(text: str, tok: str, s: int, e: int) -> bool:
     """A digit run the tokenizer read as a quantity but which is none: the
     exponent of ``10^7 cm/s`` ("7 cm"), a patent reference numeral
-    ``216A-N`` ("216 A"), a thousands count ``130K molecules`` or a shell
-    label ``5s`` ("5 s")."""
+    ``216A-N`` ("216 A") or a shell label ``5s`` ("5 s"). A cue-less glued
+    ``K`` (``130K molecules``, a thousands count) is dropped by the
+    tokenizer when the grounding filter is enabled."""
     if s and text[s - 1] == "^":
         return True
     del tok  # normalised ("216 A"); the glued shape is only in the text
-    if _GLUED_K_RE.fullmatch(text, s, e) and not _TEMP_CUE_RE.search(
-        text, max(0, s - _TEMP_CUE_CHARS), s
-    ):
-        return True
     if _S_ORBITAL_RE.fullmatch(text, s, e) and _ORBITAL_TAIL_RE.match(text, e):
         return True
     return bool(
@@ -579,7 +573,9 @@ def _fetch_evidence(
     last chunk when ``ends`` names one (the caller pools the ``(ref_id,
     None)`` document evidence with it); a ref cite reads the
     ``numerics`` column (paper/patent; a ref with no numerics at all has
-    nothing to check against) or chunk text, capped per ref (other kinds:
+    nothing to check against). Stored kelvin tokens are verified against
+    their originating chunk because older indexes also stored counts as K.
+    Other kinds read chunk text, capped per ref (
     websearch / perplexity / web / memory bodies).
     """
     out: dict[tuple[int, int | None], Evidence] = {t: Evidence() for t in targets}
@@ -620,17 +616,32 @@ def _fetch_evidence(
             for r in text_ids:
                 out[(r, None)] |= evidence_from_text(meta.get(r, ("", ""))[1] or "")
             if numeric_ids:
-                tokens: dict[int, list[str]] = {r: [] for r in numeric_ids}
+                tokens: dict[int, set[str]] = {r: set() for r in numeric_ids}
+                kelvin_ids: set[int] = set()
                 for rid, n in conn.execute(
                     "SELECT DISTINCT c.ref_id, n FROM chunks c, "
                     "unnest(c.numerics) AS n "
                     "WHERE c.ref_id = ANY(%s) AND c.retired_at IS NULL",
                     (numeric_ids,),
                 ).fetchall():
-                    if n:
-                        tokens[int(rid)].append(n)
+                    if n and n.endswith(" K"):
+                        kelvin_ids.add(int(rid))
+                    elif n:
+                        tokens[int(rid)].add(n)
+                if kelvin_ids:
+                    for rid, text, stored in conn.execute(
+                        "SELECT c.ref_id, c.text, c.numerics FROM chunks c "
+                        "WHERE c.ref_id = ANY(%s) AND c.retired_at IS NULL "
+                        "AND EXISTS (SELECT 1 FROM unnest(c.numerics) AS n "
+                        "WHERE right(n, 2) = ' K')",
+                        (sorted(kelvin_ids),),
+                    ).fetchall():
+                        live = set(extract_numerics_wide(text or ""))
+                        tokens[int(rid)].update(
+                            n for n in stored if n and n.endswith(" K") and n in live
+                        )
                 for rid, toks in tokens.items():
-                    if not toks:
+                    if not toks and rid not in kelvin_ids:
                         continue  # numerics = [] everywhere: nothing to check
                     ev = evidence_from_text(" ; ".join(toks), has_text=True)
                     ev = Evidence(ev.units, ev.runs, True, numerics_only=True)

@@ -8,8 +8,8 @@ Usage (via the ``chunk-numerics-recompute`` shell wrapper):
 ``numerics`` is derived metadata, not body: the append-only trigger guards
 ``text`` only (``docs/conventions/invariants.md``), so this UPDATE leaves
 embeddings and summaries alone. Only live chunks whose recomputed array
-differs are written; ``extract_numerics_wide`` is a superset of the old
-extractor, so nothing already stored is lost. Reads ``PRECIS_DATABASE_URL``
+differs are written. The wide extractor can also remove spurious tokens,
+such as kelvin readings of glued thousands counts. Reads ``PRECIS_DATABASE_URL``
 (dev DB by default; prod through the gitignored overlay, never a literal).
 """
 

@@ -625,6 +625,59 @@ def test_evidence_math_dollars_and_plus_minus(world):
     assert [m.token for m in _check("displaces 1.9 Å [pa12]")] == ["1.9 Å"]
 
 
+def test_doubled_mathml_latex_render_grounds(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    """gr794179 (me794148): the chunk doubles each quantity — the rendered
+    copy then the ``\\mathrm`` LaTeX copy — so ``50\\ \\mathrm{K}50\\
+    \\mathrm{K}`` reads ``50 K`` and ``00 to 5​GPa5\\ \\mathrm{GPa}`` reads
+    ``0 to 5 GPa`` (the ``00`` is ``0`` written twice)."""
+    world[(12, None)] = (
+        r"deviates by less than 50\ \mathrm{K}50\ \mathrm{K} of the "
+        r"experimental reference"
+    )
+    assert _check("within 50 K of the reference [pa12]") == []
+    assert [m.token for m in _check("within 51 K of the reference [pa12]")] == ["51 K"]
+    world[(12, None)] = "pressures from 00 to 5\u200bGPa5\\ \\mathrm{GPa}"
+    assert _check("strained over 0–5 GPa [pa12]") == []
+    assert [m.token for m in _check("strained over 0–7 GPa [pa12]")] == ["7 GPa"]
+    # A sentence-ending period after the doubled copy must not block the
+    # collapse — without it the unit/number glue leaves both copies
+    # unreadable (review td794577).
+    world[(12, None)] = r"deviates by less than 50\ \mathrm{K}50\ \mathrm{K}."
+    assert _check("within 50 K of the reference [pa12]") == []
+    assert [m.token for m in _check("within 51 K of the reference [pa12]")] == ["51 K"]
+
+
+def test_doubled_render_keeps_the_glued_count_filter(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    """review td794577: the collapse keeps the source copy's spelling, so
+    a doubled ``130K130K`` stays ``130K`` — a thousands count, not
+    130 kelvin. Collapsing to a spaced ``130 K`` would let a molecule
+    count ground a temperature claim."""
+    world[(12, None)] = "pre-training on 130K130K low-quality molecules"
+    assert [m.token for m in _check("trained on 130 K [pa12]")] == ["130 K"]
+    assert _check("trained on 130K samples [pa12]") == []
+    # A cue-marked doubled kelvin still grounds through the same collapse.
+    world[(12, None)] = "cooled to 4K4K before the scan"
+    assert _check("held to 4 K [pa12]") == []
+
+
+def test_sim_cue_keeps_a_glued_kelvin(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    """review td794577: ``\\sim4K`` normalizes to ``~4K`` — the ``~`` is
+    the approximation cue that keeps the glued ``K`` a temperature, so
+    ``4 K`` still grounds."""
+    world[(12, None)] = r"cooled to \sim4K before the scan"
+    assert _check("held to 4 K [pa12]") == []
+    assert [m.token for m in _check("held to 5 K [pa12]")] == ["5 K"]
+    # The doubled ``\sim`` render (rendered ``~`` copy + source copy).
+    world[(12, None)] = r"near ~4K\sim4\ \mathrm{K} conditions"
+    assert _check("held to 4 K [pa12]") == []
+
+
 def test_zero_width_spaces_and_duplicated_equation_rendering(world):
     """gr715966 (me715737): the cited inequalities carry zero-width spaces
     and a duplicated equation rendering — ``0.50​ eV​ Å​⁻¹​0.15​ eV​ Å​⁻¹​``

@@ -9,9 +9,11 @@ from types import ModuleType
 import pytest
 
 from precis.dispatch import Hub
+from precis.handlers._attribution import ungrounded_cited_numbers
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store, Tag
 from tests.conftest import id_of
+from tests.workers._helpers import seed_chunks
 
 _SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "_memory_attribution_audit.py"
@@ -99,3 +101,35 @@ def test_clear_stale_lifts_only_the_system_tag_the_gate_no_longer_raises(
     out = mod.audit(store, apply=True)
     assert out["cleared"] == 0
     assert store.has_tag(seeded["good"], "AUDIT", "ungrounded-number")
+
+
+def test_audit_checks_a_range_with_a_glued_kelvin_unit(hub: Hub, store: Store) -> None:
+    h = MemoryHandler(hub=hub)
+    source = id_of(h.put(text="source: measured at 20 K").body)
+    claim = id_of(h.put(text=f"range was 10–20K [me{source}]").body)
+    out = _load().audit(store)
+    assert claim in out["flagged_ids"]
+    assert f'me{claim}  "10 K"  ' in "\n".join(out["sample"])
+
+
+def test_legacy_kelvin_index_is_checked_against_its_chunk(store: Store) -> None:
+    paper, (count, temperature, pinpoint) = seed_chunks(
+        store,
+        ["used 130K molecules and 5 nm particles", "annealed at 300K", "scan details"],
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET numerics = %s WHERE chunk_id = %s",
+            (["130 K", "5 nm"], count),
+        )
+        conn.execute(
+            "UPDATE chunks SET numerics = %s WHERE chunk_id = %s",
+            (["300 K"], temperature),
+        )
+        conn.commit()
+
+    for cite in (f"[pa{paper}]", f"[pc{pinpoint}]"):
+        misses = ungrounded_cited_numbers(store, f"held at 130 K {cite}")
+        assert [(m.token, m.ref_id) for m in misses] == [("130 K", paper)]
+        assert ungrounded_cited_numbers(store, f"held at 300 K {cite}") == []
+        assert ungrounded_cited_numbers(store, f"used 5 nm particles {cite}") == []

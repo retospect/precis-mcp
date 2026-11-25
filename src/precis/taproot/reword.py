@@ -536,16 +536,24 @@ _SCI_TEN_RE = re.compile(r"10(?=[⁰¹²³⁴⁵⁶⁷⁸⁹⁻])")
 _TRAILING_FRAC_ZERO_RE = re.compile(r"(?<=\d)(\.\d*?)0+\b")
 _BARE_POINT_RE = re.compile(r"(?<=\d)\.(?!\d)")
 
+#: Leading zeros carry no value and doubled MathML/LaTeX renderings write
+#: them: a chunk's ``00 to 5 GPa`` is ``0`` rendered twice, and formatted
+#: output pads to ``007``. Fold them so both sides read the same value.
+#: The ``.`` guard keeps ``0.5`` and ``1.05`` intact.
+_LEADING_ZERO_RE = re.compile(r"(?<![\d.])0+(?=\d)")
+
 
 def _canon_grounding(text: str) -> str:
     """Grounding-side number canon: grouping separators stripped (so a
     passage's ``10,000`` grounds a claim's ``10 000``), scientific-notation
-    mantissas and super/subscripts dropped, trailing fractional zeros
-    normalized away. Both sides go through it, so it only ever makes two
-    spellings of the same value compare equal."""
+    mantissas and super/subscripts dropped, leading zeros folded (``00``
+    ≡ ``0`` — a doubled math rendering or formatted output pads them) and
+    trailing fractional zeros normalized away. Both sides go through it,
+    so it only ever makes two spellings of the same value compare equal."""
     out = _GROUP_SEP_RE.sub("", text)
     out = _SCI_TEN_RE.sub("", out).translate(_SUPERSCRIPT_DIGITS)
-    return _BARE_POINT_RE.sub("", _TRAILING_FRAC_ZERO_RE.sub(r"\1", out))
+    out = _BARE_POINT_RE.sub("", _TRAILING_FRAC_ZERO_RE.sub(r"\1", out))
+    return _LEADING_ZERO_RE.sub("", out)
 
 
 #: Word-prefix length a mode token is stemmed to before the passage is

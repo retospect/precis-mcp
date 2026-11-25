@@ -93,11 +93,11 @@ def audit(
     from precis.handlers._attribution import (
         AUDIT_VALUE,
         AttributionCache,
+        _quantities,
         grounding_failures,
         ungrounded_cited_numbers,
     )
     from precis.store import Tag
-    from precis.utils.numerics import numeric_spans
 
     tag = Tag.closed("AUDIT", AUDIT_VALUE)
     cache = AttributionCache()
@@ -114,7 +114,7 @@ def audit(
             break
         after = rows[-1][0]
         for ref_id, body in rows:
-            if not numeric_spans(body):
+            if not _quantities(body):
                 continue
             candidates += 1
             try:
