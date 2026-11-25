@@ -138,7 +138,9 @@ class TestCheckDispatch:
 
 
 class TestDispatchIntegration:
-    def test_dispatch_refuses_oversized_fixed_model(self, bound_store: Any) -> None:
+    def test_dispatch_refuses_oversized_fixed_model(
+        self, bound_store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from precis import llm_catalog
         from precis.utils.llm import admit
         from precis.utils.llm.router import LlmRequest, route
@@ -150,6 +152,12 @@ class TestDispatchIntegration:
             offerings=[{"transport": "local", "max_input": 100}],
         )
         admit.reset_cache()
+        # Transport follows the model: only a locally served model rides the
+        # local wire (the card's offering); an unserved one is OPENAI_COMPAT and
+        # dropped as unusable on a host with no PRECIS_LLM_BASE_URL.
+        monkeypatch.setattr(
+            "precis.utils.llm.local_serving.served_locally", lambda model: True
+        )
         # A fixed-model (pinned) call with a durably oversized prompt: dispatch
         # returns the refusal as a normalized error, WITHOUT running a provider.
         req = LlmRequest(

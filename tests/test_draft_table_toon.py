@@ -728,8 +728,12 @@ def test_edit_table_cas_blocks_on_row_lock(draft: DraftHandler, hub: Hub) -> Non
         n = 0
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
+            # pg_locks is server-wide: count only waits by backends on
+            # this test's database, never another xdist worker's.
             lock_row = aconn.execute(
-                "SELECT count(*) FROM pg_locks WHERE NOT granted"
+                "SELECT count(*) FROM pg_locks l "
+                "JOIN pg_stat_activity a ON a.pid = l.pid "
+                "WHERE NOT l.granted AND a.datname = current_database()"
             ).fetchone()
             assert lock_row is not None
             n = lock_row[0]

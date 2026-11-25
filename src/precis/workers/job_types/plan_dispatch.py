@@ -491,10 +491,29 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    the pin, with a note. A pinned job no host claims reaches the
    placement ask (:func:`_step_unplaced`), whose text then says how to
    release the pin: clear ``meta.build_ref`` and cancel the job, which
-   loses the work held on that host. Not solved yet, and all must be
-   before a second build host is enabled: lane choice (:func:`_escalate`,
-   :func:`_review_lane`, the conflict path's try 3) does not check that
-   the pinned host runs the lane it picks; a reviewer whose targets
+   loses the work held on that host. The pin is resolved before the lane
+   is chosen (gr778684): lane choice (:func:`_review_lane`,
+   :func:`_escalate`, the conflict path's try 3) picks from the lanes
+   the pinned host advertises a binary for (:func:`_host_lanes`). A
+   review with no open lane on that host takes its ``review_fallback``
+   when the host runs that, else waits while a lane the host runs is
+   only full or backed off; a rung whose ``rung_caps`` cap is spent
+   counts as one the host does not run. When the host runs no lane that
+   could take the job, the node is held with a :data:`HOST_GAP_HOLD`
+   reason naming the host and the missing token (:func:`_host_gap`). A
+   review stays held — the reviewer's clone fetches the reviewed ref
+   from its own host's hub, so an off-hub review cannot read the work —
+   and once the gap has held for :data:`HOST_GAP_WAIT` it counts toward
+   ONE ask per host and token (:func:`_step_host_gap_asks`, full passes
+   only), closed by the tick once no review waits on it; a person's close
+   is the ruling for :data:`HOST_GAP_ASK_QUIET`. A build or retry, which restarts
+   from the todo, mints unpinned once the gap has held that long and
+   says why (:data:`HUB_PIN_DROPPED_KEY`, a ``hub-pin-dropped`` job
+   event). The wait is the hold's own first-sight stamp on the host's
+   live heartbeat, so a probe flap drops nothing. A pinned host that
+   advertises nothing live (dark) constrains nothing; the placement ask
+   speaks for it. Not solved yet, and all
+   must be before a second build host is enabled: a reviewer whose targets
    sit on different hosts is pinned to the first by id (with a note);
    after a start-over or a released pin, the task's attempt refs can
    remain in the other host's hub, where a launch without a record takes
@@ -1770,6 +1789,11 @@ class PassResult:
 
     #: The current dispatch impediment per node, before summary truncation.
     dispatch_holds: dict[int, str] = field(default_factory=dict, init=False, repr=False)
+    #: ``{(host, token): [review ids]}`` held on a host gap past
+    #: ``HOST_GAP_WAIT`` this pass (:func:`_step_host_gap_asks`).
+    host_gaps: dict[tuple[str, str], list[int]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def dispatch_hold(self, n: _Node, reason: str) -> None:
         self.dispatch_holds[n.id] = reason
@@ -7204,6 +7228,7 @@ def _conflict_pin(
     lane_table: tuple[_lanes.Lane, ...],
     rules: dict[str, dict[str, Any]] | None,
     k: int,
+    host_lanes: tuple[str, frozenset[str]] | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Pin conflict attempt ``k`` to its rung; ``(go, note, unusable)``.
     Tries below :data:`CONFLICT_STRONG_TRY` run where the task's build ran
@@ -7215,7 +7240,14 @@ def _conflict_pin(
     but when the strongest rung cannot be used for a reason waiting does
     not clear (the ladder has no enabled rung, its ``rung_caps`` cap is
     spent) ``unusable`` says why: the tries are spent and the conflict ask
-    names it. A node whose op pins a ``model`` keeps it."""
+    names it. A node whose op pins a ``model`` keeps it.
+
+    ``host_lanes`` is ``(host, lane names)`` when the attempt is hub-pinned
+    to ``host`` (gr778684): try :data:`CONFLICT_STRONG_TRY` takes the top
+    rung on a lane the host runs whose ``rung_caps`` cap is not spent.
+    When the host runs no such rung, the ladder's top is taken as before —
+    a lane outside ``host_lanes``, which tells the caller to mint
+    unpinned."""
     rungs = _task_rungs(lane_table, n, params)
     if k < CONFLICT_STRONG_TRY:
         if _mech_pin(plan, w, n, rungs, params, rules):
@@ -7236,7 +7268,25 @@ def _conflict_pin(
     if not rungs:
         why = "no enabled lane offers a rung for the task's class"
         return False, f"td{n.id}: conflict try {k} cannot run — {why}", why
-    top = rungs[-1]
+    runs = host_lanes[1] if host_lanes is not None else None
+    spend = _node_spend_usd(plan, n, rules) if rules and runs is not None else 0.0
+
+    def spent(r: _lanes.Rung) -> bool:
+        cap = _rung_cap_usd(r, rules) if rules else None
+        return cap is not None and spend >= cap
+
+    # A rung whose ``rung_caps`` cap is spent cannot run on the host
+    # either: it counts as not runnable there, so the attempt falls back
+    # to the unpinned top rather than wait on a cap that never clears.
+    top_i = next(
+        (
+            i
+            for i in range(len(rungs) - 1, -1, -1)
+            if runs is not None and rungs[i].lane in runs and not spent(rungs[i])
+        ),
+        len(rungs) - 1,
+    )
+    top = rungs[top_i]
     if top.lane in set(_lanes.lane_backoffs(w.store)):
         return (
             False,
@@ -7258,10 +7308,15 @@ def _conflict_pin(
     if top.model is not None:
         params["model"] = top.model
     model_bit = f" model {top.model}" if top.model else ""
+    host_bit = (
+        f" that host {host_lanes[0]} runs"
+        if host_lanes is not None and top_i < len(rungs) - 1
+        else ""
+    )
     return (
         True,
-        f"td{n.id}: conflict try {k} pinned to the strongest model "
-        f"(lane {top.lane}{model_bit}, rung {len(rungs)}/{len(rungs)})",
+        f"td{n.id}: conflict try {k} pinned to the strongest model{host_bit} "
+        f"(lane {top.lane}{model_bit}, rung {top_i + 1}/{len(rungs)})",
         None,
     )
 
@@ -7917,6 +7972,7 @@ def _escalate(
     rules: dict[str, dict[str, Any]] | None = None,
     *,
     from_builder: bool = False,
+    host_lanes: tuple[str, frozenset[str]] | None = None,
 ) -> tuple[bool, str | None, dict[str, Any] | None]:
     """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
@@ -7943,6 +7999,15 @@ def _escalate(
     node carries its spend record (``blocked: False`` = headroom left)
     and mints the job with ``params.budget_usd`` = the remaining
     allowance — the bound ``run_slice`` enforces mid-run (td601015).
+
+    ``host_lanes`` is ``(host, lane names)`` when the job is hub-pinned to
+    ``host`` (gr778684): rungs on a lane the host does not run are skipped
+    like backed-off ones, on the same full-ladder floor. When no rung from
+    the start up sits on a lane the host runs with its ``rung_caps`` cap
+    unspent, the climb ignores the host
+    and picks as if unpinned — a lane outside ``host_lanes``, which tells
+    the caller to mint unpinned rather than strand the job on a host that
+    cannot claim it.
 
     Returns ``(go, note, stamp)``: ``go=False`` parks the node this tick —
     no job is minted — ``note`` is the action line for the summary, and
@@ -7988,21 +8053,36 @@ def _escalate(
         for i, r in enumerate(rungs)
         if (c := _rung_cap_usd(r, rules or {})) is not None and spend >= c
     )
+    runs = host_lanes[1] if host_lanes is not None else None
+    if runs is not None and not any(
+        rungs[i].lane in runs and i not in spend_blocked
+        for i in range(start, len(rungs))
+    ):
+        # The host runs no rung from here up whose cap is not spent (a
+        # spent rung never clears, so it does not count as runnable
+        # there): pick unpinned.
+        runs = None
     idx = next(
         (
             i
             for i in range(start, len(rungs))
-            if rungs[i].lane not in backed and i not in spend_blocked
+            if rungs[i].lane not in backed
+            and i not in spend_blocked
+            and (runs is None or rungs[i].lane in runs)
         ),
         None,
     )
     if idx is None:
-        blocked_lanes = sorted({r.lane for r in rungs[start:]})
+        blocked_lanes = sorted(
+            {r.lane for r in rungs[start:] if runs is None or r.lane in runs}
+        )
         note = (
             f"td{n.id}: lane-wait — every rung from {start + 1}/{len(rungs)} "
             f"up sits on a backed-off lane ({', '.join(blocked_lanes)}); the "
             "retry waits, it never climbs down"
         )
+        if runs is not None and host_lanes is not None:
+            note += f"; those are the lanes pinned host {host_lanes[0]} runs"
         capped = sorted(
             {rungs[i].model or "default" for i in spend_blocked if i >= start}
         )
@@ -8160,6 +8240,342 @@ def _pin_job_host(params: dict[str, Any], host: str, holder: int) -> str | None:
     return None
 
 
+#: Job meta and job event naming a hub pin the mint dropped, ``{host,
+#: todo, lane, token, why, note}``: no lane that could take the build runs
+#: on the pinned host, and has not for :data:`HOST_GAP_WAIT`, so it mints
+#: unpinned instead of queueing where no claim ever takes it (gr778684).
+#: Never a review's: it waits (:func:`_hold_on_host_gap`).
+HUB_PIN_DROPPED_KEY = "hub_pin_dropped"
+
+
+def _host_lanes(
+    store: Any, host: str, lane_table: tuple[_lanes.Lane, ...]
+) -> frozenset[str] | None:
+    """Names of the lanes in ``lane_table`` the hub-pinned ``host`` can
+    run: the lanes whose adapter's bin token
+    (:func:`~precis.workers.executors._common.adapter_placement_token`)
+    the host advertises live in ``resource_slots`` — the claim's own
+    placement read (gr778684). ``None`` when the host advertises nothing
+    live (dark or never seen): no constraint, and the placement ask
+    (:func:`_step_unplaced`) speaks for a pinned job no host claims."""
+    from precis.workers.executors._common import (
+        adapter_placement_token,
+        advertised_by_host,
+    )
+
+    with store.pool.connection() as conn:
+        have = advertised_by_host(conn).get(host)
+    if not have:
+        return None
+    return frozenset(
+        ln.name for ln in lane_table if adapter_placement_token(ln.adapter) in have
+    )
+
+
+#: How long a hub-pinned host must lack a lane's token, read on its live
+#: heartbeat pass after pass, before the tick acts on it — drops a
+#: build's pin, or asks for a review's host (gr778684). One queued-stage
+#: stall window (``factory_rescue.STAGE_DEADLINES["queued"]``, pinned by a
+#: test): a probe that flaps for a pass or two moves nothing.
+HOST_GAP_WAIT = timedelta(minutes=30)
+
+#: Start of the dispatch-hold reason of a node held on a host gap; the
+#: stall watchdog reads it as a wait (``factory_rescue._stage_for``).
+HOST_GAP_HOLD = "hub-pin host gap"
+
+#: Meta of the ONE ask per host and token a review host gap files,
+#: ``{host, token, reviews, at}`` (:func:`_step_host_gap_asks`).
+HOST_GAP_ASK_KEY = "host_gap"
+
+
+def _host_gap(
+    host_lanes: tuple[str, frozenset[str]] | None,
+    lane: object,
+    lane_table: tuple[_lanes.Lane, ...],
+    res: PassResult,
+    n: _Node,
+) -> tuple[str, str, str] | None:
+    """``(host, lane, token)`` when ``lane`` is set and the pinned host
+    (``host_lanes`` from :func:`_host_lanes`) does not run it, else
+    ``None``. The lane pickers return such a lane only when the host runs
+    no candidate that could take the job (gr778684); ``token`` is the
+    binary token the host would have to advertise for it. A lane the lane
+    table does not hold has no known token: it is no host gap (no hold,
+    no drop), and a note names it."""
+    from precis.workers.executors._common import adapter_placement_token
+
+    if host_lanes is None or not lane or str(lane) in host_lanes[1]:
+        return None
+    adapter = next((ln.adapter for ln in lane_table if ln.name == str(lane)), None)
+    if adapter is None:
+        res.notes.append(
+            f"td{n.id}: lane {lane!r} is not in the lane table — the hub-pin "
+            f"host check for {host_lanes[0]} skips it"
+        )
+        return None
+    return host_lanes[0], str(lane), adapter_placement_token(adapter)
+
+
+def _host_gap_reason(host: str, token: str, review: bool) -> str:
+    """The stable dispatch-hold reason of a host gap — stable so the hold's
+    ``since`` (:func:`_stamp_dispatch_holds`) dates the gap's first sight."""
+    if review:
+        return (
+            f"{HOST_GAP_HOLD}: host {host} lacks {token} — the review waits "
+            "there (the reviewed work is only in that host's hub); one ask "
+            "per host and token after the wait"
+        )
+    return (
+        f"{HOST_GAP_HOLD}: host {host} lacks {token} — the pin drops and the "
+        f"run restarts off the hub after {int(HOST_GAP_WAIT.total_seconds() // 60)} min"
+    )
+
+
+def _hold_on_host_gap(
+    res: PassResult, n: _Node, gap: tuple[str, str, str], now: datetime
+) -> bool:
+    """Whether ``n`` is held this pass on the host gap ``gap`` (from
+    :func:`_host_gap`); records the hold. A review is always held — an
+    off-hub review cannot read the reviewed work — and, once the gap has
+    held for :data:`HOST_GAP_WAIT`, counts toward its host and token's ask.
+    A build is held until then and its pin drops after."""
+    host, _lane, token = gap
+    review = _is_reviewer(n)
+    reason = _host_gap_reason(host, token, review)
+    aged = _host_gap_aged(n, reason, now)
+    if review or not aged:
+        res.dispatch_hold(n, reason)
+        if review and aged:
+            res.host_gaps.setdefault((host, token), []).append(n.id)
+        return True
+    return False
+
+
+def _host_gap_aged(n: _Node, reason: str, now: datetime) -> bool:
+    """``n`` has been held on this same host gap (``reason``) for at least
+    :data:`HOST_GAP_WAIT` — the hold's own first-sight stamp, since
+    ``resource_slots`` keeps no history of an absent token."""
+    held = n.meta.get(DISPATCH_HOLD_KEY)
+    if not isinstance(held, dict) or held.get("reason") != reason:
+        return False
+    try:
+        since = datetime.fromisoformat(str(held.get("since")).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return now - since >= HOST_GAP_WAIT
+
+
+#: How long a host-gap ask a person closed stands as the ruling for its
+#: host and token (gr778684): no new ask for that pair for this long from
+#: the close — the :func:`_unplaced_asked` rule, bounded — then one more
+#: if reviews are still held there.
+HOST_GAP_ASK_QUIET = timedelta(hours=24)
+
+
+def _host_gap_asks(
+    store: Any, *, closed_since: datetime | None = None
+) -> list[tuple[int, dict[str, Any], datetime | None]]:
+    """``(ask id, meta.host_gap, closed at)`` of the host-gap asks: the
+    open ones (``closed at`` ``None``), or with ``closed_since`` the ones
+    closed after it (the terminal STATUS tag's stamp)."""
+    with store.pool.connection() as conn:
+        if closed_since is None:
+            rows = conn.execute(
+                """
+                SELECT r.ref_id, r.meta->%s, NULL FROM refs r
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND jsonb_typeof(r.meta->%s) = 'object'
+                   AND NOT EXISTS (SELECT 1 FROM ref_tags st
+                                     JOIN tags s ON s.tag_id = st.tag_id
+                                    WHERE st.ref_id = r.ref_id
+                                      AND s.namespace = 'STATUS'
+                                      AND s.value = ANY(%s))
+                """,
+                (HOST_GAP_ASK_KEY, HOST_GAP_ASK_KEY, sorted(TERMINAL_TODO_STATUSES)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT r.ref_id, r.meta->%s, st.created_at FROM refs r
+                  JOIN ref_tags st ON st.ref_id = r.ref_id
+                  JOIN tags s ON s.tag_id = st.tag_id
+                   AND s.namespace = 'STATUS' AND s.value = ANY(%s)
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND jsonb_typeof(r.meta->%s) = 'object'
+                   AND st.created_at > %s
+                """,
+                (
+                    HOST_GAP_ASK_KEY,
+                    sorted(TERMINAL_TODO_STATUSES),
+                    HOST_GAP_ASK_KEY,
+                    closed_since,
+                ),
+            ).fetchall()
+    return [(int(r[0]), dict(r[1]), r[2]) for r in rows]
+
+
+def _close_host_gap_ask(
+    w: _Writer,
+    res: PassResult,
+    ask_id: int,
+    rec: dict[str, Any],
+    status: str,
+    why: str,
+) -> None:
+    """Close a host-gap ask the tick itself settled. ``closed_by: tick``
+    keeps the close from reading as a person's ruling
+    (:data:`HOST_GAP_ASK_QUIET`)."""
+    w.comment_id(ask_id, f"plan_dispatch: {why} — this ask is moot.")
+    w.store.stamp_ref_meta(
+        ask_id, {HOST_GAP_ASK_KEY: {**rec, "closed_by": "tick", "closed_why": why}}
+    )
+    w.store.add_tag(
+        ask_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    res.notes.append(f"td{ask_id}: host-gap ask closed {status} — {why}")
+
+
+def _link_reviews(w: _Writer, ask_id: int, ids: list[int]) -> None:
+    """``related-to`` from the ask to each held review it names."""
+    for rid in ids:
+        w.store.add_link(
+            src_ref_id=ask_id, dst_ref_id=rid, relation="related-to", set_by="system"
+        )
+
+
+def _step_host_gap_asks(
+    plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    """ONE ask per host and token for the reviews held on a host gap past
+    :data:`HOST_GAP_WAIT` (``res.host_gaps``, gr778684), not one per job.
+    Full passes only (:func:`run_pass`): a partial plan's ``host_gaps`` is
+    no reading of the whole fleet.
+
+    An open ask whose host and token held a review this pass gets its
+    ``meta.host_gap.reviews`` refreshed. One that held none closes: ``done``
+    when the host advertises the token again or no review waits on it any
+    more (a lane now fits), ``won't-do`` when every review it named is
+    closed or gone. A closed ask a person closed is the ruling: no new ask
+    for that pair for :data:`HOST_GAP_ASK_QUIET` from the close — or one
+    :data:`HOST_GAP_WAIT` when the answer says the token was fixed and the
+    host still lacks it."""
+    if w.dry_run:
+        return
+    asks = _host_gap_asks(w.store)
+    if not asks and not res.host_gaps:
+        return
+    from precis.workers.executors._common import advertised_by_host
+
+    with w.store.pool.connection() as conn:
+        advertised = advertised_by_host(conn)
+    open_keys: set[tuple[str, str]] = set()
+    for ask_id, rec, _at in asks:
+        host, token = str(rec.get("host")), str(rec.get("token"))
+        held = res.host_gaps.get((host, token))
+        if held:
+            open_keys.add((host, token))
+            if sorted(held) != list(rec.get("reviews") or []):
+                w.store.stamp_ref_meta(
+                    ask_id, {HOST_GAP_ASK_KEY: {**rec, "reviews": sorted(held)}}
+                )
+                _link_reviews(
+                    w, ask_id, sorted(set(held) - set(rec.get("reviews") or []))
+                )
+            continue
+        if token in advertised.get(host, set()):
+            _close_host_gap_ask(
+                w, res, ask_id, rec, "done", f"host {host} advertises {token} again"
+            )
+            continue
+        named = [plan.nodes.get(int(i)) for i in rec.get("reviews") or []]
+        if all(r is None or _closed(r) for r in named):
+            _close_host_gap_ask(
+                w, res, ask_id, rec, "won't-do", "every review it named is closed"
+            )
+            continue
+        _close_host_gap_ask(
+            w,
+            res,
+            ask_id,
+            rec,
+            "done",
+            f"no review waits on {token} at {host} any more (a lane now fits)",
+        )
+    rulings: dict[tuple[str, str], datetime] = {}
+    if res.host_gaps:
+        for ask_id, rec, closed_at in _host_gap_asks(
+            w.store, closed_since=now - HOST_GAP_ASK_QUIET
+        ):
+            if rec.get("closed_by") == "tick" or closed_at is None:
+                continue
+            key = (str(rec.get("host")), str(rec.get("token")))
+            answer = (_release._newest_answer(w.store, ask_id) or "").lower()
+            quiet = HOST_GAP_WAIT if "fixed" in answer else HOST_GAP_ASK_QUIET
+            until = closed_at + quiet
+            if key not in rulings or until > rulings[key]:
+                rulings[key] = until
+    for (host, token), ids in sorted(res.host_gaps.items()):
+        if (host, token) in open_keys:
+            continue
+        ruled = rulings.get((host, token))
+        if ruled is not None and now < ruled:
+            res.notes.append(
+                f"host-gap ask for {host} / {token} not re-filed until "
+                f"{_iso(ruled)} — the closed ask is the ruling"
+            )
+            continue
+        handles = ", ".join(f"td{i}" for i in sorted(ids))
+        title = (
+            f"host {host} lacks {token} (binary or login?); "
+            f"{len(ids)} review(s) waiting"
+        )
+        body = (
+            f"Pre-land reviews read the reviewed work out of host `{host}`'s "
+            "hub, so they run only there — and the host has not advertised "
+            f"`{token}` for {int(HOST_GAP_WAIT.total_seconds() // 60)} min or "
+            f"more, so no lane that could take them runs there. Waiting: "
+            f"{handles}. Install or log in the binary on `{host}` (its "
+            "heartbeat then advertises the token and this ask closes on its "
+            "own), or close this ask to acknowledge the wait."
+        )
+        meta: dict[str, Any] = {
+            "ask": {
+                "kind": "ruling",
+                "options": [f"{token} fixed on {host}", "keep waiting"],
+                "blocks": "nothing",
+                "context": f"{host} lacks {token}: {handles}"[:_ASK_CONTEXT_CAP],
+            },
+            HOST_GAP_ASK_KEY: {
+                "host": host,
+                "token": token,
+                "reviews": sorted(ids),
+                "at": _iso(now),
+            },
+        }
+        check_ask_meta(meta)
+        with w.store.tx() as conn:
+            ref = w.store.insert_ref(
+                kind="todo", slug=None, title=title, meta=meta, conn=conn
+            )
+            w.store.add_tag(
+                ref.id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            w.store.add_tag(ref.id, Tag.open("ask-user"), set_by="system", conn=conn)
+            w.store.chunks.insert_chunks(
+                ref.id,
+                [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+                conn=conn,
+            )
+            finish_mint(w.store, ref.id, conn=conn)
+        _link_reviews(w, int(ref.id), sorted(ids))
+        res.asks += 1
+        res.notes.append(f"td{ref.id}: host-gap ask — {title}")
+
+
 def _root_claim_band(store: Any, root_id: int) -> str | None:
     """The plan root's ``meta.claim_band`` (the waiver gripe's chain
     stamps ``release``), else ``None``. Unreadable reads as no band."""
@@ -8180,7 +8596,12 @@ def _mint_job(
     *,
     idem_key: str | None = None,
     meta_extra: dict[str, Any] | None = None,
+    job_events: tuple[tuple[str, dict[str, Any]], ...] = (),
 ) -> int:
+    """Mint (or reuse, by idem key) ``n``'s job and return its id.
+    ``job_events`` (``(event, payload)``) are appended to the job inside
+    the mint transaction, and only when the job is new: a reused live job
+    already carries the record of its own mint."""
     from precis.workers._mint import mint_job_once
 
     stale = [v for v in n.open_tags if v.startswith("child-failed:")]
@@ -8213,6 +8634,10 @@ def _mint_job(
                 payload={"job_id": job_id, "job_type": job_type, "executor": executor},
                 conn=conn,
             )
+            for event, payload in job_events:
+                store.append_event(
+                    job_id, source=NAME, event=event, payload=payload, conn=conn
+                )
     for value in stale:
         n.open_tags.pop(value, None)
     return job_id
@@ -8320,6 +8745,7 @@ def _review_lane(
     res: PassResult,
     n: _Node,
     lane_table: tuple[_lanes.Lane, ...],
+    host_lanes: tuple[str, frozenset[str]] | None = None,
 ) -> tuple[bool, str | None, dict[str, Any] | None, str | None]:
     """``(go, lane name, stamp, fallback)`` for a reviewer's ``run_slice``:
     a lane of a vendor that did not build what it reviews, when available;
@@ -8351,7 +8777,19 @@ def _review_lane(
     :data:`~precis.plans.templates.REVIEW_FALLBACK_KEY`. The runner can move
     the review there on quota, rate or auth failure, a dead lane pin, or
     a retryable Devin empty response on a review without a model pin.
-    A full chosen lane is still waited for."""
+    A full chosen lane is still waited for.
+
+    ``host_lanes`` is ``(host, lane names)`` when the review is hub-pinned
+    to ``host`` (:func:`_hub_pin`, :func:`_host_lanes`), gr778684: the
+    claim refuses a lane whose binary the pinned host does not advertise,
+    and every other host is kept off the pinned job, so the pick and its
+    fallback come from the lanes the host runs, in the same vendor steps.
+    When none of those is open, the unconstrained pick's fallback is taken
+    if the host runs it; else a lane the host runs that is only full or
+    backed off holds the review (a wait). Only when the host runs no lane
+    fit for reviews at all is the unconstrained, capacity-blind pick
+    returned — a lane outside ``host_lanes``, on which the caller holds
+    the review (:func:`_host_gap`)."""
     cls = _templates.REVIEW_TASK_CLASS
     vendors = _builder_vendors(plan, n, lane_table)
     counts = _lanes.live_lane_counts(w.store)
@@ -8379,35 +8817,87 @@ def _review_lane(
                 if ln.vendor not in excluded and ln.cost_class != _lanes.COST_METERED
             )
             tables.insert(0, (excluded, alternatives))
-    for excluded, table in tables:
-        lane = _lanes.pick_lane(
-            w.store, cls, lanes=table, counts=counts, backoff=backoff
-        )
-        if lane is None:
-            continue
-        fallback = _review_fallback_lane(
-            w.store, cls, lane_table, vendors, lane.name, backoff
-        )
-        if vendors and lane.vendor == vendors[0]:
-            # Step three only: the original builder's own vendor reviews.
-            res.notes.append(
-                f"td{n.id}: review on lane {lane.name} shares the builder's vendor "
-                f"{lane.vendor!r} (no other vendor has an available lane)"
+    runs = host_lanes[1] if host_lanes is not None else None
+
+    def first_pick(
+        allowed: frozenset[str] | None, live: dict[str, int] = counts
+    ) -> tuple[frozenset[str], _lanes.Lane] | None:
+        for excluded, table in tables:
+            if allowed is not None:
+                table = tuple(ln for ln in table if ln.name in allowed)
+            lane = _lanes.pick_lane(
+                w.store, cls, lanes=table, counts=live, backoff=backoff
             )
-        stamp = _lane_decide.shadow_stamp(
-            w.store,
-            task_class=cls,
-            table=lane_table,
-            site="review",
-            # The model submit resolves for an unpinned pick — the
-            # lane's default — so the executed side compares
-            # like-for-like with decide()'s model-level choice.
-            picked=(lane.name, lane.default_model),
-            exclude_vendor=sorted(excluded) or None,
+            if lane is not None:
+                return excluded, lane
+        return None
+
+    hit = first_pick(runs)
+    if hit is None and host_lanes is not None and runs is not None:
+        host = host_lanes[0]
+        free = first_pick(None)
+        alt = (
+            _review_fallback_lane(
+                w.store, cls, lane_table, vendors, free[1].name, backoff
+            )
+            if free is not None
+            else None
         )
-        return True, lane.name, stamp, fallback
-    res.dispatch_hold(n, f"review not dispatched — no available lane fits {cls!r}")
-    return False, None, None, None
+        if free is not None and alt is not None and alt in runs:
+            res.notes.append(
+                f"td{n.id}: review takes its fallback lane {alt} — host {host} "
+                f"does not run lane {free[1].name}"
+            )
+            hit = (frozenset(vendors), next(ln for ln in lane_table if ln.name == alt))
+        elif any(
+            ln.name in runs and ln.enabled and not ln.parked and ln.fits(cls)
+            for ln in lane_table
+        ):
+            res.dispatch_hold(
+                n,
+                f"review not dispatched — every review lane host {host} runs "
+                "is full or backed off",
+            )
+            return False, None, None, None
+        else:
+            # Capacity-blind, so the lane (and the token the host lacks
+            # for it) is the same pass after pass: the caller holds the
+            # review on it and asks once per host and token.
+            hit = first_pick(None, {})
+    if hit is None:
+        res.dispatch_hold(n, f"review not dispatched — no available lane fits {cls!r}")
+        return False, None, None, None
+    excluded, lane = hit
+    fallback = _review_fallback_lane(
+        w.store,
+        cls,
+        # A fallback the pinned host cannot run would strand the review
+        # the same way the chosen lane would.
+        tuple(ln for ln in lane_table if ln.name in runs)
+        if runs is not None and lane.name in runs
+        else lane_table,
+        vendors,
+        lane.name,
+        backoff,
+    )
+    if vendors and lane.vendor == vendors[0]:
+        # Step three only: the original builder's own vendor reviews.
+        res.notes.append(
+            f"td{n.id}: review on lane {lane.name} shares the builder's vendor "
+            f"{lane.vendor!r} (no other vendor has an available lane)"
+        )
+    stamp = _lane_decide.shadow_stamp(
+        w.store,
+        task_class=cls,
+        table=lane_table,
+        site="review",
+        # The model submit resolves for an unpinned pick — the
+        # lane's default — so the executed side compares
+        # like-for-like with decide()'s model-level choice.
+        picked=(lane.name, lane.default_model),
+        exclude_vendor=sorted(excluded) or None,
+    )
+    return True, lane.name, stamp, fallback
 
 
 # ── (4a) the validated non-repro rerun (gr588028) ──────────────────
@@ -10109,20 +10599,35 @@ def _step_dispatch(
             cstate, ctry = _conflict_state(plan, n)
             if cstate == "try":
                 conflict_try = ctry
+        # gr741695 / gr778684: a hub is local to its host — the build, the
+        # review and the land of a task whose work a hub holds run on that
+        # host. The pin is resolved before any lane is chosen, so the
+        # review pick, the conflict try and the climb below choose from
+        # the lanes the pinned host runs (``host_lanes``): the claim
+        # refuses any other lane there, and the pin keeps every other host
+        # off the job.
+        hub_pin = _hub_pin(plan, w.store, n, job_type)
+        host_lanes: tuple[str, frozenset[str]] | None = None
+        if hub_pin is not None and job_type == DEFAULT_OP:
+            runs = _host_lanes(w.store, hub_pin[0], lane_table)
+            host_lanes = (hub_pin[0], runs) if runs is not None else None
         decision_stamp: dict[str, Any] | None = None
         review_fallback: str | None = None
         if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
             go, lane_name, decision_stamp, review_fallback = _review_lane(
-                plan, w, res, n, lane_table
+                plan, w, res, n, lane_table, host_lanes
             )
             if not go:
                 continue
             params["lane"] = lane_name
+            off_host = _host_gap(host_lanes, lane_name, lane_table, res, n)
+            if off_host is not None and _hold_on_host_gap(res, n, off_host, now):
+                continue
         mech_pinned = False
         repeated_lint = False
         if conflict_try:
             go, pin_note, unusable = _conflict_pin(
-                plan, w, n, params, lane_table, rules, conflict_try
+                plan, w, n, params, lane_table, rules, conflict_try, host_lanes
             )
             if pin_note:
                 res.notes.append(pin_note)
@@ -10218,7 +10723,14 @@ def _step_dispatch(
                 )
         if job_type == DEFAULT_OP and not mech_pinned:
             go, climbed, esc_stamp = _escalate(
-                w, plan, n, params, lane_table, rules, from_builder=repeated_lint
+                w,
+                plan,
+                n,
+                params,
+                lane_table,
+                rules,
+                from_builder=repeated_lint,
+                host_lanes=host_lanes,
             )
             if not go:
                 reason = climbed or "no eligible retry lane"
@@ -10261,13 +10773,42 @@ def _step_dispatch(
                     continue
             if host:
                 params["target_node"] = host
-        # gr741695: a hub is local to its host — the build, the review and
-        # the land of a task whose work a hub holds run on that host.
-        # Every run_slice / land_slice mint below this point carries it,
-        # whichever path (first build, retry, re-arm, mechanical-red
-        # retry, escalation, re-land) got here.
-        hub_pin = _hub_pin(plan, w.store, n, job_type)
-        if hub_pin is not None:
+        # Every run_slice / land_slice mint below this point carries the
+        # hub pin resolved above, whichever path (first build, retry,
+        # re-arm, mechanical-red retry, escalation, re-land) got here —
+        # unless the lane the job runs on is one the pinned host does not
+        # run (no lane it runs could take the job): pinned, it would queue
+        # forever. A review waits there (the reviewed work is only in that
+        # hub) and asks once per host and token; a build or retry, which
+        # restarts from the todo, mints unpinned once the gap has held for
+        # HOST_GAP_WAIT, and the job says why.
+        off_host = _host_gap(host_lanes, params.get("lane"), lane_table, res, n)
+        if off_host is not None and _hold_on_host_gap(res, n, off_host, now):
+            continue
+        dropped_pin: dict[str, Any] | None = None
+        if hub_pin is not None and off_host is not None:
+            pin_dropped = (
+                f"host {off_host[0]} runs no lane that can take the job — it has "
+                f"lacked {off_host[2]} for lane {off_host[1]} past the "
+                f"{int(HOST_GAP_WAIT.total_seconds() // 60)} min wait"
+            )
+            dropped_pin = {
+                "host": hub_pin[0],
+                "todo": hub_pin[1],
+                "lane": params.get("lane"),
+                "token": off_host[2],
+                "why": pin_dropped,
+                "note": (
+                    f"the run restarts off the hub: the work td{hub_pin[1]} "
+                    f"holds in {hub_pin[0]}'s hub is not read"
+                ),
+            }
+            res.notes.append(
+                f"td{n.id}: hub pin to {hub_pin[0]} dropped — {pin_dropped}; "
+                f"lane {params.get('lane')} mints unpinned, away from "
+                f"td{hub_pin[1]}'s work in that host's hub"
+            )
+        if hub_pin is not None and dropped_pin is None:
             pin_host, holder, pin_note = hub_pin
             if (override := _pin_job_host(params, pin_host, holder)) is not None:
                 res.notes.append(f"td{n.id}: {override}")
@@ -10312,7 +10853,12 @@ def _step_dispatch(
                     ),
                     **(
                         {HUB_PIN_KEY: {"host": hub_pin[0], "todo": hub_pin[1]}}
-                        if hub_pin is not None
+                        if hub_pin is not None and dropped_pin is None
+                        else {}
+                    ),
+                    **(
+                        {HUB_PIN_DROPPED_KEY: dropped_pin}
+                        if dropped_pin is not None
                         else {}
                     ),
                     **({"conflict_try": conflict_try} if conflict_try else {}),
@@ -10322,6 +10868,11 @@ def _step_dispatch(
                         else {}
                     ),
                 },
+                job_events=(
+                    (("hub-pin-dropped", dropped_pin),)
+                    if dropped_pin is not None
+                    else ()
+                ),
             )
             if conflict_try:
                 w.stamp_meta(
@@ -12591,6 +13142,7 @@ def run_pass(
         _step_ci_rerun(store, plan, w, res, now)
         _step_brief_holds(store, plan, w, res, now)
         _step_dispatch(plan, w, res, lane_table, rules, now)
+        _step_host_gap_asks(plan, w, res, now)
         _step_conflict_first(plan, w, res)
         _step_hygiene(plan, w, res, now, lane_table, rules)
         _step_park_stamp(plan, w, res)

@@ -320,8 +320,79 @@ _RESERVE_KEY_PREFIX = "claim.reserve."
 def _executor_lane_lock_key(executor: str, host: str) -> str:
     """Advisory-lock key serializing one executor lane's count+claim on
     one host (gr603792 review): the per-type caps lock on
-    ``claim-cap:<job_type>`` — the executor cap locks on this."""
+    :func:`_job_type_cap_lock_key` — the executor cap locks on this."""
     return f"claim-exec-cap:{executor}:{host}"
+
+
+def _job_type_cap_lock_key(job_type: str, host: str) -> str:
+    """Advisory-lock key serializing one job_type's running-cap
+    count+claim on one host. Per host because the count it guards is
+    (``meta.lease_host``): a global key let every host's claim pass —
+    and every executor's, capable or not — contend for one lock, so a
+    capable host that lost the try-lock read the type as at-cap and
+    claimed nothing."""
+    return f"claim-cap:{job_type}:{host}"
+
+
+def _cap_lock_scope(
+    conn: Connection,
+    caps: Mapping[str, int],
+    executor: str,
+    *,
+    suspended: frozenset[str] | set[str],
+    include_job_types: tuple[str, ...] | None,
+) -> set[str]:
+    """The capped job_types this claim pass could claim, so the only
+    ones whose cap lock it takes: a claimable (``queued``/``yielded``)
+    row of the type carries this ``meta.executor`` — the candidate
+    query's own scoping — and the type passes its job_type filters (not
+    suspended or process-excluded, inside ``include_job_types`` when
+    given). The caller excludes every capped type outside this set from
+    its candidates, so a row queued after this read waits one pass
+    rather than claiming past a cap whose lock was not taken."""
+    wanted = sorted(
+        jt
+        for jt in caps
+        if jt not in suspended
+        and (include_job_types is None or jt in include_job_types)
+    )
+    if not wanted:
+        return set()
+    return {
+        str(jt)
+        for (jt,) in conn.execute(
+            "SELECT DISTINCT r.meta->>'job_type' FROM refs r "
+            "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+            "AND r.meta->>'executor' = %s "
+            "AND r.meta->>'job_type' = ANY(%s) "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+            "USING (tag_id) WHERE rt.ref_id = r.ref_id "
+            "AND t.namespace = %s AND t.value = ANY(%s))",
+            (executor, wanted, STATUS_NAMESPACE, list(CLAIMABLE)),
+        ).fetchall()
+    }
+
+
+def _running_by_type(conn: Connection, executor: str, host: str) -> dict[str, int]:
+    """``job_type -> STATUS:running rows`` of ``executor`` stamped with
+    ``meta.lease_host = host`` — the per-host count both the per-type
+    caps and the executor lane cap bound."""
+    out: dict[str, int] = {}
+    for jt, _ps, cnt in conn.execute(
+        "SELECT r2.meta->>'job_type', r2.meta->'params'->>'pass', "
+        "count(*) FROM refs r2 "
+        "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
+        "AND r2.meta->>'executor' = %s "
+        "AND r2.meta->>'lease_host' = %s "
+        "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+        "USING (tag_id) WHERE rt.ref_id = r2.ref_id "
+        "AND t.namespace = %s AND t.value = %s) "
+        "GROUP BY 1, 2",
+        (executor, host, STATUS_NAMESPACE, RUNNING),
+    ).fetchall():
+        jt_s = str(jt)
+        out[jt_s] = out.get(jt_s, 0) + int(cnt)
+    return out
 
 
 # ── Job slicing (me692466) ────────────────────────
@@ -1144,6 +1215,15 @@ _ADAPTER_PLACEMENT_TOKENS: dict[str, str] = {
 }
 
 
+def adapter_placement_token(adapter: str) -> str:
+    """The ``resource_slots`` token a host must advertise to run a
+    ``run_slice`` on a lane with ``adapter`` — the swap
+    :func:`placement_requires` makes; an unknown adapter keeps the
+    ``builder`` floor. ``plan_dispatch`` reads it to choose a lane the
+    hub-pinned host runs (gr778684)."""
+    return _ADAPTER_PLACEMENT_TOKENS.get(str(adapter), "builder")
+
+
 def lane_adapter_map(conn: Connection) -> dict[str, str]:
     """``{lane name: adapter}`` from ``llm_account`` — the lane→adapter
     resolution ``placement_requires`` needs to turn a ``params.lane``
@@ -1192,7 +1272,7 @@ def placement_requires(
         lane = (meta.get("params") or {}).get("lane")
         adapter = (lane_adapters or {}).get(str(lane)) if lane else None
     tokens.discard("builder")
-    tokens.add(_ADAPTER_PLACEMENT_TOKENS.get(str(adapter), "builder"))
+    tokens.add(adapter_placement_token(str(adapter)))
     return frozenset(tokens)
 
 
@@ -3063,13 +3143,23 @@ def claim_executor_jobs(
     # type may be RUNNING on this host — the derived_drain band can never
     # occupy every ``job_inproc`` process. At-cap types are EXCLUDED from
     # the candidate set, so a capped band can't starve rows queued behind
-    # it. A per-type advisory lock serializes the count+claim pair, so
-    # two concurrent claimers can't both pass the cap — a TRY lock, never
-    # a blocking one: the loser treats the type as at-cap for this pass
-    # (the cap can never be exceeded by the loser) instead of queueing on
-    # the holder's open transaction until ``lock_timeout`` kills the whole
-    # claim pass — a concurrent claim is the normal case on a multi-worker
-    # host (test_job_claim_holds_a_real_row_lock_skip_locked).
+    # it. A per-(type, host) advisory lock serializes the count+claim
+    # pair, so two concurrent claimers on one host can't both pass the
+    # cap — a TRY lock, never a blocking one: the loser treats the type
+    # as at-cap for this pass (the cap can never be exceeded by the
+    # loser) instead of queueing on the holder's open transaction until
+    # ``lock_timeout`` kills the whole claim pass — a concurrent claim is
+    # the normal case on a multi-worker host
+    # (test_job_claim_holds_a_real_row_lock_skip_locked).
+    #
+    # The lock is keyed per host because the count is, and taken only for
+    # the capped types this pass could claim (:func:`_cap_lock_scope`);
+    # a capped type outside that scope is excluded from the candidates.
+    # A global key taken by every executor's pass made a capable host
+    # lose the try-lock to passes that could never claim the type, and
+    # claim nothing (prod: 131 of 163 coder-host passes came back empty).
+    # The slow lock-independent reads (lane usage, the build-hold filter)
+    # run before the locks, so they hold only the count and the claim.
     #
     # "This host" is ``default_host`` — the ``reserve_host()`` namespace
     # ``_stamp_lease_identity`` writes into ``meta.lease_host`` — NOT
@@ -3084,6 +3174,7 @@ def claim_executor_jobs(
     reserve_block_sql = ""
     reserve_block_params: tuple[Any, ...] = ()
     caps: dict[str, int] = {}
+    cap_scope: set[str] = set()
     running_by_type: dict[str, int] = {}
     lane_usage: dict[str, float] = {}
     lane_weights: dict[str, float] = {}
@@ -3098,6 +3189,44 @@ def claim_executor_jobs(
             conn, executor, host=claim_host
         )
         reserve_total = sum(executor_reserve.values())
+        if (
+            executor_cap is not None
+            and sum(_running_by_type(conn, executor, claim_host).values())
+            >= executor_cap
+        ):
+            # Unlocked pre-check: a lane already full skips the slow reads
+            # below. Safe without the lock — running rows only drop by a
+            # commit, so a stale read errs toward claiming nothing, and the
+            # authoritative count is re-read under the lane lock.
+            return claimed
+        cap_scope = _cap_lock_scope(
+            conn,
+            caps,
+            executor,
+            suspended=suspended,
+            include_job_types=include_job_types,
+        )
+        if claim_class_rank_enabled():
+            # Lock-independent: the windowed usage only orders the
+            # candidates, it bounds nothing, so it is read before the cap
+            # locks are taken.
+            lane_usage = lane_seconds_in_window(
+                conn, executor, claim_host, claim_share_window_s()
+            )
+            lane_weights = lane_share_weights(conn)
+    # Build-hold pre-filter (read before the cap locks: it only trims the
+    # candidate window; ``_finish_claim`` re-reads the started slices
+    # under the ``factory:build-overlap`` lock before any build claims).
+    hold_params: tuple[list[int], ...] = ()
+    if executor == "ssh_node":
+        shared = _shared_build_plan()
+        held_builds = (
+            build_overlap_holds(conn, shared=shared)
+            | build_blocked_holds(conn, shared=shared).keys()
+        )
+        if held_builds:
+            hold_params = (sorted(held_builds),)
+    if claim_host is not None:
         if executor_cap is not None:
             # Serialize this lane's count+claim (td604572 review of
             # gr603792): the per-type caps lock per job_type below, but
@@ -3113,45 +3242,28 @@ def claim_executor_jobs(
             ).fetchone()
             if not (held and held[0]):
                 return claimed
-        contested: set[str] = set()
-        for jt in sorted(caps):
+        locked: set[str] = set()
+        for jt in sorted(cap_scope):
             held = conn.execute(
                 "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
-                (f"claim-cap:{jt}",),
+                (_job_type_cap_lock_key(jt, claim_host),),
             ).fetchone()
-            if not (held and held[0]):
-                contested.add(jt)
-        # One grouped read feeds the per-type cap counts; the lane
-        # deficit reads its own windowed usage below (gr595541).
-        running_by_type = {}
-        for jt, _ps, cnt in conn.execute(
-            "SELECT r2.meta->>'job_type', r2.meta->'params'->>'pass', "
-            "count(*) FROM refs r2 "
-            "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
-            "AND r2.meta->>'executor' = %s "
-            "AND r2.meta->>'lease_host' = %s "
-            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
-            "USING (tag_id) WHERE rt.ref_id = r2.ref_id "
-            "AND t.namespace = %s AND t.value = %s) "
-            "GROUP BY 1, 2",
-            (executor, claim_host, STATUS_NAMESPACE, RUNNING),
-        ).fetchall():
-            jt_s = str(jt)
-            running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
+            if held and held[0]:
+                locked.add(jt)
+        # One grouped read, under the locks, feeds the per-type cap
+        # counts and the lane total.
+        running_by_type = _running_by_type(conn, executor, claim_host)
         running_total = sum(running_by_type.values())
-        if claim_class_rank_enabled():
-            lane_usage = lane_seconds_in_window(
-                conn, executor, claim_host, claim_share_window_s()
-            )
-            lane_weights = lane_share_weights(conn)
         if executor_cap is not None and running_total >= executor_cap:
             # Lane already full under the lane lock — no fresh claim can
             # pass this cycle, so the candidate query is skipped too.
             return claimed
+        # A capped type whose lock this pass doesn't hold — contested, or
+        # outside the claimable scope — is excluded like an at-cap one.
         at_cap = sorted(
             jt
             for jt, cap in caps.items()
-            if jt in contested or running_by_type.get(jt, 0) >= cap
+            if jt not in locked or running_by_type.get(jt, 0) >= cap
         )
         if at_cap:
             cap_sql = " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"
@@ -3241,16 +3353,8 @@ def claim_executor_jobs(
         *cap_params,
         *reserve_block_params,
     )
-    # Filter existing holds before LIMIT so held builds cannot fill the window.
-    hold_params: tuple[list[int], ...] = ()
-    if executor == "ssh_node":
-        shared = _shared_build_plan()
-        held_builds = (
-            build_overlap_holds(conn, shared=shared)
-            | build_blocked_holds(conn, shared=shared).keys()
-        )
-        if held_builds:
-            hold_params = (sorted(held_builds),)
+    # Filter existing holds before LIMIT so held builds cannot fill the
+    # window (``hold_params`` read above, before the cap locks).
     hold_sql = _BUILD_HOLD_FILTER_SQL if hold_params else ""
     where_sql += hold_sql.format(alias="r")
     where_params = (*where_params, *hold_params)

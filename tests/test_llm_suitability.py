@@ -7,6 +7,7 @@ declared scipy version, not transcribed by hand.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -626,6 +627,44 @@ def test_build_runs_prunes_jobs_below_the_ref_id_floor(store: Any) -> None:
                 (floor, expired),
             )
     assert [run.model for run in runs] == ["recent"]
+
+
+def test_build_runs_scan_is_bounded_on_the_primary_key(store: Any) -> None:
+    """A populated build history uses an index condition on the id floor."""
+    from precis.utils.llm import suitability
+
+    sql = suitability._BUILD_RUNS_SQL.format(filters="")
+    with store.pool.connection() as conn:
+        with conn.transaction(force_rollback=True):
+            # TRUNCATE leaves column statistics from previous tests. Give
+            # EXPLAIN a fixed history with builds on both sides of the cutoff.
+            conn.execute(
+                "INSERT INTO refs (kind, title, meta, created_at) "
+                "SELECT CASE WHEN n % 10 = 0 THEN 'job' ELSE 'todo' END, "
+                "'Plan fixture ' || n, "
+                "CASE WHEN n % 10 = 0 THEN "
+                """'{"job_type":"run_slice","lane":"codex","adapter":"codex"}'"""
+                "::jsonb ELSE '{}'::jsonb END, "
+                "now() - (10000 - n) * interval '10 minutes' "
+                "FROM generate_series(1, 10000) AS n ORDER BY n"
+            )
+            conn.execute("ANALYZE refs")
+            conn.execute("SET LOCAL enable_seqscan = off")
+            plan = "\n".join(
+                str(r[0])
+                for r in conn.execute(
+                    f"EXPLAIN {sql}", ("default", "build_signal", 30, 30)
+                ).fetchall()
+            )
+    # The floor: a backward walk of a ref_id-leading btree (refs_pkey or
+    # its twin refs_ref_id_kind_key) that stops at the window's edge.
+    assert re.search(
+        r"Index Scan Backward using (refs_pkey|refs_ref_id_kind_key) on refs f", plan
+    ), plan
+    # The outer scan: the floor is an index condition on ref_id, not a
+    # heap filter over every run_slice job.
+    cond = [ln for ln in plan.splitlines() if "Index Cond" in ln and "ref_id >" in ln]
+    assert cond, plan
 
 
 def test_build_runs_window_keeps_builds_under_an_older_row_on_a_newer_id(

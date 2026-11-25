@@ -26,6 +26,7 @@ from precis.workers.executors._common import (
     _EXECUTOR_CAP_KEY_PREFIX,
     _RESERVE_KEY_PREFIX,
     _executor_lane_lock_key,
+    _job_type_cap_lock_key,
     claim_executor_jobs,
     current_status,
 )
@@ -54,6 +55,8 @@ def _factory_advertised(monkeypatch: pytest.MonkeyPatch) -> None:
             "lane_host_d",
             "lane_host_f",
             "lane_host_h",
+            "cap_host_a",
+            "cap_host_b",
         ):
             out.setdefault(host, set()).update({"repo_checkout", "builder", "git"})
         return out
@@ -257,6 +260,115 @@ def test_reservation_blocked_types_do_not_fill_the_claim_window(
     with store.pool.connection() as conn:
         for rid in blocked:
             assert current_status(conn, rid) == "queued"
+
+
+_RUN_SLICE_CAP_KEY = "claim.max_running.run_slice"
+
+
+def _set_run_slice_cap(store: Store, cap: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (_RUN_SLICE_CAP_KEY, str(cap)),
+        )
+        conn.commit()
+
+
+def _cap_lock_free(store: Store, job_type: str, host: str) -> bool:
+    """Whether another session could take ``job_type``'s cap lock on
+    ``host`` right now (probe in its own rolled-back transaction)."""
+    probe = store.pool.getconn()
+    try:
+        row = probe.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+            (_job_type_cap_lock_key(job_type, host),),
+        ).fetchone()
+        return bool(row and row[0])
+    finally:
+        probe.rollback()
+        store.pool.putconn(probe)
+
+
+def test_run_slice_cap_lock_on_one_host_does_not_block_another(
+    store: Store, _factory_advertised: None
+) -> None:
+    """Prod shape: an ``ssh_node`` claim pass on host A, transaction left
+    open, held the global ``claim-cap:run_slice`` lock; host B read
+    run_slice as at-cap and claimed nothing although its own count was
+    zero. The lock is per host now, matching the per-host count."""
+    host_a, host_b = "cap_host_a", "cap_host_b"
+    _set_run_slice_cap(store, 10)
+    run = _job(store, job_type="run_slice")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{params,target_node}', "
+            "to_jsonb(%s::text)) WHERE ref_id = %s",
+            (host_b, run),
+        )
+        conn.commit()
+    holder = store.pool.getconn()
+    try:
+        # Host A's pass sees no row of its own but takes its locks.
+        assert (
+            claim_executor_jobs(
+                holder,
+                executor="ssh_node",
+                limit=1,
+                node=host_a,
+                reserve_host_id=host_a,
+            )
+            == []
+        )
+        with store.pool.connection() as conn:
+            rows = claim_executor_jobs(
+                conn,
+                executor="ssh_node",
+                limit=1,
+                node=host_b,
+                reserve_host_id=host_b,
+            )
+            conn.rollback()
+        assert [int(r[0]) for r in rows] == [run]
+        # Host A's pass did hold its own run_slice cap lock throughout.
+        assert not _cap_lock_free(store, "run_slice", host_a)
+    finally:
+        holder.rollback()
+        store.pool.putconn(holder)
+
+
+def test_executor_that_cannot_claim_run_slice_skips_its_cap_lock(
+    store: Store,
+) -> None:
+    """The cap lock is taken only for a capped type with a claimable row
+    on this executor: a ``job_inproc`` pass, whose candidates never
+    include the ``ssh_node`` run_slice row, leaves the run_slice cap lock
+    free — it used to take it and hold it through its whole transaction
+    against the hosts that can claim. The ``ssh_node`` pass on the same
+    host still takes it."""
+    host = "cap_host_c"
+    _set_run_slice_cap(store, 10)
+    run = _job(store, job_type="run_slice")
+    with store.pool.connection() as conn:
+        # Pinned elsewhere so neither pass row-locks or claims it.
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{params,target_node}', "
+            "'\"cap_host_elsewhere\"') WHERE ref_id = %s",
+            (run,),
+        )
+        conn.commit()
+    holder = store.pool.getconn()
+    try:
+        claim_executor_jobs(
+            holder, executor="job_inproc", limit=1, reserve_host_id=host
+        )
+        assert _cap_lock_free(store, "run_slice", host)
+        holder.rollback()
+        claim_executor_jobs(holder, executor="ssh_node", limit=1, reserve_host_id=host)
+        assert not _cap_lock_free(store, "run_slice", host)
+    finally:
+        holder.rollback()
+        store.pool.putconn(holder)
 
 
 def test_cap_zero_suspends_executor_claims(store: Store) -> None:

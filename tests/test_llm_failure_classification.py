@@ -282,6 +282,18 @@ def test_breaker_trip_is_classified_by_gate_kind(
     assert out.paused and out.reason_class == "budget"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_endpoint_marks():
+    """The served-endpoint health mark (gr622031) is module-global: a
+    transport failure in one test would make the next test's loopback
+    dispatch come back "local endpoint is down" (td777391)."""
+    from precis.utils.llm import local_serving
+
+    local_serving.reset_cache()
+    yield
+    local_serving.reset_cache()
+
+
 # ── SMALL-lane in-process retry (item 3) ──────────────────────────────
 
 

@@ -6872,12 +6872,17 @@ async def _validation_mcp_sha(url: str, token: str) -> str | None:
 
 
 def _preflight_validation_mcp(store: Any, tree: Path, token: str | None) -> None:
-    """Check the slice's own endpoint with its own bearer before live validation."""
+    """Check the slice's own endpoint with its own bearer before live validation.
+
+    No precis server in ``.mcp.json`` or no token: nothing to check, like
+    :func:`_preflight_mcp`. A builder host renders no slice-token registry
+    by design, and its session launches without the precis server
+    (``precis_mcp=False`` on the argv), so there is no served revision it
+    could read stale. Raising here instead made every validation on such a
+    host an attempt-free wait that re-claimed the same lane in a loop."""
     url = _mcp_url(tree)
-    if url is None:
+    if url is None or not token:
         return
-    if not token:
-        raise _ValidationMcpWait("the slice MCP bearer is unavailable")
     head = (_release.read_prod_head(store) or {}).get("head")
     if not isinstance(head, str) or not _COMMIT_SHA.fullmatch(head):
         raise _ValidationMcpWait("the deployed revision is unavailable")
@@ -8572,6 +8577,33 @@ def submit(ctx: Any, spec: Any) -> Any:
             # A retry must not read the previous run's export.
             atif_path = scratch / "devin.atif.json"
             atif_path.unlink(missing_ok=True)
+        env = slice_env(
+            todo_id,
+            effort,
+            mcp_token=grant["token"] if grant else None,
+            mcp=adapter.mcp,
+            job_id=getattr(ctx, "ref_id", None),
+            gate_slot_root=gate_slot_root(repo_root or slice_root()),
+            worktrees_root=worktrees_dir(repo_root or slice_root()),
+        )
+        if profile is not None:
+            if not use_mcp:
+                env.pop("PRECIS_MCP_TOKEN", None)
+            if profile.uv_python:
+                env["UV_PYTHON"] = profile.uv_python
+        # No bearer (a builder host has no slice-token registry and no
+        # shared token): the checkout's precis server could only answer
+        # 401, so the session launches without it. Like a failed scoped
+        # grant, the brief is rewritten to the no-MCP wording and
+        # mint_error names the reason in the launch event — a brief that
+        # sends the session to precis-status invites a false failure or a
+        # fabricated served_sha.
+        precis_mcp = bool(env.get("PRECIS_MCP_TOKEN"))
+        if use_mcp and not precis_mcp:
+            mint_error = "no precis bearer on this host"
+            brief_kwargs["mcp"] = False
+            brief = render_brief(**brief_kwargs)
+            brief_path.write_text(brief, encoding="utf-8")
         argv = adapter.argv(
             model=model,
             effort=effort,
@@ -8588,21 +8620,8 @@ def submit(ctx: Any, spec: Any) -> Any:
             read_mcp_url=read_url if grant else None,
             export_path=atif_path,
             budget_usd=budget_usd,
+            precis_mcp=precis_mcp,
         )
-        env = slice_env(
-            todo_id,
-            effort,
-            mcp_token=grant["token"] if grant else None,
-            mcp=adapter.mcp,
-            job_id=getattr(ctx, "ref_id", None),
-            gate_slot_root=gate_slot_root(repo_root or slice_root()),
-            worktrees_root=worktrees_dir(repo_root or slice_root()),
-        )
-        if profile is not None:
-            if not use_mcp:
-                env.pop("PRECIS_MCP_TOKEN", None)
-            if profile.uv_python:
-                env["UV_PYTHON"] = profile.uv_python
         if adapter.name == "devin_tree":
             # The checkout's worktrees dir is the slice's parent; seed it
             # before launch or the session stalls on the trust prompt.

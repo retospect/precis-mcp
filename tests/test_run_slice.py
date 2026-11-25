@@ -751,6 +751,14 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(
         lanes, "lane_backoffs", lambda store, now=None: calls.get("backoff", {})
     )
+    # The release-test-fix gate in submit (td764009) reads gripes and plan
+    # reservations through ``store.pool``, which the in-memory stores lack:
+    # default to no deferral; a test of the gate patches it itself.
+    monkeypatch.setattr(
+        run_slice.release_test_fixes,
+        "plan_disposition",
+        lambda _store, _root, state=None: (False, None),
+    )
     # The devin lane's submit preflight (gr570688): binary resolves, the
     # CLI reports a login, and trust seeding records the dir it seeded.
     # raising=False keeps the rest of the suite green on a run_slice that
@@ -1665,8 +1673,11 @@ def test_generator_brief_creates_children_and_never_lands(
 
 
 def test_reviewer_brief_posts_one_verdict_and_mints_nothing(
-    seams: dict[str, Any], tmp_path: Path
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The MCP lane's brief: with no bearer the session gets the no-MCP
+    # wording instead (test_validate_without_a_slice_bearer_...).
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "shared-token")
     store = _Store()
     store.add_todo(
         42,
@@ -1751,8 +1762,11 @@ def test_reviewer_launch_records_the_attempt_its_brief_names(
 
 
 def test_analyst_brief_posts_one_analysis_and_mints_nothing(
-    seams: dict[str, Any], tmp_path: Path
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The MCP lane's brief: with no bearer the session gets the no-MCP
+    # wording instead (test_validate_without_a_slice_bearer_...).
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "shared-token")
     store = _Store()
     store.add_todo(
         42,
@@ -12989,12 +13003,102 @@ def test_validate_waits_for_its_own_mcp_revision(
         assert handle is not None and ctx.failure is None
         [(_argv, kw)] = seams["launch"]
         assert token == kw["env"]["PRECIS_MCP_TOKEN"]
+        # With a bearer the checkout's precis server stays trusted.
+        assert "disabledMcpjsonServers" not in json.loads(_argv[-1])
     else:
         assert handle is None and not seams["launch"]
         assert ctx.meta_set["attempt_free"] == "validation-mcp"
         assert served_sha in (ctx.failure or "") and prod_sha in (ctx.failure or "")
         assert "STATUS:open" in store.tag_strings(42)
         assert not (registry / "td42j900").exists()
+
+
+def test_validate_without_a_slice_bearer_launches_without_the_mcp(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A builder host renders no slice-token registry and holds no shared
+    token (the seams' registry dir never exists): validation skips the
+    revision gate — the session cannot reach the MCP, so it reads no stale
+    revision — and launches with the checkout's precis server rejected,
+    not an attempt-free wait that re-claims the lane (74c88926b)."""
+    from precis import secrets as _secrets
+
+    use_lanes(monkeypatch, *SEED_LANES)
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (
+            frozenset({"swe-2-medium", "swe-2-high", "swe-2-max"}),
+            frozenset(),
+            None,
+        ),
+    )
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(_secrets, "mounted_secret", lambda name: None)
+    _write_mcp_json(tmp_path)
+    consulted: list[str] = []
+
+    def head(store: Any) -> dict[str, str]:
+        consulted.append("prod head")
+        return {"head": "a" * 40}
+
+    async def probe(url: str, token: str) -> str:
+        consulted.append("served sha")
+        return "b" * 40
+
+    monkeypatch.setattr(run_slice._release, "read_prod_head", head)
+    monkeypatch.setattr(run_slice, "_validation_mcp_sha", probe)
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    assert consulted == []
+    assert "attempt_free" not in ctx.meta_set
+    [(argv, kw)] = seams["launch"]
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["disabledMcpjsonServers"] == ["precis"]
+    # The brief is the no-MCP one, as for a failed scoped grant: nothing
+    # sends the session to a precis-status it cannot reach.
+    brief = Path(kw["stdin"]).read_text(encoding="utf-8")
+    assert "This lane has no precis MCP. Do not try to reach it." in brief
+    assert "served_sha" not in brief
+    assert "live MCP evidence" not in brief
+    assert "precis-status" not in brief
+    [launched] = [c for c in ctx.chunks if "run_slice: launched td42" in c[1]]
+    assert "(mcp token: none (no precis bearer on this host))" in launched[1]
+
+
+def test_validation_preflight_skips_the_gate_without_a_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preflight itself: no token returns before the prod head or the
+    served revision is read; a token whose served sha is behind prod
+    still waits."""
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"precis": {"url": "http://127.0.0.1:8765/mcp"}}}),
+        encoding="utf-8",
+    )
+    consulted: list[str] = []
+    prod_sha, served_sha = "a" * 40, "b" * 40
+
+    def head(store: Any) -> dict[str, str]:
+        consulted.append("prod head")
+        return {"head": prod_sha}
+
+    async def probe(url: str, token: str) -> str:
+        consulted.append("served sha")
+        return served_sha
+
+    monkeypatch.setattr(run_slice._release, "read_prod_head", head)
+    monkeypatch.setattr(run_slice, "_validation_mcp_sha", probe)
+    monkeypatch.setattr(run_slice, "_git", lambda args, cwd: _proc(rc=1))
+    for token in (None, ""):
+        run_slice._preflight_validation_mcp(object(), tmp_path, token)
+    assert consulted == []
+    with pytest.raises(run_slice._ValidationMcpWait, match=served_sha):
+        run_slice._preflight_validation_mcp(object(), tmp_path, "td42.tok")
+    assert consulted == ["prod head", "served sha"]
 
 
 def test_submit_validate_refuses_when_no_model_differs(

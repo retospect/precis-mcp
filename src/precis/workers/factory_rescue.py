@@ -535,6 +535,9 @@ class StallResult:
     would_rescue: list[tuple[int, str, str]] = field(default_factory=list)
     held: int = 0
     notes: list[str] = field(default_factory=list)
+    #: Builds this pass's rescues freed from a file-overlap hold, with the
+    #: hold's reason (:func:`_release_overlap`, gr778684).
+    freed: dict[int, str] = field(default_factory=dict, repr=False)
 
     def counts(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -1125,13 +1128,92 @@ def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
     if hit is None:
         return None
     hid, shared = hit
+    return _overlap_text(hid, started[hid].state, shared)
+
+
+def _overlap_text(hid: int, state: str, shared: frozenset[str]) -> str:
+    """The overlap hold's reason line: holder, its state, the shared files."""
     named = sorted(p for p in shared if "/" in p) or sorted(shared)
     return (
-        f"file-overlap hold — waits on td{hid} ({started[hid].state}): both "
+        f"file-overlap hold — waits on td{hid} ({state}): both "
         f"touch {', '.join(f'`{p}`' for p in named[:3])}"
         f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
         "is on main"
     )
+
+
+#: Event a build freed by a rescue gets (on its queued ``run_slice`` job,
+#: else on the todo): the newest-signal read (:func:`_signal_rows`)
+#: counts it, so the build's silence is measured from the release
+#: (gr778684).
+OVERLAP_RELEASED_EVENT = "overlap-hold-released"
+
+
+def _overlap_waiter(plan: Any, m: Any) -> tuple[bool, Any]:
+    """``(waits, job)``: ``m`` is in one of the two shapes a file-overlap
+    hold keeps waiting — no live job (an idle build, ``job`` ``None``) or
+    a queued ``run_slice`` (``job``)."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    if m.status in TERMINAL_TODO_STATUSES:
+        return False, None
+    live = next(
+        (x for x in reversed(plan.jobs(m)) if x.status not in pd._JOB_TERMINAL),
+        None,
+    )
+    if live is None:
+        return True, None
+    if live.status == "queued" and live.meta.get("job_type") == "run_slice":
+        return True, live
+    return False, None
+
+
+def _release_overlap(
+    store: Store, plan: Any, res: StallResult, before: dict[int, Any]
+) -> None:
+    """After a rescue write: every build anywhere in the plan that a
+    holder the rescue released (in ``before``, the holders read just
+    before the write, and gone now) was blocking, and that no remaining
+    holder still blocks, gets :data:`OVERLAP_RELEASED_EVENT` and lands in
+    :attr:`StallResult.freed` (gr778684). Written here rather than when
+    the build is judged, so the judging order does not matter: a build
+    judged earlier in the pass was parked by the live hold, and its clock
+    still restarts at the release. Once per build per pass."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    after = pd._started_slices(store)
+    if set(after) >= set(before):
+        return  # the rescue released no holder: nothing to scan
+    released = {hid: s for hid, s in before.items() if hid not in after}
+    waiters: dict[int, tuple[Any, Any]] = {}
+    for m in plan.todos():
+        waits, job = _overlap_waiter(plan, m)
+        if waits and m.id not in res.freed:
+            waiters[m.id] = (m, job)
+    if not waiters:
+        return
+    hits = pd._overlap_holds(plan, store, released, [m for m, _w in waiters.values()])
+    if not hits:
+        return
+    # Every remaining holder, a freed waiter that holds files itself
+    # included (``_overlap_holds`` never lets a node hold itself).
+    still = pd._overlap_holds(plan, store, after, [waiters[i][0] for i in hits])
+    for mid, (hid, shared) in sorted(hits.items()):
+        if mid in still:
+            continue
+        m, job = waiters[mid]
+        text = _overlap_text(hid, released[hid].state, shared)
+        store.append_event(
+            job.id if job is not None else mid,
+            source="factory_rescue",
+            event=OVERLAP_RELEASED_EVENT,
+            payload={"todo": mid, "holder": hid, "hold": text},
+        )
+        res.freed[mid] = text
+        res.notes.append(
+            f"td{mid}: {text} until this pass's rescue released it — "
+            "the stall clock restarts at the release"
+        )
 
 
 def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:
@@ -1356,6 +1438,14 @@ def _stage_for(
         # shared files first; the claim loop re-checks the hold until
         # the blocker is on main.
         return "parked", "parked", j, f"waiting ({overlap})"
+    gap_hold = n.meta.get(pd.DISPATCH_HOLD_KEY)
+    if isinstance(gap_hold, dict) and str(gap_hold.get("reason") or "").startswith(
+        pd.HOST_GAP_HOLD
+    ):
+        # The tick holds the node on its hub-pinned host's missing lane
+        # binary (gr778684): a review waits on the one host-gap ask, a
+        # build until its pin drops — a wait, not a per-node stall ask.
+        return "parked", "parked", j, f"waiting ({gap_hold['reason']})"
     job_type, params = pd._resolve_op(n)
     if job_type == pd.DEFAULT_OP:
         verdict = _lane_verdict(store, now, plan, n, params)
@@ -1538,11 +1628,21 @@ def _rescue(
     cls: str,
     stage: str,
     ev: RescueEvidence,
+    plan: Any = None,
 ) -> None:
     if res.dry_run:
         res.would_rescue.append((ref_id, cls, stage))
         res.notes.append(f"td{ref_id}: would rescue ({cls}, stage {stage})")
         return
+    before = None
+    if plan is not None:
+        # A rescue can release an overlap hold (a rescued pre-land review
+        # frees its build's ``pending_land``, gr778684): read the holders
+        # just before the write so :func:`_release_overlap` can restart
+        # the clock of every build the release frees.
+        from precis.workers.job_types import plan_dispatch as pd
+
+        before = pd._started_slices(store)
     try:
         r = enter_rescue(store, ref_id, cls, ev)
     except Exception as exc:  # one failing node must not stop the pass
@@ -1554,6 +1654,18 @@ def _rescue(
         res.notes.append(
             f"td{ref_id}: rescued ({cls}, stage {stage}, gripe gr{r.gripe_id})"
         )
+        if before:
+            try:
+                _release_overlap(store, plan, res, before)
+            except Exception as exc:  # the rescue stands; log the miss
+                log.warning(
+                    "factory_rescue: overlap release after td%d raised",
+                    ref_id,
+                    exc_info=True,
+                )
+                res.notes.append(
+                    f"td{ref_id}: overlap release failed ({type(exc).__name__})"
+                )
     elif r.skipped:
         res.notes.append(f"td{ref_id}: rescue skipped ({r.skipped})")
 
@@ -1799,6 +1911,13 @@ def _judge_node(
                 res.held += 1
                 res.notes.append(f"td{n.id}: {overlap} — a wait, not a stall")
                 return
+    if not is_gate and n.id in res.freed:
+        # A rescue earlier in this pass released the overlap hold this
+        # build waited on and restarted its clock (:func:`_release_overlap`,
+        # gr778684): its silence is the hold's, not a stall.
+        res.held += 1
+        res.notes.append(f"td{n.id}: freed this pass — a wait, not a stall")
+        return
     branch = head_sha = None
     head = _branch_head(plan, n)
     if head is not None:
@@ -1848,7 +1967,7 @@ def _judge_node(
         branch=branch,
         head_sha=head_sha,
     )
-    _rescue(store, res, n.id, cls, stage, ev)
+    _rescue(store, res, n.id, cls, stage, ev, plan)
 
 
 def _release_skip_roots(plan: Any) -> set[int]:
@@ -2203,7 +2322,7 @@ def _judge_terminal_roots(
                 branch=branch,
                 head_sha=head_sha,
             )
-            _rescue(store, res, n.id, "terminal-root", "idle", ev)
+            _rescue(store, res, n.id, "terminal-root", "idle", ev, plan)
         for j in dead_jobs:
             held = _held_in_plan(mini, j)
             if held is not None:

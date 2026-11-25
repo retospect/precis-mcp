@@ -235,11 +235,18 @@ def _bust_devin_login_probe() -> None:
         _devin_login_cache = None
 
 
-def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
+def deny_settings(
+    deny_paths: tuple[str, ...], tree: Path, *, precis_mcp: bool = True
+) -> str:
     """Claude deny rules in cwd-relative and absolute forms, plus trust
     for the service account checkout's project MCP servers. The
     :data:`DENY_BASH` verbs are denied in plain and ``./`` spellings,
-    like the path rules' cwd/absolute pair."""
+    like the path rules' cwd/absolute pair.
+
+    ``precis_mcp=False`` — the session has no precis bearer (a builder
+    host renders no slice-token registry and holds no shared token) —
+    rejects the checkout's ``.mcp.json`` ``precis`` server: without a
+    bearer it can only answer 401, so the session launches without it."""
     rules: list[str] = []
     for path in deny_paths:
         for spec in (f"./{path}", f"/{tree.as_posix()}/{path}"):
@@ -247,9 +254,13 @@ def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
     for cmd in DENY_BASH:
         forms = (cmd, f"./{cmd}") if cmd.startswith("scripts/") else (cmd,)
         rules += [f"Bash({form}:*)" for form in forms]
-    return json.dumps(
-        {"permissions": {"deny": rules}, "enableAllProjectMcpServers": True}
-    )
+    settings: dict[str, Any] = {
+        "permissions": {"deny": rules},
+        "enableAllProjectMcpServers": True,
+    }
+    if not precis_mcp:
+        settings["disabledMcpjsonServers"] = ["precis"]
+    return json.dumps(settings)
 
 
 def parse_claude_result(log_text: str) -> tuple[str | None, bool]:
@@ -693,6 +704,7 @@ class Adapter:
         read_mcp_url: str | None = None,
         export_path: Path | None = None,
         budget_usd: float | None = None,
+        precis_mcp: bool = True,
     ) -> list[str]:
         """Build argv; effort remains the worker's exported metadata.
         ``writable_roots`` are the sandbox's ``--add-dir`` grants (codex
@@ -706,7 +718,10 @@ class Adapter:
         ``budget_usd`` is the node's remaining allowance; only
         :attr:`budget_capable` adapters put it in argv (claude's
         ``--max-budget-usd``) — a :attr:`budget_watch` lane's bound rides
-        its usage channel, and run_slice refuses the rest."""
+        its usage channel, and run_slice refuses the rest. ``precis_mcp``
+        is false when the session holds no precis bearer: claude's
+        settings then reject the checkout's precis server
+        (:func:`deny_settings`)."""
         if self.name == "claude_p":
             argv = [
                 claude_bin(),
@@ -724,7 +739,7 @@ class Adapter:
                 "--permission-mode",
                 PERMISSION_MODE,
                 "--settings",
-                deny_settings(deny_paths, tree),
+                deny_settings(deny_paths, tree, precis_mcp=precis_mcp),
             ]
         if self.name == "codex_exec":
             argv = [

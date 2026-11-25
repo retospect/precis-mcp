@@ -205,7 +205,7 @@ def test_cap_check_is_serialized_by_advisory_lock(
     store: Store, monkeypatch: Any
 ) -> None:
     """Two concurrent claimers can't both pass the cap: while one holds
-    ``claim-cap:<type>``, a racing claim's ``pg_try_advisory_xact_lock``
+    ``claim-cap:<type>:<host>``, a racing claim's ``pg_try_advisory_xact_lock``
     loses and the type reads as at-cap for that pass — the racing claim
     returns at once WITHOUT the row instead of queueing on the holder's
     open transaction until ``lock_timeout`` kills its whole pass (the
@@ -228,12 +228,63 @@ def test_cap_check_is_serialized_by_advisory_lock(
     # Hold the cap lock open on one tx: the racing claim excludes
     # 'serial' (the only claimable row) rather than blocking on it.
     holder = store.pool.getconn()
-    holder.execute("SELECT pg_advisory_xact_lock(hashtext('claim-cap:serial')::bigint)")
+    holder.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('claim-cap:serial:h1')::bigint)"
+    )
     assert _claim(store, limit=1) == []
     holder.commit()
     store.pool.putconn(holder)
     # Released — the next pass counts fresh and takes the row.
     assert _claim(store, limit=1) == [serial]
+
+
+def _claim_open(conn: Any, host: str, limit: int = 1) -> list[int]:
+    """One ``job_inproc`` claim pass on ``host`` whose transaction the
+    caller leaves open — its advisory locks stay held until commit."""
+    rows = claim_executor_jobs(
+        conn, executor="job_inproc", limit=limit, node="h1", reserve_host_id=host
+    )
+    return [int(r[0]) for r in rows]
+
+
+def test_cap_lock_binds_per_host_under_concurrent_claimers(
+    store: Store, monkeypatch: Any
+) -> None:
+    """A real claim pass on host A, transaction left open, holds the
+    ``serial`` cap lock for host A only: a second claimer on host A
+    still reads the type as at-cap and leaves the row queued (the cap
+    binds on one host), while a concurrent claimer on host B claims its
+    own row — the count is per host, so the lock is too. With the
+    global key the host-B claim came back empty."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES "
+            "('claim.max_running.serial', '1') "
+            "ON CONFLICT (key) DO UPDATE SET value = '1'"
+        )
+        conn.commit()
+    first = _job(store, origin="background", prio=8, job_type="serial")
+    monkeypatch.setattr(
+        "precis.workers.executors._common._this_worker_lease_identity",
+        lambda: ("boot", "proc", "host-a"),
+    )
+    holder = store.pool.getconn()
+    peer = store.pool.getconn()
+    try:
+        assert _claim_open(holder, "host-a") == [first]
+        # Queued after the holder's pass, so its overfetch window
+        # (FOR UPDATE) never row-locked it — only the cap lock is in play.
+        second = _job(store, origin="background", prio=8, job_type="serial")
+        # Same host, holder still open: contested → at-cap, nothing claimed.
+        assert _claim_open(peer, "host-a") == []
+        peer.rollback()
+        # Other host, holder still open: its own lock is free.
+        assert _claim_open(peer, "host-b") == [second]
+        peer.rollback()
+    finally:
+        holder.rollback()
+        store.pool.putconn(holder)
+        store.pool.putconn(peer)
 
 
 def test_kill_switch_restores_aged_order(store: Store, monkeypatch: Any) -> None:

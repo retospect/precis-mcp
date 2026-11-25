@@ -486,6 +486,148 @@ def test_queued_overlap_held_build_on_a_stalled_queue_waits(store: Store) -> Non
     assert any("file-overlap hold" in note for note in res.notes)
 
 
+@pytest.mark.parametrize("build_first", [False, True])
+def test_build_freed_by_a_same_pass_rescue_is_rechecked_next_pass(
+    store: Store, build_first: bool
+) -> None:
+    """gr778684: a stuck pre-land review held its build's ``pending_land``,
+    and that hold kept a build sharing a file queued. Rescuing the review
+    releases the hold; the freed build is not judged stalled on the
+    silence the hold caused — its stall clock restarts at the release,
+    whether the pass judged it before the review (parked by the live
+    hold) or after it."""
+    from precis.plans import templates as T
+
+    root = _root(store)
+    if build_first:
+        waiting = _node(store, root, title="held build")
+        _body(store, waiting, "Edit src/precis/a.py")
+        waiting_job = _job(store, waiting, status="queued")
+    holder = _node(
+        store,
+        root,
+        title="holder build",
+        status="done",
+        meta={"op": "run_slice", "branch_files": ["src/precis/a.py"]},
+    )
+    store.stamp_ref_meta(
+        holder,
+        {
+            "pending_land": {
+                "todo_id": holder,
+                "branch": f"slice/{holder}",
+                "head": "a" * 40,
+            }
+        },
+    )
+    _body(store, holder, "Edit src/precis/a.py")
+    review = _node(
+        store, root, title="pre-land review", meta=T._reviewer(holder, preland=True)
+    )
+    _job(store, review, status="queued")
+    if not build_first:
+        waiting = _node(store, root, title="held build")
+        _body(store, waiting, "Edit src/precis/a.py")
+        waiting_job = _job(store, waiting, status="queued")
+    assert (waiting < review) is build_first  # the pass judges in id order
+
+    released_at = NOW + timedelta(minutes=31)
+    res = fr.run_stall_pass(store, released_at)
+
+    assert res.rescued == [(review, "stalled", "queued")]
+    assert _rescue_tags(store, waiting) == []
+    assert (
+        sum(
+            f"td{waiting}: file-overlap hold — waits on td{holder}" in note
+            and "until this pass's rescue released it" in note
+            for note in res.notes
+        )
+        == 1
+    )
+    # The release event restarts the clock. It lands at wall-clock time;
+    # this file's passes run on a shifted clock, so align it with the pass.
+    with store.pool.connection() as conn:
+        n_events = conn.execute(
+            "UPDATE ref_events SET ts = %s WHERE ref_id = %s AND event = %s",
+            (released_at, waiting_job, fr.OVERLAP_RELEASED_EVENT),
+        ).rowcount
+        conn.commit()
+    assert n_events == 1
+
+    # Inside the 30 min queued deadline from the release: still a wait.
+    res = fr.run_stall_pass(store, released_at + timedelta(minutes=29))
+    assert res.rescued == []
+    assert _rescue_tags(store, waiting) == []
+
+    # Past it with no claim: the queue really stalled.
+    res = fr.run_stall_pass(store, released_at + timedelta(minutes=31))
+    assert res.rescued == [(waiting, "stalled", "queued")]
+
+
+def _pending_holder(
+    store: Store, root: int, files: list[str], *, status: str = "done"
+) -> int:
+    """A build held for its pre-land review: ``pending_land`` stamped and
+    ``branch_files`` set (it holds those files)."""
+    node = _node(
+        store,
+        root,
+        title="held-for-review build",
+        status=status,
+        meta={"op": "run_slice", "branch_files": files},
+    )
+    store.stamp_ref_meta(
+        node,
+        {
+            "pending_land": {
+                "todo_id": node,
+                "branch": f"slice/{node}",
+                "head": "a" * 40,
+            }
+        },
+    )
+    return node
+
+
+def _release_events(store: Store, ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s AND event = %s",
+            (ref_id, fr.OVERLAP_RELEASED_EVENT),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def test_a_build_another_holder_still_blocks_is_not_freed(store: Store) -> None:
+    """gr778684: B waits on A and on C. Rescuing A's review releases A,
+    but C — an idle build that waits itself (on A and D) and holds its
+    own branch files — still blocks B, and D still blocks C. Neither B
+    nor C is freed and neither gets a release event."""
+    from precis.plans import templates as T
+
+    root = _root(store)
+    a = _pending_holder(store, root, ["src/precis/a.py"])
+    review = _node(
+        store, root, title="pre-land review", meta=T._reviewer(a, preland=True)
+    )
+    _job(store, review, status="queued")
+    _pending_holder(store, root, ["src/precis/d.py"])
+    c = _pending_holder(
+        store, root, ["src/precis/a.py", "src/precis/d.py"], status="open"
+    )
+    b = _node(store, root, title="held build")
+    _body(store, b, "Edit src/precis/a.py")
+    b_job = _job(store, b, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert (review, "stalled", "queued") in res.rescued
+    assert _rescue_tags(store, b) == [] and _rescue_tags(store, c) == []
+    assert (_release_events(store, b_job), _release_events(store, b)) == (0, 0)
+    assert _release_events(store, c) == 0
+    assert b not in res.freed and c not in res.freed
+
+
 def test_queued_job_other_type_drain_does_not_hold(store: Store) -> None:
     """gr625325's cohort is the queue the job actually waits in: another
     job_type (or executor) draining does not shorten this queue, so a

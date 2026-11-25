@@ -126,9 +126,7 @@ def test_global_fallback_kind_gets_lexical_leg_and_is_named(
     DB) routes its ANN leg over the global index — the 10-30 s scan —
     so it is forced lexical up front and named in a footer, while
     ``paper`` (a designated global-index kind) and the small kinds keep
-    the full hybrid legs. ``anki`` is a partial-index kind too but
-    routes "exact" (td775750), so it is never forced lexical for an
-    unready index and stays on its exact leg."""
+    the full hybrid legs."""
     from precis.store._chunks_ops import _ANN_PARTIAL_KINDS
 
     rt = runtime_with_store
@@ -141,9 +139,18 @@ def test_global_fallback_kind_gets_lexical_leg_and_is_named(
 
     out = rt._dispatch_cross_kind("*", {"q": "gr628278uniquemarker"})
 
-    # anki is a partial-index kind but routes "exact" (td775750), so it is
-    # never forced lexical for an unready index.
-    skipped = (set(seen) & set(_ANN_PARTIAL_KINDS)) - {"anki"}
+    # The skip set is the probe's own rule: a partial-index kind whose
+    # ANN leg routes over the global index. gr746586 routes anki
+    # "exact" (retired cards dominate its HNSW index), so it keeps its
+    # vector leg and is never lexical-forced.
+    from precis.store._chunks_ops import ann_route_plan
+
+    with store.pool.connection() as conn:
+        skipped = {
+            k
+            for k in set(seen) & set(_ANN_PARTIAL_KINDS)
+            if ann_route_plan(conn, k, None)["route"] == "global"
+        }
     assert skipped, "the test DB builds no partial indexes — fallback expected"
     assert all(seen[k].get("mode") == "lexical" for k in skipped)
     kept = set(seen) - skipped

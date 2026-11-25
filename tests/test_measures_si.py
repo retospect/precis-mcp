@@ -1488,10 +1488,20 @@ class TestReadersShowTheSameNumber:
         # The replayed chain stops at 0188, before reviews.sha_basis (0235);
         # reviews aren't what this test reads, so stub them out.
         monkeypatch.setattr(Store, "reviews_for", lambda *a, **k: [])
+        # Likewise measure_detail reads measure_anchors (0360, after this
+        # replay point): stand in a bare table for the pre-0188 read, then
+        # drop it so the full chain applied below creates the real one.
+        with psycopg.connect(fresh_db, autocommit=True) as conn:
+            conn.execute(
+                "CREATE TABLE measure_anchors "
+                "(measure_id bigint, position integer, anchor_id bigint)"
+            )
         with _store(fresh_db) as s:
             tax = _taxon_id(fresh_db, "component_specs", "length")
             (old,) = [r for r in s.search_measures(tax).rows if r["literal"] == "12.5"]
             shown_before = render.value_text(s.measure_detail(old["id"]))
+        with psycopg.connect(fresh_db, autocommit=True) as conn:
+            conn.execute("DROP TABLE measure_anchors")
         _apply_0188(fresh_db)
         with _store(fresh_db) as s:
             legacy = s.measure_detail(old["id"])  # superseded, readable

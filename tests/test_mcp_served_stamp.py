@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -231,22 +232,37 @@ def test_a_late_write_after_forget_does_not_restore_the_key(
     monkeypatch.setattr(mss, "_pending", None)
     monkeypatch.setattr(mss, "_state", (store, T0))
     monkeypatch.setattr(mss, "_instance", lambda: "late:5")
+    assert mss.write_stamp(store, T0, now=T0)
+
+    # Force the lock wait to expire while giving the real DB clear its own
+    # budget. The writer still takes the real lock through the context manager.
+    lock = threading.Lock()
+    write_lock = Mock(wraps=lock)
+    write_lock.__enter__ = Mock(side_effect=lock.__enter__)
+    write_lock.__exit__ = Mock(side_effect=lock.__exit__)
+    write_lock.acquire.side_effect = lambda *, timeout: lock.acquire(blocking=False)
+    monkeypatch.setattr(mss, "_write_lock", write_lock)
     entered, release = threading.Event(), threading.Event()
     real_now = mss._db_now
 
     def slow_now(s: Any) -> datetime:
         entered.set()
-        release.wait(10)
+        release.wait(30)
         return real_now(s)
 
     monkeypatch.setattr(mss, "_db_now", slow_now)
     result: list[bool] = []
     t = threading.Thread(target=lambda: result.append(mss.write_stamp(store, T0)))
     t.start()
-    assert entered.wait(5)
-    assert mss.forget_own_stamp(timeout_s=0.2) is True  # lock wait timed out
-    release.set()
-    t.join(10)
+    try:
+        assert entered.wait(5)
+        assert mss.forget_own_stamp(timeout_s=10) is True
+        write_lock.acquire.assert_called_once_with(timeout=10)
+        write_lock.release.assert_not_called()
+        assert mss.read_stamps(store) == []
+    finally:
+        release.set()
+        t.join(10)
     assert result == [False]
     assert mss.read_stamps(store) == []
 

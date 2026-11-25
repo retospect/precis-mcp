@@ -75,18 +75,6 @@ UNINDEXED_FKS: frozenset[str] = frozenset(
         "links.links_set_by_fkey",
         "ref_tags.ref_tags_set_by_fkey",
         "refs.refs_set_by_fkey",
-        # 0358/0360 — frozen-release hold (td783123): these parents DO have
-        # live delete paths (re-ingest deletes chunks rows; a refs delete
-        # cascades to anchors), so the real fix is a covering index — a new
-        # migration, which a frozen release cannot land ungated (ship's
-        # --allow-migration is coordinator-only). The tables are new and
-        # empty, so the cascade probe seq-scans nothing today. The first
-        # post-release migration on main adds the four indexes and this
-        # ratchet then forces these entries back out.
-        "chunk_corrections.chunk_corrections_chunk_id_fkey",
-        "measure_anchors.measure_anchors_anchor_id_fkey",
-        "evidence_anchors.evidence_anchors_anchor_id_fkey",
-        "code_anchor_aliases.code_anchor_aliases_anchor_id_fkey",
     }
 )
 

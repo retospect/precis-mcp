@@ -69,7 +69,7 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
         "math",
         "provenance",
         "random",
-        "handle",
+        "handle",  # live catalog introspection — addressed by relation name
     }
 )
 
