@@ -2047,9 +2047,12 @@ class TestTryZenodo:
         )
         assert outcome is not None and outcome.event == "api_error"
 
-    def test_lookup_uses_safe_get(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Let safe_get validate redirects from concept DOIs to the latest record."""
-        api = "https://zenodo.org/api/records/22897659"
+    @pytest.mark.parametrize("requested_id", ["22897659", "22897660"])
+    def test_lookup_uses_resolved_record_path(
+        self, monkeypatch: pytest.MonkeyPatch, requested_id: str
+    ) -> None:
+        api = f"https://zenodo.org/api/records/{requested_id}"
+        resolved_api = "https://zenodo.org/api/records/22897660"
         client = httpx.Client()
         requested: list[str] = []
 
@@ -2062,8 +2065,8 @@ class TestTryZenodo:
             requested.append(url)
             return httpx.Response(
                 200,
-                request=httpx.Request("GET", url),
-                json={"files": [{"key": "paper.pdf"}, {"key": "data.csv"}]},
+                request=httpx.Request("GET", f"{resolved_api}?format=json"),
+                json={"files": [{"key": "the paper.pdf"}, {"key": "data.csv"}]},
             )
 
         # call_with_backoff's provider-row resolution is DB-backed; the
@@ -2072,10 +2075,10 @@ class TestTryZenodo:
         monkeypatch.setattr(fetch_oa, "http_client", _fake_http_client)
         monkeypatch.setattr(fetch_oa, "safe_get", _fake_safe_get)
 
-        urls = fetch_oa._zenodo_pdf_urls("22897659")
+        urls = fetch_oa._zenodo_pdf_urls(requested_id)
 
         assert requested == [api]
-        assert urls == [f"{api}/files/paper.pdf/content"]
+        assert urls == [f"{resolved_api}/files/the%20paper.pdf/content"]
 
 
 class TestTryPublisher:

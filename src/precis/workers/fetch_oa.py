@@ -1829,6 +1829,7 @@ def _try_acl(
 
 
 _ZENODO_DOI_RE = re.compile(r"10\.5281/zenodo\.([0-9]+)", re.IGNORECASE | re.ASCII)
+_ZENODO_RECORD_PATH_RE = re.compile(r"/api/records/[0-9]+")
 
 
 def _zenodo_pdf_urls(record_id: str) -> list[str]:
@@ -1839,16 +1840,19 @@ def _zenodo_pdf_urls(record_id: str) -> list[str]:
     """
     api = f"https://zenodo.org/api/records/{record_id}"
 
-    def _get() -> Any:
+    def _get() -> tuple[str, Any]:
         with http_client(
             timeout=_API_TIMEOUT_S,
             headers={"User-Agent": _user_agent_header()},
         ) as client:
             resp = safe_get(client, api)
             resp.raise_for_status()
-            return resp.json()
+            record_path = resp.url.path.rstrip("/")
+            if not _ZENODO_RECORD_PATH_RE.fullmatch(record_path):
+                raise ValueError("Zenodo API response did not resolve to a record path")
+            return record_path, resp.json()
 
-    data = call_with_backoff(
+    record_path, data = call_with_backoff(
         _get,
         service="web-fetch",
         url=api,
@@ -1860,7 +1864,7 @@ def _zenodo_pdf_urls(record_id: str) -> list[str]:
         key = f.get("key") if isinstance(f, dict) else None
         if isinstance(key, str) and key.lower().endswith(".pdf"):
             quoted = quote(key, safe="")
-            urls.append(f"{api}/files/{quoted}/content")
+            urls.append(f"https://zenodo.org{record_path}/files/{quoted}/content")
     return urls
 
 

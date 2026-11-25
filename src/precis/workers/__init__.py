@@ -154,11 +154,11 @@ Notable pass mechanics
   ``PRECIS_EMBED_BACKLOG_HIGH`` — or once the oldest pending chunk
   outwaits ``PRECIS_EMBED_BACKLOG_AGE_MINUTES`` — only when none are
   live: hysteresis coalesces churn into few large batches.
-* ``fetch``/``chase`` backoff are both exponential (kills ``ref_events``
-  spin-loop floods). ``Store.pin_stub_for_fetch`` (the
-  ``put(kind='paper')`` path) pre-empts both queue rank and backoff:
-  pins ``prio=1``, and its fresh ``oa_requeued`` stamp buys one immediate
-  retry; auto-discovered stubs earn their turn via ``stub_rank``.
+* Exponential ``fetch``/``chase`` backoff prevents ``ref_events`` floods.
+  ``put(kind='paper')`` uses ``Store.pin_stub_for_fetch`` to override rank
+  (``prio=1``) and allow one immediate retry (``oa_requeued``).
+  ``stub_rank`` orders auto-discovered stubs. Zenodo concept records
+  redirect metadata requests to the version records that serve PDFs.
 * ``sweeper`` — own docstring for the claim-orphan sweep + ``unpark``
   phase; ``coordinator`` deliberately keeps it as its only crash recovery.
 * ``reaper`` (:mod:`.reaper`, run inside the sweeper pass) — own
