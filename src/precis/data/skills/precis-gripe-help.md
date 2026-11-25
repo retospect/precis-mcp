@@ -380,6 +380,17 @@ comments; unsure = not met). Shorthands: `gr<N>`/`td<N>` → `ref_done`,
 `text`. `get(kind="gripe", id="/parked")` lists the shelf with each
 condition and parked age; `tag(add=["STATUS:open"])` unparks by hand.
 
+To defer a todo, use `STATUS:paused`. A todo handle in a gripe's
+`until` condition is the wake target. Record the decision and clear
+any answered review tags on the todo in the same call:
+
+```python
+put(kind="todo", id=T, text="Deferred pending the next review",
+    tags=["STATUS:paused"], untags=["reto:ask", "waiting-for:reto"])
+```
+
+Resume the todo with `tag(kind="todo", id=T, add=["STATUS:open"])`.
+
 ## Show me a specific gripe
 ## Read a gripe with its comment thread
 ## What's the full thread on this bug?
