@@ -131,12 +131,14 @@ _OPS_ALIASES = {
     "remove_sites": "vacancy",
 }
 
-#: Names a model guesses for a label-preserving atom move (gr788533: a quest
-#: concluded none existed and fell back to vacancy+add_atom, which mints a
-#: new label and breaks CI-NEB label matching). The real op is ``displace``.
+#: Names a model guesses for a label-preserving atom move that are NOT in the
+#: catalog (gr788533: a quest concluded none existed and fell back to
+#: vacancy+add_atom, which mints a new label and breaks CI-NEB label
+#: matching). The real op is ``displace``. A guessed ``move_atom`` itself
+#: reaches ``_op_move_atom`` (the op is in the catalog since gr788526) and
+#: learns ``displace`` from its vector-vs-site refusal.
 _MOVE_ALIASES = frozenset(
     {
-        "move_atom",
         "move",
         "translate_atom",
         "translate",
@@ -2240,6 +2242,14 @@ def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
         )
     site = op.get("site")
     if not isinstance(site, dict):
+        if "vector" in op:
+            raise OpError(
+                "move_atom repositions onto a named 'site', not by 'vector' "
+                "— 'displace' is the label-preserving atom-move op for a "
+                "'vector' [dx,dy,dz]",
+                example=_DISPLACE_EXAMPLE,
+                next=_DISPLACE_HINT,
+            )
         raise OpError(
             "move_atom needs a 'site' object: "
             "{'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: [labels]}",
