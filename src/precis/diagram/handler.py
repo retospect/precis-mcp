@@ -23,7 +23,8 @@ from typing import Any, ClassVar
 
 from precis.diagram.lang import DiagramLang
 from precis.errors import BadInput, NotFound
-from precis.handlers._slug_ref_shared import render_slug_ref_list, resolve_live_slug_ref
+from precis.handlers._slug_ref_shared import render_slug_ref_list
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref as _resolve_live
 from precis.protocol import Handler
 from precis.response import Response
 from precis.utils.text import fmt_num
@@ -112,12 +113,22 @@ class DiagramHandler(Handler):
                 notes = c
         return source, vocab, notes
 
+    def _resolve_live(self, slug: str) -> Any:
+        # No search verb on diagram kinds: the bare-kind get is the list.
+        return _resolve_live(
+            self.store,
+            kind=self.LANG.kind,
+            id=slug,
+            next_hint=f"get(kind='{self.LANG.kind}') to list existing "
+            f"{self.LANG.kind}s",
+        )
+
     def _resolve_any(self, id: str | int | None) -> Any:
         s = str(id or "").strip()
         if not s:
             raise BadInput(
                 f"edit(kind='{self.LANG.kind}') requires id=",
-                next=f"search(kind='{self.LANG.kind}') for the slug, then pass id=",
+                next=f"get(kind='{self.LANG.kind}') lists the slugs, then pass id=",
             )
         if self._is_node_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind=self.LANG.kind)
@@ -135,7 +146,7 @@ class DiagramHandler(Handler):
                     "owning diagram may have been deleted",
                 )
             return ref
-        return resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=s)
+        return self._resolve_live(s)
 
     def _resolve_project(self, project: str | int) -> int:
         raw = str(project).strip()
@@ -194,7 +205,7 @@ class DiagramHandler(Handler):
             )
         if self._is_node_handle(s):
             return self._render_node(s)
-        ref = resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=s)
+        ref = self._resolve_live(s)
         return self._render(s, ref)
 
     def _render_list(self) -> Response:
@@ -265,7 +276,13 @@ class DiagramHandler(Handler):
         if findings:
             lines.append("\n## Lints")
             lines.extend(f"- [{f.kind}] {f.message}" for f in findings)
-        return Response(body="\n".join(lines))
+        return Response(
+            body="\n".join(lines),
+            result_budget_hint=(
+                f"get(kind='{lang.kind}', id='<node handle>') for one node, "
+                f"or get(kind='{lang.kind}') to list the {lang.kind}s"
+            ),
+        )
 
     # ── put ────────────────────────────────────────────────────────────
 
@@ -434,10 +451,10 @@ class DiagramHandler(Handler):
         if id is None or not str(id).strip():
             raise BadInput(
                 f"delete(kind='{self.LANG.kind}') requires id=",
-                next=f"search(kind='{self.LANG.kind}') for the slug, then "
+                next=f"get(kind='{self.LANG.kind}') lists the slugs, then "
                 f"delete(kind='{self.LANG.kind}', id='<slug>')",
             )
-        ref = resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=str(id).strip())
+        ref = self._resolve_live(str(id).strip())
         self.store.retire_ref(ref.id)
         return Response(body=f"retired {self.LANG.kind} {ref.slug}")
 
@@ -459,9 +476,7 @@ class DiagramHandler(Handler):
             return self._link_element(id=id, element=element, target=target, mode=mode)
 
         if rel == RESERVED_PARENT_REL:
-            ref = resolve_live_slug_ref(
-                self.store, kind=self.LANG.kind, id=str(id).strip()
-            )
+            ref = self._resolve_live(str(id).strip())
             return place_ref(
                 self.store, kind=self.LANG.kind, ref=ref, target=target, mode=mode
             )

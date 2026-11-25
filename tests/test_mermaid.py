@@ -9,12 +9,17 @@ when the engine is absent, so the shared core still drives the kind.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from precis.diagram.lang import DiagramLang
 from precis.diagram.turn import run_turn
 from precis.dispatch import Hub
 from precis.mermaid import MERMAID_LANG as LANG
+
+if TYPE_CHECKING:
+    from precis.handlers.mermaid import MermaidHandler
 
 _FLOW = """flowchart TD
   intake[Intake] --> review{Approved?}
@@ -529,13 +534,33 @@ def test_turn_edits_source_and_reconciles_links(store, mh, diagram) -> None:
     assert got == {("intake", h)}
 
 
-def test_delete_without_id_names_the_search_then_delete(mh) -> None:
+def test_delete_without_id_names_the_list_then_delete(mh: MermaidHandler) -> None:
     """M3 burn-down (gr494831): delete without id= refuses with next=."""
-    import pytest
-
     from precis.errors import BadInput
 
     with pytest.raises(BadInput, match="requires id=") as exc:
         mh.delete()
     assert exc.value.next is not None
+    assert "get(kind='mermaid')" in str(exc.value.next)
     assert "delete(kind='mermaid', id=" in str(exc.value.next)
+
+
+def test_missing_slug_hint_names_a_supported_call(mh: MermaidHandler) -> None:
+    # gr793755: the kind has no search verb — the NotFound hint must not send
+    # the agent to search(kind='mermaid'); get without id lists the diagrams.
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound) as exc:
+        mh.get(id="no-such-diagram")
+    nxt = str(exc.value.next)
+    assert "search(" not in nxt
+    assert "get(kind='mermaid')" in nxt
+
+
+@pytest.mark.usefixtures("diagram")
+def test_slug_view_budget_hint_names_supported_calls(mh: MermaidHandler) -> None:
+    resp = mh.get(id="flow")
+    assert resp.result_budget_hint is not None
+    assert "get(kind='mermaid', id='<node handle>')" in resp.result_budget_hint
+    assert "get(kind='mermaid')" in resp.result_budget_hint
+    assert "search(" not in resp.result_budget_hint
