@@ -2129,7 +2129,7 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "endpoint edit — never vacancy+add_atom, which remints the label "
         "and breaks IS/FS pairing): onto a named site "
         '{"op":"move_atom","atom":"aO1","site":{"type":"top",'
-        f'"anchors":["{top_label}"]}}, to absolute fractional coordinates '
+        f'"anchors":["{top_label}"]}}}}, to absolute fractional coordinates '
         '"frac":[fa,fb,fc], or onto another atom\'s position '
         '"onto":"<label>" (the lattice-hop endpoint — a dopant moving to '
         "a neighbour's site has no named site to resolve) (refuses a "
