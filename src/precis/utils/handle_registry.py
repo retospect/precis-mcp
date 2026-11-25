@@ -280,8 +280,6 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "provenance",
     "random",
     "handle",
-    # live catalog introspection — no rows, so no ref to encode
-    "schema",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
     # live introspection — addressed by relation name, never a ref row
