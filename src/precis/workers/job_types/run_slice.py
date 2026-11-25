@@ -797,6 +797,8 @@ def _move_review_to_fallback(
     params: dict[str, Any],
     why: str,
     lane_table: tuple[_lanes.Lane, ...] | None = None,
+    *,
+    exclude_vendor: str | None = None,
 ) -> bool:
     """Rewrite a reviewer job's ``params.lane`` to its
     ``meta.review_fallback`` lane (gr761723), and ``meta.adapter`` to that
@@ -811,6 +813,8 @@ def _move_review_to_fallback(
     if params.get("lane") == fallback:
         return False
     table = _lanes.load_lanes(ctx.store) if lane_table is None else lane_table
+    if exclude_vendor:
+        table = tuple(ln for ln in table if ln.vendor != exclude_vendor)
     if not _usable_fallback(ctx.store, fallback, table):
         ctx.append_chunk(
             "job_event",
@@ -10461,7 +10465,8 @@ HOST_FAILURE_CLASS = "host"
 #: ``"cognition.ai/retryable": true`` — the model ended its turn without
 #: a response): a blip, not a window — parked attempt-free like
 #: ``host``, relaunched on the same lane after a short settle, never a
-#: lane move or a vendor switch.
+#: lane move or a vendor switch unless a review's empty response has an
+#: independent fallback.
 VENDOR_FAILURE_CLASS = "vendor"
 #: How long a retryable vendor error settles before the relaunch — the
 #: router's ``rate`` horizon, not the two-hour window guess.
@@ -10526,8 +10531,8 @@ def _lane_outage(
     For ``devin_tree``, the vendor's terminal ``Error: Agent error:`` block
     declaring ``"cognition.ai/retryable": true`` takes precedence over the
     transcript's wording (:func:`devin_retryable_agent_error`, gr751832).
-    Class ``vendor`` retries on the same lane without counting an attempt
-    while the park budget lasts.
+    Class ``vendor`` retries without counting an attempt while the park
+    budget lasts.
 
     Otherwise, the result wording classifies
     ``quota``/``rate``, or the CLI's final JSON carries
@@ -10748,16 +10753,28 @@ def _park_outage(
     # the lane's nor the vendor's: no lane move, no vendor switch, and the
     # relaunch is due now — the scope probe runs again before it. A
     # ``vendor`` class (gr751832: the vendor flagged its own kill
-    # retryable) is a blip, not a window either — the same lane relaunches
-    # after a short settle; a move or a switch is for windows that stay
-    # closed, not a retryable error.
+    # retryable) usually relaunches on the same lane after a short settle.
     host = cls == HOST_FAILURE_CLASS
     blip = cls == VENDOR_FAILURE_CLASS
-    # gr761723: a reviewer carries the lane its dispatch would pick without
-    # this one — the window moves the review there now, never parks it.
-    moved = not (host or blip) and _move_review_to_fallback(
-        ctx, dict(params), f"lane {lane} {cls} window closed", lane_table
+    # gr754140: a review that got no response can use its independent
+    # fallback before spending the same-lane retry budget.
+    empty_review_response = (
+        blip and phrase == "devin-empty-response" and not params.get("model")
     )
+    moved = (
+        not host
+        and (not blip or empty_review_response)
+        and _move_review_to_fallback(
+            ctx,
+            dict(params),
+            f"lane {lane} returned a retryable empty response"
+            if empty_review_response
+            else f"lane {lane} {cls} window closed",
+            lane_table,
+            exclude_vendor=vendor if empty_review_response else None,
+        )
+    )
+    retry_same_lane = blip and not moved
     switch = (
         not (host or blip)
         and not moved
@@ -10766,7 +10783,7 @@ def _park_outage(
     if host:
         due = now
         where = "this host once the slice scope probe has run again"
-    elif blip:
+    elif retry_same_lane:
         due = (
             retry_at
             if retry_at is not None and retry_at > now
@@ -10816,8 +10833,8 @@ def _park_outage(
         compute_handle_released=False,
         deadline=deadline,
         exclude_vendor=vendor if switch else None,
-        vendor_retry_lane=lane if blip else None,
-        vendor_retry_parks=parks if blip else None,
+        vendor_retry_lane=lane if retry_same_lane else None,
+        vendor_retry_parks=parks if retry_same_lane else None,
     )
     return False
 

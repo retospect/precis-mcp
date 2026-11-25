@@ -59,10 +59,11 @@ approved edits against rule body text.
 file-overlap holds. Verdictless reviews default to at least two attempts.
 Rescue sends sampled clean exits at the retry cap to run-quality judging.
 Judge tasks still enter rescue, with their backlink preventing another judge.
-Retryable Devin empty responses prefer another independent flat-rate
-vendor and share a rescue signature keyed by the terminal error.
-Before the retry cap counts a failure, the slice runner retries a
-terminal Devin agent error on the same lane. The terminal error takes
+Retryable Devin empty responses move reviews without model pins to their
+configured independent fallback when usable. Subsequent dispatch prefers a different
+independent flat-rate vendor and rescue keys on the terminal error.
+The runner otherwise retries terminal Devin errors on the same lane
+before counting a failure. The terminal error takes
 precedence because transcript progress can quote quota or rate-limit wording.
 Workers prepare release refs for reviewers without Git write access.
 Hub-pinned reviews claim only at their hub. Zero executor capacity raises
@@ -163,8 +164,8 @@ human policy.
 ``(job_ref_id, launch)``. The writer never blocks launch. These rows
 support predicting small-rung gate outcomes against recipe-only routing.
 
-Retryable Devin errors park attempt-free for 15 minutes on the same lane
-until ``OUTAGE_PARK_CAP`` (gr751832). Review routing and rescue share the
+Same-lane Devin retries park attempt-free for 15 minutes until
+``OUTAGE_PARK_CAP`` (gr751832). Review routing and rescue share the
 terminal JSON parser to classify errors independently of transcript prose.
 
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,

@@ -8348,10 +8348,10 @@ def _review_lane(
     ``fallback`` is :func:`_review_fallback_lane` — another flat-rate
     lane of a vendor that built none of the work — or ``None``. The
     minted job carries it as
-    :data:`~precis.plans.templates.REVIEW_FALLBACK_KEY`: a quota, rate or
-    auth window on the chosen lane, or the pin going dead, moves the
-    review there instead of parking it (``run_slice``); a full chosen
-    lane is still waited for."""
+    :data:`~precis.plans.templates.REVIEW_FALLBACK_KEY`. The runner can move
+    the review there on quota, rate or auth failure, a dead lane pin, or
+    a retryable Devin empty response on a review without a model pin.
+    A full chosen lane is still waited for."""
     cls = _templates.REVIEW_TASK_CLASS
     vendors = _builder_vendors(plan, n, lane_table)
     counts = _lanes.live_lane_counts(w.store)

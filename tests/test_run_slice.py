@@ -16541,6 +16541,40 @@ def test_review_quota_window_relaunches_on_the_fallback_now(
     assert rctx.meta_set["lane"] == "codex"
 
 
+def test_review_devin_empty_response_relaunches_on_fallback(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_DEVIN_BIN", "/vendor/devin")
+    classes = frozenset({"code", "review"})
+    devin = replace(
+        _vendor_lane("devin", "devin_tree", models=("swe-2-high",)),
+        vendor="devin",
+        task_classes=classes,
+    )
+    codex, _ = _codex_and_sub()
+    use_lanes(monkeypatch, devin, replace(codex, task_classes=classes))
+    store = _Store()
+    store.add_todo(42, "Review td41", meta={"task_class": "review"})
+    ctx = _Ctx(store, {"todo_id": 42, "lane": "devin"}, review_fallback="codex")
+    handle = run_slice.submit(ctx, None)
+    assert handle is not None and ctx.meta_set["lane"] == "devin"
+    _finish(handle, 1, "Checking the branch and diff.\n" + _DEVIN_AGENT_ERROR)
+    pctx = _Ctx(store, ctx.meta["params"], **ctx.meta_set, review_fallback="codex")
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert "attempt:1" not in store.tag_strings(42)
+    assert handle["not_before"] <= datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert pctx.meta_set["params"]["lane"] == "codex"
+    assert pctx.meta_set["review_fallback"] is None
+    assert pctx.meta_set["vendor_retry_lane"] is None
+
+    seams["alive"] = False
+    meta = {k: v for k, v in pctx.meta_set.items() if k != "params"}
+    rctx = _Ctx(store, pctx.meta_set["params"], **meta)
+    assert run_slice.poll(rctx, handle) is False
+    assert rctx.meta_set["lane"] == "codex"
+
+
 def test_review_moved_to_its_fallback_is_placed_by_the_fallback_s_binary(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
