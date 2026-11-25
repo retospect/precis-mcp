@@ -512,7 +512,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    event). The wait is the hold's own first-sight stamp on the host's
    live heartbeat, so a probe flap drops nothing. A pinned host that
    advertises nothing live (dark) constrains nothing; the placement ask
-   speaks for it. Not solved yet, and all
+   speaks for it. A ``needs_mcp`` run_slice narrows the same machinery
+   to the lanes that can carry a precis bearer (gr793277): the pick
+   table and the pin's host lanes both hold mcp lanes only — a lane pin
+   that cannot carry one re-picks — and a live host that serves no
+   bearer is a gap of its own (:func:`_bearer_gap`), so a devin-only
+   bearer host waits on the missing lane token rather than claim a job
+   its submit could only park. Not solved yet, and all
    must be before a second build host is enabled: a reviewer whose targets
    sit on different hosts is pinned to the first by id (with a note);
    after a start-over or a released pin, the task's attempt refs can
@@ -8272,6 +8278,39 @@ def _host_lanes(
     )
 
 
+def _bearer_gap(store: Any, host: str) -> tuple[str, str, str] | None:
+    """``(host, "", "precis_mcp")`` when the hub-pinned ``host`` is live
+    but cannot serve a precis bearer — the token side of a host gap the
+    lane pick cannot express: every lane the host runs may fit and a
+    ``needs_mcp`` slice still launches blind (gr793277). The same
+    ``None`` = "no constraint" rule as :func:`_host_lanes` — a host that
+    advertises nothing live (dark or never seen) keeps its pin; the
+    unschedulable alert speaks for it."""
+    from precis.workers.capability_probe import PRECIS_MCP_RESOURCE
+    from precis.workers.executors._common import advertised_by_host
+
+    with store.pool.connection() as conn:
+        have = advertised_by_host(conn).get(host)
+    if not have or PRECIS_MCP_RESOURCE in have:
+        return None
+    return host, "", PRECIS_MCP_RESOURCE
+
+
+def _mcp_lane_names(lane_table: tuple[_lanes.Lane, ...]) -> frozenset[str]:
+    """Names of the lanes whose adapter carries the write precis MCP —
+    the lane eligibility a ``params.needs_mcp`` run_slice applies
+    (:func:`run_slice.submit`'s own pick rule, read on the dispatch side
+    so the hub-gap and the claim's placement tokens see it too,
+    gr793277)."""
+    from precis.workers.job_types._slice_adapters import ADAPTERS
+
+    return frozenset(
+        ln.name
+        for ln in lane_table
+        if (adapter := ADAPTERS.get(ln.adapter)) is not None and adapter.mcp
+    )
+
+
 #: How long a hub-pinned host must lack a lane's token, read on its live
 #: heartbeat pass after pass, before the tick acts on it — drops a
 #: build's pin, or asks for a review's host (gr778684). One queued-stage
@@ -10414,6 +10453,42 @@ def _step_dispatch(
                 res.dispatch_hold(n, f"not dispatched — {mismatch}")
                 continue
         job_type, params = _resolve_op(n)
+        if (
+            job_type == DEFAULT_OP
+            and n.meta.get("needs_mcp")
+            and "needs_mcp" not in params
+        ):
+            # The slice declares a live precis bearer on its own meta
+            # (gr793277); a dict ``meta.op`` carries it in
+            # ``op.params.needs_mcp`` instead. ``placement_requires``
+            # turns either into the ``precis_mcp`` host token.
+            params["needs_mcp"] = True
+        from precis.workers.executors._common import needs_precis_mcp
+
+        # A ``needs_mcp`` run_slice takes only lanes whose adapter
+        # carries the write precis MCP — run_slice's pick rule applied
+        # BEFORE the hub-gap and the claim's placement tokens, or the
+        # mint pins a lane the session can never take: a devin-lane job
+        # on a bearer host that runs only Devin claims on ``devin_bin``,
+        # and the submit's re-pick then waits on a host that runs no mcp
+        # lane at all (gr793277 review). ``pick_table`` is the table the
+        # pickers and the climb see; ``mcp_names`` is the eligibility
+        # the pin's host lanes are filtered by below.
+        needs_mcp = job_type == DEFAULT_OP and needs_precis_mcp(params)
+        mcp_names: frozenset[str] = frozenset()
+        pick_table = lane_table
+        if needs_mcp:
+            mcp_names = _mcp_lane_names(lane_table)
+            pick_table = tuple(ln for ln in lane_table if ln.name in mcp_names)
+            if params.get("lane") and str(params["lane"]) not in mcp_names:
+                # The declaration, not the lane name, is the contract —
+                # the same re-pick run_slice's submit does on a pin that
+                # cannot carry the MCP.
+                res.notes.append(
+                    f"td{n.id}: params.lane {params['lane']!r} offers no "
+                    "'mcp'; params.needs_mcp re-picks"
+                )
+                params.pop("lane")
         # td659522 step 1: a build in another repo carries it on the job;
         # a default-repo node gets no key, so its params are unchanged.
         node_deny = deny
@@ -10512,10 +10587,13 @@ def _step_dispatch(
                         lead="pre-land hand-back's",
                     )
                     continue
-        rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
-        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
+        # ``pick_table`` is already the needs_mcp subset, so the ladder
+        # the cap counts and the climb walks has only rungs the session
+        # could take (gr793277).
+        rungs = _task_rungs(pick_table, n, params) if job_type == DEFAULT_OP else ()
+        cap = _retry_cap(n, _cap_rungs(plan, pick_table, n, job_type, params, rules))
         spend_hit = (
-            _spend_hit(plan, n, _spend_rungs(lane_table, n, params), rules)
+            _spend_hit(plan, n, _spend_rungs(pick_table, n, params), rules)
             if rules and job_type == DEFAULT_OP
             else None
         )
@@ -10608,14 +10686,25 @@ def _step_dispatch(
         # off the job.
         hub_pin = _hub_pin(plan, w.store, n, job_type)
         host_lanes: tuple[str, frozenset[str]] | None = None
+        mcp_gap: tuple[str, str, str] | None = None
         if hub_pin is not None and job_type == DEFAULT_OP:
             runs = _host_lanes(w.store, hub_pin[0], lane_table)
+            if runs is not None and needs_mcp:
+                # Of the lanes the pin's host runs, only the mcp-carrying
+                # ones can take this job: a devin-only bearer host is
+                # still a host gap for it — the missing lane's binary
+                # token names the gap (gr793277 review).
+                runs = frozenset(ln for ln in runs if ln in mcp_names)
             host_lanes = (hub_pin[0], runs) if runs is not None else None
+            if needs_mcp:
+                # The lane picks may all fit and the slice still launches
+                # blind here — the pin's bearer side gets its own gap.
+                mcp_gap = _bearer_gap(w.store, hub_pin[0])
         decision_stamp: dict[str, Any] | None = None
         review_fallback: str | None = None
         if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
             go, lane_name, decision_stamp, review_fallback = _review_lane(
-                plan, w, res, n, lane_table, host_lanes
+                plan, w, res, n, pick_table, host_lanes
             )
             if not go:
                 continue
@@ -10627,7 +10716,7 @@ def _step_dispatch(
         repeated_lint = False
         if conflict_try:
             go, pin_note, unusable = _conflict_pin(
-                plan, w, n, params, lane_table, rules, conflict_try, host_lanes
+                plan, w, n, params, pick_table, rules, conflict_try, host_lanes
             )
             if pin_note:
                 res.notes.append(pin_note)
@@ -10727,7 +10816,7 @@ def _step_dispatch(
                 plan,
                 n,
                 params,
-                lane_table,
+                pick_table,
                 rules,
                 from_builder=repeated_lint,
                 host_lanes=host_lanes,
@@ -10783,14 +10872,20 @@ def _step_dispatch(
         # restarts from the todo, mints unpinned once the gap has held for
         # HOST_GAP_WAIT, and the job says why.
         off_host = _host_gap(host_lanes, params.get("lane"), lane_table, res, n)
+        if off_host is None and mcp_gap is not None:
+            off_host = mcp_gap
         if off_host is not None and _hold_on_host_gap(res, n, off_host, now):
             continue
         dropped_pin: dict[str, Any] | None = None
         if hub_pin is not None and off_host is not None:
+            gap_min = int(HOST_GAP_WAIT.total_seconds() // 60)
             pin_dropped = (
                 f"host {off_host[0]} runs no lane that can take the job — it has "
                 f"lacked {off_host[2]} for lane {off_host[1]} past the "
-                f"{int(HOST_GAP_WAIT.total_seconds() // 60)} min wait"
+                f"{gap_min} min wait"
+                if off_host[1]
+                else f"host {off_host[0]} cannot take the job — it has lacked "
+                f"{off_host[2]} past the {gap_min} min wait"
             )
             dropped_pin = {
                 "host": hub_pin[0],
@@ -12404,6 +12499,8 @@ def _step_hygiene(
     _step_mint_holds(w.store, plan, w, res, now)
     _step_pin_stale(plan, w, res, now)
     _step_pin_image_ask(plan, w, res, now)
+    from precis.workers.executors._common import needs_precis_mcp
+
     for n in plan.todos():
         if _closed(n):
             continue
@@ -12418,10 +12515,20 @@ def _step_hygiene(
         if _closed(n) or not _dispatchable(plan, n) or _in_rescue(n):
             continue
         job_type, params = _resolve_op(n)
-        rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
-        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
+        pick_table = lane_table
+        if job_type == DEFAULT_OP and (
+            n.meta.get("needs_mcp") or needs_precis_mcp(params)
+        ):
+            # A needs_mcp node caps on the lanes the job could actually
+            # take — the same mcp-only ladder the dispatch pass counts
+            # (gr793277), or the ask never mints when it stops climbing.
+            pick_table = tuple(
+                ln for ln in lane_table if ln.name in _mcp_lane_names(lane_table)
+            )
+        rungs = _task_rungs(pick_table, n, params) if job_type == DEFAULT_OP else ()
+        cap = _retry_cap(n, _cap_rungs(plan, pick_table, n, job_type, params, rules))
         spend_hit = (
-            _spend_hit(plan, n, _spend_rungs(lane_table, n, params), rules)
+            _spend_hit(plan, n, _spend_rungs(pick_table, n, params), rules)
             if rules and job_type == DEFAULT_OP
             else None
         )

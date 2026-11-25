@@ -664,6 +664,14 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # becomes a preference: a dead or incapable params.lane re-picks,
         # an unpinned pick sees offering lanes only and waits on one.
         "lane_capability": {"type": "string"},
+        # The slice must launch with a live precis bearer (gr793277): a
+        # plan/slice declares it via meta.needs_mcp or meta.op.params —
+        # placement then requires the host's precis_mcp token (a mintable
+        # slice-token registry or a shared token), the lane pick holds to
+        # MCP lanes, and a host that still cannot serve a bearer gives
+        # the claim back attempt-free rather than launch the session
+        # blind. lane_capability "mcp" implies it.
+        "needs_mcp": {"type": "boolean"},
         # Model id/alias; unset → PRECIS_RUN_SLICE_MODEL, else the lane's
         # default_model, else FRONTIER (Claude) or the account default.
         "model": {"type": "string"},
@@ -6879,7 +6887,10 @@ def _preflight_validation_mcp(store: Any, tree: Path, token: str | None) -> None
     by design, and its session launches without the precis server
     (``precis_mcp=False`` on the argv), so there is no served revision it
     could read stale. Raising here instead made every validation on such a
-    host an attempt-free wait that re-claimed the same lane in a loop."""
+    host an attempt-free wait that re-claimed the same lane in a loop.
+    The bearer-less case belongs to placement, not to this gate: a slice
+    that needs live MCP evidence declares ``needs_mcp`` and waits on a
+    ``precis_mcp``-advertising host (gr793277)."""
     url = _mcp_url(tree)
     if url is None or not token:
         return
@@ -7854,6 +7865,14 @@ def submit(ctx: Any, spec: Any) -> Any:
             params.pop("model", None)
     else:
         params = _review_fallback_params(ctx, params, lane_table)
+    # ``params.needs_mcp`` — a plan/slice's declaration that the session
+    # must launch with a live precis bearer (gr793277). Lane-side it is
+    # a second pick constraint next to ``cap``: only lanes whose adapter
+    # carries the write precis MCP can serve it; ``lane_capability
+    # "mcp"`` implies it. The host side rides placement (``precis_mcp``).
+    from precis.workers.executors._common import needs_precis_mcp
+
+    needs_mcp = needs_precis_mcp(params)
     pinned = (
         next((ln for ln in lane_table if ln.name == str(params["lane"])), None)
         if params.get("lane")
@@ -7883,23 +7902,41 @@ def submit(ctx: Any, spec: Any) -> Any:
     paid_ok = True
     if params.get("lane") and not left_pin:
         dead = lane is None or not lane.enabled or lane.parked
-        if dead and (cap is None or vendor_retry_lane):
+        if dead and ((cap is None and not needs_mcp) or vendor_retry_lane):
             ctx.record_failure(
                 f"run_slice: lane {params['lane']!r} unknown or disabled"
             )
             return None
         if dead or (
-            cap is not None and lane is not None and not _lane_offers(lane, cap)
+            lane is not None
+            and (
+                (cap is not None and not _lane_offers(lane, cap))
+                or (needs_mcp and not _lane_offers(lane, "mcp"))
+            )
         ):
             # The pin went dead between mint and submit, or a retry
             # climb pinned a lane that never offered the capability —
             # re-pick instead of the 0-second failure a hard pin died
             # with (gr604579).
+            missing = (
+                cap
+                if lane is not None and cap is not None and not _lane_offers(lane, cap)
+                else "mcp"
+            )
+            req = (
+                f"params.lane_capability {cap!r}"
+                if cap is not None and (dead or missing == cap)
+                else "params.needs_mcp"
+            )
             ctx.append_chunk(
                 "job_event",
                 f"run_slice: params.lane {params['lane']!r} "
-                + ("is unknown, disabled or parked" if dead else f"offers no {cap!r}")
-                + f"; params.lane_capability {cap!r} re-picks",
+                + (
+                    "is unknown, disabled or parked"
+                    if dead
+                    else f"offers no {missing!r}"
+                )
+                + f"; {req} re-picks",
             )
             lane = None
     if lane is not None:
@@ -7972,6 +8009,10 @@ def submit(ctx: Any, spec: Any) -> Any:
             if cap is not None
             else lane_table
         )
+        if needs_mcp:
+            # A live-bearer slice can only run on an adapter whose
+            # session carries the write precis MCP (gr793277).
+            capable = tuple(ln for ln in capable if _lane_offers(ln, "mcp"))
         table = tuple(ln for ln in capable if not exclude or ln.vendor != exclude)
         # Only lanes this host can exec (gr676054): a builder fleet host
         # may carry a subset of the lane binaries — the ``builder``
@@ -8076,9 +8117,10 @@ def submit(ctx: Any, spec: Any) -> Any:
                 why = f"lanes {', '.join(backed)} backed off after a host refusal"
                 if len(backed) < len(fit_names):
                     why += "; the rest at their caps"
+            cap_label = cap if cap is not None else ("mcp" if needs_mcp else None)
             _park_lane_full(
                 ctx,
-                f"run_slice: no {f'{cap} ' if cap else ''}lane free for "
+                f"run_slice: no {f'{cap_label} ' if cap_label else ''}lane free for "
                 f"task class {task_class!r} ({why})",
                 lanes=[ln.name for ln in wake_lanes],
             )
@@ -8137,6 +8179,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             ln
             for ln in lane_table
             if (cap is None or _lane_offers(ln, cap))
+            and (not needs_mcp or _lane_offers(ln, "mcp"))
             and (not exclude or ln.vendor != exclude)
             and (not retry_lane or ln.name == retry_lane or not lane_pinned)
             and ("model" not in op_params or not lane_pinned or ln is lane)
@@ -8207,6 +8250,18 @@ def submit(ctx: Any, spec: Any) -> Any:
             "meta.task_class off 'code' or pin an MCP lane via params.lane"
         )
         return None
+    repo_review = _repo_reviewer(profile, todo.meta)
+    if needs_mcp and not ((profile is None or profile.mcp) and not repo_review):
+        # The pick already held to ``adapter.mcp`` lanes, so this is the
+        # part no lane can fix: the declaration asks for a bearer a
+        # second-repo review or an ``mcp=False`` profile never carries.
+        # A mint bug, not capacity — parking would wait forever.
+        ctx.record_failure(
+            f"run_slice: td{todo_id} declares needs_mcp but this launch "
+            "can carry no precis MCP (a second-repo review or a profile "
+            "with mcp=False); re-mint it on a first-repo node"
+        )
+        return None
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     # Leaving the lane-full park (gr611299): the lane wait marks must not
     # outlive it, or a later quota park of this job would read as one.
@@ -8245,7 +8300,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         picked=(lane.name, recorded_model),
         counts=counts,
         backoffs=backoffs,
-        needs_mcp=mints or cap == "mcp",
+        needs_mcp=mints or needs_mcp,
         code_only=task_class == _DEFAULT_TASK_CLASS,
         exclude_vendor=exclude or None,
         required_capability=cap,
@@ -8313,7 +8368,6 @@ def submit(ctx: Any, spec: Any) -> Any:
     # td659522 step 5: a reviewer of a second-repo slice reads the landed
     # commit in a detached tree of that repo's clone, with no MCP of either
     # kind (its verdict is the first line of its final message).
-    repo_review = _repo_reviewer(profile, todo.meta)
     # The scoped read grant is a code-class affordance of the read lanes
     # (codex_exec, devin_tree — gr574082): PRECIS_SLICE_READ_MCP names the
     # scope to mint, anything else is today's no-MCP launch (ships dark).
@@ -8599,6 +8653,21 @@ def submit(ctx: Any, spec: Any) -> Any:
         # sends the session to precis-status invites a false failure or a
         # fabricated served_sha.
         precis_mcp = bool(env.get("PRECIS_MCP_TOKEN"))
+        if use_mcp and needs_mcp and not (precis_mcp and _mcp_url(tree)):
+            # The slice declared live-MCP evidence: never degrade to the
+            # blind launch below, and never a launch whose token cannot
+            # reach a server — a bearer in env is no precis MCP when the
+            # checkout's ``.mcp.json`` names no endpoint (both preflights
+            # no-op on a missing URL). The claim goes back attempt-free —
+            # a host that advertises precis_mcp takes the next one
+            # (gr793277; the claim gate already keeps bearer-less hosts
+            # off this job, so reaching here means a stale advert or a
+            # profile whose tree names no endpoint).
+            raise _ValidationMcpWait(
+                "no precis bearer on this host"
+                if not precis_mcp
+                else "the checkout names no precis MCP endpoint (.mcp.json)"
+            )
         if use_mcp and not precis_mcp:
             mint_error = "no precis bearer on this host"
             brief_kwargs["mcp"] = False

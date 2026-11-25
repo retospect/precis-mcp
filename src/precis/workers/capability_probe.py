@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from importlib.util import find_spec
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from precis.embedder_wire import PATH_READY
 from precis.plans import lanes
@@ -132,18 +132,41 @@ SECOND_REPO_TOKENS = frozenset(
     lanes.repo_checkout_token(name) for name in lanes.REPO_PROFILES
 )
 
+#: The resource_slots token a host advertises when it can hand a slice
+#: session a live precis bearer — the sources ``slice_env`` reads: a
+#: mintable slice-token registry, the ``PRECIS_MCP_TOKEN`` env or the
+#: mounted secret. Builder hosts deliberately render
+#: ``PRECIS_MCP_SLICE_TOKEN_DIR=""`` and carry no shared token, so a
+#: ``params.needs_mcp`` run_slice waits on a bearer host instead of
+#: launching blind (gr793277).
+PRECIS_MCP_RESOURCE = "precis_mcp"
+
+#: The resource_slots token a host advertises when at least one lane
+#: whose adapter carries the write precis MCP can exec on it — the lane
+#: side of the ``needs_mcp`` claim floor (gr793277 review): the
+#: ``builder`` floor passes a devin-only bearer host, whose submit
+#: could only park the job it claimed, while a Claude bearer host that
+#: could run it sits unclaimed.
+MCP_LANE_RESOURCE = "mcp_lane"
+
 
 def capability_vocabulary() -> frozenset[str]:
     """Every capability token any service declares via ``requires`` or
     ``placement`` (the check-only claim-gate tokens, td543917), plus the
     lane-bin tokens :data:`LANE_BIN_TOKENS` a lane-aware run_slice asks
-    for per job and the per-repo checkout tokens :data:`SECOND_REPO_TOKENS`.
+    for per job, the per-repo checkout tokens :data:`SECOND_REPO_TOKENS`
+    and the ``needs_mcp`` tokens :data:`PRECIS_MCP_RESOURCE` and
+    :data:`MCP_LANE_RESOURCE`.
 
     The self-probe evaluates exactly this set, so a capability no host can
     provide still gets a definitive absent (deleted) row rather than being
     silently ignored.
     """
-    tokens: set[str] = set(LANE_BIN_TOKENS) | set(SECOND_REPO_TOKENS)
+    tokens: set[str] = (
+        set(LANE_BIN_TOKENS)
+        | set(SECOND_REPO_TOKENS)
+        | {PRECIS_MCP_RESOURCE, MCP_LANE_RESOURCE}
+    )
     for spec in SERVICES:
         tokens |= set(spec.requires) | set(spec.placement)
     return frozenset(tokens)
@@ -790,6 +813,77 @@ def claude_agent_capable() -> bool:
     )
 
 
+def _registry_writable(directory: Path) -> bool:
+    """``True`` when this worker could actually write a grant file into
+    the slice-token registry ``directory`` — existence alone is no
+    mint: a dir the mount or its mode refuses still serves every slice
+    a 401 (gr793277 review). The probe file takes the mint's
+    ``.td*.tmp`` name so the TTL sweep reaps it when the unlink is
+    lost."""
+    probe = directory / f".td-probe.{os.getpid()}.tmp"
+    try:
+        probe.write_text("", encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+    return True
+
+
+def _probe_precis_mcp() -> int:
+    """1 when a slice launched here would carry a precis bearer — the
+    same sources ``slice_env`` reads: a writable slice-token registry
+    the worker can mint into (:func:`_registry_writable`), the
+    ``PRECIS_MCP_TOKEN`` env, or the mounted secret. Builder hosts
+    render ``PRECIS_MCP_SLICE_TOKEN_DIR=""`` and hold no shared token
+    by design — 0 — so a ``params.needs_mcp`` slice is routed only to a
+    host that can serve the MCP (gr793277)."""
+    from precis.slice_tokens import registry_dir
+
+    directory = registry_dir()
+    if directory is not None and _registry_writable(directory):
+        return 1
+    if os.environ.get("PRECIS_MCP_TOKEN"):
+        return 1
+    try:
+        from precis.secrets import mounted_secret
+
+        # Mirrors slice_env: an unreadable store is no bearer.
+        if mounted_secret("PRECIS_MCP_TOKEN"):
+            return 1
+    except Exception:
+        pass
+    return 0
+
+
+def _probe_mcp_lane() -> int:
+    """The ``mcp_lane`` token (:data:`MCP_LANE_RESOURCE`) — 1 when at
+    least one lane whose adapter carries the write precis MCP can exec
+    here: the ``builder`` floor's shape, restricted to the
+    ``_slice_adapters.ADAPTERS`` entries with ``mcp`` set (today
+    ``claude_p`` alone; the probe map below is per-adapter, kept in sync
+    the way :func:`_probe_builder`'s list is). A process holding
+    ``run_slice`` does not claim one (the ``builder`` rule), so its host
+    does not advertise it."""
+    from precis.workers.executors import suspended_job_types
+    from precis.workers.job_types._slice_adapters import ADAPTERS
+
+    if "run_slice" in suspended_job_types():
+        return 0
+    probes: dict[str, Callable[[], int]] = {
+        "claude_p": _probe_claude_lane,
+        "codex_exec": _probe_codex_bin,
+        "kimi_tree": _probe_kimi_bin,
+        "devin_tree": _probe_devin_bin,
+    }
+    for adapter, probe in probes.items():
+        if getattr(ADAPTERS.get(adapter), "mcp", False) and probe() == 1:
+            return 1
+    return 0
+
+
 #: Capability token → its presence probe. A probe returns a capacity
 #: (``> 0`` present, ``0`` absent) or ``None`` (unknown — leave the row).
 _PROBES: dict[str, Callable[[], int | None]] = {
@@ -811,6 +905,8 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "autocatpath": _probe_autocatpath,
     "has_mace": _probe_has_mace,
     "latexmk": _probe_latexmk,
+    PRECIS_MCP_RESOURCE: _probe_precis_mcp,
+    MCP_LANE_RESOURCE: _probe_mcp_lane,
     **{
         lanes.repo_checkout_token(_n): _make_repo_probe(_n)
         for _n in lanes.REPO_PROFILES
@@ -1379,6 +1475,8 @@ def soft_capacity(resource: str) -> int:
 
 
 __all__ = [
+    "MCP_LANE_RESOURCE",
+    "PRECIS_MCP_RESOURCE",
     "RETRACTABLE_SOFT_SIGNALS",
     "capability_vocabulary",
     "claude_auth_present",

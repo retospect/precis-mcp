@@ -1236,6 +1236,20 @@ def lane_adapter_map(conn: Connection) -> dict[str, str]:
     }
 
 
+def needs_precis_mcp(params: Mapping[str, Any] | None) -> bool:
+    """``True`` when a ``run_slice`` job must launch with a live precis
+    bearer — declared as ``params.needs_mcp`` (the todo's
+    ``meta.needs_mcp`` or ``meta.op.params.needs_mcp``, stamped into job
+    params at dispatch; gr793277) or implied by ``params.lane_capability
+    == "mcp"``: a lane pick that requires the write precis MCP is also a
+    bearer requirement — the lane's MCP cannot exist on a host that
+    hands out no token, so the requirement has to reach placement or the
+    run launches blind.
+    """
+    p = params or {}
+    return bool(p.get("needs_mcp")) or p.get("lane_capability") == "mcp"
+
+
 def placement_requires(
     meta: dict[str, Any], lane_adapters: Mapping[str, str] | None = None
 ) -> frozenset[str]:
@@ -1248,6 +1262,12 @@ def placement_requires(
     a prior submit) or a ``params.lane`` pin resolved through
     ``lane_adapters`` ({lane: adapter}, :func:`lane_adapter_map`; absent
     or unresolved → the ``builder`` floor stands).
+
+    A ``run_slice`` job that needs a live precis bearer
+    (:func:`needs_precis_mcp`) also requires the ``precis_mcp`` and
+    ``mcp_lane`` tokens, so only a host that can serve the MCP AND run
+    an mcp-carrying lane claims it — a devin-only bearer host could
+    serve the token but park every pick (gr793277).
 
     A ``run_slice`` / ``land_slice`` / ``repo_release`` job for a second repo
     (``params.repo`` a non-empty name other than the default) also needs
@@ -1273,6 +1293,20 @@ def placement_requires(
         adapter = (lane_adapters or {}).get(str(lane)) if lane else None
     tokens.discard("builder")
     tokens.add(adapter_placement_token(str(adapter)))
+    if needs_precis_mcp(meta.get("params")):
+        # A live precis bearer is part of the requirement (gr793277):
+        # only a host that can serve the MCP may claim the slice — a
+        # builder host with no token source runs it blind. ``mcp_lane``
+        # is the lane side of the same need: the ``builder`` floor
+        # passes a host with no mcp-carrying lane, whose submit could
+        # only park the claim.
+        from precis.workers.capability_probe import (
+            MCP_LANE_RESOURCE,
+            PRECIS_MCP_RESOURCE,
+        )
+
+        tokens.add(PRECIS_MCP_RESOURCE)
+        tokens.add(MCP_LANE_RESOURCE)
     return frozenset(tokens)
 
 

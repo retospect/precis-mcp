@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import claim_executor_jobs
@@ -666,3 +667,147 @@ def test_a_reused_mint_writes_no_job_event(store: Store) -> None:
     )
     assert again == first
     assert _events(store, first, "hub-pin-dropped") == [{"host": _HOST}]
+
+
+def test_pinned_needs_mcp_build_waits_on_a_bearer_less_host(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr793277: the pinned host runs the retry's lanes but serves no
+    precis bearer — the ``needs_mcp`` slice is held on the host gap (the
+    lane pick cannot express the missing token), the mint carries the
+    declaration on the job params so only a ``precis_mcp`` host claims
+    it, and past the wait the pin drops so it can run on one."""
+    use_lanes(monkeypatch)
+    _advertise(store, _HOST, _HOST_SLOTS)
+    task = _one_task_plan(store).ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {"build_ref": _build_ref(task, host=_HOST), "needs_mcp": True},
+    )
+    _failed_job(store, task, "build red on the diff", lane="devin", model="swe-2-high")
+
+    res = pd.run_pass(store)
+
+    assert len(_jobs_under(store, task)) == 1  # only the failed attempt
+    assert f"host {_HOST} lacks precis_mcp" in res.dispatch_holds[task]
+
+    _age_hold(store, task)
+    pd.run_pass(store)
+
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["needs_mcp"] is True
+    assert "target_node" not in meta["params"]
+    assert pd.HUB_PIN_KEY not in meta
+    dropped = meta[pd.HUB_PIN_DROPPED_KEY]
+    assert (dropped["host"], dropped["todo"], dropped["token"]) == (
+        _HOST,
+        task,
+        "precis_mcp",
+    )
+    assert dropped["note"].startswith("the run restarts off the hub")
+
+
+def test_pinned_needs_mcp_build_stays_pinned_on_a_bearer_host(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the host advertises ``precis_mcp`` and runs an
+    mcp-carrying lane — the retry mints pinned onto it (never onto the
+    host's devin lane, which the declaration cannot take) and the host
+    claims it."""
+    use_lanes(monkeypatch)
+    _advertise(store, _HOST, {**_HOST_SLOTS, "precis_mcp": 1, "mcp_lane": 1})
+    task = _one_task_plan(store).ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {"build_ref": _build_ref(task, host=_HOST), "needs_mcp": True},
+    )
+    _failed_job(store, task, "build red on the diff", lane="devin", model="swe-2-high")
+
+    res = pd.run_pass(store)
+
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["needs_mcp"] is True
+    assert meta["params"]["lane"] == "claude-sub"
+    assert meta["params"]["target_node"] == _HOST
+    assert meta[pd.HUB_PIN_KEY] == {"host": _HOST, "todo": task}
+    assert pd.HUB_PIN_DROPPED_KEY not in meta
+    assert task not in res.dispatch_holds
+    assert int(_job_id) in _claimed_on(store, _HOST)
+
+
+def test_pinned_needs_mcp_retry_gaps_on_a_devin_only_bearer_host(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr793277 review: the pinned host serves a bearer but runs only
+    Devin — mcp lane eligibility applies before the hub gap and the
+    claim: the retry is held naming the missing lane's binary token,
+    never minted onto a devin lane the session could not take, and past
+    the wait the pin drops and the mint carries the mcp lane, unpinned,
+    so a devin-only host can no longer claim it."""
+    use_lanes(monkeypatch)
+    _advertise(
+        store,
+        _HOST,
+        {"repo_checkout": 1, "git": 1, "devin_bin": 1, "precis_mcp": 1},
+    )
+    task = _one_task_plan(store).ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {"build_ref": _build_ref(task, host=_HOST), "needs_mcp": True},
+    )
+    _failed_job(store, task, "build red on the diff", lane="devin", model="swe-2-high")
+
+    res = pd.run_pass(store)
+
+    assert len(_jobs_under(store, task)) == 1  # only the failed attempt
+    assert f"host {_HOST} lacks claude_bin" in res.dispatch_holds[task]
+
+    _age_hold(store, task)
+    pd.run_pass(store)
+
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["needs_mcp"] is True
+    assert meta["params"]["lane"] == "claude-sub"
+    assert "target_node" not in meta["params"]
+    assert pd.HUB_PIN_KEY not in meta
+    dropped = meta[pd.HUB_PIN_DROPPED_KEY]
+    assert (dropped["host"], dropped["todo"], dropped["token"]) == (
+        _HOST,
+        task,
+        "claude_bin",
+    )
+    assert _claimed_on(store, _HOST) == []
+
+
+def test_needs_mcp_op_lane_offer_drops_a_non_mcp_lane(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan author pinning ``op.params.lane`` to a lane whose adapter
+    carries no write MCP loses the pin, not the declaration — the same
+    re-pick run_slice's submit does on a pin that cannot take it."""
+    use_lanes(monkeypatch)
+    _advertise(store, _HOST, {**_HOST_SLOTS, "precis_mcp": 1, "mcp_lane": 1})
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "The task",
+            {
+                "op": {
+                    "type": "run_slice",
+                    "params": {"lane": "devin", "needs_mcp": True},
+                }
+            },
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+
+    res = pd.run_pass(store)
+
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["needs_mcp"] is True
+    assert "lane" not in meta["params"]
+    assert any("params.lane 'devin' offers no 'mcp'" in note for note in res.notes)

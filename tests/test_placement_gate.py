@@ -618,3 +618,91 @@ def test_ssh_node_skips_run_slice_on_a_bare_host_beside_a_gate_host(
     _advertise(store, "node-a", GATE_HOST)
     assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
     assert _ssh_host == [jid]
+
+
+def test_needs_mcp_slice_requires_a_bearer_host() -> None:
+    """gr793277: ``params.needs_mcp`` adds the ``precis_mcp`` and
+    ``mcp_lane`` tokens — a host that cannot serve a precis bearer (a
+    builder host by design), or one that serves a bearer but runs no
+    mcp-carrying lane, fails the gate instead of the slice launching
+    blind or parking there."""
+    from precis.workers.executors._common import _placement_ok, placement_gap
+
+    meta = {"job_type": "run_slice", "params": {"needs_mcp": True}}
+    bare = {"repo_checkout", "builder", "git"}
+    full = bare | {"precis_mcp", "mcp_lane"}
+    assert not _placement_ok(meta, {"h1": bare}, "h1")
+    assert _placement_ok(meta, {"h1": full}, "h1")
+    assert placement_gap(meta, {"h1": bare}) == frozenset(full)
+    assert placement_gap(meta, {"h1": bare, "h2": full}) == frozenset()
+
+
+def test_mcp_lane_capability_implies_the_bearer_token() -> None:
+    """``params.lane_capability "mcp"`` implies the same need — the lane's
+    write precis MCP cannot exist where no token is handed out, and the
+    claim needs an mcp-carrying lane to run on. Without either
+    declaration neither token is required."""
+    from precis.workers.executors._common import placement_requires
+
+    for params in ({"lane_capability": "mcp"}, {"needs_mcp": True}):
+        tokens = placement_requires({"job_type": "run_slice", "params": params})
+        assert {"precis_mcp", "mcp_lane"} <= tokens
+    tokens = placement_requires({"job_type": "run_slice", "params": {}})
+    assert "precis_mcp" not in tokens and "mcp_lane" not in tokens
+    # Only run_slice mints it: a land job's params never declare it.
+    tokens = placement_requires(
+        {"job_type": "land_slice", "params": {"needs_mcp": True}}
+    )
+    assert "precis_mcp" not in tokens and "mcp_lane" not in tokens
+
+
+def test_needs_mcp_slice_waits_on_a_bearer_host(
+    store: Store, _ssh_host: list[int]
+) -> None:
+    """The claim end of it: a needs_mcp slice stays queued on a builder
+    host's advert and is claimed the moment the host can serve a
+    bearer."""
+    _advertise(store, "node-a", SLICE_HOST)
+    jid = _queue(store, "run_slice", {"todo_id": 1, "needs_mcp": True})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    assert _status(store, jid) == "queued"
+    _advertise(store, "node-a", {**SLICE_HOST, "precis_mcp": 1, "mcp_lane": 1})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]
+
+
+def test_needs_mcp_slice_skips_a_devin_only_bearer_host(
+    store: Store, _ssh_host: list[int]
+) -> None:
+    """gr793277 review: a host that serves a bearer but runs no
+    mcp-carrying lane (Devin only) fails the claim floor too — the job
+    it could only park waits for a host that can actually exec the
+    pick."""
+    _advertise(
+        store,
+        "node-a",
+        {
+            "repo_checkout": 1,
+            "git": 1,
+            "builder": 1,
+            "devin_bin": 1,
+            "precis_mcp": 1,
+        },
+    )
+    jid = _queue(store, "run_slice", {"todo_id": 1, "needs_mcp": True})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    assert _status(store, jid) == "queued"
+    _advertise(
+        store,
+        "node-a",
+        {
+            "repo_checkout": 1,
+            "git": 1,
+            "builder": 1,
+            "claude_bin": 1,
+            "precis_mcp": 1,
+            "mcp_lane": 1,
+        },
+    )
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]

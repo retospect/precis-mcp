@@ -3280,12 +3280,16 @@ def test_capability_pick_never_lands_on_a_lane_without_mcp(
 
 
 def test_capability_pick_waits_on_the_mcp_lane_at_its_cap(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The one MCP lane at its cap parks the wait — the free devin lane
     alongside is never picked — and one freed slot launches on it."""
     use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
     seams["live"] = {"claude-sub": 2}
+    # The capability implies the bearer need (gr793277): the launch
+    # below carries a host token.
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "td42.tok")
+    _live_mcp_endpoint(tmp_path, monkeypatch)
     store = _Store()
     store.add_todo(42, "t")
     ctx = _Ctx(store, {"todo_id": 42, "lane_capability": "mcp"})
@@ -3305,7 +3309,7 @@ def test_capability_pick_waits_on_the_mcp_lane_at_its_cap(
 
 
 def test_dead_capability_pin_repicks_an_mcp_lane(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pin that went dead between mint and submit re-picks another MCP
     lane — the capability is the contract, the lane name a preference —
@@ -3313,6 +3317,10 @@ def test_dead_capability_pin_repicks_an_mcp_lane(
     sub = replace(seed_lane("claude-sub"), parked_reason="lane-auth:not-logged-in")
     alt = replace(seed_lane("claude-sub"), name="claude-sub-2")
     use_lanes(monkeypatch, seed_lane("devin"), sub, alt)
+    # The capability implies the bearer need (gr793277): the launch
+    # below carries a host token.
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "td42.tok")
+    _live_mcp_endpoint(tmp_path, monkeypatch)
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams, lane="claude-sub", lane_capability="mcp")
@@ -3321,14 +3329,64 @@ def test_dead_capability_pin_repicks_an_mcp_lane(
 
 
 def test_capability_pin_offering_none_repicks(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A live pin that never offered the capability — a retry climb
     pinned a code-fit lane — re-picks an offering one."""
     use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
+    # The capability implies the bearer need (gr793277): the launch
+    # below carries a host token.
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "td42.tok")
+    _live_mcp_endpoint(tmp_path, monkeypatch)
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams, lane="devin", lane_capability="mcp")
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    assert any("offers no 'mcp'" in text for _kind, text in ctx.chunks)
+
+
+def test_needs_mcp_pick_waits_on_an_mcp_lane(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr793277: ``params.needs_mcp`` — the declaration that the session's
+    reads and evidence ride a live precis bearer — is the same lane
+    contract ``lane_capability "mcp"`` carries: a free code-fit lane
+    without the write precis MCP (devin) is no fallback, so the submit
+    waits on an MCP slot instead of launching the task somewhere the
+    session runs blind."""
+    use_lanes(
+        monkeypatch,
+        seed_lane("devin"),
+        replace(seed_lane("claude-sub"), enabled=False),
+    )
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42, "needs_mcp": True})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "mcp" in deferred[0][1]
+    assert ctx.failure is None
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_needs_mcp_pin_offering_none_repicks(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live pin that cannot carry a precis MCP re-picks an mcp lane —
+    the declaration, not the lane name, is the contract."""
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "td42.tok")
+    _live_mcp_endpoint(tmp_path, monkeypatch)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="devin", needs_mcp=True)
     assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
     assert any("offers no 'mcp'" in text for _kind, text in ctx.chunks)
 
@@ -4063,6 +4121,15 @@ def _write_mcp_json(tmp_path: Path) -> Path:
         ),
     )
     return _job_tree(tmp_path, 42)
+
+
+def _live_mcp_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The endpoint half of a declared ``needs_mcp`` launch (gr793277
+    review): the checkout's ``.mcp.json`` planted, and a preflight that
+    answers 2xx — a test with a bearer but no endpoint now waits
+    attempt-free where it used to launch."""
+    _write_mcp_json(tmp_path)
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", lambda req, timeout: _Resp())
 
 
 def test_submit_preflights_the_mcp_with_the_session_bearer(
@@ -13067,6 +13134,62 @@ def test_validate_without_a_slice_bearer_launches_without_the_mcp(
     assert "precis-status" not in brief
     [launched] = [c for c in ctx.chunks if "run_slice: launched td42" in c[1]]
     assert "(mcp token: none (no precis bearer on this host))" in launched[1]
+
+
+def test_needs_mcp_validate_waits_attempt_free_on_a_bearer_less_host(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr793277: a validation that declares ``needs_mcp`` never launches
+    blind — on a builder host (no slice-token registry, no shared
+    token) the launch is not degraded like the test above but given
+    back attempt-free, so a ``precis_mcp``-advertising host takes the
+    next claim. The pick still held to the MCP lane: the free devin and
+    codex lanes were never candidates."""
+    from precis import secrets as _secrets
+
+    use_lanes(monkeypatch, *SEED_LANES)
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (
+            frozenset({"swe-2-medium", "swe-2-high", "swe-2-max"}),
+            frozenset(),
+            None,
+        ),
+    )
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(_secrets, "mounted_secret", lambda name: None)
+    _write_mcp_json(tmp_path)
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams, needs_mcp=True)
+    assert handle is None
+    assert ctx.meta_set["attempt_free"] == "validation-mcp"
+    assert "no precis bearer on this host" in (ctx.failure or "")
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+    assert ctx.meta_set["lane"] == "claude-sub"
+
+
+def test_needs_mcp_waits_attempt_free_when_the_tree_names_no_endpoint(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr793277 review: a bearer in env is no precis MCP when the
+    checkout's ``.mcp.json`` names no precis server — both preflights
+    no-op on a missing URL, so a declared slice would launch with a
+    token it cannot use. The lease goes back attempt-free instead."""
+    use_lanes(monkeypatch, *SEED_LANES)
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "td42.tok")
+    # No .mcp.json planted in the clone the submit cuts.
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx, handle = _submit(store, seams, needs_mcp=True)
+    assert handle is None
+    assert ctx.meta_set["attempt_free"] == "validation-mcp"
+    assert "no precis MCP endpoint" in (ctx.failure or "")
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+    assert ctx.meta_set["lane"] == "claude-sub"
 
 
 def test_validation_preflight_skips_the_gate_without_a_token(

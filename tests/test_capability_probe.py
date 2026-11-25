@@ -8,6 +8,7 @@ never lets a broken probe escape (heartbeat liveness must survive it).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,8 @@ _OVERRIDE_ENVS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "PRECIS_SLICE_ROOT",
     "PRECIS_LATEXMK_SLOTS",
+    "PRECIS_MCP_TOKEN",
+    "PRECIS_MCP_SLICE_TOKEN_DIR",
 )
 
 
@@ -1062,3 +1065,112 @@ def test_gate_tokens_gate_land_and_run_placement() -> None:
 
     for name in ("land_slice", "run_slice"):
         assert {"gate_image", "uv_bin"} <= SERVICES_BY_NAME[name].placement
+
+
+# ── precis_mcp — the slice bearer token (gr793277) ──────────────────────
+
+
+def _no_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every bearer source off: a set-but-missing token dir (returns
+    ``None`` without falling back to the shared server's state dir) and
+    no mounted secret — the builder-host shape the token exists to keep
+    ``needs_mcp`` slices off."""
+    from precis import secrets as _secrets
+
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", "/dev/null/no-such-dir")
+    monkeypatch.setattr(_secrets, "mounted_secret", lambda name: None)
+
+
+def test_precis_mcp_token_in_vocabulary_and_probed() -> None:
+    """The bearer token is probed like every vocabulary token — without it
+    no host could advertise the capability a ``needs_mcp`` slice requires."""
+    assert cap.PRECIS_MCP_RESOURCE in cap.capability_vocabulary()
+    assert cap._PROBES[cap.PRECIS_MCP_RESOURCE] is cap._probe_precis_mcp
+
+
+def test_probe_precis_mcp_slice_token_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A mintable slice-token registry advertises the bearer — the source
+    a builder host deliberately lacks."""
+    _no_bearer(monkeypatch)
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(tmp_path))
+    assert cap._probe_precis_mcp() == 1
+
+
+def test_probe_precis_mcp_shared_env_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_bearer(monkeypatch)
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "tok")
+    assert cap._probe_precis_mcp() == 1
+
+
+def test_probe_precis_mcp_mounted_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_bearer(monkeypatch)
+    from precis import secrets as _secrets
+
+    monkeypatch.setattr(_secrets, "mounted_secret", lambda name: "tok")
+    assert cap._probe_precis_mcp() == 1
+
+
+def test_probe_precis_mcp_absent_on_a_builder_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Builder hosts render ``PRECIS_MCP_SLICE_TOKEN_DIR=""`` and hold no
+    shared token — absent, so the claim gate keeps a ``needs_mcp`` slice
+    off them (gr793277)."""
+    _no_bearer(monkeypatch)
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", "")
+    # env="" is falsy, so the shared-server state dir fallback applies;
+    # a path nothing created reads absent too.
+    monkeypatch.setenv("PRECIS_MCP_HTTP_STATE", "/dev/null/no-state")
+    assert cap._probe_precis_mcp() == 0
+
+
+def test_probe_precis_mcp_secret_store_error_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable secret store is no bearer — ``slice_env``'s own
+    read swallows it the same way."""
+    _no_bearer(monkeypatch)
+    from precis import secrets as _secrets
+
+    def boom(name: str) -> None:
+        raise OSError("store down")
+
+    monkeypatch.setattr(_secrets, "mounted_secret", boom)
+    assert cap._probe_precis_mcp() == 0
+
+
+def test_probe_precis_mcp_unwritable_registry_is_no_bearer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr793277 review: a registry the worker cannot mint into — a dir
+    that exists but refuses the grant write — is no bearer either;
+    advertising it would only route ``needs_mcp`` slices to a host
+    whose every mint 401s. The probe file's own name planted as a
+    directory fails the write deterministically at any uid."""
+    _no_bearer(monkeypatch)
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(tmp_path))
+    (tmp_path / f".td-probe.{os.getpid()}.tmp").mkdir()
+    assert cap._probe_precis_mcp() == 0
+
+
+def test_mcp_lane_in_vocabulary_and_probed() -> None:
+    """The lane side of the ``needs_mcp`` claim floor is probed like
+    every vocabulary token."""
+    assert cap.MCP_LANE_RESOURCE in cap.capability_vocabulary()
+    assert cap._PROBES[cap.MCP_LANE_RESOURCE] is cap._probe_mcp_lane
+
+
+def test_probe_mcp_lane_follows_the_claude_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``claude_p`` is the only mcp-carrying adapter: the token is
+    exactly its lane probe's answer (a devin-only host — no claude —
+    advertises none, so a ``needs_mcp`` claim never parks there)."""
+    monkeypatch.setattr(cap, "_probe_claude_lane", lambda: 1)
+    assert cap._probe_mcp_lane() == 1
+    monkeypatch.setattr(cap, "_probe_claude_lane", lambda: 0)
+    assert cap._probe_mcp_lane() == 0

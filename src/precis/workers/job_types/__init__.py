@@ -2,176 +2,179 @@
 
 Each job_type module exports:
 
-- ``PARAMS_SCHEMA`` (jsonschema dict): validated at submit time.
+- ``PARAMS_SCHEMA`` (jsonschema dict): validated at submit.
 - ``COMPATIBLE_EXECUTORS`` (frozenset[str]): which executors this
-  type can run under. Dispatcher rejects the put if the requested
-  executor isn't in the set.
+  type runs under; dispatch rejects a put naming one outside it.
 - ``REQUIRES`` (frozenset[str]): what the executor host must
-  provide. Dispatcher rejects if the executor's PROVIDES set
-  doesn't cover this.
+  provide; dispatch rejects when PROVIDES does not cover it.
 - ``DESCRIPTION`` (str): one-line summary; surfaced in
   ``precis-job-help``.
-- ``run(...)``: the worker entry point invoked by the executor's
-  runner once a row is claimed.
+- ``run(...)``: the worker entry point the executor's runner
+  invokes once a row is claimed.
 - ``dispatch(ctx, spec)`` (optional): the per-job dispatch
-  wrapper. Plugin job_types ship their own; built-ins keep their
-  dispatch logic inside the executor module for now.
+  wrapper — plugins ship their own; built-ins keep theirs in
+  the executor module.
 
 ``pcb_place`` reports outer LP legalisation re-route attempts separately
-from failure-driven part shoves. The two counters and their translation
-distances describe attempted work, including candidates discarded by
-keep-best. Corridor retries inside a route call have their own progress events.
+from failure-driven part shoves; the counters and translation distances
+describe attempted work, candidates discarded by keep-best included.
+Corridor retries inside a route call have their own progress events.
 
-The runtime registry below imports each built-in type and bundles
-its metadata into a :class:`JobTypeSpec`. Third-party packages can
-register additional job_types via the ``precis.job_types``
-entry-point group; failure isolation mirrors
-:func:`precis.dispatch._load_plugins` — one broken plugin must not
+The runtime registry below imports each built-in type into a
+:class:`JobTypeSpec`; third-party packages register job_types via the
+``precis.job_types`` entry-point group — failure isolation mirrors
+:func:`precis.dispatch._load_plugins`, one broken plugin must not
 brick the worker.
 
-``reap_worktrees`` uses the host's existing reaper for eligibility and the
-grace re-check. Its before/after inventories are used only for reporting.
+``reap_worktrees`` uses the host's reaper for eligibility and the grace
+re-check; its before/after inventories are reporting only.
 
 Slice cleanup safety lives in :func:`run_slice._settle`.
 
-A pre-land coordinator ask holds the builder and reviewer together.
-Builds can be done with a pending land, so a review checks the build's
-ask separately from sequencing on the build's status.
+A pre-land coordinator ask holds the builder and reviewer together;
+builds can finish with a pending land, so a review checks the build's
+ask apart from sequencing on its status.
 
-``elsevier_abstract_backfill`` is deterministic: explicit confirmed IDs,
-expected-count guard and dry-run default re-arm existing fetch pins without
+``elsevier_abstract_backfill`` is deterministic: confirmed IDs, an
+expected-count guard and a dry-run default re-arm fetch pins without
 removing body/hash/event evidence or calling a provider/model.
 
-``skill_garden`` reviews skill rules against their ``rulings:`` monthly:
-per-section records (a section citing a ruling handle is attributed to
-it; ambiguous or unruled sections go to Reto), one routed verdict per
-incident-born item, and ``limit`` bounding judge attempts. Proposals need
-a done gripe with a resolution SHA and a quote grounded in the gripe or
-a successful example replay. The private replay runtime suppresses recall
-stamps and ref read counts so worker reads do not affect agent telemetry.
-Collection, judging and reporting share one skill scope, including an
-explicit empty selection. The report on the dispatching todo verifies
-approved edits against rule body text.
+``skill_garden`` reviews skill rules against their ``rulings:`` monthly —
+per-section records (a cited ruling handle attributes the section;
+ambiguous or unruled ones go to Reto), one routed verdict per
+incident-born item, ``limit`` bounding judge attempts. Proposals need a
+done gripe with a resolution SHA and a quote grounded in the gripe or a
+successful example replay; the private replay runtime suppresses recall
+stamps and ref read counts so worker reads leave agent telemetry alone.
+Collection, judging and reporting share one skill scope; the report on
+the dispatching todo verifies approved edits against rule body text.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
-``plan_dispatch`` prefers independent review vendors. Fallback limits
-file-overlap holds. Verdictless reviews default to at least two attempts.
-Rescue sends sampled clean exits at the retry cap to run-quality judging.
-Judge tasks still enter rescue, with their backlink preventing another judge.
+``plan_dispatch`` prefers independent review vendors, fallback limits
+file-overlap holds, and verdictless reviews default to two attempts.
+Rescue sends sampled clean exits at the retry cap to run-quality judging
+(judge tasks still enter rescue, their backlink preventing another).
 Retryable Devin empty responses move reviews without model pins to their
-configured independent fallback when usable. Subsequent dispatch prefers a different
-independent flat-rate vendor and rescue keys on the terminal error.
-The runner otherwise retries terminal Devin errors on the same lane
-before counting a failure. The terminal error takes
-precedence because transcript progress can quote quota or rate-limit wording.
-Workers prepare release refs for reviewers without Git write access.
-Hub-pinned reviews claim only at their hub. Zero executor capacity raises
-an unplaced ask because capability advertisements hide the claim hold.
-After an ask re-arms a build, a fresh brief or acknowledged answer sends
-the pushed head back to a builder before review. The ask's brief wins only
-if its comment ``ord`` exceeds the selected brief's. A subsequent push or
-builder/reviewer handoff spends the request and restores normal routing.
+configured independent fallback; the next dispatch prefers a different
+independent flat-rate vendor and rescue keys on the terminal error — it
+wins because transcript progress can quote quota or rate-limit wording,
+while the runner otherwise retries terminal errors on the same lane
+first. Workers prepare release refs for reviewers without Git write
+access; hub-pinned reviews claim only at their hub; zero executor
+capacity raises an unplaced ask (capability advertisements hide the
+claim hold). After an ask re-arms a build, a fresh brief or acknowledged
+answer sends the pushed head back to a builder before review — the ask's
+brief wins only when its comment ``ord`` exceeds the selected brief's,
+and a later push or builder/reviewer handoff spends the request.
 
-Release fixers receive the pass and fix-loop briefs when the digest posts,
-so the owner can steer future iterations before their fix todos exist.
-Restamp reports the fixers' handoff decisions alongside its head check.
+Release fixers receive the pass and fix-loop briefs when the digest posts
+— the owner steers future iterations before their fix todos exist;
+restamp reports the fixers' handoff decisions beside its head check.
 
 MCP-backed validation checks the deployed revision against the slice's
-own endpoint and bearer at launch. The plan's deployment gate observes
-production rollout, and the launch check prevents a stale slice server
-from supplying evidence for a validation verdict. An endpoint that
-cannot prove the revision gives back the lease without spending an attempt.
+own endpoint and bearer at launch — an endpoint that cannot prove it
+gives the lease back without spending an attempt (the plan's deployment
+gate observes rollout separately). A run_slice whose evidence needs live
+prod precis reads declares it — ``meta.needs_mcp`` or
+``meta.op.params.needs_mcp`` (``lane_capability "mcp"`` implies it):
+picks, climbs and the claim then take only lanes whose adapter carries
+the write MCP and only hosts advertising ``precis_mcp`` (a writable
+slice-token registry, the shared env token or the mounted secret) plus
+``mcp_lane`` — a devin-only bearer host's ``builder`` floor is no claim
+either. A hub pin is no exception: a missing lane or bearer holds on the
+same host-gap path a missing binary uses until the pin drops, and a
+launch that still finds no bearer or no configured ``.mcp.json``
+endpoint gives the lease back attempt-free rather than run blind
+(gr793277).
 
 The periodic sweep reaches parked slice locks and resumes across watch
-budgets, so a slow folder cannot starve later folders.
+budgets — a slow folder cannot starve later ones.
 
 Build folders are disposable (gr741695, ``_slice_ws``): every ``run_slice``
 and ``land_slice`` job cuts its own clone of the host's hub (a bare
 repository, one ref ``refs/factory/build/<todo>/<job>`` per attempt) and no
 job enters a folder another job made. The builder pushes its ref before it
-exits; the worker's finalize pushes for a builder that did not, a
-``wip:`` snapshot of uncommitted work included, and the hub's hook scans
-every pushed commit because deleted credentials remain fetchable in history.
-Once the hub holds the head, the worker drops the folder. Builds, reviews and
-lands resume on ``meta.build_ref.host``. Start-over deletes the task's attempts.
-Clone setup copies the host venv. After checkout and any rebase, precis code
-builders sync locked paper and web extras for mypy and pytest.
-With only a legacy ref or the base available, a legacy park needs its saved
-head to preserve unpublished work. A missing head returns the lease attempt-free.
+exits — the worker's finalize pushes for one that did not (a ``wip:``
+snapshot included) — and the hub's hook scans every pushed commit:
+deleted credentials stay fetchable in history.
+Once the hub holds the head the worker drops the folder; builds, reviews and
+lands resume on ``meta.build_ref.host``, and start-over deletes the task's
+attempts. Clone setup copies the host venv; after checkout and rebase,
+precis builders sync locked paper and web extras for mypy and pytest.
+A legacy park with only a legacy ref or the base keeps its saved head
+(unpublished work); a missing head returns the lease attempt-free.
 
 ``_slice_adapters`` owns CLI argv, stdin and output parsing.
-Codex's terminal missing-credentials 401 parks the lane attempt-free.
-Checking the failure event protects against assistant quotations.
+Codex's terminal missing-credentials 401 parks the lane attempt-free —
+the failure event is checked against assistant quotations.
 Only ``claude_p`` gets a precis MCP grant. Codex and Devin hand off
 through final output. All three pass the pre-land deny-path check.
 ``meta.adapter`` pins the parser across lane configuration changes.
 Devin's model must be on the lane's list to prevent paid overage.
 Claude, Devin and Kimi commit, rebase and push their own attempt ref
-(``Adapter.pushes``); Codex, whose sandbox keeps ``.git`` read-only, leaves
-its edits and the worker commits and pushes after it exits. Workspace
-sandboxing is off by default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because
-cache/temp write scopes and Docker under Seatbelt remain unverified.
+(``Adapter.pushes``); Codex's sandbox keeps ``.git`` read-only, so the
+worker commits and pushes after it exits. Workspace
+sandboxing stays off (``PRECIS_DEVIN_SANDBOX=1``): cache/temp write
+scopes and Docker under Seatbelt remain unverified.
 A stale ``index.lock`` in a dead session's folder is simply removed; the
 job's folder has one owner.
 The coordinator supplies acceptance tests before launch: new files ride
 ``params.acceptance_tests`` as path-to-source artifacts installed in the
 fresh clone; checked-in paths come only from explicit Acceptance tests:
-or File set: lines in the body/latest brief, so quoted symptom paths do
-not become acceptance requests. Acceptance runs exclude nightly tests,
-matching the regular check gate.
-Plan dispatch and executor claims use the same brief selection as build
-and land to resolve overlap targets. This keeps brief-only release fixes
-isolated from main while holding overlapping work on the same branch.
-Finished builds can drop declared paths from the hold only when their
+or File set: lines in the body or brief — quoted symptom paths are no
+request. Acceptance runs exclude nightly tests, as the check gate does.
+Plan dispatch and executor claims use build/land's brief selection for
+overlap targets, keeping brief-only release fixes off main while
+overlapping work stays on one branch.
+Finished builds drop declared paths from the hold only when their
 complete diff stamp matches the tip handed to review or land.
-The overlap cap counts ended build runs that used a turn. A host refusal
-never launched a build, so it leaves the hold budget intact. The settings
+The overlap cap counts ended build runs that used a turn — a host refusal
+never launched one, so the hold budget stays intact. The settings
 read uses a savepoint to preserve the claim transaction on read failure.
 Dispatch overlap notes use an indexed snapshot of slice jobs and stamped
-todos. The snapshot query holds a transaction advisory lock on its own
-connection only for the dispatch diagnostic pass (``single_flight``): a
-concurrent dispatch scan skips the notes and preserves any existing
-overlap hold stamp. Executor claims and rescue always run the full scan.
+todos under a transaction advisory lock on its own connection for the
+dispatch pass only (``single_flight``): a concurrent scan skips the
+notes and keeps any existing hold stamp; executor claims and rescue
+always run the full scan.
 The wake runner requeues legacy year-long pinned-lane parks so submit can
 recheck the current lane breaker.
-``run_slice`` gates code builds on the available supplied tests. Missing
-tests fall back to checked landing; non-code/no-commit nodes are exempt.
+``run_slice`` gates code builds on the available supplied tests — missing
+ones fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot
-starve shared factory dispatch; timeout and cancellation stop their group.
+starve factory dispatch; timeout and cancellation stop their group.
 Every worker commit still lands checked: ask-specific tests do not cover
 all impacted behavior. First-line verdicts survive test-only dirty trees.
-Cloud ``devin_task`` appends a pending named-branch handoff contract; no
-consumer fetches or lands that branch yet, and the API executor has no
-local checkout.
-Land children and slice sessions retain service PATH precedence, with the
-user's uv install directory as a fallback so non-login coder services can
-run ship's nested helpers and the gate (gr702380). A clean exit whose
-session reported its commit blocked still lands: the worker commits the
-tree under a generated subject when no commit-msg.txt exists (gr702644),
-and work a commit that fails leaves is pushed as a ``wip:`` snapshot.
+Cloud ``devin_task`` appends a pending named-branch handoff contract —
+nothing fetches or lands that branch yet, and the API executor has no
+checkout.
+Land children and slice sessions keep service PATH precedence, with the
+user's uv install as fallback so non-login coder services can run ship's
+helpers and the gate (gr702380). A clean exit whose session reported its
+commit blocked still lands — the worker commits the tree under a
+generated subject when no commit-msg.txt exists (gr702644) — and work a
+failed commit leaves is pushed as a ``wip:`` snapshot.
 
-Builder ``skills:`` markers create skill-editor children after a successful
-land. A receipt under the source row lock prevents duplicate follow-ups
-when the land tail retries. The ``skill`` task class needs a live MCP lane
-and can write only skills and their evals; both poll and land enforce this
-scope. Governed skills retain their human-only fence. Editors open ruling
-provenance before loosening a rule, so tool drift cannot silently repeal
-human policy.
+Builder ``skills:`` markers create skill-editor children after a land; a
+receipt under the source row lock prevents duplicates when the land tail
+retries. The ``skill`` class needs a live MCP lane and writes only
+skills and their evals (poll and land both enforce). Governed skills
+keep their human-only fence: editors open ruling provenance before
+loosening a rule, so tool drift cannot silently repeal human policy.
 
 ``_run_features`` logs text, graph and lane features to
-``slice_run_features`` (gr595544). Relaunches share a job, so the key is
-``(job_ref_id, launch)``. The writer never blocks launch. These rows
-support predicting small-rung gate outcomes against recipe-only routing.
+``slice_run_features`` (gr595544), keyed ``(job_ref_id, launch)`` since
+relaunches share a job; the writer never blocks launch. The rows feed
+predicting small-rung gate outcomes against recipe-only routing.
 
 Same-lane Devin retries park attempt-free for 15 minutes until
 ``OUTAGE_PARK_CAP`` (gr751832). Review routing and rescue share the
 terminal JSON parser to classify errors independently of transcript prose.
 
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
-to keep later releases from repeating the same fix. Legacy notes inherit
-the preceding fix comment's SHA (unknown provenance counts as noted);
-held gripes retain their STATUS and existing comments.
+so later releases do not repeat a fix. Legacy notes inherit the
+preceding fix comment's SHA (unknown provenance counts as noted); held
+gripes keep their STATUS and comments.
 """
 
 from __future__ import annotations
