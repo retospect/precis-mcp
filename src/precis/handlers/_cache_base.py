@@ -337,6 +337,7 @@ class CacheBackedHandler(Handler):
 
     #: ``view='log'`` (the ref's ``ref_events`` trail) is opt-in per kind.
     _SERVES_LOG_VIEW: ClassVar[bool] = False
+    _SERVES_RAW_VIEW: ClassVar[bool] = False
 
     provider: ClassVar[str]
     ttl_seconds: ClassVar[int | None]
@@ -479,6 +480,7 @@ class CacheBackedHandler(Handler):
         no_fetch: bool = False,
         literal: bool = False,
         context: Any = None,
+        meta_key: str | None = None,
         **_kw: Any,
     ) -> Response:
         # An explicit blank id is the legacy recent-cache listing.
@@ -545,7 +547,7 @@ class CacheBackedHandler(Handler):
         # so the view can never fire a provider call. ``view='links'`` is
         # the stored ref's edge graph (gr702974) and ``view='log'`` its
         # ``ref_events`` trail — both read-only, resolved from the store
-        # alone; ``log`` is opt-in per kind (``_SERVES_LOG_VIEW``). Any
+        # alone. The event log and raw record views are opt-in per kind. Any
         # other non-None view that reaches a cache-backed ``get`` is
         # unknown — the dispatcher consumes eye-ladder labels before this
         # method runs.
@@ -555,6 +557,8 @@ class CacheBackedHandler(Handler):
             return self._render_links_view(
                 id, cursor=cursor, limit=limit, rel=rel, of_kind=of_kind
             )
+        if view == "raw" and self._SERVES_RAW_VIEW:
+            return self._render_raw_view(id, meta_key=meta_key)
         if view is not None and view != "body":
             # gr613469: ``body`` is the unambiguous correction, so it
             # always leads (the caller's own args preserved, review
@@ -574,6 +578,8 @@ class CacheBackedHandler(Handler):
             served = ["body", "links"]
             if self._SERVES_LOG_VIEW:
                 served.append("log")
+            if self._SERVES_RAW_VIEW:
+                served.append("raw")
             raise BadInput(
                 f"unknown view={view!r} for kind={self.spec.kind!r}",
                 options=served,
@@ -1205,6 +1211,26 @@ class CacheBackedHandler(Handler):
                 next=f"get(kind={self.spec.kind!r}, id='/recent') lists cached refs",
             )
         return render_event_log(self.store, entry[0].id)
+
+    def _render_raw_view(
+        self, id: str | int | None, *, meta_key: str | None = None
+    ) -> Response:
+        entry = self._resolve_cached_entry(id)
+        if entry is None:
+            raise NotFound(
+                f"{self.spec.kind} {id!r} is not cached — view='raw' reads "
+                "a stored ref and never fetches",
+                next=f"get(kind={self.spec.kind!r}, id='/recent') lists cached refs",
+            )
+        ref = entry[0]
+        from precis.handlers._raw_render import render_raw
+
+        return Response(
+            body=render_raw(
+                self.store, ref, self.store.tags_for(ref.id), meta_key=meta_key
+            ),
+            result_count=1,
+        )
 
     def _render_links_view(
         self,

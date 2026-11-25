@@ -784,7 +784,7 @@ class DraftHandler(Handler):
         id_required=False,
         note_like=True,
         placement="artifact",
-        views=("toc", "links", "log"),
+        views=("toc", "links", "raw", "log"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -1236,6 +1236,18 @@ class DraftHandler(Handler):
             from precis.handlers._event_log_render import render_event_log
 
             return render_event_log(self.store, ref.id)
+        if view == "raw":
+            from precis.handlers._raw_render import render_raw
+
+            return Response(
+                body=render_raw(
+                    self.store,
+                    ref,
+                    self.store.tags_for(ref.id),
+                    meta_key=(args or {}).get("meta_key"),
+                ),
+                result_count=1,
+            )
         if view == "links":
             # Graph-completeness audit item 1 — draft was link-blind like
             # paper (OPEN-ITEMS.md 🕸️). Ref-level only; draft's own
@@ -1327,7 +1339,8 @@ class DraftHandler(Handler):
                 next=(
                     "view='toc' for the heading skeleton, view='wordcount' for "
                     "per-section word counts vs targets, view='links' for the "
-                    "link graph, view='log' for the ref's event trail, "
+                    "link graph, view='raw' for the stored record, "
+                    "view='log' for the ref's event trail, "
                     "view='integration' for the integration ledger "
                     "(a topic dossier only), view='review' for the approval "
                     "ledger, view='cites' for finding citation counts, "

@@ -94,6 +94,7 @@ _CFP_VIEWS: tuple[str, ...] = (
     "log",
     "abbrevs",
     "links",
+    "raw",
 )
 
 

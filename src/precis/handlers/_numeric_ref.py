@@ -82,6 +82,8 @@ from precis.errors import (
 from precis.handle_words import to_words2
 from precis.handlers._eye import is_eye_view
 from precis.handlers._prio_tag import prio_display
+from precis.handlers._raw_render import _RAW_META_ELIDE_CHARS as _RAW_META_ELIDE_CHARS
+from precis.handlers._raw_render import render_raw
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
@@ -258,15 +260,6 @@ _HANDLE_TOKEN = re.compile(r"\b([a-z]{2}\d+)\b")
 #: size still executes, but past it the caller wants the listing anyway
 #: (gr514477).
 _ID_RANGE_HITS_CAP = 20_000
-
-#: Cap on one top-level ``meta`` value's rendered JSON inside
-#: ``view='raw'`` (gr635381): a job's ``meta.assembled_context`` runs
-#: ~45 kB of cached prompt layers, burying the ``meta.error`` a failed
-#: job's read exists to show — and the read's own byte cap cuts the
-#: dump before the error ever renders. Past the cap the value collapses
-#: to an elision line naming the ``args={'meta_key': '<key>'}`` door
-#: that serves it whole; the dict's other keys render as usual.
-_RAW_META_ELIDE_CHARS = 2000
 
 
 def _parse_id_range(
@@ -6103,93 +6096,7 @@ class NumericRefHandler(Handler):
     def _render_raw(
         self, ref: Ref, tags: list[Tag], *, meta_key: str | None = None
     ) -> str:
-        """``view='raw'`` — the verbatim record: scalar columns + the
-        ``meta`` JSON + tags + links. The pretty ``_render_one`` is a
-        curated summary; ``raw`` is the debug view that hides nothing.
-
-        The motivating gap: a todo's *behaviour* lives in ``meta``
-        (``executor`` → dispatch, ``schedule`` → recurring cadence,
-        ``auto_check`` → the wait condition, ``workspace`` →
-        path/format/brief, ``anchor`` → the draft chunk a change-request
-        targets) and none of it surfaces in the default render or in
-        ``links`` / ``log``. Two todos can render byte-identical yet behave
-        completely differently; ``raw`` is the read path to tell them
-        apart. Universal across numeric-ref kinds — meta is invisible on
-        every kind, not just ``todo``.
-
-        "Nothing" now means *every key*, not every byte (gr635381): a
-        top-level meta value whose JSON outgrows
-        :data:`_RAW_META_ELIDE_CHARS` collapses to an elision line that
-        names the single-key door — ``args={'meta_key': '<key>'}`` —
-        which renders that value alone, in full. Without it a job's
-        ~45 kB ``assembled_context`` pushed the failure reason the read
-        was for past the byte cap.
-        """
-        import json
-
-        meta = ref.meta or {}
-        if meta_key is not None:
-            if meta_key not in meta:
-                raise BadInput(
-                    f"{ref.kind} {ref.public_id} meta has no key {meta_key!r}",
-                    options=sorted(meta),
-                    next=(f"get(kind={ref.kind!r}, id={ref.public_id}, view='meta')"),
-                )
-            value = meta[meta_key]
-            # A text value renders verbatim — the elided blob is usually
-            # a prompt layer or a traceback, which quoting/escaping would
-            # only make harder to read. Structured values keep JSON.
-            rendered = (
-                value
-                if isinstance(value, str)
-                else json.dumps(value, indent=2, sort_keys=True, default=str)
-            )
-            return f"# raw {ref.kind} {ref.public_id} — meta.{meta_key}\n{rendered}"
-
-        out = [f"# raw {ref.kind} {ref.public_id}", ""]
-        # Scalar columns — only the ones that are set, to keep it terse.
-        scalars: list[tuple[str, Any]] = [
-            ("id", ref.id),
-            ("kind", ref.kind),
-            ("slug", ref.slug),
-            ("parent_id", ref.parent_id),
-            ("prio", ref.prio),
-            ("provider", ref.provider),
-            ("set_by", ref.set_by),
-            ("year", ref.year),
-            ("created_at", ref.created_at),
-            ("updated_at", ref.updated_at),
-            ("retired_at", ref.retired_at),
-            ("auto_refresh_days", ref.auto_refresh_days),
-            ("refreshed_at", ref.refreshed_at),
-        ]
-        out += [f"{k}: {v}" for k, v in scalars if v is not None]
-        out += ["", "title:", ref.title]
-        if tags:
-            out += ["", "tags: " + " ".join(str(t) for t in tags)]
-        out += ["", "meta:"]
-        shown: dict[str, Any] = {}
-        for key, value in meta.items():
-            blob = json.dumps(value, sort_keys=True, default=str)
-            if len(blob) > _RAW_META_ELIDE_CHARS:
-                shown[key] = (
-                    f"<{len(blob)} chars elided; get(kind={ref.kind}, "
-                    f"id={ref.public_id}, view='raw', "
-                    f"args={{'meta_key': '{key}'}}) for it whole>"
-                )
-            else:
-                shown[key] = value
-        out.append(json.dumps(shown, indent=2, sort_keys=True, default=str))
-        body = "\n".join(out)
-        # gr489582: ``raw`` exists so an agent can read meta — the link
-        # list must not drown it. Cap like the bare-get append; the
-        # overflow line already points at ``view='links'`` for the rest.
-        from precis.handlers._links_render import DEFAULT_LINK_ROW_CAP
-
-        body += self._render_links_section(
-            ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
-        )
-        return body
+        return render_raw(self.store, ref, tags, meta_key=meta_key)
 
     def _render_meta_view(self, ref: Ref) -> str:
         """``view='meta'`` — the ref's full ``meta`` dict as JSON

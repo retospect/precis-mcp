@@ -207,8 +207,11 @@ debug behaviour the default render hides — e.g. a todo's
 and compute kinds, `view='log'` reads the stored `ref_events` trail on
 `paper`, `datasheet`, `cfp`, `pres`, `draft`, `cad`, `structure`,
 `pcb`, `plaintext`, `markdown` and `news`. `tex` rejects the log
-view. Availability of `links` and `raw` varies by kind. A bad view
-returns the kind's option list.
+view. `view='raw'` serves the stored record — the same columns, meta
+JSON, elision and `args={'meta_key': '<key>'}` door as on the
+numeric-ref kinds — on `paper`, `datasheet`, `cfp`, `draft`, `cad`,
+`structure`, `pcb` and `news`. Availability of `links` varies by kind.
+A bad view returns the kind's option list.
 
 For handle format, sibling/parent navigation (`+1`/`-1`/`^`), and the
 full 2-char type-code table, see `precis-addressing-help`.

@@ -297,13 +297,14 @@ class NewsHandler(CacheBackedHandler):
         # `get` now understands the resulting `slug~ord` selector
         # (CacheBackedHandler._render_chunk_selector).
         supports_chunk_selectors=True,
-        views=("body", "links", "log"),
+        views=("body", "links", "raw", "log"),
     )
 
     stamps_recall: ClassVar[bool] = True
     handle_routes_by_ref_id: ClassVar[bool] = True
     provider: ClassVar[str] = "news"
     _SERVES_LOG_VIEW: ClassVar[bool] = True
+    _SERVES_RAW_VIEW: ClassVar[bool] = True
     ttl_seconds: ClassVar[int | None] = None  # pinned — articles are records
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"

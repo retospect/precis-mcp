@@ -192,6 +192,7 @@ _VIEWS = (
     "rays",
     "inspect",
     "links",
+    "raw",
     "log",
     "literature",
     "pathways",
@@ -3838,6 +3839,12 @@ class StructureHandler(Handler):
                 next="get(kind='structure', id='<slug>', view='completion') "
                 "without source=",
             )
+        if view == "raw" and src is not None:
+            raise BadInput(
+                "structure raw records read stored refs and cannot hydrate "
+                "external sources",
+                next="get(kind='structure', id='<slug>', view='raw') without source=",
+            )
         if src is not None:
             query = q if q is not None else a.get("q")
             if id is not None and str(id).strip() and not a.get("config_id"):
@@ -3893,6 +3900,18 @@ class StructureHandler(Handler):
         if view == "pathways":
             # meta only — the pathway list reads refs.meta, not geometry.
             return self._render_pathways(ref)
+        if view == "raw":
+            from precis.handlers._raw_render import render_raw
+
+            return Response(
+                body=render_raw(
+                    self.store,
+                    ref,
+                    self.store.tags_for(ref.id),
+                    meta_key=a.get("meta_key"),
+                ),
+                result_count=1,
+            )
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)

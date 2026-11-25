@@ -215,7 +215,7 @@ _PROBE_VIEWS = (
     "mold",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
-_OTHER_VIEWS = ("links", "log", "sweep", "bom", "printability")
+_OTHER_VIEWS = ("links", "raw", "log", "sweep", "bom", "printability")
 _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
 
 #: view='printability' — flat, equal weights (se passes its own
@@ -1464,6 +1464,18 @@ class CadHandler(Handler):
             from precis.handlers._event_log_render import render_event_log
 
             return render_event_log(self.store, ref.id)
+        if view == "raw":
+            from precis.handlers._raw_render import render_raw
+
+            return Response(
+                body=render_raw(
+                    self.store,
+                    ref,
+                    self.store.tags_for(ref.id),
+                    meta_key=(args or {}).get("meta_key"),
+                ),
+                result_count=1,
+            )
         spec, handles = self.store.cad_load(ref.id)
         with sticky_prefunits_scope(_spec_prefunits(spec)):
             return self._get_view(ref, spec, handles, view, args or {}, s)

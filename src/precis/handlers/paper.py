@@ -400,6 +400,7 @@ _SUPPORTED_VIEWS = (
     "log",
     "abbrevs",
     "links",
+    "raw",
     "claims",
     "authors",
     "chunks",
@@ -12176,6 +12177,18 @@ class PaperHandler(Handler):
             lines += [str(t) for t in tags] or ["(no tags)"]
             return Response(body="\n".join(lines))
 
+        if view == "raw":
+            from precis.handlers._raw_render import render_raw
+
+            return Response(
+                body=render_raw(
+                    self.store,
+                    ref,
+                    self.store.tags_for(ref.id),
+                    meta_key=(args or {}).get("meta_key"),
+                ),
+                result_count=1,
+            )
         if view == "links":
             if (args or {}).get("reason") == "missing":
                 from precis.handlers._links_missing_reason import render_missing_reasons

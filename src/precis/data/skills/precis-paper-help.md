@@ -617,7 +617,9 @@ a gloss. The web reader's Semantic/Keyword sidebar uses the same data.
 Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `figures`, `measures`,
 `refs` (`references`), `si`, `sentences` (the last three: see Read a
 paper's own reference list), `bibtex` (`cite/bib`), `ris` (`cite/ris`),
-`endnote` (`cite/endnote`), `links`, `claims`, `authors`,
+`endnote` (`cite/endnote`), `links`, `raw` (the stored record — every
+column plus the `meta` JSON; an oversized value elides and
+`args={'meta_key': '<key>'}` serves it whole), `claims`, `authors`,
 `comments` (the note timeline — see Add a note to a paper),
 `corrections` (human/inferred fixes of glyph-damaged passages — see
 [[precis-glyph-correction-help]]; recorded with `put(id='pa…',

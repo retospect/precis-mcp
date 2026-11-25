@@ -286,6 +286,7 @@ _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: live jlcpcb.com refresh on the way out.
 _OTHER_VIEWS = (
     "links",
+    "raw",
     "log",
     "footprints",
     "footprint",
@@ -5495,7 +5496,7 @@ class PcbHandler(Handler):
                     "view='log')",
                 )
             return render_event_log(self.store, ref_id)
-        if view == "links":
+        if view in ("links", "raw"):
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
             from precis.handlers._links_render import render_links_view
@@ -5505,7 +5506,19 @@ class PcbHandler(Handler):
                 raise NotFound(
                     f"pcb id={ref_id} not found",
                     next="re-resolve the design: get(kind='pcb', id='slug', "
-                    "view='links')",
+                    f"view={view!r})",
+                )
+            if view == "raw":
+                from precis.handlers._raw_render import render_raw
+
+                return Response(
+                    body=render_raw(
+                        self.store,
+                        ref,
+                        self.store.tags_for(ref.id),
+                        meta_key=(args or {}).get("meta_key"),
+                    ),
+                    result_count=1,
                 )
             return render_links_view(
                 self.store,

@@ -550,25 +550,23 @@ class TestViews:
         self, store: Store, handler: PaperHandler
     ) -> None:
         """gr551843: agents reach for ``view='meta'`` wanting the
-        bibliographic card — the overview *is* that card, so it aliases
-        instead of refusing (one reading; 'raw' has two and still
-        refuses with the view list)."""
+        bibliographic card — the overview *is* that card, so it aliases."""
         _seed_paper(store)
         resp = handler.get(id="wang2020state", view="meta")
         plain = handler.get(id="wang2020state")
         assert resp.body == plain.body
         assert "Nature, 2020" in resp.body
 
-    def test_raw_view_still_refuses_with_the_view_list(
+    def test_raw_view_renders_and_meta_still_aliases_overview(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """gr551843: ``view='raw'`` has no single natural reading on a
-        paper — it still refuses, and the refusal lists the views."""
         _seed_paper(store)
-        with pytest.raises(Unsupported) as exc:
-            handler.get(id="wang2020state", view="raw")
-        assert "bibtex" in (exc.value.options or [])
-        assert "toc" in (exc.value.options or [])
+        slug = "wang2020state"
+
+        raw = handler.get(id=slug, view="raw")
+        assert raw.body.startswith(f"# raw paper {slug}\n")
+        assert "year: 2020" in raw.body
+        assert handler.get(id=slug, view="meta").body == handler.get(id=slug).body
 
     def test_status_view_single_id(self, store: Store, handler: PaperHandler) -> None:
         """gr635828: callers kept guessing ``view='status'`` on a
