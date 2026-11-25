@@ -56,6 +56,35 @@ class TestDependent:
         assert s.independent is False
         assert s.depends_on == [1, 2, 3]
 
+    def test_any_of_the_previous_claims(self) -> None:
+        # gr793801 — WO-style "according to any of the previous claims"
+        # was read as independent; only "preceding" and explicit
+        # "claim N" references counted.
+        s = classify_claim(
+            "5. The method according to any of the previous claims, wherein W.",
+            5,
+        )
+        assert s.independent is False
+        assert s.depends_on == [1, 2, 3, 4]
+
+    def test_the_previous_claim(self) -> None:
+        # gr793801 — bare "the previous claim" narrows only the claim
+        # immediately before it.
+        s = classify_claim(
+            "9. The device according to the previous claim, wherein W.",
+            9,
+        )
+        assert s.independent is False
+        assert s.depends_on == [8]
+
+    def test_the_preceding_claims_plural(self) -> None:
+        s = classify_claim(
+            "7. The apparatus according to the preceding claims.",
+            7,
+        )
+        assert s.independent is False
+        assert s.depends_on == [1, 2, 3, 4, 5, 6]
+
     def test_forward_and_self_reference_ignored(self) -> None:
         # A reference to a same/higher-numbered claim is not a dependency
         # (defensive — well-formed claims never forward-reference).

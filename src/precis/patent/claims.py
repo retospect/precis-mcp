@@ -12,9 +12,10 @@ prior-art claim it designs around.
 
 It is a **heuristic**, like :func:`precis.ingest.blocks.classify_density`:
 a dependent claim back-references a lower-numbered claim ("The method of
-claim 3, wherein…", "according to any preceding claim"); an independent
-claim does not. The result is stored, not authoritative — a review pass
-or a re-run can refine it without a migration.
+claim 3, wherein…", "according to any preceding claim", "according to
+any of the previous claims"); an independent claim does not. The result
+is stored, not authoritative — a review pass or a re-run can refine it
+without a migration.
 """
 
 from __future__ import annotations
@@ -22,9 +23,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-#: "…any preceding claim" / "any one of the preceding claims" — a
+#: Words a dependent claim uses for "the claim(s) before this one".
+_PRECEDING_WORDS = r"(?:preceding|previous|foregoing|aforesaid|aforementioned)"
+
+#: "…the preceding claims" / "any of the previous claims" (plural) — a
 #: dependent claim that narrows *every* earlier claim.
-_PRECEDING_RE = re.compile(r"preceding\s+claims?", re.I)
+_PRECEDING_ALL_RE = re.compile(rf"\b{_PRECEDING_WORDS}\s+claims\b", re.I)
+
+#: "…the previous claim" (singular) — a bare reference narrows only the
+#: claim right before it; a quantifier ("any preceding claim", "each of
+#: the foregoing claim") still points at every earlier claim.
+_PRECEDING_ONE_RE = re.compile(
+    rf"\b(?:(any|each|either|every)\s+(?:of\s+the\s+|of\s+)?)?"
+    rf"{_PRECEDING_WORDS}\s+claim\b",
+    re.I,
+)
 
 #: A reference to specific claim number(s): the "claim(s)" anchor followed
 #: by a number spec ("1", "1 to 3", "1 or 2", "1, 2 and 5"). Anchoring on
@@ -63,8 +76,13 @@ def classify_claim(text: str, number: int) -> ClaimStructure:
     independent.
     """
     deps: set[int] = set()
-    if _PRECEDING_RE.search(text):
+    if _PRECEDING_ALL_RE.search(text):
         deps.update(range(1, number))
+    for pm in _PRECEDING_ONE_RE.finditer(text):
+        if pm.group(1):
+            deps.update(range(1, number))
+        elif number > 1:
+            deps.add(number - 1)
     for m in _CLAIM_REF_RE.finditer(text):
         span = m.group(1)
         for r in _RANGE_RE.finditer(span):

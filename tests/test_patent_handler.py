@@ -26,6 +26,7 @@ from precis.patent.ops import (
     OpsQuotaError,
 )
 from precis.store import Store, Tag
+from precis.store.types import ChunkInsert
 from tests.conftest import chunk_handle, record_handle
 
 FIXTURES = Path(__file__).parent / "fixtures" / "patent"
@@ -755,6 +756,47 @@ class TestClaimsView:
         assert "**Claim 2** (depends on claim 1):" in body
         assert "**Claim 3** (depends on claim 1):" in body
         assert "photocatalytic system" in body.lower()  # claim 1 recited
+
+    def test_claim_views_correct_stale_dependencies(
+        self, handler: PatentHandler, store: Store
+    ) -> None:
+        ref = store.insert_ref(
+            kind="patent", slug="wo2026009145a1", title="Example patent"
+        )
+        claim_texts = (
+            "1. A device comprising a housing.",
+            "2. The device according to claim 1.",
+            "3. The device according to any of the previous claims.",
+            "4. The device according to the previous claim.",
+        )
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(
+                    ord=number - 1,
+                    text=claim,
+                    meta={
+                        "patent_block": "claim",
+                        "claim_number": number,
+                        "claim_independent": number != 2,
+                        "depends_on": [1] if number == 2 else [],
+                    },
+                )
+                for number, claim in enumerate(claim_texts, start=1)
+            ],
+        )
+
+        claims = handler.get(id="wo2026009145a1", view="claims").body
+        toc = handler.get(id="wo2026009145a1", view="toc").body
+        shapes = (
+            "independent",
+            "depends on claim 1",
+            "depends on claim 1, 2",
+            "depends on claim 3",
+        )
+        for number, shape in enumerate(shapes, start=1):
+            assert f"**Claim {number}** ({shape}):" in claims
+            assert f"claim {number} ({shape})" in toc
 
     def test_description_view_excludes_claims(self, handler: PatentHandler) -> None:
         handler.get(id="EP1234567B1")

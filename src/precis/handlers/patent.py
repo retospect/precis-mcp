@@ -31,6 +31,7 @@ from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.format import render_agent_table
 from precis.handlers._patent_cql import build_cql
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.patent.claims import classify_claim
 from precis.patent.ingest import (
     AWAITING_FULLTEXT_TAG,
     FULLTEXT_UNAVAILABLE_TAG,
@@ -50,6 +51,7 @@ from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
+from precis.store.types import ChunkRow
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.match_all import fold_match_all_q
@@ -743,7 +745,8 @@ class PatentHandler(Handler):
             lines = [f"# {handle} - {section}"]
             for b in selected:
                 if want == "claim" and marked:
-                    lines.append(_claim_header(b.meta or {}))
+                    number, shape = _claim_label(b)
+                    lines.append(f"**Claim {number}** ({shape}):")
                 lines.append(b.text)
                 lines.append("")
             return Response(body="\n".join(lines).rstrip())
@@ -794,17 +797,8 @@ class PatentHandler(Handler):
                     f"description ({len(desc)} paragraphs)"
                 )
             for b in claims:
-                m = b.meta or {}
-                if m.get("claim_independent"):
-                    shape = "independent"
-                else:
-                    deps = m.get("depends_on") or []
-                    shape = (
-                        "depends on claim " + ", ".join(str(d) for d in deps)
-                        if deps
-                        else "dependent"
-                    )
-                lines.append(f"  ~{b.ord}  claim {m.get('claim_number')} ({shape})")
+                number, shape = _claim_label(b)
+                lines.append(f"  ~{b.ord}  claim {number} ({shape})")
             unmarked = [b for b in blocks if not (b.meta or {}).get("patent_block")]
             if unmarked:
                 lines.append(
@@ -1059,21 +1053,25 @@ def _ops_hit_to_search_hit(hit: OpsHit) -> SearchHit:
     )
 
 
-def _claim_header(meta: dict[str, Any]) -> str:
-    """A one-line structural header for a claim block in the ``claims``
-    view: its number and whether it is independent or which earlier
-    claim(s) it depends on (from the ``patent_block`` marker, slice 1)."""
+def _claim_label(block: ChunkRow) -> tuple[str, str]:
+    """Use the current classifier for previously ingested claim text."""
+    meta = block.meta or {}
     number = meta.get("claim_number")
-    if meta.get("claim_independent"):
+    if type(number) is int and number > 0:
+        structure = classify_claim(block.text, number)
+        independent, deps = structure.independent, structure.depends_on
+    else:
+        independent = bool(meta.get("claim_independent"))
+        deps = meta.get("depends_on") or []
+    if independent:
         shape = "independent"
     else:
-        deps = meta.get("depends_on") or []
         shape = (
             "depends on claim " + ", ".join(str(d) for d in deps)
             if deps
             else "dependent"
         )
-    return f"**Claim {number}** ({shape}):"
+    return str(number), shape
 
 
 def _format_biblio(ref: Ref, meta: dict[str, Any]) -> str:
