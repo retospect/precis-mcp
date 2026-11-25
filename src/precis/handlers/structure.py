@@ -1208,6 +1208,7 @@ class StructureHandler(Handler):
         "edit": ArgsSpec({"ops"}),
         "get": ArgsSpec(
             {
+                "meta_key",
                 "source",
                 "q",
                 "config_id",

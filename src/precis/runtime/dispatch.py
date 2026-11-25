@@ -669,6 +669,54 @@ def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
     return frozenset(accepted)
 
 
+def _link_applies_reason(cls: type[Any], clean: dict[str, Any]) -> bool:
+    """Whether ``link(reason=…)`` can land on ``cls`` for the call shape
+    in ``clean`` (gr753970).
+
+    The strictness gate's ``reason=`` hint must name only kinds whose
+    link really takes it, and signature membership alone over-promises:
+    the shared ``NumericRefHandler.link`` base declares ``reason`` but
+    refuses it at runtime unless the kind sets ``link_meta`` (gripe,
+    quest). The walk mirrors :func:`_handler_accepted_kwargs`'s, tracking
+    *which* class in the forwarding chain declares ``reason``: an
+    override that consumes it itself (memory/todo/finding/paper/taxon/
+    checklist, via :func:`precis.utils.link_tag_ops.merge_link_reason`)
+    takes it on any kind — paper's also covers the cfp and datasheet
+    subclasses, which don't override ``link``; the base takes it only
+    under ``link_meta``.
+
+    Three call-shape gates refuse ``reason=`` on *every* kind, so the
+    hint stays silent there: ``rel='parent'`` (a virtual placement edge
+    with no stored meta to carry a reason), ``mode='remove'``
+    (``merge_link_reason`` is add-only) and a fan-in ``id`` (edge meta
+    is single-id only; a comma-joined string is not a real fan-in
+    spelling, but skipping the hint for it is harmless).
+    """
+    from precis.handlers._numeric_ref import NumericRefHandler
+    from precis.handlers._placement import RESERVED_PARENT_REL
+
+    if clean.get("rel") == RESERVED_PARENT_REL:
+        return False
+    if clean.get("mode") == "remove":
+        return False
+    id_arg = clean.get("id")
+    if isinstance(id_arg, list) or (isinstance(id_arg, str) and "," in id_arg):
+        return False
+    for klass in cls.__mro__:
+        raw = klass.__dict__.get("link")
+        if raw is None:
+            continue
+        func = inspect.unwrap(raw)
+        if "reason" in _explicit_param_names(func):
+            if klass is NumericRefHandler:
+                return bool(getattr(cls, "link_meta", False))
+            return True
+        catchall = _catchall_param_name(func)
+        if catchall is None or not _forwards_catchall(func, catchall):
+            break
+    return False
+
+
 #: The two spellings of the one prose slot a put/edit takes. The verbs
 #: declare both at the top level (``body=`` because finding's write shape
 #: made it canonical, ``text=`` because every numeric-ref/file kind uses
@@ -5165,6 +5213,18 @@ class DispatchMixin(RuntimeShape):
                     )
                     if note_takers:
                         hint = " — kinds accepting note=: " + ", ".join(note_takers)
+                if not hint and verb == "link" and "reason" in unknown_top:
+                    # gr753970: reason= rides link's meta= door; name the
+                    # kinds whose link really takes it for this call shape
+                    # (rel='parent', mode='remove' and fan-in ids refuse it
+                    # on every kind, so the hint stays silent there).
+                    reason_takers = sorted(
+                        k
+                        for k, h in self.hub.handlers.items()
+                        if _link_applies_reason(cast(type[Handler], type(h)), clean)
+                    )
+                    if reason_takers:
+                        hint = " — kinds accepting reason=: " + ", ".join(reason_takers)
                 if not hint and verb == "search":
                     # gr568808: a verb-level search knob on a kind that
                     # can't apply it refuses "not on <kind> yet" —

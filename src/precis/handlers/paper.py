@@ -997,6 +997,7 @@ class PaperHandler(Handler):
             # (gr520326): resolve the figure crop / page for the chunk
             # at that ord.
             {
+                "meta_key",
                 "page",
                 "page_size",
                 "offset",

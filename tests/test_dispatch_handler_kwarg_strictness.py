@@ -195,6 +195,52 @@ def test_link_note_refusal_names_takers_without_invalid_workaround(
     assert "meta={'note':" not in out
 
 
+def test_link_reason_refusal_names_takers_for_this_call_shape(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr753970: an unsupported reason= on link names the kinds whose
+    link really takes it — the ``merge_link_reason`` overrides (with
+    ``PaperHandler.link`` covering cfp and datasheet by inheritance)
+    plus the ``link_meta``-gated base kinds — computed live like the
+    note= hint, not from signature membership alone (the base declares
+    ``reason`` but refuses it at runtime when ``link_meta`` is
+    False)."""
+    out = runtime_with_store.dispatch(
+        "link",
+        {"kind": "cad", "id": "example", "target": "fi1", "reason": "why"},
+    )
+    assert "does not accept ['reason']" in out
+    assert "kinds accepting reason=:" in out
+    takers = out.split("kinds accepting reason=: ", 1)[1].partition(";")[0]
+    assert takers.split(", ") == [
+        "cfp",
+        "checklist",
+        "datasheet",
+        "finding",
+        "gripe",
+        "memory",
+        "paper",
+        "quest",
+        "taxon",
+        "todo",
+    ]
+
+
+def test_link_reason_hint_suppressed_where_reason_never_applies(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr753970: rel='parent' (a virtual placement edge with no meta to
+    carry a reason), mode='remove' (``merge_link_reason`` is add-only)
+    and a fan-in id refuse reason= on every kind — naming takers there
+    would point at kinds the call still can't use, so the hint stays
+    silent."""
+    base = {"kind": "cad", "id": "example", "target": "fi1", "reason": "why"}
+    for extra in ({"rel": "parent"}, {"mode": "remove"}, {"id": ["a", "b"]}):
+        out = runtime_with_store.dispatch("link", {**base, **extra})
+        assert "does not accept ['reason']" in out
+        assert "kinds accepting reason=" not in out
+
+
 def test_tolerant_handler_ignores_unrecognized_extras(
     runtime_with_store: PrecisRuntime,
 ) -> None:

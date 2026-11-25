@@ -704,6 +704,7 @@ class DraftHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec(
             {
+                "meta_key",
                 "limit",
                 "offset",
                 "page",

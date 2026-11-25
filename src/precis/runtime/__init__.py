@@ -16,6 +16,10 @@ tool ledger retains the caller's reference envelope, never expanded content.
 Writer labels go through the credential gate at payload validation because
 attribution is persisted even for handlers that accept opaque text.
 
+Link refusals suggest kinds for ``reason=`` only when their handlers can
+store edge metadata for the requested operation. Forwarded signatures
+alone cannot establish that capability.
+
 A queried verbatim skill read uses find-in-ref so it searches the served
 body even when the default read shows a section index. Fisheye queries
 continue to select neighbor groups.

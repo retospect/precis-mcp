@@ -416,6 +416,7 @@ class CadHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec(
             {
+                "meta_key",
                 "a",
                 "b",
                 "axis",
