@@ -136,7 +136,6 @@ _OPS_ALIASES = {
 #: new label and breaks CI-NEB label matching). The real op is ``displace``.
 _MOVE_ALIASES = frozenset(
     {
-        "move_atom",
         "move",
         "translate_atom",
         "translate",
@@ -2227,6 +2226,12 @@ def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
     from the site clearance check, so its own current position never
     blocks the target. Refuses a fixed atom (release it with constrain
     kind='none' first).
+
+    A ``vector`` supplied without a ``site`` is a guessed ``displace``:
+    after the atom and fixed checks above the refusal names ``displace``
+    (the label-preserving vector move) with its valid form — the
+    ``move_atom`` guess a model makes for a delta move (gr788533) learns
+    the real op instead of falling back to vacancy + add_atom.
     """
     atom_label = op.get("atom")
     if not atom_label:
@@ -2240,6 +2245,13 @@ def _op_move_atom(scene: Scene, op: dict[str, Any]) -> None:
         )
     site = op.get("site")
     if not isinstance(site, dict):
+        if "vector" in op:
+            raise OpError(
+                "move_atom repositions onto a 'site' — a 'vector' delta is "
+                "'displace' (also label-preserving)",
+                example=_DISPLACE_EXAMPLE,
+                next=_DISPLACE_HINT,
+            )
         raise OpError(
             "move_atom needs a 'site' object: "
             "{'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: [labels]}",
