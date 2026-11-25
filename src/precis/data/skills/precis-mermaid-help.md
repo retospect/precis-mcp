@@ -61,8 +61,15 @@ fine (mermaidx>=0.9); a stale claim they didn't was gr311345.
 
 - `put(kind='mermaid', id='<slug>', title='…', project=<todo>, text='<source>',
   vocab='…')` — create. Source defaults to a starter flowchart.
-- `get(kind='mermaid', id=None)` lists; `id='<slug>'` renders (source + vocab +
-  notes + `## Bindings` + lints); `id='mn<id>'` reads the source node.
+- `get(kind='mermaid', id=None)` lists; `id='<slug>'` renders (`## Lints` —
+  a bounded preview of the first 20 findings — + source + vocab + notes +
+  `## Bindings`; a byte-capped read can only cut the prose, and each doc
+  section header names its `mn<id>` handle). `id='mn<id>'` reads that one
+  chunk — whole when it fits, else page by `args={'offset': N}` following
+  the footer's `rest:` to the end. `view='links'|'log'|'raw'|'lints'` are
+  the ref-inspection views — `'lints'` pages the full finding list by
+  `args={'offset': N}` (a node handle takes no `view=` — pass the owning
+  slug).
 - `edit(kind='mermaid', id='<slug>', text=… | vocab=… | notes=…)` — set the
   source, the shared vocabulary, or the notes.
 - `delete(kind='mermaid', id='<slug>')` — soft-retire.

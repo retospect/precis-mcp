@@ -48,6 +48,11 @@ class FigureHandler(DiagramHandler):
         note_like=True,
         placement="artifact",
         corpus_role="none",
+        views=("links", "log", "raw", "lints"),
+        # A figure's addressable chunks are fn<chunk_id> node handles —
+        # the dispatcher's generic slug~ord rewrite must leave them alone
+        # (gr793934 for the mermaid twin; same class as plan's gr495745).
+        supports_chunk_selectors=False,
         # Compute-lane opt-in: a diagram_propose job parents on the figure it builds/verifies.
         can_own_jobs=True,
     )

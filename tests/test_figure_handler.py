@@ -123,6 +123,31 @@ def test_get_node_by_handle(figure):
     assert "circle" in node
 
 
+def test_fn_handle_reads_node_through_dispatch(figure, runtime_with_store):
+    """gr793934's mermaid bug was figure's too: the dispatcher rewrote
+    ``fn<N>`` to ``slug~ord``, a selector the kind has no grammar for
+    (same class as plan's gr495745)."""
+    figure.put(id="m", text=_CIRCLE)
+    body = figure.get(id="m").body
+    handle = next(tok for tok in body.split() if tok.startswith("fn"))
+    out, err = runtime_with_store.dispatch_with_status("get", {"id": handle})
+    assert not err and "circle" in out, out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "figure", "id": handle}
+    )
+    assert not err and "circle" in out, out
+
+
+def test_figure_ref_inspection_views(figure):
+    """The shared links / log / raw views ride the diagram core too."""
+    figure.put(id="m", text=_CIRCLE)
+    assert "(no links)" in figure.get(id="m", view="links").body
+    assert "# raw figure" in figure.get(id="m", view="raw").body
+    assert figure.get(id="m", view="log").body.startswith("log:")
+    with pytest.raises(BadInput):
+        figure.get(id="m", view="bogus")
+
+
 def test_lint_surfaces_out_of_bounds(figure):
     figure.put(id="m")
     oob = (
@@ -144,3 +169,19 @@ def test_delete_retires(figure):
 def test_get_missing_raises(figure):
     with pytest.raises(NotFound):
         figure.get(id="nope")
+
+
+def test_lints_view_pages_the_full_finding_list(figure):
+    """view='lints' is the bounded read path the slug render's preview
+    names (review td794121) — same shared core as mermaid's."""
+    figure.put(id="m")
+    oob = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        '<rect id="big" x="90" y="90" width="50" height="50"/></svg>'
+    )
+    figure.edit(id="m", text=oob)
+    body = figure.get(id="m", view="lints").body
+    assert "[bounds]" in body and "big" in body
+    # and the per-view args gate refuses keys meant for another view
+    with pytest.raises(BadInput):
+        figure.get(id="m", view="lints", args={"meta_key": "render"})

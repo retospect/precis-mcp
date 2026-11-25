@@ -564,3 +564,401 @@ def test_slug_view_budget_hint_names_supported_calls(mh: MermaidHandler) -> None
     assert "get(kind='mermaid', id='<node handle>')" in resp.result_budget_hint
     assert "get(kind='mermaid')" in resp.result_budget_hint
     assert "search(" not in resp.result_budget_hint
+
+
+# ── gr793934: the render order + the node-handle dead end ───────────────────
+
+
+def _notes_handle(store, ref_id: int) -> str:
+    for c in store.drafts.reading_order(ref_id, kind="mermaid"):
+        if c.chunk_kind == "mermaid_notes":
+            return c.dc
+    raise AssertionError("no mermaid_notes chunk")
+
+
+def test_render_puts_lints_and_source_ahead_of_the_prose(store, mh, diagram) -> None:
+    """gr793934: the byte cap cuts from the bottom — vocab/notes/bindings
+    used to render ahead of the source (and lints last of all), so a long
+    notes doc hid both. The invariant parts render first now."""
+    h = _target(store)
+    mh.link(id="flow", element="intake", target=h)
+    # rewrite the source without 'intake' → dangling binding lint
+    mh.edit(id="flow", text="flowchart TD\n  ship[Ship] --> done((Done))")
+    mh.edit(id="flow", vocab="vocabulary text")
+    mh.edit(id="flow", notes="notebook text")
+    body = mh.get(id="flow").body
+    assert body.index("## Lints") < body.index("## Mermaid source")
+    assert body.index("## Mermaid source") < body.index("## Shared vocabulary")
+    assert body.index("## Shared vocabulary") < body.index("## Implementation notes")
+    assert body.index("## Implementation notes") < body.index("## Bindings")
+
+
+def test_doc_sections_carry_their_chunk_handle(store, mh, diagram) -> None:
+    """A truncated render's outline names each cut section by the handle
+    that reads it whole."""
+    mh.edit(id="flow", vocab="vocabulary text")
+    mh.edit(id="flow", notes="notebook text")
+    body = mh.get(id="flow").body
+    import re
+
+    m = re.search(r"## Implementation notes {2}\((mn\d+)\)", body)
+    assert m, body
+    node = mh.get(id=m.group(1)).body
+    assert "notebook text" in node
+
+
+def test_over_cap_render_keeps_lints_and_whole_source(
+    store, mh, diagram, monkeypatch
+) -> None:
+    """End-to-end for the reported failure: long notes + bindings used to
+    cut the source mid-flow and drop the lints entirely — a diagram with
+    a dangling binding read as clean."""
+    from precis._result_budget import fit_result_body
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "6000")
+    h = _target(store)
+    mh.link(id="flow", element="intake", target=h)
+    mh.edit(id="flow", text="flowchart TD\n  ship[Ship] --> done((Done))")
+    mh.edit(
+        id="flow",
+        notes="\n".join(f"note line {i} lorem ipsum dolor" for i in range(500)),
+    )
+    body = mh.get(id="flow").body
+    assert len(body.encode()) > 6000
+    fitted = fit_result_body(
+        body,
+        verb="get",
+        kind="mermaid",
+        context_limited=True,
+        targeted_hint=None,
+        read="single",
+    )
+    head = fitted.split("… truncated")[0]
+    assert "## Lints" in head and "binding" in head
+    assert "done((Done))" in head  # the LAST source line — shown whole
+    assert "note line 499" not in head  # the prose takes the cut
+    # the fitted outline names what dropped, handle included
+    assert "Implementation notes" in fitted
+    import re
+
+    assert re.search(r"mn\d+", fitted)
+
+
+def test_mn_handle_reads_the_node_through_dispatch(
+    runtime_with_store, store, mh, diagram
+) -> None:
+    """gr793934 part 2: ``get(kind='mermaid', id='mn<N>')`` used to 404 —
+    the dispatcher rewrote the node handle to ``slug~ord``, a selector
+    this kind has no grammar for (same class as plan's gr495745). Bare
+    and explicit-kind forms must reach DiagramHandler untouched."""
+    from precis.utils import handle_registry
+
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+    out, err = runtime_with_store.dispatch_with_status("get", {"id": h})
+    assert not err and "intake[Intake]" in out, out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "mermaid", "id": h}
+    )
+    assert not err and "intake[Intake]" in out, out
+    # a notes chunk handle resolves the same way
+    mh.edit(id="flow", notes="notebook text")
+    nh = _notes_handle(store, diagram.id)
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "mermaid", "id": nh}
+    )
+    assert not err and "notebook text" in out, out
+
+
+def test_mn_handle_reaches_edit_through_dispatch(
+    runtime_with_store, store, mh, diagram
+) -> None:
+    """The rewrite hit ``edit`` too — a node handle names the owning ref."""
+    from precis.utils import handle_registry
+
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+    out, err = runtime_with_store.dispatch_with_status(
+        "edit",
+        {
+            "kind": "mermaid",
+            "id": h,
+            "text": "flowchart TD\n  ship[Ship] --> done((Done))",
+        },
+    )
+    assert not err and "set Mermaid source" in out, out
+    assert "ship[Ship]" in mh.get(id="flow").body
+
+
+def test_ref_inspection_views(store, mh, diagram) -> None:
+    """Every ref-backed kind answers links / log / raw (me751839)."""
+    from precis.errors import BadInput
+
+    assert "(no links)" in mh.get(id="flow", view="links").body
+    assert "# raw mermaid" in mh.get(id="flow", view="raw").body
+    assert mh.get(id="flow", view="log").body.startswith("log:")
+    with pytest.raises(BadInput):
+        mh.get(id="flow", view="bogus")
+
+
+def test_links_view_shows_the_project_edge(store, mh) -> None:
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    mh.put(id="flow2", title="F", text=_FLOW, project=proj)
+    body = mh.get(id="flow2", view="links").body
+    assert "Links:" in body and "proj" in body
+
+
+# ── review td794121: declared args, node paging, node view refusal ──────────
+
+
+def test_get_declares_its_args_keys(mh) -> None:
+    """get(args=…) without an ARGS declaration left unknown keys silently
+    accepted — dispatch falls back to a lenient dict (review td794121)."""
+    assert "get" in type(mh).ARGS_KEYS
+    assert {"rel", "of_kind", "limit", "cursor", "meta_key", "offset"} <= set(
+        type(mh).ARGS_KEYS["get"]
+    )
+
+
+def test_get_rejects_an_undeclared_args_key(
+    runtime_with_store, store, mh, diagram
+) -> None:
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "mermaid", "id": "flow", "__extras__": {"zz_bogus": 1}}
+    )
+    assert err and "zz_bogus" in out, out
+    assert "not accepted by mermaid.get" in out, out
+
+
+def test_node_handle_rejects_view_naming_the_owning_ref(store, mh, diagram) -> None:
+    """view= on a node handle was silently dropped (review td794121). The
+    inspection views inspect the ref — the refusal names the owning slug."""
+    from precis.errors import BadInput
+    from precis.utils import handle_registry
+
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+    with pytest.raises(BadInput) as exc:
+        mh.get(id=h, view="links")
+    nxt = str(exc.value.next)
+    assert "get(kind='mermaid', id='flow'" in nxt, nxt
+    assert "view='links'" in nxt, nxt
+
+
+def test_node_read_pages_past_the_cap(store, mh, diagram, monkeypatch) -> None:
+    """A chunk over the cap used to come back cut with no way at the rest
+    (review td794121). The node read pages by ``args={'offset': N}`` — the
+    rest: chain reassembles the whole source."""
+    import re
+
+    from precis._result_budget import fit_result_body
+    from precis.utils import handle_registry
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "400")
+    long_src = "flowchart TD\n" + "\n".join(
+        f"  n{i}[node {i}] --> n{i + 1}[node {i + 1}]" for i in range(40)
+    )
+    mh.edit(id="flow", text=long_src)
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+    resp = mh.get(id=h)
+    fitted = fit_result_body(
+        resp.body,
+        verb="get",
+        kind="mermaid",
+        context_limited=True,
+        targeted_hint=resp.result_budget_hint,
+        read="single",
+        structured_fit=resp.budget_fit,
+    )
+    assert "… showing chars 0.." in fitted, fitted
+    m = re.search(
+        r"rest: get\(kind='mermaid', id='mn\d+', "
+        r"args=\{'offset': (\d+)\}\)",
+        fitted,
+    )
+    assert m, fitted
+    page2 = mh.get(id=h, args={"offset": int(m.group(1))}).body
+    assert f"chars {m.group(1)}.." in page2, page2
+    # the chain covers the whole chunk — the tail is on a later page
+    assert "n40[node 40]" in page2
+
+
+def test_node_read_offset_refusals(store, mh, diagram) -> None:
+    from precis.errors import BadInput
+    from precis.utils import handle_registry
+
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+    total = len(mh.get(id=h).body)
+    with pytest.raises(BadInput, match="at or past the end"):
+        mh.get(id=h, args={"offset": total + 10})
+    with pytest.raises(BadInput, match="offset"):
+        mh.get(id=h, args={"offset": -1})
+
+
+# ── review td794121: forward-progress paging, bounded lints, args gating ────
+
+
+def test_node_page_chain_reassembles_the_chunk_through_dispatch(
+    runtime_with_store, store, mh, diagram, monkeypatch
+) -> None:
+    """review td794121: a page whose frame alone filled the budget used to
+    emit ``rest:`` back to the same offset. Follow the dispatched
+    continuations to the final page — every page must advance and the
+    parts must reassemble the chunk whole."""
+    import re
+
+    from precis.utils import handle_registry
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "400")
+    long_src = "flowchart TD\n" + "\n".join(
+        f"  n{i}[node {i}] --> n{i + 1}[node {i + 1}]" for i in range(40)
+    )
+    mh.edit(id="flow", text=long_src)
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+
+    parts: list[str] = []
+    payload: dict = {"kind": "mermaid", "id": h}
+    prev_end: int | None = None
+    for _ in range(60):
+        out, err = runtime_with_store.dispatch_with_status("get", payload)
+        assert not err, out
+        m = re.search(r"\(chars (\d+)\.\.(\d+) of (\d+)\)\n\n(.*)", out, re.S)
+        assert m, out
+        start, end, total = int(m[1]), int(m[2]), int(m[3])
+        assert end > start  # forward progress on every page
+        assert prev_end is None or start == prev_end
+        assert len(out.encode("utf-8")) <= 400, out
+        prev_end = end
+        rest = m[4]
+        part, sep, _tail = rest.partition("\n\n… showing")
+        parts.append(part)
+        if not sep:
+            assert end == total
+            break
+        nxt = re.search(r"args=\{'offset': (\d+)\}", rest)
+        assert nxt and int(nxt[1]) == end, out
+        payload = {"kind": "mermaid", "id": h, "__extras__": {"offset": end}}
+    else:
+        pytest.fail("the rest: chain did not finish")
+    assert "".join(parts) == long_src
+
+
+def test_node_page_refuses_when_the_frame_alone_wont_fit(
+    runtime_with_store, store, mh, diagram, monkeypatch
+) -> None:
+    """A budget below the header + ``rest:`` footer used to either
+    overrun the cap or emit a self-restarting continuation. Now the
+    typed refusal names the same read — the cap is what must move."""
+    from precis.utils import handle_registry
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "80")
+    node = _source_chunk_id(store, diagram.id)
+    h = handle_registry.format_handle("mermaid", node, chunk=True)
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "mermaid", "id": h}
+    )
+    assert err, out
+    assert "cannot fit even one character" in out, out
+    assert f"id='{h}'" in out, out
+
+
+def test_lint_list_is_bounded_and_pages_through_lints_view(
+    store, mh, diagram, monkeypatch
+) -> None:
+    """review td794121: an unbounded lint list ahead of the source could
+    still crowd it out. The slug render shows a bounded preview naming
+    view='lints'; the view itself pages to the end by args={'offset': N}."""
+    import re
+
+    from precis._result_budget import fit_result_body
+
+    h = _target(store)
+    for i in range(30):
+        mh.link(id="flow", element=f"ghost{i}", target=h)
+    body = mh.get(id="flow").body
+    shown = re.findall(r"^- \[binding\]", body, re.M)
+    assert len(shown) == 20, body
+    assert "… and 10 more — get(kind='mermaid', id='flow', view='lints')" in body
+
+    whole = mh.get(id="flow", view="lints").body
+    assert len(re.findall(r"^- \[binding\]", whole, re.M)) == 30, whole
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "400")
+    resp = mh.get(id="flow", view="lints")
+    fitted = fit_result_body(
+        resp.body,
+        verb="get",
+        kind="mermaid",
+        context_limited=True,
+        targeted_hint=resp.result_budget_hint,
+        read="single",
+        structured_fit=resp.budget_fit,
+    )
+    assert "… showing chars 0.." in fitted, fitted
+    m = re.search(r"args=\{'offset': (\d+)\}", fitted)
+    assert m, fitted
+    page2 = mh.get(id="flow", view="lints", args={"offset": int(m[1])}).body
+    assert f"chars {m[1]}.." in page2
+    assert "ghost29" in page2  # the last finding lands on a later page
+
+
+def test_view_args_meant_for_another_view_refuse(mh, diagram) -> None:
+    """review td794121: offset on links, limit on raw and offset on log
+    used to be silently dropped. Each refusal names the door that reads
+    the key."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput) as exc:
+        mh.get(id="flow", view="links", args={"offset": 3})
+    assert "offset" in str(exc.value) and "lints" in str(exc.value)
+
+    with pytest.raises(BadInput) as exc:
+        mh.get(id="flow", view="raw", args={"limit": 2})
+    assert "limit" in str(exc.value) and "view='links'" in str(exc.value)
+
+    with pytest.raises(BadInput) as exc:
+        mh.get(id="flow", view="log", args={"offset": 1})
+    assert "offset" in str(exc.value)
+
+    # the keys each view does take still pass
+    assert mh.get(id="flow", view="log", args={"limit": 5}).body.startswith("log:")
+    assert mh.get(id="flow", view="raw", args={"meta_key": "render"}).body
+
+
+def test_list_path_refuses_args(mh, diagram) -> None:
+    """review td794121: declared args on the no-id list path silently
+    did nothing."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput) as exc:
+        mh.get(args={"offset": 1})
+    assert "list takes no args" in str(exc.value), str(exc.value)
+    nxt = str(exc.value.next)
+    assert "get(kind='mermaid', id='<slug>'" in nxt, nxt
+
+
+def test_log_view_args_dispatch(runtime_with_store, store, mh, diagram) -> None:
+    """log's own keys ride the declared-args channel too."""
+    out, err = runtime_with_store.dispatch_with_status(
+        "get",
+        {
+            "kind": "mermaid",
+            "id": "flow",
+            "view": "log",
+            "__extras__": {"limit": 5},
+        },
+    )
+    assert not err and out.startswith("log:"), out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get",
+        {
+            "kind": "mermaid",
+            "id": "flow",
+            "view": "links",
+            "__extras__": {"offset": 3},
+        },
+    )
+    assert err and "don't apply to mermaid view='links'" in out, out

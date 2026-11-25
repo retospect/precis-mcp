@@ -45,6 +45,12 @@ class MermaidHandler(DiagramHandler):
         note_like=True,
         placement="artifact",
         corpus_role="none",
+        views=("links", "log", "raw", "lints"),
+        # A mermaid's addressable chunks are mn<chunk_id> node handles —
+        # the dispatcher's generic slug~ord rewrite must leave them alone
+        # (gr793934: a rewritten mn<N> reached get as a bogus slug; same
+        # class as plan's gr495745).
+        supports_chunk_selectors=False,
         # Compute-lane opt-in: a diagram_propose job parents on the mermaid it builds/verifies.
         can_own_jobs=True,
     )

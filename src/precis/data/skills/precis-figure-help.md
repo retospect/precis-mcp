@@ -60,11 +60,18 @@ Create a figure (optionally under a project todo, optionally seeded):
         viewbox='0 0 256 256')
     put(kind='figure', id='mascot', text='<svg …>…</svg>', vocab='green = foo')
 
-Read it (assembled SVG + shared vocabulary + `fn<id>` handle + lints):
+Read it (a bounded lint preview + assembled SVG first, then shared
+vocabulary / notes / bindings — each doc section header names its
+`fn<id>` handle):
 
     get(kind='figure', id='mascot')
     get(kind='figure')            # list all figures
-    get(kind='figure', id='fn42') # source node or top-level element verbatim
+    get(kind='figure', id='fn42') # one node — over the cap it pages;
+                                # follow `rest:` with args={'offset': N}
+
+`view='links'|'log'|'raw'|'lints'` are the ref-inspection views —
+`'lints'` pages the full finding list by `args={'offset': N}` (a node
+handle takes no `view=` — pass the owning slug).
 
 Edit — three independent axes:
 
