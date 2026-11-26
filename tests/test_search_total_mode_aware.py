@@ -147,3 +147,28 @@ def test_semantic_total_is_honest_none(store: Store) -> None:
         page_size=2,
     )
     assert " of " not in out.body.splitlines()[0]
+
+
+# ── gr796551: capped lexical count (broad queries skip the full scan) ──
+
+
+def test_count_chunks_lexical_cap_flags_lower_bound(store: Store) -> None:
+    tag = uuid4().hex[:8]
+    _seed(
+        store,
+        slug=f"cnt-cap-{tag}",
+        blocks=[f"capword{tag} filler chunk {i}" for i in range(6)],
+    )
+    capped: dict[str, int] = {}
+    store.chunks.count_chunks_lexical(
+        q=f"capword{tag}", kind="paper", totals_out=capped, cap=3
+    )
+    assert capped["capped"] == 1
+    assert capped["chunks"] == 4  # cap + 1 probe row
+
+    roomy: dict[str, int] = {}
+    n = store.chunks.count_chunks_lexical(
+        q=f"capword{tag}", kind="paper", totals_out=roomy, cap=100
+    )
+    assert "capped" not in roomy
+    assert (n, roomy["refs"]) == (6, 1)

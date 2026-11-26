@@ -82,6 +82,10 @@ _log = logging.getLogger("precis.handlers.paper")
 #: here (the ``good=True`` deep-search leg shares the same limit).
 _BROAD_LEG_CAP = 8
 
+#: Ceiling on the paper-search "N of K" count scan (gr796551): past this many
+#: matching chunks the header drops K instead of scanning the whole universe.
+_COUNT_CAP = 5000
+
 # Multiplicative penalty applied to a hit's fused ``score`` (the
 # store's ts_rank/cosine-distance blend), keyed by
 # ``refs.retraction_status``. The severity split mirrors
@@ -1477,8 +1481,14 @@ class FusedBlockSearch:
                         card_kinds=("card_combined",),
                         chunk_kinds=chunk_kinds,
                         totals_out=lexical_totals if paper_rows else None,
+                        cap=_COUNT_CAP if paper_rows else None,
                     )
-                    if paper_rows:
+                    if lexical_totals.get("capped"):
+                        # Broad match set: the exact K is a full scan
+                        # (gr796551). Drop the denominator; the +1 probe
+                        # drives paging.
+                        total = None
+                    elif paper_rows:
                         # Get both headline denominators without scanning
                         # the broad OR match set twice.
                         paper_total = max(len(hits), lexical_totals["refs"])

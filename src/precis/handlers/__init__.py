@@ -96,15 +96,15 @@ The single-hit larger-page action restarts at page 1.
 ref — the best surviving hit's ``pc`` handle, a ``+N`` count of its other
 fused-pool hits, that chunk's keywords — over ``search_chunks_multi``'s
 ``per_paper=1`` + ``prefer_body`` collapse, which pages at paper
-granularity. ``unique_per='chunk'`` keeps the per-hit drill shape and is
-implied by the doors that already ask for it (``scope=``,
-``mode='verbatim'`` — verbatim has no per-paper pool to collapse, so an
-explicit ``'paper'`` there is a BadInput, not a silent fallback). Page-size
-defaults follow the row shape (25 papers / 20 chunks): the MCP surface
-forwards ``page_size=None`` when unset so the handler resolves it *after*
-``unique_per``. Headline counters stay honest: "N papers of M matched
-(K chunk hits)" counts the lexical universe (a lower bound under fusion);
-``semantic``/multi-leg calls show the plain count, same rule as before.
+granularity. ``scope=`` and ``mode='verbatim'`` imply per-hit rows
+(``unique_per='chunk'``). Verbatim has no per-paper pool and rejects
+explicit ``unique_per='paper'``. MCP forwards unset ``page_size`` as
+``None``, letting the handler default by row shape (25 papers / 20 chunks).
+The headline's paper and chunk totals count the lexical
+universe (a lower bound under fusion). When the lexical count exceeds
+5,000 matching chunks, paper-row searches omit both totals to avoid a full
+count scan. An extra-row probe drives pagination.
+``semantic``/multi-leg calls show the plain count.
 Explicit ``unique_per=`` echoes into same-search continuations so a
 ``page=N+1`` hint can't flip shapes mid-walk.
 

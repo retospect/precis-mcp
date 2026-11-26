@@ -1323,10 +1323,11 @@ class ChunkStore:
         chunk_kinds: list[str] | None = None,
         distinct_refs: bool = False,
         totals_out: dict[str, int] | None = None,
+        cap: int | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
     ) -> int:
-        """Count chunks matching the lexical filter (no LIMIT). Companion
+        """Count chunks matching the lexical filter (no LIMIT unless ``cap``). Companion
         to :meth:`search_chunks_lexical` for the "N of K" header — same
         WHERE clause (noise-floor guard, ``card_kinds`` opt-in) so the
         header matches the search's exact universe. ``lexical_info_out``
@@ -1341,6 +1342,12 @@ class ChunkStore:
         chunks would otherwise over-state the result-row total.
         The optional totals_out receives both counts from the same scan.
 
+        ``cap`` (with ``totals_out``) bounds the scan to ``cap + 1`` matching
+        chunks: a broad query matching hundreds of thousands of chunks no
+        longer pays a full-universe count (gr796551 — voice searches ran past
+        10 s on it). When the cap is exceeded the counts are lower bounds and
+        ``totals_out['capped']`` is 1; callers drop the "of K" denominator.
+
         ``kinds`` takes precedence over single ``kind`` (pass one or
         neither). ``since``/``until`` filter ``refs.created_at``, ``until``
         **exclusive**. Also serves the ``/drive`` "showing N of ~K"
@@ -1350,6 +1357,7 @@ class ChunkStore:
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         if totals_out is not None:
             count_expr = "count(*), count(DISTINCT c.ref_id)"
+        capped = cap is not None and totals_out is not None
         clauses = [
             secret_fence("r", path="lexical_count"),
             "r.retired_at IS NULL",
@@ -1393,12 +1401,21 @@ class ChunkStore:
         if until is not None:
             clauses.append("r.created_at < %s")
             params.append(until)
-        sql = (
-            f"SELECT {count_expr} FROM chunks c "
-            "JOIN refs r ON r.ref_id = c.ref_id, "
-            "websearch_to_tsquery('english', %s) qq(qq) "
-            f"WHERE {' AND '.join(clauses)}"
-        )
+        if capped:
+            sql = (
+                "SELECT count(*), count(DISTINCT ref_id) FROM ("
+                "SELECT c.ref_id FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id, "
+                "websearch_to_tsquery('english', %s) qq(qq) "
+                f"WHERE {' AND '.join(clauses)} LIMIT {int(cap or 0) + 1}) capped_m"
+            )
+        else:
+            sql = (
+                f"SELECT {count_expr} FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id, "
+                "websearch_to_tsquery('english', %s) qq(qq) "
+                f"WHERE {' AND '.join(clauses)}"
+            )
         from precis.store.pool import apply_checkout_budget
 
         retry = _or_retry(q, scope_ref_id, kind=kind if kinds is None else None)
@@ -1434,6 +1451,8 @@ class ChunkStore:
         assert row is not None
         if totals_out is not None:
             totals_out.update(chunks=int(row[0]), refs=int(row[1]))
+            if capped and int(row[0]) > int(cap or 0):
+                totals_out["capped"] = 1
             return totals_out["refs" if distinct_refs else "chunks"]
         return int(row[0])
 
