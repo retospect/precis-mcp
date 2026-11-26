@@ -134,6 +134,35 @@ def test_regression_needs_the_absolute_margin(store) -> None:
     assert _checks(store)["tool_latency_regressed"].status == "ok"
 
 
+def test_tiny_hour_sample_cannot_flag_regression(store) -> None:
+    """gr798548: put/memory's hour held 7 calls — p95, second-slowest and
+    median all cleared the bars against a 3.6 s week, but under 10 calls
+    the hour p95 is the max in disguise. The pair is not judged."""
+    _seed(store, "put", "memory", [3600] * 40, age_s=86400)
+    _seed(store, "put", "memory", [8000] * 6 + [19400])
+    assert _checks(store)["tool_latency_regressed"].status == "ok"
+
+
+def test_fast_pair_tail_noise_under_the_median_floor_is_green(store) -> None:
+    """gr798548's link/todo shape: week p95 0.2 s, hour p95 2.4 s on two
+    slow calls with a 0.3 s median. The median cleared the bare week p95
+    but not the 1 s floor — a regression must move the typical call by a
+    felt amount, not just past a near-zero baseline."""
+    _seed(store, "link", "todo", [200] * 40, age_s=86400)
+    _seed(store, "link", "todo", [300] * 9 + [1500, 2000, 2900])
+    assert _checks(store)["tool_latency_regressed"].status == "ok"
+
+
+def test_whole_distribution_shift_on_a_fast_pair_still_flags(store) -> None:
+    """The median floor must not neuter the check: a fast pair whose
+    typical call genuinely slowed past it (week p95 0.2 s, the hour all
+    1.5 s) is a real regression."""
+    _seed(store, "link", "todo", [200] * 40, age_s=86400)
+    _seed(store, "link", "todo", [1500] * 12)
+    c = _checks(store)["tool_latency_regressed"]
+    assert c.status == "stale" and "link/todo" in c.detail
+
+
 def test_status_table_is_durable_across_renders(store) -> None:
     """The rows come from the ledger, so a second render (a restarted
     process) shows the same numbers."""

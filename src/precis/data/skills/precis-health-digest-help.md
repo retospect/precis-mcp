@@ -96,7 +96,7 @@ plus the bespoke checks that share the `CheckResult` shape:
 | `doctor_report_fresh` | `autonomy` | the `doctor_tick` pass wrote a report within twice its fresh window |
 | `hosts_alive` | `infra` | every recently-active host's `host_heartbeat` row is <15 min old |
 | `tool_latency` | `infra` | every verb/kind with ≥10 calls in the last hour has its `tool_calls` p95 under budget (15 s; slower for put/edit draft, perplexity, web, websearch, semanticscholar, youtube); red needs two calls over, not one cold call |
-| `tool_latency_regressed` | `infra` | no verb/kind's last-hour p95 (n≥5) cleared max(2× week, week+1 s) against a ≥30-call trailing week (info) |
+| `tool_latency_regressed` | `infra` | no verb/kind's last-hour p95 (n≥10) cleared max(2× week, week+1 s) against a ≥30-call trailing week, with the hour median over max(week p95, 1 s) (info) |
 | `endpoint_dark` | `infra` | no MCP client label had a gap of ≥30 min that started in the last 2h, followed an hour with ≥20 calls from ≥3 sessions, and had other ledger calls in its final 30 min |
 | `alert_backlog_rot` | `meta` | no `alert-state:open` row is >7d old — the response loop itself rotting (info) |
 | `post_migration_steps` | `deploy` | a migration's out-of-transaction step still pending, named in the finding |

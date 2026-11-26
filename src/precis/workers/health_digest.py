@@ -1562,10 +1562,11 @@ _TOOL_LATENCY_BASELINE_S = 7 * 86400
 #: budget check. The week-long baseline wants the larger sample: a
 #: sparse baseline's p95 is a few calls' luck, and put/fleet's n=10
 #: ~0 ms week read one 6 s hour as "more than doubled" — the alert
-#: flapped open 24x on that noise (gr542156). The hour keeps a lower
-#: bar because the second-slowest guard already rejects a one-outlier
-#: hour.
-_TOOL_LATENCY_REGRESSION_MIN_CALLS = 5
+#: flapped open 24x on that noise (gr542156). The hour floor matches
+#: the budget check's: under 10 calls the p95 interpolates toward the
+#: max, so two slow calls in a 6-call hour cleared the second-slowest
+#: guard and flapped the alert a third time (gr798548).
+_TOOL_LATENCY_REGRESSION_MIN_CALLS = 10
 _TOOL_LATENCY_REGRESSION_MIN_BASELINE_CALLS = 30
 
 #: Absolute margin over the baseline p95 a regression must clear on top
@@ -1612,8 +1613,10 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     :data:`~precis.health_checks.TOOL_LATENCY_MIN_CALLS` calls are not
     judged, and a pair needs its second-slowest call over the line too:
     one cold call after a restart is not a slow MCP. The hour's median
-    must also sit above the week's p95 — two stragglers in a
-    heavy-tailed pair are not a regression (gr646231).
+    must also clear the absolute floor on top of the week's p95 — two
+    stragglers in a heavy-tailed pair are not a regression (gr646231),
+    and against a near-zero baseline an unfloored median bar is no bar
+    at all (gr798548).
     """
     try:
         rows = health_checks.tool_latency(conn, baseline_s=_TOOL_LATENCY_BASELINE_S)
@@ -1648,7 +1651,10 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
         # A shifted pair moves its typical call, not just its tail: at
         # n~20 the p95 is the 2nd-slowest call, so two stragglers in a
         # heavy-tailed pair (get/job, gr646231) cleared every other bar.
-        and t.p50_ms > t.baseline_p95_ms
+        # The bar carries the absolute floor too — against a near-zero
+        # baseline "over the week's p95" is no bar, and a fast pair's
+        # noisy tail flapped on it a third time (gr798548).
+        and t.p50_ms > max(t.baseline_p95_ms, _TOOL_LATENCY_REGRESSION_FLOOR_MS)
     ]
     budget = (
         CheckResult(
