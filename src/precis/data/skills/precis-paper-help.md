@@ -97,10 +97,14 @@ side — use it when you want the paper ingested, not just looked up.
 put(kind="paper", citation="Phys. Rev. B 47, 558 (1993)")
 ```
 
-The string goes to Crossref's bibliographic query. Exactly one record
-matching every part of it (year, volume, first page, journal) is stubbed
-by its DOI. Anything weaker returns candidates with a `conf=` score and
-mints nothing; pick one and `put(kind="paper", doi="<its DOI>")`.
+For recognized Wiley journals with an article number, Crossref first checks
+the DOI derived from that number. A verified match is stubbed by its DOI.
+Other citations and failed DOI checks use Crossref's bibliographic query.
+A single full match on year, volume, first page or article number, and
+journal is stubbed by its DOI. When the citation includes a page or article
+number, issue front matter such as mastheads scores lower. Weaker or tied
+matches return candidates with a `conf=` score. Pick one and
+`put(kind="paper", doi="<its DOI>")`.
 Starting from something thinner — a conference title, byline or abstract
 fragment — the identification ladder lives in
 [[precis-identify-publication-help]].

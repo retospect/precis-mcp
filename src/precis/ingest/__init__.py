@@ -53,6 +53,8 @@ cluster.
 Title-token overlap is available on core installs for these checks.
 Only fuzzy PDF verification loads the optional RapidFuzz dependency.
 
+Verified Wiley eLocator DOIs bypass noisy issue results.
+
 DOI writes strip citation punctuation. The audit routes punctuation-equivalent
 papers to explicit ``merge_into`` after identity review.
 

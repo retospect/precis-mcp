@@ -1290,9 +1290,10 @@ class PaperHandler(Handler):
         ``precis-paper-dump/1`` export, sent one slice per call in
         window order — see :meth:`_restore`.
 
-        ``citation=`` resolves a classic journal/volume/page/year string via
-        Crossref ``query.bibliographic``: one full-confidence hit is stubbed
-        by its DOI; otherwise the scored candidates come back, nothing minted.
+        ``citation=`` tries an exact Crossref DOI lookup for known Wiley
+        eLocators, then falls back to ``query.bibliographic``. One
+        full-confidence hit is stubbed by its DOI. Weaker or tied hits
+        return scored candidates.
 
         This is a thin adapter over :meth:`acquire` — it folds the
         ``doi=`` / ``arxiv=`` conveniences into the canonical

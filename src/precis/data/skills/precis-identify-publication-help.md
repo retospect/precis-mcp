@@ -92,8 +92,10 @@ bar.
    get(kind="web", id="https://doi.org/<candidate DOI>")
    ```
 
-   A citation string goes to Crossref's `query.bibliographic`: a weak
-   or split match returns `conf=` candidates and mints **nothing** —
+   Crossref first checks the derived DOI for article numbers in recognized
+   Wiley journals. Other citations and failed DOI checks go to
+   `query.bibliographic`. A weak or split match returns `conf=` candidates
+   and mints **nothing** —
    that is the candidate-discovery door; a lone full-confidence hit
    mints the stub on the spot, so run `put(citation=)` only where a
    mint is acceptable (the citation itself is the evidence, or a
