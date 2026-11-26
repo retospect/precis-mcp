@@ -388,7 +388,11 @@ def test_contended_probe_checkout_cannot_starve_the_fan_out(
     # raised Internal; now it spends only its slice, fails open, and
     # the fan-out still runs.
     assert seen, "the fan-out must still run when the probe can't answer"
-    assert elapsed < budget(5.0)
+    # A priority kind's PoolTimeout now buys one lexical retry that may
+    # use the rest of the 5s window, so a fully contended pool ends the
+    # call at the window edge (+ harvest overhead), never beyond it: the
+    # bound is the window plus slack, not an unbounded stall.
+    assert elapsed < budget(5.0) + 1.5
     assert "semantic leg skipped for" not in out.body
     assert any(t is not None and 0 < t <= 0.05 for t in checkouts)
 

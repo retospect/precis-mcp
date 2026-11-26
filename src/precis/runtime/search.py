@@ -50,6 +50,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from psycopg.errors import QueryCanceled
+from psycopg_pool import PoolTimeout
 
 from precis.errors import (
     BadInput,
@@ -3641,11 +3642,12 @@ class SearchMixin(RuntimeShape):
         by a lexical rewrite, so those keep the timeout too.
 
         The same reserved retry budget serves a kind whose leg *failed*
-        mid-window: a server-side ``QueryCanceled`` or a built-in
-        ``TimeoutError`` triggers a lexical-only retry when at least
-        ``retry_s`` of the job deadline remains (gr664954, gr776663).
-        Psycopg pool checkout expiry raises ``PoolTimeout`` and follows
-        the ordinary error path.
+        mid-window: a server-side ``QueryCanceled``, a pool checkout
+        ``PoolTimeout`` or a built-in ``TimeoutError`` triggers a lexical-only
+        retry when at least ``retry_s`` of the job deadline remains. This
+        covers priority kinds whose first attempt is capped at the
+        best-effort window; it cannot free a pool that stays saturated, so a
+        retry that also times out still omits the kind.
 
         gr664988: jobs submit cheapest-first on the process-wide cost
         EMA (:func:`_cross_kind_job_key`), not alphabetically — an
@@ -3740,8 +3742,13 @@ class SearchMixin(RuntimeShape):
             attempt_deadline = deadline_at
             retry_s = min(CROSS_KIND_LEXICAL_MIN_START_MS / 1000, cap / 4)
             if tiered and can_retry:
+                now = time.monotonic()
+                # Leave priority kinds enough time for a fresh checkout
+                # and lexical query after a saturated pool or slow ANN.
+                # Their longer window is for recovery as well as search.
                 attempt_deadline = max(
-                    time.monotonic() + 0.001, deadline_at - 1.25 * retry_s
+                    now + 0.001,
+                    min(now + CROSS_KIND_PER_KIND_S, deadline_at - 1.25 * retry_s),
                 )
                 POOL_CHECKOUT_DEADLINE.set(attempt_deadline)
                 remaining_ms = max(1, int((attempt_deadline - time.monotonic()) * 1000))
@@ -3757,10 +3764,8 @@ class SearchMixin(RuntimeShape):
             started = time.monotonic()
             try:
                 result = self._cross_kind_invoke_search_hits(handler, k, kw)
-                # Reuse the reserved window when the hybrid leg raises a
-                # built-in timeout, as the finding leg did in gr776663.
                 if (
-                    isinstance(result, (QueryCanceled, TimeoutError))
+                    isinstance(result, (QueryCanceled, PoolTimeout, TimeoutError))
                     and can_retry
                     and lexical_fallback is not None
                     and deadline_at - time.monotonic() >= retry_s
@@ -3852,8 +3857,8 @@ class SearchMixin(RuntimeShape):
         drop unknown kwargs on ``TypeError``, most-recent-addition first
         (``exclude``, then ``tags``). Any non-TypeError exception is
         logged and returned as a value. The fan-out can recover from
-        ``QueryCanceled`` or built-in ``TimeoutError`` with a lexical retry
-        when the request and remaining budget allow it. Successful
+        ``QueryCanceled``, ``PoolTimeout`` or built-in ``TimeoutError`` with a
+        lexical retry when the request and remaining budget allow it. Successful
         recovery contributes lexical-only results. An unrecovered error
         omits the kind and records the failure separately from a "0
         matches" count (gr281493).

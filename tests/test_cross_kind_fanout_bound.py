@@ -12,10 +12,12 @@ from typing import Any
 
 import pytest
 from psycopg.errors import QueryCanceled
+from psycopg_pool import PoolTimeout
 
 from precis.embedder import MockEmbedder
 from precis.runtime import search as search_mod
 from precis.runtime.core import PrecisRuntime
+from precis.store.pool import CHECKOUT_BUDGET, POOL_CHECKOUT_DEADLINE
 from precis.utils.search_merge import SearchHit
 from tests._timing import budget
 
@@ -480,6 +482,50 @@ def _stub_cancelled_fan_out(
 
     monkeypatch.setattr(rt.hub, "handler_for", handler_for)
     monkeypatch.setattr(type(rt), "_cross_kind_kinds", lambda self: list(handlers))
+
+
+@pytest.mark.parametrize("timeout", [QueryCanceled, PoolTimeout])
+def test_priority_timeout_leaves_time_for_lexical_recovery(
+    runtime_stateless: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    timeout: type[Exception],
+) -> None:
+    rt = runtime_stateless
+    clock = _frozen_clock(monkeypatch)
+    monkeypatch.setattr(rt.hub, "embedder", _ProductionStubEmbedder())
+    modes: list[str] = []
+
+    def search_hits(*, mode: str = "hybrid", **kwargs: Any) -> list[SearchHit]:
+        modes.append(mode)
+        budget = CHECKOUT_BUDGET.get()
+        assert budget is not None
+        deadline, _ = budget
+        assert POOL_CHECKOUT_DEADLINE.get() == deadline
+        if mode == "hybrid":
+            clock["t"] = deadline
+            raise timeout("hybrid attempt exhausted its budget")
+        # A fresh checkout and lexical query together need more than the
+        # old 625 ms reserve.
+        clock["t"] += 1.0
+        assert clock["t"] < deadline
+        return [
+            SearchHit(
+                score=0.9,
+                kind="memory",
+                title="recovered xyzzy",
+                preview="p",
+                ref_id=None,
+                slug=None,
+            )
+        ]
+
+    _stub_cancelled_fan_out(monkeypatch, rt, search_hits)
+    out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+
+    assert modes == ["hybrid", "lexical"]
+    assert "recovered xyzzy" in out.body
+    assert "semantic leg skipped for memory" in out.body
+    assert "errored, omitted" not in out.body
 
 
 @pytest.mark.parametrize(
