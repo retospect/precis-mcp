@@ -1583,9 +1583,9 @@ class NumericRefHandler(Handler):
         # ``view='count'`` (gr472990): the filtered total + facet counts
         # instead of a hit page — ``group_by=`` picks the facets
         # ('state', 'meta.<key>', 'tag:<axis>'; comma-separated or list).
-        # ``since=``/``until=`` bound refs.created_at on that view only
-        # (mcp-introspection gap closures 2026-10-14); on any other shape
-        # they route to the cross-kind source-search primitive upstream.
+        # ``since=`` (inclusive) and ``until=`` (exclusive) bound
+        # refs.created_at on counts and queryless listings. Dispatch routes
+        # dated ranked searches to the source-search primitive upstream.
         view: str | None = None,
         group_by: str | list[str] | None = None,
         agg: str | None = None,
@@ -1837,13 +1837,25 @@ class NumericRefHandler(Handler):
                 page=page,
                 status=status,
             )
-        if since is not None or until is not None:
-            # Reached only on a direct handler call — dispatch routes
-            # date-bound searches to the source-search primitive before
-            # this. Fail loudly rather than drop the bound.
+        dated_listing = (
+            (since is not None or until is not None)
+            and not (q and q.strip())
+            and not (link is not None and str(link).strip())
+        )
+        created_after_dt = (
+            _parse_window_bound(since, "since") if dated_listing else None
+        )
+        created_before_dt = (
+            _parse_window_bound(until, "until") if dated_listing else None
+        )
+        if (since is not None or until is not None) and not dated_listing:
+            # A ranked or link= search cannot apply a creation window —
+            # dispatch routes dated ranked searches to the source-search
+            # primitive before this. Fail loudly rather than drop the
+            # bound. A queryless listing applies it below (gr797062).
             raise BadInput(
-                f"since=/until= apply only to search(kind={self.kind!r}, "
-                "view='count') on this kind",
+                "since=/until= require a queryless listing without link= "
+                "or view='count'",
                 next=(
                     f"search(kind={self.kind!r}, view='count', "
                     "args={'since': '<ISO>', 'until': '<ISO>'}) — or a dated "
@@ -1889,6 +1901,7 @@ class NumericRefHandler(Handler):
                 or closed_given
                 or id_lo is not None
                 or id_hi is not None
+                or dated_listing
                 # A resolved scope alone (under=/cited= with no q=/tags=)
                 # is a complete listing shape — but never lets it steal
                 # the link= branch: link + under must keep the edge
@@ -1914,6 +1927,8 @@ class NumericRefHandler(Handler):
                     closed_values=self._closed_status_values()
                     if closed_given
                     else None,
+                    created_after=created_after_dt,
+                    created_before=created_before_dt,
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
             # target ref is resolved to an exact id, not a fuzzy match),
@@ -3059,6 +3074,8 @@ class NumericRefHandler(Handler):
         closed_before: datetime | None = None,
         closed_values: list[str] | None = None,
         row_tag_prefixes: tuple[str, ...] | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
     ) -> Response:
         """List refs matching ``tags`` in the requested browse order.
 
@@ -3094,6 +3111,10 @@ class NumericRefHandler(Handler):
             filters["include_ref_ids"] = include_ref_ids
         if exclude_ref_ids:
             filters["exclude_ref_ids"] = exclude_ref_ids
+        dated = created_after is not None or created_before is not None
+        if dated:
+            filters["created_after"] = created_after
+            filters["created_before"] = created_before
         # A closed-window listing reads newest-closed first — the
         # question it answers is "what closed when" (gr592737).
         order_key = "closed_desc" if closed_engaged else self._order_key_for_sort(sort)
@@ -3120,7 +3141,15 @@ class NumericRefHandler(Handler):
             and not exclude_ref_ids
             and (label := _hidden_excluded_label(self.kind, exclude_tags)) is not None
         ):
-            hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
+            hidden = (
+                self.store.count_refs(
+                    kind=self.kind,
+                    tags=tags,
+                    created_after=created_after,
+                    created_before=created_before,
+                )
+                - total
+            )
             note = (
                 note + f"\n{hidden} {label} entries hidden; status='*' to include"
             ).strip()
@@ -3130,6 +3159,12 @@ class NumericRefHandler(Handler):
             lo = closed_after.strftime("%Y-%m-%dT%H:%M:%SZ") if closed_after else "…"
             hi = closed_before.strftime("%Y-%m-%dT%H:%M:%SZ") if closed_before else "…"
             window_note = f" closed in [{lo}, {hi})"
+        if dated:
+            lo = created_after.strftime("%Y-%m-%dT%H:%M:%SZ") if created_after else "…"
+            hi = (
+                created_before.strftime("%Y-%m-%dT%H:%M:%SZ") if created_before else "…"
+            )
+            window_note += f" created in [{lo}, {hi})"
         if not refs:
             if page > 1 and total > 0:
                 # Past the last page — total is still positive, so this
@@ -3204,30 +3239,38 @@ class NumericRefHandler(Handler):
         # The age summary reads the *open* queue — on a closure listing
         # it would count the unfiltered tag set and name rows outside
         # the window (gr592737).
-        if not closed_engaged and (
-            summary := self._list_summary(
-                tags,
-                exclude_tags=exclude_tags,
-                total=total,
-                past_page=total - offset - shown,
-                id_min=id_min,
-                id_max=id_max,
-                include_ref_ids=include_ref_ids,
-                exclude_ref_ids=exclude_ref_ids,
+        if (
+            not closed_engaged
+            and not dated
+            and (
+                summary := self._list_summary(
+                    tags,
+                    exclude_tags=exclude_tags,
+                    total=total,
+                    past_page=total - offset - shown,
+                    id_min=id_min,
+                    id_max=id_max,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                )
             )
         ):
             parts.append(summary)
-        if total > offset + shown and (
-            facets := self._facet_line(
-                tags,
-                exclude_tags=exclude_tags,
-                id_min=id_min,
-                id_max=id_max,
-                include_ref_ids=include_ref_ids,
-                exclude_ref_ids=exclude_ref_ids,
-                closed_after=closed_after,
-                closed_before=closed_before,
-                closed_values=closed_values,
+        if (
+            total > offset + shown
+            and not dated
+            and (
+                facets := self._facet_line(
+                    tags,
+                    exclude_tags=exclude_tags,
+                    id_min=id_min,
+                    id_max=id_max,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    closed_after=closed_after,
+                    closed_before=closed_before,
+                    closed_values=closed_values,
+                )
             )
         ):
             parts.append(facets)

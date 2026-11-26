@@ -85,6 +85,11 @@ list) selects its `instance-of` members (next section); any other handle
 (`'depth': 1` keeps direct members only). Combines with `q=`/`tags=`;
 without `q=` memory hits list newest-first. Todo and taxon keep their
 own `under=` meanings (todo subtree, concept descendants).
+For a creation-time window on the default queryless memory listing, use
+`search(kind='memory', tags=['project:x'], args={'since': '2026-11-17',
+'until': '2026-11-18'})`. The lower bound is inclusive and the upper bound
+is exclusive. Either bound may be omitted. Bounds accept ISO dates,
+timestamps, or relative spans such as `'7d'`.
 `angle=`/`like=`/`n=` run the diverse-cone salience spray seeded from a ref
 handle or `q=` — `search(args={'angle': 0.5, 'like': 'quest:164903',
 'n': 8})`. They are **verb-level params**, not a kind's `args=` keys —
@@ -575,7 +580,8 @@ filter as the listing, so they match the "N of K" page headers;
 `args={'folder'}` and `args={'under'}` fold in as ref-set filters, and
 `args={'since'}`/`args={'until'}` bound on
 creation date — an ISO bound or a span (`'30m'`, `'2h'`, `'3d'`,
-`'1w'`, "now minus that long"); `until=` exclusive. `kind='job'` counts also tail a
+`'1w'`, "now minus that long"). `since=` is inclusive and `until=` is
+exclusive. `kind='job'` counts also tail a
 bounded "error heads" section — the top normalized first-line errors per
 failing job_type — so "what's failing, and how" is one call. One kind
 per call — no cross-kind or `sort=` on this shape.

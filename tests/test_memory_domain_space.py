@@ -12,6 +12,7 @@ identical to the pre-domain surface.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -208,6 +209,32 @@ def test_cross_kind_stream_stays_in_space(
 # ── the footer counts the view's corpus, not every memory (td611734) ────
 # Each specialized view carries predicates the plain ref count ignores:
 # a corpus entry the view never had is not a hidden hit.
+
+
+def test_listing_footer_keeps_creation_window(
+    handler: MemoryHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    since = datetime(2026, 1, 1, tzinfo=UTC)
+    until = datetime(2026, 1, 2, tzinfo=UTC)
+    visible = _note(handler, f"{_TOKEN} visible in window", "repo-dev")
+    hidden = _note(handler, f"{_TOKEN} hidden at lower bound", "research")
+    past = _note(handler, f"{_TOKEN} hidden before window", "research")
+    future = _note(handler, f"{_TOKEN} hidden at upper bound", "research")
+    with hub.live_store.pool.connection() as conn:
+        for ref_id, created_at in (
+            (visible, since),
+            (hidden, since),
+            (past, datetime(2025, 12, 31, tzinfo=UTC)),
+            (future, until),
+        ):
+            conn.execute(
+                "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+                (created_at, ref_id),
+            )
+    monkeypatch.setenv(scope_mod.DOMAIN_ENV, "repo-dev")
+    body = handler.search(since=since.isoformat(), until=until.isoformat()).body
+    assert "visible in window" in body
+    assert "1 memory entry outside SPACE:repo-dev" in body
 
 
 def test_reads_footer_keeps_min_predicates(

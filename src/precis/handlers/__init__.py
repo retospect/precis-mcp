@@ -33,6 +33,7 @@ deadlocks and redirect cycles. The successor stamp commits with retirement
 so failed deletes leave no redirect.
 Memory's audit view uses the retired view so a superseded handle exposes
 its own tombstone through the same read path.
+Memory's domain footer shares the listing's resolved creation window.
 Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
 Unscoped paper TOCs flag short bodies that end mid-sentence so readers can
 recognize possible gaps in the held copy before drawing conclusions.

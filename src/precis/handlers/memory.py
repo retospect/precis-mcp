@@ -218,6 +218,7 @@ from precis.handlers._numeric_ref import (
     NumericRefHandler,
     _id_batch_next,
     _parse_id_range,
+    _parse_window_bound,
     _tag_names_axis,
 )
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -5412,6 +5413,21 @@ class MemoryHandler(AuditedRetirementHandler):
             kw["status"] = status
         if view in (None, "index") and (out_of_force := hidden_ids(self.store)):
             exclude_ref_ids = sorted({*(exclude_ref_ids or ()), *out_of_force})
+        created_after = created_before = None
+        if (
+            domain is not None
+            and view in (None, "count")
+            and not (fold_match_all_q(q) or "").strip()
+            and not kw.get("link")
+        ):
+            # Resolve relative bounds once so the listing and footer use
+            # the same instants.
+            created_after = _parse_window_bound(kw.get("since"), "since")
+            created_before = _parse_window_bound(kw.get("until"), "until")
+            if created_after is not None:
+                kw["since"] = created_after
+            if created_before is not None:
+                kw["until"] = created_before
         resp = self._search_inner(
             q=q,
             tags=tags,
@@ -5451,6 +5467,8 @@ class MemoryHandler(AuditedRetirementHandler):
             after=(tags, include_ref_ids),
             id_min=id_lo,
             id_max=id_hi,
+            created_after=created_after,
+            created_before=created_before,
         )
 
     def _domain_space_default(
@@ -5501,6 +5519,8 @@ class MemoryHandler(AuditedRetirementHandler):
         count: Callable[[list[str] | None, list[int] | None], int] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
     ) -> Response:
         """Append the gr572723 footer: name the door when the domain's
         default ``SPACE:`` filter dropped hits. ``before``/``after`` are
@@ -5549,6 +5569,8 @@ class MemoryHandler(AuditedRetirementHandler):
                     tags=Tag.normalize_filter(before_tags, kind=self.kind),
                     id_min=id_min,
                     id_max=id_max,
+                    created_after=created_after,
+                    created_before=created_before,
                     include_ref_ids=before_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 )
@@ -5557,6 +5579,8 @@ class MemoryHandler(AuditedRetirementHandler):
                     tags=Tag.normalize_filter(after_tags, kind=self.kind),
                     id_min=id_min,
                     id_max=id_max,
+                    created_after=created_after,
+                    created_before=created_before,
                     include_ref_ids=after_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 )
