@@ -39,7 +39,7 @@ from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers import health_digest, nursery
-from precis.workers.chunk_keywords import MIN_CHUNK_CHARS
+from precis.workers.chunk_keywords import MIN_CHUNK_CHARS, write_chunk_keywords
 from precis.workers.doctor_report import DoctorReport
 from precis.workers.health_digest import (
     CheckResult,
@@ -658,19 +658,18 @@ def test_embed_backlog_draining_within_budget_is_ok(store) -> None:
 # ── (b2) net-rate gate for the chunk_keywords backlog check ─────────────
 
 
-def _log_runner_batch(store, *, handler: str, ok: int, claimed: int) -> None:
-    """Insert one ``pass='runner'`` worker_logs row, as the runner emits —
-    the ok-ledger ``keywords_backlog_rates`` sums for drain, and the
-    check's ``last_ts`` source."""
+def _log_runner_batch(store: Store, *, fresh_ok: int = 0, rederive_ok: int = 0) -> None:
+    """Insert a runner row shaped like a keyword pass's success ledger."""
     with store.pool.connection() as conn:
         conn.execute(
             """
             INSERT INTO worker_logs (host, pass, level, message, payload)
             VALUES ('maple', 'runner', 'INFO', 'worker: batch',
-                    jsonb_build_object('handler', %s::text, 'claimed', %s::int,
-                                       'ok', %s::int, 'failed', 0::int))
+                    jsonb_build_object('handler', 'chunk_keywords',
+                                       'ok', %s::int, 'fresh_ok', %s::int,
+                                       'rederive_ok', %s::int))
             """,
-            (handler, claimed, ok),
+            (fresh_ok + rederive_ok, fresh_ok, rederive_ok),
         )
         conn.commit()
 
@@ -706,9 +705,7 @@ def _seed_keywords_rows(
                 (cid, embedder.embed_one("x")),
             )
         conn.commit()
-    _log_runner_batch(
-        store, handler="chunk_keywords", ok=drained_ok, claimed=drained_ok
-    )
+    _log_runner_batch(store, fresh_ok=drained_ok)
 
 
 def test_growing_keywords_backlog_with_fresh_writes_is_stale(store) -> None:
@@ -762,6 +759,127 @@ def test_keywords_backlog_rates_probe_failure_is_recency_ok(store, monkeypatch) 
     kw = next(r for r in results if r.name == "chunk_keywords")
     assert kw.status == "ok"
     assert "draining" in kw.detail
+
+
+def _seed_keywords_stale_rows(
+    store: Store, *, stale: int, recent_embeddings: bool = False
+) -> None:
+    """Version-stale re-derive rows (``pending_stale``): keywords exist
+    but ``keywords_meta.version`` lags ``KEYWORDS_VERSION`` — the paced
+    tier-3 burn a version bump re-queues. Embed timestamps can model
+    either older entries or recent refreshes of already-keyworded rows."""
+    embedder = make_mock_bge_m3()
+    body = "k" * (MIN_CHUNK_CHARS + 50)
+    _r, stale_ids = seed_chunks(store, [f"{body} s{i}" for i in range(stale)])
+    with store.pool.connection() as conn:
+        for cid in stale_ids:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+                "status, created_at) VALUES (%s, 'bge-m3', %s, 'ok', "
+                "now() - %s::interval)",
+                (
+                    cid,
+                    embedder.embed_one("x"),
+                    "0 hours" if recent_embeddings else "24 hours",
+                ),
+            )
+            conn.execute(
+                "UPDATE chunks SET keywords = %s, keywords_meta = "
+                "jsonb_build_object('version', '0.0', "
+                "'content_sha', content_sha) "
+                "WHERE chunk_id = %s",
+                (["kw"], cid),
+            )
+        conn.commit()
+
+
+def test_keywords_stale_burn_with_recent_rederives_is_ok(store: Store) -> None:
+    """gr796455: a ``KEYWORDS_VERSION`` bump re-queues the whole labelled
+    corpus as version-stale re-derives — a months-long background burn
+    BY DESIGN (gr664574). The pending count lumped that burn into the
+    drain-budget queue, so an honest ~140d-ETA re-derive kept minting
+    pipeline-stuck gripes. With the fresh queue empty and writes
+    landing, the check must read the burn as ok."""
+    _seed_keywords_stale_rows(store, stale=50)
+    _log_runner_batch(store, rederive_ok=10)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn, store.pool)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "ok"
+    assert "re-derives" in kw.detail
+
+
+def test_keywords_stale_burn_with_only_fresh_successes_is_stale(store: Store) -> None:
+    """The exemption covers a MOVING burn only: re-derive rows pending
+    with no successful batch inside the budget still read stale."""
+    _seed_keywords_stale_rows(store, stale=50)
+    _log_runner_batch(store, fresh_ok=10)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn, store.pool)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "stale"
+    assert "NOT draining" in kw.detail
+
+
+def test_keywords_fresh_backlog_still_gated_beside_burn(store: Store) -> None:
+    """The burn exemption must not hide a real fresh backlog: fresh
+    chunks pending while inflow outpaces drain stay a stale verdict —
+    the gate still governs the queue the budget was written for."""
+    _seed_keywords_rows(store, old_pending=40, fresh_inflow=60, drained_ok=10)
+    _seed_keywords_stale_rows(store, stale=250)
+    _log_runner_batch(store, rederive_ok=250)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn, store.pool)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "stale"
+    assert "growing" in kw.detail
+
+
+def test_keywords_refreshed_embeddings_do_not_inflate_fresh_inflow(
+    store: Store,
+) -> None:
+    _seed_keywords_rows(store, old_pending=5, fresh_inflow=0, drained_ok=25)
+    _seed_keywords_stale_rows(store, stale=50, recent_embeddings=True)
+    _log_runner_batch(store, rederive_ok=1)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn, store.pool)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "ok"
+
+
+def test_keywords_inflow_includes_rows_drained_after_embedding(store: Store) -> None:
+    _seed_keywords_rows(store, old_pending=0, fresh_inflow=2, drained_ok=0)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunk_embeddings ORDER BY chunk_id LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        chunk_id = row[0]
+        assert write_chunk_keywords(
+            conn, chunk_id, keywords=[], embedder_name="bge-m3"
+        ) == (1, 1)
+        conn.commit()
+        assert health_checks.keywords_backlog_rates(conn, window_hours=6) == {
+            "inflow": 2,
+            "drained": 0,
+        }
+        conn.execute(
+            "UPDATE chunk_embeddings SET created_at = clock_timestamp() "
+            "WHERE chunk_id = %s",
+            (chunk_id,),
+        )
+        conn.execute(
+            "UPDATE chunks SET keywords_meta = keywords_meta || "
+            "jsonb_build_object('version', '0.0') WHERE chunk_id = %s",
+            (chunk_id,),
+        )
+        assert write_chunk_keywords(
+            conn, chunk_id, keywords=[], embedder_name="bge-m3"
+        ) == (1, 0)
+        assert health_checks.keywords_backlog_rates(conn, window_hours=6) == {
+            "inflow": 1,
+            "drained": 0,
+        }
 
 
 # ── (d) push policy ──────────────────────────────────────────────────────

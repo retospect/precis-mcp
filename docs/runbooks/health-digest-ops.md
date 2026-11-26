@@ -43,6 +43,17 @@ In production it fires once an hour, wherever the cadence lease lands.
    scans parked at most hourly in `app_state` (`backlog_count:*` keys,
    `precis.backlog_cache`); the panel shows each count's age, and
    deleting those keys forces a recount on the next read.
+   `chunk_keywords`'s pending splits fresh (`keywords IS NULL`) from
+   version/`content_sha`-stale re-derives: the net-rate ETA gate governs
+   the fresh queue only — a `KEYWORDS_VERSION` bump re-derives the whole
+   corpus as a deliberately months-long burn, which only has to keep
+   moving (gr796455). The worker logs committed first writes as
+   `fresh_ok` and re-derives as `rederive_ok`. The watchdog checks for
+   a recent re-derive when only the background queue has work. Embeddings
+   that arrived while a chunk still lacked keywords count toward fresh
+   inflow even if that chunk has since drained.
+   Older worker logs lack the queue fields. The watchdog needs a success
+   from an updated worker to establish recent progress.
    `chunks_extracted` is body-row-only
    (`ord >= 0`, so a card_forge rewrite or a concept/glossary chunk write
    can't mask a stalled extraction pipeline) and input-aware: stale only

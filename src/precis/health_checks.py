@@ -102,7 +102,22 @@ def _terminal_pass_counts(
 
 def _keywords_counts(conn: Any) -> dict[str, int]:
     """pending/blocked/done for ``chunk_keywords``. A full ``chunks`` scan,
-    parked hourly like :func:`_terminal_pass_counts`."""
+    parked hourly like :func:`_terminal_pass_counts`.
+
+    ``pending`` is the whole emb-ready claimable queue — but it splits
+    in two, and the halves have different health contracts (gr796455):
+
+    * ``pending_fresh`` — ``keywords IS NULL``: chunks never labelled.
+      The backlog the watchdog's drain budget governs; fresh ingests
+      are expected to get keywords promptly.
+    * ``pending_stale`` — keywords exist but the version or
+      ``content_sha`` drifted: the paced tier-3 re-derive. A
+      ``KEYWORDS_VERSION`` bump re-queues the entire labelled corpus
+      here, and the gr664574 ruling runs that re-derive as a
+      deliberately months-long background burn — an ETA no drain
+      budget could ever meet. The watchdog checks it keeps moving,
+      not that it empties on the fresh queue's clock.
+    """
     from precis.workers.chunk_keywords import (
         KEYWORDS_VERSION,
         MIN_CHUNK_CHARS,
@@ -112,10 +127,12 @@ def _keywords_counts(conn: Any) -> dict[str, int]:
     r = conn.execute(
         """
         SELECT
-            count(*) FILTER (WHERE elig)                            AS total,
-            count(*) FILTER (WHERE elig AND NOT pend)               AS done,
-            count(*) FILTER (WHERE elig AND pend AND emb_ready)     AS pending,
-            count(*) FILTER (WHERE elig AND pend AND NOT emb_ready) AS blocked
+            count(*) FILTER (WHERE elig)                              AS total,
+            count(*) FILTER (WHERE elig AND NOT pend)                 AS done,
+            count(*) FILTER (WHERE elig AND pend AND emb_ready)       AS pending,
+            count(*) FILTER (WHERE elig AND fresh AND emb_ready)      AS fresh,
+            count(*) FILTER (WHERE elig AND stale AND emb_ready)      AS stale,
+            count(*) FILTER (WHERE elig AND pend AND NOT emb_ready)   AS blocked
           FROM (
             SELECT
                 (c.chunk_kind <> ALL(%(skip)s)
@@ -126,8 +143,14 @@ def _keywords_counts(conn: Any) -> dict[str, int]:
                         WHERE ce.chunk_id = c.chunk_id
                           AND ce.embedder = %(emb)s
                           AND ce.status = 'ok'
+                          AND ce.vector IS NOT NULL
                           AND ce.content_sha
                               IS NOT DISTINCT FROM c.content_sha) AS emb_ready,
+                (c.keywords IS NULL) AS fresh,
+                (c.keywords IS NOT NULL
+                 AND ((c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
+                      OR (c.keywords_meta->>'content_sha')
+                         IS DISTINCT FROM c.content_sha)) AS stale,
                 (c.keywords IS NULL
                  OR (c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
                  OR (c.keywords_meta->>'content_sha')
@@ -142,16 +165,25 @@ def _keywords_counts(conn: Any) -> dict[str, int]:
             "kv": KEYWORDS_VERSION,
         },
     ).fetchone()
-    done, pending, blocked = int(r[1]), int(r[2]), int(r[3])
-    return {"pending": pending, "blocked": blocked, "done": done, "failed": 0}
+    done, pending = int(r[1]), int(r[2])
+    pending_fresh, pending_stale, blocked = int(r[3]), int(r[4]), int(r[5])
+    return {
+        "pending": pending,
+        "pending_fresh": pending_fresh,
+        "pending_stale": pending_stale,
+        "blocked": blocked,
+        "done": done,
+        "failed": 0,
+    }
 
 
 def compute_backlog_counts(conn: Any, pool: Any) -> dict[str, dict[str, Any]]:
     """Per-pass backlog counts on an already-open ``conn``.
 
     Same three-way (pending/done/failed) plus ``chunk_keywords``' extra
-    ``blocked`` split as the original ``/status`` panel query — see the
-    module docstring. The counts are full ``chunks`` scans, so each is
+    ``blocked`` and ``pending_fresh``/``pending_stale`` splits as the
+    original ``/status`` panel query — see the module docstring. The
+    counts are full ``chunks`` scans, so each is
     served from :mod:`precis.backlog_cache` (recounted at most hourly, on
     its own connection from ``pool``) and its row carries ``counted_at``;
     ``last_ts`` stays live on ``conn``. A failed count reads
@@ -188,9 +220,12 @@ def compute_backlog_counts(conn: Any, pool: Any) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     for label, compute in counters.items():
         try:
-            hit = backlog_cache.cached_count(
-                pool, f"status:{label}", compute, conn=conn
+            cache_key = (
+                "status:chunk_keywords:split"
+                if label == "chunk_keywords"
+                else f"status:{label}"
             )
+            hit = backlog_cache.cached_count(pool, cache_key, compute, conn=conn)
             rows[label] = {**hit.value, "counted_at": hit.counted_at}
         except Exception:
             log.exception("health_checks: backlog query for %s failed", label)
@@ -210,6 +245,22 @@ def compute_backlog_counts(conn: Any, pool: Any) -> dict[str, dict[str, Any]]:
                 row = conn.execute(
                     "SELECT max(created_at) FROM chunk_embeddings"
                 ).fetchone()
+            elif pass_name == "chunk_keywords":
+                row = conn.execute(
+                    """
+                    SELECT max(ts) FILTER (WHERE (payload->>'ok')::int > 0),
+                           max(ts) FILTER (WHERE (payload->>'fresh_ok')::int > 0),
+                           max(ts) FILTER (WHERE (payload->>'rederive_ok')::int > 0)
+                      FROM worker_logs
+                     WHERE pass = 'runner'
+                       AND ts > now() - interval '6 hours'
+                       AND split_part(payload->>'handler', ':', 1) = 'chunk_keywords'
+                    """
+                ).fetchone()
+                if row:
+                    rows[pass_name].update(
+                        fresh_last_ts=row[1], rederive_last_ts=row[2]
+                    )
             else:
                 row = conn.execute(
                     """
@@ -303,46 +354,28 @@ def _embed_skip_kinds() -> tuple[str, ...]:
 
 
 def keywords_backlog_rates(conn: Any, *, window_hours: float) -> dict[str, int] | None:
-    """chunk_keywords drain vs inflow over the last ``window_hours``.
+    """First-keyword drain and emb-ready inflow over the same window.
 
-    ``{"drained": N, "inflow": M}`` — the ``chunk_keywords`` twin of
-    :func:`embed_backlog_rates` (gr520236): its backlog (order ~1.5M
-    pending at a ~7k/day drain) keeps ``last_ts`` permanently fresh while
-    the honest ETA sits months out, so the digest's recency verdict alone
-    can never fire on this queue either.
+    Drain counts committed KeyBERT writes to previously unlabelled
+    chunks. Legacy batches lack queue attribution and supply no evidence.
+    Inflow counts eligible chunks whose current embedding arrived while
+    they were unlabelled, including chunks since drained in this window.
+    The first-write timestamp survives re-derives so neither drain nor
+    later embedding refreshes count as new arrivals.
 
-    **Drain** — the runner's own ok-ledger. The pass's output is an
-    UPDATE onto ``chunks.keywords``/``keywords_meta``, and that envelope
-    carries no write timestamp (version/embedder/keywords/content_sha
-    only), so the windowed drain count is ``SUM(payload->>'ok')`` over
-    the same ``pass='runner'`` handler-split ``worker_logs`` rows the
-    check's ``last_ts`` probe already reads — one ``ok`` is one chunk the
-    pass wrote. A re-derivation counts again, correctly: it re-claimed
-    and re-wrote the chunk.
-
-    **Inflow** — entry into the *claimable* queue, not chunk creation:
-    ``pending`` in :func:`compute_backlog_counts` is emb-ready-gated (a
-    keyword-eligible chunk behind a missing/stale embedding reads
-    ``blocked``, not ``pending``), so the honest inflow count is
-    ``bge-m3`` ``chunk_embeddings`` rows inserted in the window for
-    keyword-eligible chunks — the moment each becomes claimable under
-    :func:`~precis.workers.chunk_keywords.claim_chunks_without_keywords`.
-
-    Returns ``None`` on any error (same degrade contract as
-    :func:`embed_backlog_rates`), after a rollback so later sections on
-    the shared connection still run.
+    Returns ``None`` on probe failure after rolling back the connection.
     """
     from precis.workers.chunk_keywords import MIN_CHUNK_CHARS, SKIP_KINDS
 
     try:
         window = f"{window_hours} hours"
         drained = conn.execute(
-            "SELECT COALESCE(SUM((payload->>'ok')::int), 0) "
+            "SELECT COALESCE(SUM((payload->>'fresh_ok')::int), 0) "
             "FROM worker_logs "
             "WHERE pass = 'runner' "
             "AND split_part(payload->>'handler', ':', 1) = 'chunk_keywords' "
             "AND ts > now() - %s::interval "
-            "AND payload->>'ok' ~ '^[0-9]+$'",
+            "AND payload->>'fresh_ok' ~ '^[0-9]+$'",
             (window,),
         ).fetchone()
         inflow = conn.execute(
@@ -351,6 +384,10 @@ def keywords_backlog_rates(conn: Any, *, window_hours: float) -> dict[str, int] 
             "JOIN chunks c ON c.chunk_id = ce.chunk_id "
             "WHERE ce.embedder = %s "
             "AND ce.status = 'ok' "
+            "AND ce.vector IS NOT NULL "
+            "AND (c.keywords IS NULL OR "
+            "     (c.keywords_meta->>'first_keyworded_at')::timestamptz "
+            "         >= ce.created_at) "
             "AND ce.content_sha IS NOT DISTINCT FROM c.content_sha "
             "AND ce.created_at > now() - %s::interval "
             "AND c.chunk_kind <> ALL(%s) "

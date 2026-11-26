@@ -146,8 +146,9 @@ Notable pass mechanics
   Both use the per-account sync lock. The job needs a runner with a configured
   mirror and shares the cadence's AnkiWeb failure backoff. A successful cadence
   clears only the deadline it saw at start, preserving newer failures.
-* ``chunk_keywords`` batches paper-local embedding outside DB connections
-  (gr547587) and logs pass time and lifetime worker RSS (gr701709).
+* ``chunk_keywords`` batches embedding outside transactions (gr547587),
+  logs pass time and RSS (gr701709), and tracks queue-specific progress
+  (gr796455).
 * ``embed`` is manual-only (``--only embed``); the ``materialize`` cadence
   mints bounded ``embed_batch`` jobs (default-ON,
   ``PRECIS_MATERIALIZE_EMBED=0`` opts out) above

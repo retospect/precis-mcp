@@ -91,7 +91,10 @@ def build_ref_passes(
             # the claim while ``PRECIS_CHUNK_KEYWORDS_MAX_SECONDS``
             # (~60 s) bounds the advisory-lock hold — same trap as
             # ``chase_trigger`` (gr454865), which passes ``None`` too.
-            r = run_chunk_keywords_pass(store, kw_embedder, batch_size=None)
+            success_counts: dict[str, int] = {}
+            r = run_chunk_keywords_pass(
+                store, kw_embedder, batch_size=None, success_counts=success_counts
+            )
             # Tier-1 counts ride in ``extra`` (own payload keys), never
             # in the claimed/ok/failed drain ledger (gr739436).
             return BatchResult.from_dict(
@@ -100,6 +103,7 @@ def build_ref_passes(
                     **r,
                     "extra": {
                         **tier1_counts(r),
+                        **success_counts,
                         "process_peak_rss_mib": process_peak_rss_mib(),
                     },
                 },

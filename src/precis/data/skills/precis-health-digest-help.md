@@ -78,7 +78,7 @@ plus the bespoke checks that share the `CheckResult` shape:
 | `chunks_extracted` | `ingest` | no live paper newer than the newest chunk, unextracted >6h |
 | `chunks_classified` | `discovery` | a ROLE3 classification within 12h while the classify pass is enabled and has eligible chunks |
 | `embed` | `discovery` | embed backlog empty or draining within 2h (idle-aware); a stale detail names the first stuck stage — materializer → `embed_batch` → `job_inproc` |
-| `chunk_keywords` | `discovery` | chunk_keywords backlog empty or draining within 6h |
+| `chunk_keywords` | `discovery` | fresh (never-keyworded) backlog empty or draining within 6h; a version-stale re-derive burn only has to keep moving — its months-long ETA is by design (gr796455) |
 | `morning_brief_cast` | `reading` | the briefing pass ran within 26h |
 | `cast_audio` | `reading` | cast_audio narrated a cast within 26h |
 | `card_forge` | `reading` | a card_forge job completed within 26h while cards were due |

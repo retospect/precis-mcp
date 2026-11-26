@@ -1390,59 +1390,10 @@ def write_chunk_keywords(
     *,
     keywords: list[dict[str, Any]],
     embedder_name: str,
-) -> None:
-    """Persist the keywords payload onto the chunk row.
-
-    Writes both ``chunks.keywords`` (the canonical TEXT[] for GIN
-    lookup + Jaccard) and ``chunks.keywords_meta`` (the rich JSONB
-    envelope including version + embedder for the lazy-update path).
-
-    Guarded by the same predicate :func:`claim_chunks_without_keywords`
-    claims on (``keywords IS NULL OR`` version/``content_sha`` stale): the
-    claim's row lock is released well before this write runs (see
-    :func:`run_chunk_keywords_pass`'s claim-commit-first phase). With the
-    pass's single-runner advisory lock (also documented there), two hosts
-    processing the same chunk is a genuinely rare edge case now (a
-    lock-handoff window right at pass boundary, not the fleet-normal
-    collision it would be without that lock) — belt-and-braces, not the
-    primary defense. Without the guard, whichever write lands second would
-    clobber the first with equivalent-but-not-identical data; with it, a
-    redundant write is a cheap no-op (0 rows affected, no error) instead.
-    """
-    canonical = [
-        (k.get("short") or k.get("long") or "").lower().strip() for k in keywords
-    ]
-    canonical = [c for c in canonical if c]
-    meta = {
-        "version": KEYWORDS_VERSION,
-        "extractor": TIER2_EXTRACTOR,
-        "embedder": embedder_name,
-        "keywords": keywords,
-    }
-    # Stamp the chunk's current content_sha into the envelope (column ref,
-    # so it's the locked row's value — race-free) for the re-derive claim.
-    # NB: use ``|| jsonb_build_object(...)`` rather than ``jsonb_set(...,
-    # to_jsonb(content_sha), ...)``. When ``content_sha`` is SQL NULL (a
-    # chunk that never had its hash stamped), ``to_jsonb(NULL)`` is SQL
-    # NULL and ``jsonb_set`` then returns NULL — nulling the *entire*
-    # envelope (version included), which makes the claim query
-    # (``keywords_meta->>'version' IS DISTINCT FROM …``) re-claim the row
-    # forever (a spin loop). ``jsonb_build_object`` maps a NULL value to a
-    # JSON ``null`` and the ``||`` merge preserves the rest of the envelope.
-    conn.execute(
-        """
-        UPDATE chunks
-           SET keywords = %s,
-               keywords_meta =
-                   %s::jsonb || jsonb_build_object('content_sha', content_sha)
-         WHERE chunk_id = %s
-           AND (
-                keywords IS NULL
-             OR (keywords_meta->>'version') IS DISTINCT FROM %s
-             OR (keywords_meta->>'content_sha') IS DISTINCT FROM content_sha
-           )
-        """,
-        (canonical, Jsonb(meta), chunk_id, KEYWORDS_VERSION),
+) -> tuple[int, int]:
+    """Persist one KeyBERT result. Return (total written, first writes)."""
+    return write_chunk_keywords_bulk(
+        conn, [(chunk_id, keywords)], embedder_name=embedder_name
     )
 
 
@@ -1451,31 +1402,17 @@ def write_chunk_keywords_bulk(
     items: list[tuple[int, list[dict[str, Any]]]],
     *,
     embedder_name: str,
-) -> int:
-    """One ``UPDATE ... FROM (VALUES ...)`` for a slice of scored chunks.
+) -> tuple[int, int]:
+    """Persist KeyBERT results and return (total written, first writes).
 
-    The dedicated lane's write path (gr550973): a multi-row statement
-    replaces ``len(items)`` per-chunk write transactions — same
-    columns, same payload shape as :func:`write_chunk_keywords`
-    (canonical ``keywords`` TEXT[] + versioned ``keywords_meta``
-    envelope), and the same stale guard
-    (``keywords IS NULL OR`` version/``content_sha`` drift), so a
-    duplicate claim landing in the post-commit window stays a no-op.
-    ``items`` is ``[(chunk_id, keywords), ...]``; callers bound each
-    call to :data:`_BULK_WRITE_MAX_ROWS` rows. The ``content_sha``
-    stamp is the row's own column value at write time, race-free —
-    same ``|| jsonb_build_object`` merge the single-row writer uses
-    (NULL ``content_sha`` maps to JSON ``null``, not a NULLed
-    envelope).
-
-    ``keywords``/``keywords_meta`` are UPDATE-safe on ``chunks``: the
-    body-chunk append-only trigger (migration 0068, see
-    ``docs/conventions/invariants.md``) forbids mutating ``text`` and
-    the identity columns only. Returns the UPDATE's rowcount — rows
-    skipped by the stale guard simply don't count.
+    Lock the current rows before classifying the writes. Claims commit
+    before scoring, so another writer can change a row or complete it
+    before this UPDATE. The stale guard skips completed rows and the
+    first-write timestamp survives later re-derives so the watchdog can
+    count embeddings that arrived while a chunk still had no keywords.
     """
     if not items:
-        return 0
+        return 0, 0
     values: list[str] = []
     params: list[Any] = []
     for chunk_id, keywords in items:
@@ -1491,23 +1428,34 @@ def write_chunk_keywords_bulk(
         }
         values.append("(%s::bigint, %s::text[], %s::jsonb)")
         params.extend([chunk_id, canonical, Jsonb(meta)])
-    cur = conn.execute(
+    written = conn.execute(
         f"""
+        WITH candidates AS MATERIALIZED (
+            SELECT c.chunk_id, v.keywords, v.keywords_meta, c.keywords IS NULL AS fresh,
+                   c.keywords_meta->'first_keyworded_at' AS first_keyworded_at
+              FROM (VALUES {", ".join(values)}) AS v(chunk_id, keywords, keywords_meta)
+              JOIN chunks c ON c.chunk_id = v.chunk_id
+             WHERE c.keywords IS NULL
+                OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
+                OR (c.keywords_meta->>'content_sha') IS DISTINCT FROM c.content_sha
+             ORDER BY c.chunk_id
+             FOR UPDATE OF c
+        )
         UPDATE chunks c
            SET keywords = v.keywords,
-               keywords_meta =
-                   v.keywords_meta || jsonb_build_object('content_sha', c.content_sha)
-          FROM (VALUES {", ".join(values)}) AS v(chunk_id, keywords, keywords_meta)
+               keywords_meta = v.keywords_meta || jsonb_build_object(
+                   'content_sha', c.content_sha,
+                   'first_keyworded_at',
+                   CASE WHEN v.fresh THEN to_jsonb(statement_timestamp())
+                        ELSE v.first_keyworded_at END
+               )
+          FROM candidates v
          WHERE c.chunk_id = v.chunk_id
-           AND (
-                c.keywords IS NULL
-             OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
-             OR (c.keywords_meta->>'content_sha') IS DISTINCT FROM c.content_sha
-           )
+         RETURNING v.fresh
         """,
         (*params, KEYWORDS_VERSION),
-    )
-    return cur.rowcount
+    ).fetchall()
+    return len(written), sum(fresh for (fresh,) in written)
 
 
 def write_statistical_keywords_bulk(
@@ -1667,6 +1615,7 @@ def _run_chunk_keywords_batch(
     max_seconds: float,
     include_stale: bool = True,
     stale_claimed: list[int] | None = None,
+    success_counts: dict[str, int] | None = None,
     shard_count: int = 1,
     shard_index: int = 0,
     should_stop: Callable[[], bool] | None = None,
@@ -1770,11 +1719,19 @@ def _run_chunk_keywords_batch(
     def _stopped() -> bool:
         return should_stop is not None and should_stop()
 
+    def _record_write(counts: tuple[int, int]) -> None:
+        nonlocal ok
+        written, fresh = counts
+        ok += written
+        if success_counts is not None:
+            success_counts["fresh_ok"] += fresh
+            success_counts["rederive_ok"] += written - fresh
+
     def _write_scored(scored: list[tuple[int, list[dict[str, Any]]]]) -> None:
         """Bulk-write scored chunks in :data:`_BULK_WRITE_MAX_ROWS`
         slices; a non-lock slice failure falls back to per-chunk
         writes so one bad row can't sink the slice."""
-        nonlocal ok, failed
+        nonlocal failed
         for i in range(0, len(scored), _BULK_WRITE_MAX_ROWS):
             if _stopped():
                 return
@@ -1782,14 +1739,16 @@ def _run_chunk_keywords_batch(
 
             def _bulk(
                 part: list[tuple[int, list[dict[str, Any]]]] = part,
-            ) -> None:
+            ) -> tuple[int, int]:
                 with store.pool.connection() as wconn:
-                    write_chunk_keywords_bulk(wconn, part, embedder_name=embedder.model)
+                    counts = write_chunk_keywords_bulk(
+                        wconn, part, embedder_name=embedder.model
+                    )
                     wconn.commit()
+                    return counts
 
             try:
-                retry_locked(_bulk, label="chunk_keywords bulk write")
-                ok += len(part)
+                _record_write(retry_locked(_bulk, label="chunk_keywords bulk write"))
                 continue
             except (LockNotAvailable, DeadlockDetected) as exc:
                 # Residual lock contention that outlasted retry_locked's
@@ -1818,18 +1777,22 @@ def _run_chunk_keywords_batch(
                     def _write(
                         chunk_id: int = chunk_id,
                         keywords: list[dict[str, Any]] = keywords,
-                    ) -> None:
+                    ) -> tuple[int, int]:
                         with store.pool.connection() as wconn:
-                            write_chunk_keywords(
+                            counts = write_chunk_keywords(
                                 wconn,
                                 chunk_id,
                                 keywords=keywords,
                                 embedder_name=embedder.model,
                             )
                             wconn.commit()
+                            return counts
 
-                    retry_locked(_write, label=f"chunk_keywords chunk_id={chunk_id}")
-                    ok += 1
+                    _record_write(
+                        retry_locked(
+                            _write, label=f"chunk_keywords chunk_id={chunk_id}"
+                        )
+                    )
                 except (LockNotAvailable, DeadlockDetected) as exc:
                     log.warning(
                         "chunk_keywords: chunk_id=%s deferred after "
@@ -1889,7 +1852,7 @@ def _run_chunk_keywords_batch(
                 exc,
                 claimed,
             )
-            return idle
+            return {**idle, "ok": ok}
         except Exception:
             log.exception("chunk_keywords: candidate embedding batch failed")
             return {
@@ -1957,6 +1920,7 @@ def run_chunk_keywords_pass(
     shard_count: int = 1,
     shard_index: int = 0,
     should_stop: Callable[[], bool] | None = None,
+    success_counts: dict[str, int] | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, int]:
     """One pass over the chunk_keywords queue.
@@ -1983,7 +1947,8 @@ def run_chunk_keywords_pass(
     claimed rows the dict also carries ``tier1_claimed`` /
     ``tier1_ok`` / ``tier1_failed`` (:func:`tier1_counts` picks them
     out); tier 1 never adds to the first three. Pure pass — the caller
-    decides whether to loop.
+    decides whether to loop. Log callers can pass ``success_counts`` to
+    collect committed KeyBERT writes by queue (``fresh_ok``, ``rederive_ok``).
 
     Single-runner advisory lock (see the module docstring): ``chunk_keywords``
     runs on every system-profile host on the same ~2s tick, all ordering
@@ -2009,6 +1974,8 @@ def run_chunk_keywords_pass(
     live stale backlog is draining.
     """
     idle: dict[str, int] = {"claimed": 0, "ok": 0, "failed": 0}
+    if success_counts is not None:
+        success_counts.update(fresh_ok=0, rederive_ok=0)
     if not store.dsn:
         return idle
 
@@ -2043,6 +2010,7 @@ def run_chunk_keywords_pass(
             max_seconds=max(0.0, deadline - clock()),
             include_stale=_stale_draining or (_pass_count % _STALE_CLAIM_EVERY) == 0,
             stale_claimed=stale,
+            success_counts=success_counts,
             shard_count=shard_count,
             shard_index=shard_index,
             should_stop=should_stop,
@@ -2163,6 +2131,7 @@ def run_dedicated_loop(
         if should_stop is not None and should_stop():
             return
         t0 = clock()
+        success_counts: dict[str, int] = {}
         result = run_chunk_keywords_pass(
             store,
             embedder,
@@ -2173,6 +2142,7 @@ def run_dedicated_loop(
             shard_index=resolved_index,
             should_stop=should_stop,
             clock=clock,
+            success_counts=success_counts,
         )
         runner_log.info(
             "worker: chunk_keywords claimed=%d ok=%d failed=%d",
@@ -2189,6 +2159,7 @@ def run_dedicated_loop(
                     "duration_ms": int((clock() - t0) * 1000),
                     "process_peak_rss_mib": process_peak_rss_mib(),
                     **tier1_counts(result),
+                    **success_counts,
                 }
             },
         )

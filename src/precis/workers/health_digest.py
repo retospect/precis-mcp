@@ -21,7 +21,13 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
      or above drain, or an ETA past budget, is stale even with writes
      minutes old (gr506753 for embed via ``embed_backlog_rates``;
      gr520236 extended the same verdict to chunk_keywords via
-     ``keywords_backlog_rates``, ETA named in days).
+     ``keywords_backlog_rates``, ETA named in days). For
+     ``chunk_keywords`` the pending count additionally splits fresh
+     (``keywords IS NULL``) from version/``content_sha``-stale
+     re-derives: the ETA gate governs the fresh half only, because the
+     paced re-derive burn a ``KEYWORDS_VERSION`` bump re-queues is
+     months-long BY DESIGN and only has to keep moving (gr796455 — a
+     burn at ~140d ETA kept minting pipeline-stuck gripes).
      ``chunks_classified`` is idle-aware on
      the ``service_config`` gate instead: :func:`_classify_gate_enabled`
      (via :func:`_resolve_enabled_somewhere`, shared with Layer-2) reads
@@ -478,8 +484,9 @@ def _idle_aware_backlog_checks(conn: Any, pool: Any) -> list[CheckResult]:
             )
             continue
         pending = int(row["pending"])
-        last_ts = row.get("last_ts")
-        age = _hours_since(last_ts)
+        fresh = int(row.get("pending_fresh", pending))
+        requeue = int(row.get("pending_stale", 0))
+        age = _hours_since(row.get("last_ts"))
         if pending <= 0:
             out.append(
                 CheckResult(
@@ -487,6 +494,36 @@ def _idle_aware_backlog_checks(conn: Any, pool: Any) -> list[CheckResult]:
                 )
             )
             continue
+        if key == _KEYWORDS_BACKLOG_KEY and fresh <= 0:
+            burn_age = _hours_since(row.get("rederive_last_ts"))
+            if burn_age is None or burn_age > budget_hours:
+                last_seen = f"{burn_age:.1f}h ago" if burn_age is not None else "never"
+                out.append(
+                    CheckResult(
+                        group,
+                        key,
+                        "stale",
+                        f"{what}: {requeue} re-derives pending, NOT draining "
+                        f"(last re-derive {last_seen}, budget {budget_hours:.0f}h)",
+                        severity,
+                        burn_age,
+                    )
+                )
+            else:
+                out.append(
+                    CheckResult(
+                        group,
+                        key,
+                        "ok",
+                        f"{what}: 0 fresh pending; {requeue} re-derives "
+                        f"burning in the background (last re-derive {burn_age:.1f}h ago)",
+                        severity,
+                        burn_age,
+                    )
+                )
+            continue
+        if key == _KEYWORDS_BACKLOG_KEY:
+            age = _hours_since(row.get("fresh_last_ts"))
         if age is not None and age <= budget_hours:
             # "Writes are fresh" is not "the backlog is shrinking"
             # (gr506753): steady embed_batch successes kept
@@ -505,7 +542,7 @@ def _idle_aware_backlog_checks(conn: Any, pool: Any) -> list[CheckResult]:
             if rates is not None:
                 net = (rates["drained"] - rates["inflow"]) / budget_hours
                 detail = _net_rate_verdict(
-                    pending,
+                    fresh,
                     net,
                     rates,
                     age,
@@ -519,20 +556,23 @@ def _idle_aware_backlog_checks(conn: Any, pool: Any) -> list[CheckResult]:
                         detail += " — " + _diagnose_embed_pipeline(conn)
                     out.append(CheckResult(group, key, "stale", detail, severity, age))
                     continue
+            burn = f"; {requeue} re-derives pending" if requeue else ""
             out.append(
                 CheckResult(
                     group,
                     key,
                     "ok",
-                    f"{what}: {pending} pending, draining (last batch {age:.1f}h ago)",
+                    f"{what}: {fresh} pending, draining "
+                    f"(last batch {age:.1f}h ago{burn})",
                     severity,
                     age,
                 )
             )
             continue
         last_seen = f"{age:.1f}h ago" if age is not None else "never"
+        queue = " fresh" if key == _KEYWORDS_BACKLOG_KEY else ""
         detail = (
-            f"{what}: {pending} pending, NOT draining "
+            f"{what}: {fresh}{queue} pending, NOT draining "
             f"(last batch {last_seen}, budget {budget_hours:.0f}h)"
         )
         if key == _EMBED_BACKLOG_KEY:

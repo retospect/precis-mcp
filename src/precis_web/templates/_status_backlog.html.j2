@@ -40,11 +40,12 @@
     {% if row.pending == -1 %}
     <span class="text-danger">(query failed — see logs)</span>
     {% else %}
-    <span class="w-44 shrink-0 tabular-nums" title="{{ '{:,}'.format(total) }} eligible chunks">
-      <span class="font-medium {% if row.pending > 0 %}text-warning-strong{% else %}text-success-strong{% endif %}">{{ '{:,}'.format(row.pending) }}</span><span class="text-fg-faint"> pending</span>{% if blocked > 0 %}<span class="text-warning"> · {{ '{:,}'.format(blocked) }} blocked</span>{% endif %}{% if failed > 0 %}<span class="text-danger"> · {{ '{:,}'.format(failed) }} failed</span>{% endif %}
+    <span class="w-56 shrink-0 tabular-nums" title="{{ '{:,}'.format(total) }} eligible chunks">
+      {% set requeue = row.pending_stale|default(0) %}
+      <span class="font-medium {% if row.pending > 0 %}text-warning-strong{% else %}text-success-strong{% endif %}">{{ '{:,}'.format(row.pending) }}</span><span class="text-fg-faint"> pending</span>{% if requeue > 0 %}<span class="text-fg-faint" title="version/content-sha-stale re-derives — the paced background burn, months-long by design">({{ '{:,}'.format(row.pending_fresh|default(row.pending)) }} fresh · {{ '{:,}'.format(requeue) }} re-deriving)</span>{% endif %}{% if blocked > 0 %}<span class="text-warning"> · {{ '{:,}'.format(blocked) }} blocked</span>{% endif %}{% if failed > 0 %}<span class="text-danger"> · {{ '{:,}'.format(failed) }} failed</span>{% endif %}
     </span>
     <div class="flex-1 h-2 rounded bg-surface-muted overflow-hidden flex"
-         title="done {{ '{:,}'.format(row.done) }} · pending {{ '{:,}'.format(row.pending) }} · blocked {{ '{:,}'.format(blocked) }} · failed {{ '{:,}'.format(failed) }}">
+         title="done {{ '{:,}'.format(row.done) }} · pending {{ '{:,}'.format(row.pending) }}{% if requeue > 0 %} ({{ '{:,}'.format(row.pending_fresh|default(row.pending)) }} fresh + {{ '{:,}'.format(requeue) }} re-derives){% endif %} · blocked {{ '{:,}'.format(blocked) }} · failed {{ '{:,}'.format(failed) }}">
       <div class="h-2 bg-success-solid-soft" style="width: {{ '%.1f'|format(pct) }}%"></div>
       <div class="h-2 bg-info-solid-soft" style="width: {{ '%.1f'|format(pct_pend) }}%"></div>
       <div class="h-2 bg-warning-solid-light" style="width: {{ '%.1f'|format(pct_block) }}%"></div>

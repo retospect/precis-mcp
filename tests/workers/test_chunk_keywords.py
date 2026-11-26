@@ -885,18 +885,18 @@ class TestRunChunkKeywordsPass:
 
         def _poisoning_write_chunk_keywords(
             conn: Any, chunk_id: int, *, keywords: Any, embedder_name: str
-        ) -> None:
+        ) -> tuple[int, int]:
             if chunk_id == poison_id:
                 conn.execute("SELECT 1 / 0")
-            else:
-                real_write_chunk_keywords(
-                    conn, chunk_id, keywords=keywords, embedder_name=embedder_name
-                )
+            return real_write_chunk_keywords(
+                conn, chunk_id, keywords=keywords, embedder_name=embedder_name
+            )
 
-        def _poisoning_bulk(conn: Any, items: Any, *, embedder_name: str) -> int:
+        def _poisoning_bulk(
+            conn: Any, items: Any, *, embedder_name: str
+        ) -> tuple[int, int]:
             if any(chunk_id == poison_id for chunk_id, _ in items):
                 conn.execute("SELECT 1 / 0")
-                return 0
             return real_bulk(conn, items, embedder_name=embedder_name)
 
         monkeypatch.setattr(
@@ -1379,7 +1379,7 @@ class TestBulkWrite:
                 embedder_name="bge-m3",
             )
             conn.commit()
-        assert n == 2
+        assert n == (2, 2)
         with store.pool.connection() as conn:
             rows: dict[int, list[str]] = dict(
                 conn.execute(
@@ -1413,16 +1413,14 @@ class TestBulkWrite:
             {"short": None, "long": "clobber", "score": 0.1}
         ]
         with store.pool.connection() as conn:
-            assert (
-                write_chunk_keywords_bulk(conn, [(cid, first)], embedder_name="bge-m3")
-                == 1
-            )
+            assert write_chunk_keywords_bulk(
+                conn, [(cid, first)], embedder_name="bge-m3"
+            ) == (1, 1)
             # Same version, unchanged text → the guard refuses: the
             # duplicate claim window is a no-op, not a clobber.
-            assert (
-                write_chunk_keywords_bulk(conn, [(cid, second)], embedder_name="bge-m3")
-                == 0
-            )
+            assert write_chunk_keywords_bulk(
+                conn, [(cid, second)], embedder_name="bge-m3"
+            ) == (0, 0)
             conn.commit()
             row = conn.execute(
                 "SELECT keywords FROM chunks WHERE chunk_id = %s", (cid,)
