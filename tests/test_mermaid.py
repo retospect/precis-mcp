@@ -557,6 +557,48 @@ def test_missing_slug_hint_names_a_supported_call(mh: MermaidHandler) -> None:
     assert "get(kind='mermaid')" in nxt
 
 
+def test_missing_slug_suggests_nearest_live_slugs(store, mh, diagram) -> None:
+    """gr797061: a miss carries close-match options — a misremembered or
+    renamed slug lands on a live diagram instead of being retried."""
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound) as exc:
+        mh.get(id="flo")
+    assert exc.value.options is not None
+    assert "flow" in exc.value.options
+
+
+def test_deleted_slug_is_gone_not_notfound(store, mh, diagram) -> None:
+    """gr797061: a deleted diagram's slug read as a plain NotFound —
+    indistinguishable from a typo, so a stale reference kept being
+    reissued. ``Gone`` names the deletion; the caller drops the pointer."""
+    from precis.errors import Gone
+
+    mh.delete(id="flow")
+    with pytest.raises(Gone, match="was deleted"):
+        mh.get(id="flow")
+
+
+def test_deleted_slug_record_handle_is_gone(store, mh, diagram) -> None:
+    """The same tombstone reached through the ``mm<id>`` record handle."""
+    from precis.errors import Gone
+
+    handle = f"mm{diagram.id}"
+    mh.delete(id="flow")
+    with pytest.raises(Gone, match="was deleted"):
+        mh.get(id=handle)
+
+
+def test_edit_and_redelete_on_a_tombstone_raise_gone(store, mh, diagram) -> None:
+    from precis.errors import Gone
+
+    mh.delete(id="flow")
+    with pytest.raises(Gone):
+        mh.edit(id="flow", text="flowchart TD\n  a --> b")
+    with pytest.raises(Gone):
+        mh.delete(id="flow")
+
+
 @pytest.mark.usefixtures("diagram")
 def test_slug_view_budget_hint_names_supported_calls(mh: MermaidHandler) -> None:
     resp = mh.get(id="flow")

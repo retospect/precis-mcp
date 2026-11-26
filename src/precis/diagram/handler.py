@@ -38,11 +38,12 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from precis.diagram.lang import DiagramLang
-from precis.errors import BadInput, NotFound, ResultBudgetExceeded
+from precis.errors import BadInput, Gone, NotFound, ResultBudgetExceeded
 from precis.handlers._slug_ref_shared import render_slug_ref_list
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref as _resolve_live
 from precis.protocol import ArgsSpec, Handler
 from precis.response import Response
+from precis.utils import handle_registry
 from precis.utils.text import fmt_num
 
 #: Lint lines the slug render shows before naming the paged
@@ -168,13 +169,56 @@ class DiagramHandler(Handler):
 
     def _resolve_live(self, slug: str) -> Any:
         # No search verb on diagram kinds: the bare-kind get is the list.
-        return _resolve_live(
-            self.store,
-            kind=self.LANG.kind,
-            id=slug,
-            next_hint=f"get(kind='{self.LANG.kind}') to list existing "
-            f"{self.LANG.kind}s",
-        )
+        kind = self.LANG.kind
+        s = str(slug).strip()
+        try:
+            return _resolve_live(
+                self.store,
+                kind=kind,
+                id=s,
+                next_hint=f"get(kind='{kind}') to list existing {kind}s",
+                options=lambda: self._nearest_slugs(s),
+            )
+        except NotFound:
+            # gr797061: a retired diagram keeps its slug's cite_key row,
+            # and the bare "slug not found" read like a typo — a stale
+            # reference to 'mlip-concept-map' was retried for a whole
+            # session. A retired slug (or a retired ref behind its
+            # record handle) is a tombstone: ``Gone`` names the
+            # deletion so the caller drops the pointer instead of
+            # reissuing the identical get.
+            tomb = self.store.get_ref(kind=kind, id=s, include_deleted=True)
+            if tomb is None:
+                # The slug form missed — the id may still name a
+                # tombstone by its ``mm<N>``/``fn<N>`` record handle or
+                # a bare ref_id (``resolve_live_slug_ref``'s own
+                # fallbacks, same order).
+                pk: int | None = None
+                parsed = handle_registry.parse(s)
+                if parsed is not None and parsed[0] == kind and not parsed[1]:
+                    pk = parsed[2]
+                elif s.isdigit():
+                    pk = int(s)
+                if pk is not None:
+                    tomb = self.store.get_ref(kind=kind, id=pk, include_deleted=True)
+            if tomb is not None and tomb.retired_at is not None:
+                raise Gone(
+                    f"{kind} {s!r} was deleted — a reference naming it is stale",
+                    next=f"get(kind='{kind}') to list the live {kind}s",
+                ) from None
+            raise
+
+    def _nearest_slugs(self, slug: str) -> list[str]:
+        """Close-match live slugs for a miss's ``options=``.
+
+        Runs only when the ref actually missed (the callable ``options=``
+        contract — gr674691 made eager suggestion scans too expensive to
+        pay per element); the diagram corpus is small, so the 200 most
+        recently updated slugs are plenty for a fuzzy recovery."""
+        from precis.utils.file_id import nearest_slugs
+
+        refs = self.store.list_refs(kind=self.LANG.kind, limit=200)
+        return nearest_slugs(slug, (r.slug or "" for r in refs))
 
     def _resolve_any(self, id: str | int | None) -> Any:
         s = str(id or "").strip()
