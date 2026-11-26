@@ -1,0 +1,9 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ ref.title or sid }} · Ask{% endblock %}
+{% block content %}
+<section class="mx-auto max-w-2xl space-y-4">
+  <a class="text-accent text-sm" href="/chat">All chats</a>
+  <h1 class="text-xl font-semibold break-words">{{ ref.title or sid }}</h1>
+  {% include "chat/content.html.j2" %}
+</section>
+{% endblock %}

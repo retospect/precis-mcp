@@ -1,0 +1,24 @@
+{% extends "base.html.j2" %}
+{% from "chat/forms.html.j2" import composer, preflight %}
+{% block title %}Ask · precis{% endblock %}
+{% block content %}
+<section class="mx-auto max-w-2xl space-y-4">
+  <h1 class="text-xl font-semibold">Ask</h1>
+  {% if message and not problems %}<p role="alert">{{ message }}</p>{% endif %}
+  {% if problems %}
+    {{ preflight(problems) }}
+  {% else %}
+    {{ composer('/chat/new', 'New chat', draft) }}
+  {% endif %}
+  <ul class="divide-y divide-line">
+    {% for sid, (title, cost) in sessions.items() %}
+      <li class="py-2">
+        <a class="text-accent break-words" href="/chat/{{ sid }}">{{ title }}</a>
+        <span class="block text-xs text-fg-muted">${{ '%.2f' | format(cost) }} today</span>
+      </li>
+    {% else %}
+      <li class="text-fg-muted">No chats yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

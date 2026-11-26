@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from fastapi.testclient import TestClient
+from starlette.types import Receive, Scope, Send
 
 from precis import secrets
+from precis.users import WebUser
 from precis.utils.llm import router
-from precis_web import chat_turns
+from precis_web import chat_turns, create_app
+from precis_web.config import WebConfig
+from tests.precis_web.conftest import FakeRuntime, FakeStore
 
 
 @pytest.fixture
@@ -428,3 +434,273 @@ def test_streaming_child_has_its_own_process_group() -> None:
         assert spawned == [int(exc.value.stdout.strip())]
     else:
         assert exc.value.returncode == -signal.SIGKILL
+
+
+_SID = "20261126-1234-abcd"
+_CHAT = f"/chat/{_SID}"
+_HX = {"HX-Request": "true"}
+
+
+def _ask_client(runtime: Mock | FakeRuntime, abbrev: str = "owner") -> TestClient:
+    app = create_app(runtime=runtime, web_config=WebConfig(owner="owner"))
+
+    async def with_user(scope: Scope, receive: Receive, send: Send) -> None:
+        scope.setdefault("state", {})["web_user"] = WebUser(
+            id=1,
+            login=abbrev,
+            abbrev=abbrev,
+            full_name=None,
+            email=None,
+            disabled_at=None,
+            last_login_at=None,
+            created_at=None,
+            updated_at=None,
+        )
+        await app(scope, receive, send)
+
+    return TestClient(with_user)
+
+
+def _chat_ref(sid: str = _SID, *, owner: str = "owner") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=42,
+        slug=f"chat/{sid}/a",
+        title="First question",
+        meta={"chat_session": sid, "owner_abbrev": owner, "model": "opus"},
+    )
+
+
+def _chunk(ord_: int, text: str, author: str = "owner", **meta: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        ord=ord_,
+        text=text,
+        meta={"author": author, **meta},
+        created_at=datetime.now(UTC),
+    )
+
+
+@pytest.fixture
+def pages(runtime: Mock) -> TestClient:
+    ref = _chat_ref()
+    runtime.store.get_ref.return_value = ref
+    runtime.store.list_refs.return_value = [ref]
+    runtime.store.chunks.list_chunks_for_ref.return_value = []
+    return _ask_client(runtime)
+
+
+def test_send_poll_pending_then_answer(
+    pages: TestClient, runtime: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    turn = chat_turns.ChatTurn("tok", f"chat/{_SID}/a", "a", "owner", "opus", 10, 42)
+    turn.text = "Partial <answer>"
+    turn.tool_chips = [{"name": "mcp__precis__get", "arguments": '{"id": "me123"}'}]
+
+    def start(sid: str, lane: str, user: str, text: str, **kwargs: Any) -> str:
+        assert (sid, lane, user, text) == (_SID, "a", "owner", "A question")
+        assert kwargs["runtime"] is runtime
+        chat_turns._TURNS[turn.token] = turn
+        runtime.store.chunks.list_chunks_for_ref.return_value = [_chunk(0, text)]
+        return turn.token
+
+    monkeypatch.setattr(chat_turns, "start_turn", start)
+    pending = pages.post(f"{_CHAT}/send", data={"text": "A question"}, headers=_HX)
+    assert pending.status_code == 200
+    assert "A question" in pending.text
+    assert 'hx-trigger="every 1.5s"' in pending.text
+    assert "Partial &lt;answer&gt;" in pending.text
+    assert "Interrupted" not in pages.get(_CHAT).text
+
+    poll_url = f"{_CHAT}/turn/{turn.token}"
+    assert "mcp__precis__get" in pages.get(poll_url).text
+    assert f'action="{poll_url}/stop"' in pending.text
+    stopping = pages.post(f"{poll_url}/stop", headers=_HX)
+    assert stopping.status_code == 200 and "Stopping" in stopping.text
+    assert turn.stopping
+
+    turn.status = "stopped"
+    runtime.store.chunks.list_chunks_for_ref.return_value.append(
+        _chunk(
+            1,
+            "Final answer",
+            "asa",
+            status="stopped",
+            msg_id=turn.token,
+            model="sonnet",
+            cost_usd=0.25,
+            tool_calls=1,
+            duration_s=2.0,
+        )
+    )
+    done = pages.get(poll_url)
+    assert done.status_code == 200
+    assert "Final answer" in done.text and "Stopped" in done.text
+    assert "sonnet · $0.2500" in done.text and "1 tool calls · 2.0 s" in done.text
+    assert "hx-trigger" not in done.text
+    chat_turns._TURNS.clear()
+    assert "Final answer" in pages.get(poll_url).text
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/chat"),
+        ("POST", "/chat/new"),
+        ("GET", _CHAT),
+        ("POST", f"{_CHAT}/send"),
+        ("GET", f"{_CHAT}/turn/tok"),
+        ("POST", f"{_CHAT}/turn/tok/stop"),
+        ("POST", f"{_CHAT}/continue"),
+        ("POST", f"{_CHAT}/retry"),
+    ],
+)
+def test_non_owner_403(runtime: Mock, method: str, path: str) -> None:
+    assert _ask_client(runtime, "other").request(method, path).status_code == 403
+    runtime.store.get_ref.assert_not_called()
+
+
+def test_nav_has_ask_for_owner() -> None:
+    runtime = FakeRuntime(FakeStore())
+    owner = _ask_client(runtime).get("/drive")
+    other = _ask_client(runtime, "other").get("/drive")
+    assert owner.status_code == other.status_code == 200
+    assert 'href="/chat"' in owner.text
+    assert 'href="/chat"' not in other.text
+
+
+def test_orphan_human_turn_offers_retry(
+    pages: TestClient, runtime: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime.store.chunks.list_chunks_for_ref.return_value = [
+        _chunk(0, "Original prompt")
+    ]
+    page = pages.get(_CHAT)
+    assert "Interrupted" in page.text
+    assert f'action="{_CHAT}/retry"' in page.text
+    start = Mock(return_value="tok")
+    monkeypatch.setattr(chat_turns, "start_turn", start)
+    assert pages.post(f"{_CHAT}/retry", headers=_HX).status_code == 200
+    start.assert_called_once_with(
+        _SID, "a", "owner", "Original prompt", runtime=runtime
+    )
+
+
+def test_capped_turn_offers_continue(
+    pages: TestClient, runtime: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime.store.chunks.list_chunks_for_ref.return_value = [
+        _chunk(0, "Question"),
+        _chunk(1, "Partial answer", "asa", status="capped"),
+    ]
+    page = pages.get(_CHAT)
+    assert "Capped" in page.text
+    assert f'action="{_CHAT}/continue"' in page.text
+    start = Mock(return_value="tok")
+    monkeypatch.setattr(chat_turns, "start_turn", start)
+    assert pages.post(f"{_CHAT}/continue", headers=_HX).status_code == 200
+    start.assert_called_once_with(_SID, "a", "owner", "Continue.", runtime=runtime)
+
+
+def test_day_cap_refusal_renders_message(pages: TestClient, runtime: Mock) -> None:
+    runtime.store.chunks.list_chunks_for_ref.return_value = [
+        _chunk(0, "Last answer", "asa", cost_usd=30)
+    ]
+    response = pages.post(f"{_CHAT}/send", data={"text": "Try again"}, headers=_HX)
+    assert response.status_code == 200
+    assert "day cap reached" in response.text and "Try again" in response.text
+    runtime.append.assert_not_called()
+
+
+def test_desired_deletes_listed(pages: TestClient, runtime: Mock) -> None:
+    runtime.store.chunks.list_chunks_for_ref.return_value = [
+        _chunk(0, "Question"),
+        _chunk(
+            1,
+            "Answer",
+            "asa",
+            desired_deletes=[
+                {"kind": "memory", "id": "me123", "reason": "Duplicate <record>"}
+            ],
+        ),
+    ]
+    page = pages.get(_CHAT)
+    assert "Deletes the assistant asked for" in page.text
+    assert 'href="/refs/memory/me123">me123</a>' in page.text
+    assert "Duplicate &lt;record&gt;" in page.text
+    assert 'href="#chat-turn-2">Turn 2</a>' in page.text
+
+
+def test_new_chat_redirects_to_minted_sid(
+    pages: TestClient, runtime: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime.store.get_ref.return_value = None
+    start = Mock(return_value="tok")
+    monkeypatch.setattr(chat_turns, "start_turn", start)
+    created = pages.post(
+        "/chat/new", data={"text": "First prompt"}, follow_redirects=False
+    )
+    assert created.status_code == 303
+    assert re.fullmatch(r"/chat/\d{8}-\d{4}-[0-9a-f]{4}", created.headers["location"])
+    start.assert_called_once_with(
+        created.headers["location"].split("/")[-1],
+        "a",
+        "owner",
+        "First prompt",
+        runtime=runtime,
+    )
+
+
+def test_chat_index_groups_owned_chats_with_todays_cost(
+    pages: TestClient, runtime: Mock
+) -> None:
+    ref = _chat_ref()
+    sibling = SimpleNamespace(**vars(ref))
+    sibling.id = 43
+    sibling.slug = f"chat/{_SID}/b"
+    other = _chat_ref("other", owner="other")
+    standalone = SimpleNamespace(
+        id=44, title="Other conversation", slug="ordinary", meta=ref.meta
+    )
+    old = _chunk(1, "Prior answer", "asa", cost_usd=2)
+    old.created_at -= timedelta(days=1)
+    runtime.store.list_refs.return_value = [ref, sibling, other, standalone]
+    runtime.store.chunks.list_chunks_for_ref.side_effect = [
+        [_chunk(0, "Answer", "asa", cost_usd=0.5), old],
+        [_chunk(0, "Sibling answer", "asa", cost_usd=0.25)],
+    ]
+
+    response = pages.get("/chat")
+    assert response.status_code == 200
+    assert response.text.count(f'href="{_CHAT}"') == 1
+    assert "$0.75 today" in response.text
+    assert 'href="/chat/other"' not in response.text
+    assert "Other conversation" not in response.text
+    assert "New chat" in response.text
+
+
+def test_preflight_replaces_composer(
+    pages: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(chat_turns, "preflight", lambda: ["Claude is unavailable."])
+    page = pages.get(_CHAT)
+    assert "Claude is unavailable." in page.text
+    assert 'name="text"' not in page.text
+
+
+def test_cross_origin_send_refused(pages: TestClient, runtime: Mock) -> None:
+    response = pages.post(
+        f"{_CHAT}/send",
+        data={"text": "Hello"},
+        headers={"Origin": "https://example.org"},
+    )
+    assert response.status_code == 403
+    runtime.append.assert_not_called()
+
+
+def test_turn_token_must_belong_to_chat(pages: TestClient) -> None:
+    chat_turns._TURNS["tok"] = chat_turns.ChatTurn(
+        "tok", "chat/other/a", "a", "owner", "opus", 10, 99
+    )
+    url = f"{_CHAT}/turn/tok"
+    assert pages.get(url).status_code == 404
+    assert pages.post(f"{url}/stop").status_code == 404
+    assert not chat_turns._TURNS["tok"].stopping

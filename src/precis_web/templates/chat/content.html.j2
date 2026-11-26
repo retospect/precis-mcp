@@ -1,0 +1,86 @@
+{% from "chat/forms.html.j2" import action_form, composer, preflight %}
+{% macro metering(model, cost, calls, seconds) -%}
+  <footer class="mt-2 text-xs text-fg-muted">
+    {{ model }} · {% if cost is none %}cost unavailable{% else %}${{ '%.4f' | format(cost) }}{% endif %}
+    · {{ calls }} tool calls · {{ '%.1f' | format(seconds) }} s
+  </footer>
+{%- endmacro %}
+
+<div id="chat-content" class="space-y-4" hx-target="#chat-content" hx-swap="outerHTML">
+  <p class="text-sm text-fg-muted">${{ '%.2f' | format(spent) }} today · ${{ '%.2f' | format(cap) }} day cap (UTC)</p>
+  <div class="space-y-3" aria-label="Transcript">
+    {% for chunk in chunks %}
+      {% set assistant = chunk.meta.author == 'asa' %}
+      {% set following = chunks[loop.index] %}
+      {% set interrupted = not assistant and (following.meta.author != 'asa') and (not loop.last or not (pending or unsaved)) %}
+      <article id="chat-turn-{{ chunk.ord + 1 }}" class="rounded border border-line p-3">
+        <header class="mb-2 text-sm font-semibold">{{ 'Ask' if assistant else 'You' }}</header>
+        {% if assistant and chunk.meta.status in ('capped', 'paused', 'stopped', 'error') %}
+          <p class="text-sm font-medium">{{ chunk.meta.status | capitalize }}</p>
+        {% elif interrupted %}
+          <p class="text-sm font-medium">Interrupted</p>
+        {% endif %}
+        <div class="whitespace-pre-wrap break-words">{{ chunk.text }}</div>
+        {% if assistant %}
+          {{ metering(chunk.meta.get('model') or ref.meta.get('model') or 'Unknown model',
+                      chunk.meta.get('cost_usd'), chunk.meta.get('tool_calls') or 0,
+                      chunk.meta.get('duration_s') or 0) }}
+        {% endif %}
+        {% if loop.last and not (pending or unsaved or problems) %}
+          {% if assistant and chunk.meta.status == 'capped' %}
+            {{ action_form('/chat/' ~ sid ~ '/continue', 'Continue') }}
+          {% elif interrupted or (assistant and chunk.meta.status == 'paused') %}
+            {{ action_form('/chat/' ~ sid ~ '/retry', 'Retry') }}
+          {% endif %}
+        {% endif %}
+      </article>
+    {% endfor %}
+
+    {% if pending %}
+    <article id="chat-turn-{{ tail.ord + 2 if tail else 1 }}" class="space-y-2 rounded border border-line p-3"
+             hx-get="/chat/{{ sid }}/turn/{{ pending.token }}" hx-trigger="every 1.5s" hx-sync="#chat-content:drop">
+      <header class="text-sm font-semibold" role="status">{{ 'Stopping…' if pending.stopping else 'Working…' }}</header>
+      {% if pending.tool_chips %}
+      <ul class="flex flex-wrap gap-1" aria-label="Tool calls">
+        {% for chip in pending.tool_chips %}
+          <li title="{{ chip.arguments }}" class="rounded border border-line px-2 py-1 text-xs break-words">{{ chip.name }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <div class="whitespace-pre-wrap break-words">{{ pending.text }}</div>
+      {% if not pending.stopping %}
+        {{ action_form('/chat/' ~ sid ~ '/turn/' ~ pending.token ~ '/stop', 'Stop', stopping=true) }}
+      {% endif %}
+    </article>
+    {% elif unsaved %}
+    <article id="chat-turn-{{ tail.ord + 2 if tail else 1 }}" class="rounded border border-line p-3">
+      <p role="alert">{{ unsaved.error }}</p>
+      <div class="whitespace-pre-wrap break-words">{{ unsaved.text }}</div>
+      {{ metering(unsaved.model, unsaved.cost_usd, unsaved.tool_chips | length, unsaved.finished - unsaved.started) }}
+      {% if not problems %}{{ action_form('/chat/' ~ sid ~ '/retry', 'Retry') }}{% endif %}
+    </article>
+    {% endif %}
+  </div>
+
+  {% if message %}<p role="alert">{{ message }}</p>{% endif %}
+  {% if problems %}
+    {{ preflight(problems) }}
+  {% elif not pending %}
+    {{ composer('/chat/' ~ sid ~ '/send', 'Message', draft, inline=true) }}
+  {% endif %}
+
+  {% if deletes %}
+  <section class="space-y-2">
+    <h2 class="font-semibold">Deletes the assistant asked for</h2>
+    <ul class="space-y-2">
+      {% for item in deletes %}
+      <li class="break-words">
+        {% if item.href %}<a class="text-accent" href="{{ item.href }}">{{ item.handle }}</a>{% else %}{{ item.handle }}{% endif %}
+        <a class="text-accent text-sm" href="#chat-turn-{{ item.turn }}">Turn {{ item.turn }}</a>
+        <p>{{ item.reason }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>

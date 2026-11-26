@@ -165,6 +165,9 @@ def nav_badges(request: Request) -> dict[str, Any]:
     gripes = 0
     alerts = 0
     user = _nav_user(request)
+    from precis_web.deps import get_store, get_web_config
+
+    can_ask = user is not None and user.abbrev == get_web_config(request).owner
     # Server-side page match against the cached tour manifests — no store,
     # no extra client fetch. Computed before the store lookup below so it
     # still lands on a stateless-app response.
@@ -173,8 +176,6 @@ def nav_badges(request: Request) -> dict[str, Any]:
     tour_slug = tour_slug_for_path(request.url.path)
     tour_href = _tour_href(request, tour_slug) if tour_slug else None
     try:
-        from precis_web.deps import get_store
-
         store = get_store(request)
     except Exception:
         # No runtime / stateless app (e.g. /healthz before boot) — no badges.
@@ -183,6 +184,7 @@ def nav_badges(request: Request) -> dict[str, Any]:
             "nav_gripes": 0,
             "nav_alerts": 0,
             "nav_user": user,
+            "nav_can_ask": can_ask,
             "tour_slug": tour_slug,
             "tour_href": tour_href,
         }
@@ -211,6 +213,7 @@ def nav_badges(request: Request) -> dict[str, Any]:
         "nav_gripes": gripes,
         "nav_alerts": alerts,
         "nav_user": user,
+        "nav_can_ask": can_ask,
         "tour_slug": tour_slug,
         "tour_href": tour_href,
     }

@@ -93,6 +93,9 @@
           {% if nav_user %}
           <a href="/learning" class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'learning' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">Learning</a>
           {% endif %}
+          {% if nav_can_ask %}
+          <a href="/chat" class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'chat' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">Ask</a>
+          {% endif %}
 
           <span class="mx-1 h-4 w-px bg-chrome-hover"></span>
           {# ── Quests / Clusters / Reactions: plain links. The former

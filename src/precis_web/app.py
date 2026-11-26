@@ -198,6 +198,7 @@ def create_app(
         cad,
         categorizers,
         cfp,
+        chat,
         claim,
         clusters,
         code_view,
@@ -302,6 +303,7 @@ def create_app(
     app.include_router(account.router)
     app.include_router(anki.router)
     app.include_router(learning.router)
+    app.include_router(chat.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

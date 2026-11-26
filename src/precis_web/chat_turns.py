@@ -13,7 +13,7 @@ import signal
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from secrets import token_urlsafe
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +32,7 @@ from precis.utils.llm.router import (
 if TYPE_CHECKING:
     from precis.runtime import PrecisRuntime
     from precis.store import Store
+    from precis.store.types import ChunkRow
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +181,34 @@ def get_turn(token: str, user_abbrev: str) -> ChatTurn | None:
     return turn if turn is not None and turn.owner_abbrev == user_abbrev else None
 
 
+def active_turn(slug: str, user_abbrev: str) -> ChatTurn | None:
+    """Recover the working turn when the owner opens or reloads its page."""
+    return next(
+        (
+            turn
+            for turn in _TURNS.values()
+            if turn.slug == slug
+            and turn.owner_abbrev == user_abbrev
+            and turn.status == "running"
+        ),
+        None,
+    )
+
+
+def day_cost(chunks: list[ChunkRow], today: date) -> float:
+    """Sum the metered answers for one UTC day."""
+    return math.fsum(
+        chunk.meta.get("cost_usd") or 0
+        for chunk in chunks
+        if chunk.meta.get("author") == "asa"
+        and chunk.created_at.astimezone(UTC).date() == today
+    )
+
+
+def day_cap() -> float:
+    return _cap("PRECIS_CHAT_DAY_MAX_USD", "30")
+
+
 def _cap(env: str, default: str) -> float:
     cap = float(os.environ.get(env, default))
     if not math.isfinite(cap) or cap <= 0:
@@ -220,13 +249,7 @@ def start_turn(
         raise RuntimeError("three chat turns are already running")
     if ref is not None:
         today = datetime.now(UTC).date()
-        spent = math.fsum(
-            chunk.meta.get("cost_usd") or 0
-            for chunk in store.chunks.list_chunks_for_ref(ref.id)
-            if chunk.meta.get("author") == "asa"
-            and chunk.created_at.astimezone(UTC).date() == today
-        )
-        if spent >= _cap("PRECIS_CHAT_DAY_MAX_USD", "30"):
+        if day_cost(store.chunks.list_chunks_for_ref(ref.id), today) >= day_cap():
             raise RuntimeError("day cap reached")
 
     model = os.environ.get("PRECIS_CHAT_MODEL") or "opus"
@@ -376,6 +399,7 @@ def _finish(
             meta={
                 "lane": turn.lane,
                 "status": status,
+                "model": turn.model,
                 "cost_usd": turn.cost_usd,
                 "duration_s": (
                     result.duration_s

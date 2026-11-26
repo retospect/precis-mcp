@@ -401,6 +401,9 @@ web-owned streaming task on an API-key-only Claude Agent rung. Progress lives
 in memory. Answers and reported spend persist to the conversation, which
 supplies the UTC day admission check. Stop and lifespan shutdown signal the
 CLI process group.
+The owner-only Ask tab lists conversations at `/chat` and polls live progress
+from `src/precis_web/routes/chat.py`. Saved turns supply the transcript and
+the read-only review list of requested deletes.
 
 The `/rxn` web form dispatches the rxn energetics handler and renders its
 tables through the shared reader. Explicit keep stores equation inputs and

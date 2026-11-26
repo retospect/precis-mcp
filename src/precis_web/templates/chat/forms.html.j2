@@ -1,0 +1,25 @@
+{% macro preflight(problems) -%}
+<div role="alert" class="rounded border border-line p-3">
+  <p class="font-semibold">Ask is unavailable</p>
+  <ul class="list-disc pl-5">
+    {% for problem in problems %}<li class="break-words">{{ problem }}</li>{% endfor %}
+  </ul>
+</div>
+{%- endmacro %}
+
+{% macro composer(action, label, draft, inline=false) -%}
+<form method="post" action="{{ action }}" class="space-y-2"
+      {% if inline %}hx-post="{{ action }}" hx-disabled-elt="find button" hx-sync="#chat-content:drop"{% endif %}>
+  <label class="block font-medium" for="chat-text">{{ label }}</label>
+  <textarea id="chat-text" name="text" rows="3" required
+            class="w-full rounded border border-line bg-surface p-2">{{ draft }}</textarea>
+  <button class="rounded border border-line px-3 py-2" type="submit">Send</button>
+</form>
+{%- endmacro %}
+
+{% macro action_form(action, label, stopping=false) -%}
+<form method="post" action="{{ action }}" hx-post="{{ action }}" hx-disabled-elt="find button"
+      hx-sync="#chat-content:{{ 'replace' if stopping else 'drop' }}">
+  <button class="rounded border border-line px-3 py-2" type="submit">{{ label }}</button>
+</form>
+{%- endmacro %}
