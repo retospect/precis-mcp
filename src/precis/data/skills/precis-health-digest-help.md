@@ -38,6 +38,12 @@ fingerprint, seen_count, timestamps, and its links:
 get(kind='alert', id=N, view='detail')
 ```
 
+Read a routed gripe's report and comments with its `gr…` handle:
+
+```python
+get(kind='gripe', id=N, view='full')
+```
+
 ## `pass-dead` — a handler dead inside a live worker
 
 The `condition` group (alert source `watchdog:condition`) is a
