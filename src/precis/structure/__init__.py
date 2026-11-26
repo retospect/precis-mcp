@@ -10,6 +10,10 @@ except the error-severity ``small_ring_strain``). The relaxer/DFT
 dependency, MLIP/GPAW rungs remain extras-gated; the store + handler (the DB
 layer) wrap this core.
 
+The pair kernels retain JIT compilation when Numba cannot locate their
+source or a writable disk cache. Disk caching only saves compilation across
+processes and must not block structure validation.
+
 Surface endpoint edits use ``move_atom`` to place an existing atom at a
 named site while preserving its label for NEB correspondence and retaining
 its declared bonds; it also takes ``frac`` (absolute fractional

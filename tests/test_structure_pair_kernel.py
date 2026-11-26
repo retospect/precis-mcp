@@ -9,8 +9,10 @@ The ``_ref_*`` functions are verbatim copies of the pre-kernel implementations
 from __future__ import annotations
 
 import importlib
+import inspect
 import itertools
 import math
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -31,6 +33,29 @@ validate = importlib.import_module("precis.structure.validate")
 
 TOL = 1e-9
 ELS = ["C", "H", "O", "N", "Pd", "Cu", "Xx"]  # Xx = unknown → default radius
+
+
+def test_pair_kernel_without_cache_locator() -> None:
+    from precis.structure import _pair_kernel
+
+    # A synthetic filename has no source file for Numba's disk cache locator.
+    module = ModuleType("precis.structure._pair_kernel_without_source")
+    module.__package__ = "precis.structure"
+    code = compile(
+        inspect.getsource(_pair_kernel), "<pair kernels without source>", "exec"
+    )
+    exec(code, vars(module))
+
+    frac = np.array([[0.0, 0.0, 0.0], [0.75, 0.0, 0.0]])
+    lat = np.eye(3)
+    pbc = np.ones(3, dtype=bool)
+    i, j, distances, images = module.pairs_within(
+        frac, lat, pbc, np.ones(2), 1.0, False
+    )
+    np.testing.assert_array_equal(i, [0])
+    np.testing.assert_array_equal(j, [1])
+    np.testing.assert_allclose(distances, [0.25])
+    np.testing.assert_array_equal(images, [[-1, 0, 0]])
 
 
 # -- references (verbatim old code) -----------------------------------------

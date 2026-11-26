@@ -15,12 +15,25 @@ modules import *this* module lazily inside their functions so
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 from numba import njit
 
 from . import elements
+
+
+def _cached_njit(**options: Any) -> Callable[[Callable[..., Any]], Any]:
+    def decorate(func: Callable[..., Any]) -> Any:
+        try:
+            return njit(cache=True, **options)(func)
+        except RuntimeError as exc:
+            if "no locator available for file" not in str(exc):
+                raise
+            return njit(**options)(func)
+
+    return decorate
 
 
 def cell_arrays(cell: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -49,7 +62,7 @@ def radii_of(scene: Any, labels: list[str]) -> np.ndarray:
     )
 
 
-@njit(cache=True)
+@_cached_njit()
 def _mic(
     fi: np.ndarray, fj: np.ndarray, lat: np.ndarray, pbc: np.ndarray
 ) -> tuple[float, int, int, int]:
@@ -89,7 +102,7 @@ def _mic(
     return float(np.sqrt(best)), int(b0), int(b1), int(b2)
 
 
-@njit(cache=True)
+@_cached_njit()
 def mic_scalar(
     fi: np.ndarray, fj: np.ndarray, lat: np.ndarray, pbc: np.ndarray
 ) -> tuple[float, int, int, int]:
@@ -97,7 +110,7 @@ def mic_scalar(
     return _mic(fi, fj, lat, pbc)
 
 
-@njit(cache=True)
+@_cached_njit()
 def row_mic(
     frac: np.ndarray, idx: int, lat: np.ndarray, pbc: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -114,7 +127,7 @@ def row_mic(
     return d, img
 
 
-@njit(cache=True)
+@_cached_njit()
 def pairs_within(
     frac: np.ndarray,
     lat: np.ndarray,
@@ -162,7 +175,7 @@ def pairs_within(
     return oi[:m].copy(), oj[:m].copy(), od[:m].copy(), oimg[:m].copy()
 
 
-@njit(cache=True)
+@_cached_njit()
 def coordination_counts(
     frac: np.ndarray,
     lat: np.ndarray,
@@ -192,7 +205,7 @@ def coordination_counts(
     return out
 
 
-@njit(cache=True)
+@_cached_njit()
 def min_distance(
     frac: np.ndarray, lat: np.ndarray, pbc: np.ndarray, cap: float
 ) -> float:
@@ -207,7 +220,7 @@ def min_distance(
     return best
 
 
-@njit(cache=True)
+@_cached_njit()
 def clean_displacements(
     frac: np.ndarray, lat: np.ndarray, pbc: np.ndarray, radii: np.ndarray
 ) -> np.ndarray:
@@ -237,7 +250,7 @@ def clean_displacements(
 
 # error_model="numpy": a coincident atom pair divides by zero → NaN, as the old
 # numpy loop did, instead of raising ZeroDivisionError.
-@njit(cache=True, error_model="numpy")
+@_cached_njit(error_model="numpy")
 def relax_graph_loop(
     coords: np.ndarray,
     bonds: np.ndarray,
