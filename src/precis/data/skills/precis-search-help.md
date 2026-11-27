@@ -324,8 +324,10 @@ its own, only the hub itself.
 
 The fan-out runs in two tiers: `finding`, `memory`, `todo`, `gripe`,
 `quest` and `paper` are priority kinds with a 5 s budget and reserved
-workers. Other wildcard kinds get up to 2 s once started, within the
-same 5 s window. Per-kind counts cover completed searches. Omissions are
+workers. Other wildcard kinds get up to 2 s once admitted, within the
+same 5 s window. Both tiers share a per-database-pool admission limit, so
+a busy server can leave a kind waiting for a slot; one that never gets
+one is reported as dropped at deadline. Skill search needs no slot. Per-kind counts cover completed searches. Omissions are
 never silent — the result header names each one: `dropped at deadline,
 omitted from this merge:` a kind that missed its budget, `⚠ errored,
 omitted from this merge:` a kind that failed, `semantic leg skipped for
