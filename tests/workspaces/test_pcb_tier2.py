@@ -4,7 +4,8 @@
 - ``sanity`` is HARD: ``pcb.local.place`` + ``pcb.local.drc`` must reach
   0 DRC errors on every run.
 - ``nano_usb_pd`` and ``esp32c3`` are MEASURED: the placement metrics
-  (crossings, pads-only DRC error count) are compared against
+  (crossings, every DRC error on the placed board — silkscreen
+  findings included) are compared against
   ``data/pcb_tier2_goldens.json`` and any drift is printed naming the
   board — the same "golden drift — regenerate" escape as tier-1, never
   a silent floor. An ``optimize`` change that moves a board's anneal
@@ -13,7 +14,8 @@
 **Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
 deleted, tag ``vroute-final``; ``pcb.local.route`` now refuses). The
 routed/failed/vias golden rows died with it — what remains measures the
-anneal and the pads-only DRC readback over the placed board.
+anneal and the full DRC readback over the placed board (silkscreen
+findings count toward ``errors``).
 
 Regenerate the measured rows after an intended engine change (then read
 the diff)::
