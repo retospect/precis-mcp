@@ -517,6 +517,7 @@ def test_fired_watchdog_is_reaped_before_the_conn_returns(
     whatever the next borrower runs on the connection. The probe now
     joins the watchdog first: a cancel held inside the callback must
     pin the connection, not trail it back to the pool."""
+    import sys
     import threading
 
     import psycopg
@@ -524,28 +525,73 @@ def test_fired_watchdog_is_reaped_before_the_conn_returns(
     import precis.store._chunks_ops as chunks_ops
 
     rt = runtime_with_store
-    monkeypatch.setattr(search_mod, "CROSS_KIND_PROBE_BUDGET_S", 0.2)
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PROBE_BUDGET_S", 0.5)
+    # The reap join is bounded by 2*CROSS_KIND_PROBE_REAP_S; raising it
+    # to 60 s takes that bound out of the test's window, so a held
+    # cancel pins the probe until the test releases it — a slow main
+    # thread can no longer let the join time out first and fail a
+    # correct implementation ("probe returned while its cancel was
+    # held").
+    monkeypatch.setattr(search_mod, "CROSS_KIND_PROBE_REAP_S", 30.0)
 
     cancel_entered = threading.Event()
     release_cancel = threading.Event()
+    cancel_done = threading.Event()
     probe_conns: list[Any] = []
 
     def held_cancel(self: Any, **kwargs: Any) -> None:
         probe_conns.append(self)
         cancel_entered.set()
-        release_cancel.wait(10)
+        # No bounded self-release: a wait(10) lets the callback finish
+        # ahead of the test's own release on a stalled runner and
+        # recreates the timing failure the hold exists to expose.
+        release_cancel.wait()
+        cancel_done.set()
 
     monkeypatch.setattr(psycopg.Connection, "cancel_safe", held_cancel)
 
     def past_deadline_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        # Still running when the 0.2 s slice ends — the watchdog fires
-        # deterministically while the probe holds the connection.
-        time.sleep(0.4)
+        # Still running when the 0.5 s slice ends — the watchdog fires
+        # deterministically while the probe holds the connection. Waiting
+        # on the callback (not a fixed sleep) removes the loaded-runner
+        # race where a starved Timer loses to watchdog.cancel() and
+        # never invokes its callback ("watchdog never fired").
+        cancel_entered.wait(10)
         return {"route": "local", "kind": None}
 
     monkeypatch.setattr(chunks_ops, "ann_route_plan", past_deadline_plan)
 
-    returned: list[Any] = []
+    reap_timeouts: list[float | None] = []
+    join_saw_done: list[bool] = []
+    orig_join = threading.Timer.join
+
+    def spy_join(self: threading.Timer, timeout: float | None = None) -> None:
+        # The probe's reap is the only Timer join whose callback is the
+        # cancel_in_flight closure.
+        is_reap = getattr(getattr(self, "function", None), "__name__", "") == (
+            "cancel_in_flight"
+        )
+        if is_reap:
+            # The timeout argument is a fact about the call, not a
+            # timing observation: a join(0) descheduled inside the join
+            # frame for the whole dwell flatters every ordering check
+            # below once the release lands, but it cannot hide the zero
+            # it was called with — that regression fails on this record
+            # whatever the scheduler does (td804777 review).
+            reap_timeouts.append(timeout)
+        orig_join(self, timeout)
+        if is_reap:
+            # A join that waited on the callback returns only after
+            # cancel_done; one whose bound ran out records the callback
+            # still in flight. (The join's entry cannot be announced by
+            # an event here: a probe descheduled between the set() and
+            # the call would let the release slip in first and a
+            # no-wait cleanup pass — td804777 review.)
+            join_saw_done.append(cancel_done.is_set())
+
+    monkeypatch.setattr(threading.Timer, "join", spy_join)
+
+    returned: list[tuple[Any, bool]] = []
     orig = PrecisPool.connection
 
     @contextmanager
@@ -558,8 +604,15 @@ def test_fired_watchdog_is_reaped_before_the_conn_returns(
                 # spent raises through the body (its supported fail-open),
                 # and the pool still takes the connection back — gr700452
                 # had the bare final assert any() flake red on exactly this
-                # (the append after a plain yield never ran).
-                returned.append(conn)
+                # (the append after a plain yield never ran). The pair
+                # records whether the callback had finished when the
+                # checkout ended — the ordering this test asserts. Gated
+                # on the cancel being in flight: another thread's
+                # checkout can hand back the very conn object the pool
+                # then gives the probe, and a return recorded before the
+                # watchdog fired says nothing about the reap ordering.
+                if cancel_entered.is_set():
+                    returned.append((conn, cancel_done.is_set()))
 
     monkeypatch.setattr(PrecisPool, "connection", spy)
 
@@ -572,16 +625,64 @@ def test_fired_watchdog_is_reaped_before_the_conn_returns(
     t = threading.Thread(target=run, daemon=True)
     t.start()
 
-    assert cancel_entered.wait(5), "watchdog never fired"
-    probe_conn = probe_conns[0]
-    # The cancel is still in flight — pre-fix the checkout ended here
-    # anyway, and the pending cancel would eat the next borrower's work.
-    assert all(c is not probe_conn for c in returned)
-    assert not done.wait(0.5), "probe returned while its cancel was held"
-    release_cancel.set()
-    assert done.wait(5)
+    join_code = threading.Thread.join.__code__
+
+    def probe_inside_join() -> bool:
+        # Read the probe's stack, not an event: a flag set before the
+        # real join call can be observed while the thread sits
+        # descheduled one instruction short of it, letting the release
+        # slip in ahead of the join so the test passes a cleanup that
+        # never waited (td804777 review). A frame on the stack is there
+        # whether or not the thread is currently scheduled — but it
+        # proves only that the probe is INSIDE join, not that the join
+        # waits: a join(0) carries the same frame. That case fails on
+        # the recorded reap_timeouts instead, so what this poll
+        # establishes is "the probe reached the reap while the cancel
+        # was still held"; whether the reap can out-wait the hold is
+        # the timeout argument's job to prove.
+        ident = t.ident
+        frame = sys._current_frames().get(ident) if ident is not None else None
+        while frame is not None:
+            if frame.f_code is join_code:
+                return True
+            frame = frame.f_back
+        return False
+
+    try:
+        assert cancel_entered.wait(5), "watchdog never fired"
+        probe_conn = probe_conns[0]
+        parked_deadline = time.monotonic() + 5
+        while not probe_inside_join():
+            assert time.monotonic() < parked_deadline, (
+                "probe never reached the watchdog join"
+            )
+            time.sleep(0.01)
+        # Verified inside the join with the cancel still in flight —
+        # now give a cleanup that does not wait a full dwell to hand the
+        # conn back or finish. Pre-fix the checkout ended here anyway,
+        # letting the pending cancel eat the next borrower's work.
+        assert not done.wait(0.5), "probe returned while its cancel was held"
+        assert all(c is not probe_conn for c, _ in returned)
+    finally:
+        release_cancel.set()
+
+    assert done.wait(10)
     t.join(5)
-    assert any(c is probe_conn for c in returned)
+    probe_returns = [finished for c, finished in returned if c is probe_conn]
+    assert probe_returns and all(probe_returns), (
+        "the probe's conn went back to the pool before its cancel finished"
+    )
+    assert join_saw_done and all(join_saw_done), (
+        "the reap join returned before the watchdog callback finished"
+    )
+    # The hold above ends ~one dwell after the join frame was seen; a
+    # bound at the patched REAP scale cannot expire inside it. A join
+    # called with a timeout that fits the window — join(0) being the
+    # extreme — proves nothing about ordering no matter how the
+    # scheduler lands the release, so the argument itself is asserted.
+    assert reap_timeouts and all(
+        t is None or t >= search_mod.CROSS_KIND_PROBE_REAP_S for t in reap_timeouts
+    ), "the reap join's bound sits inside the test's hold window"
 
 
 def test_deadline_misses_are_named_as_dropped_not_errored(
