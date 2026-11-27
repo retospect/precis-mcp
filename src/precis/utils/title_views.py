@@ -18,8 +18,9 @@ surface derives its view from this module — no per-surface regexes.
 * ``raw`` — the stored string itself; no function needed.
 
 Pure, stdlib-only (``html.parser``), never raises on malformed input:
-unclosed tags stay open to end-of-title, unmatched closers drop, and
-unknown tags pass their text through.
+unclosed tags stay open to end-of-title, unmatched closers drop, a
+truncated tag at end-of-title is dropped, and unknown tags pass their
+text through.
 """
 
 from __future__ import annotations
@@ -85,11 +86,19 @@ class _TitleParser(HTMLParser):
         self._stack[-1][1].append(data)
 
 
+#: A ``<tag``/``</tag`` tail with no ``>`` — a truncated tag at
+#: end-of-title. ``html.parser`` emits it as literal text before
+#: Python 3.12.12 and drops it after (gh-135462, HTML5 EOF rules);
+#: stripping it here keeps one behaviour across versions: a tag that
+#: never opened is markup noise, not text.
+_TRUNCATED_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*$")
+
+
 def _parse(raw: str) -> _Node:
     # Decode entities first (twice — ``&amp;lt;`` double-encoded shapes land
     # as ``<``) so entity-encoded markup parses as markup, not text.
     p = _TitleParser()
-    p.feed(html.unescape(html.unescape(raw)))
+    p.feed(_TRUNCATED_TAG_RE.sub("", html.unescape(html.unescape(raw))))
     p.close()
     return p.root
 
