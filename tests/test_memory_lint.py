@@ -306,6 +306,28 @@ def test_graph_mode_without_a_cached_render_says_so(
     assert "hygiene issue" not in res.stdout, res.stdout
 
 
+def test_graph_mode_render_stamp_follows_a_symlinked_cache(
+    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """gr804723 review: PRECIS_MEMORY_CACHE may itself be a symlink. Both
+    stat flavours default to lstat, which would stamp the LINK's mtime; the
+    render stamp must read the target's, as the old GNU `date -r FILE` did."""
+    home, mem = home_and_mem
+    (mem / "MEMORY.md").write_text(_POINTER, encoding="utf-8")
+    target = tmp_path / "cache" / "memory-index.md"
+    target.parent.mkdir()
+    target.write_text("# Memory index\n\n- Alpha (me1) — x\n", encoding="utf-8")
+    old = datetime.datetime(2020, 1, 2, 3, 4, tzinfo=datetime.UTC).timestamp()
+    os.utime(target, (old, old))
+    link = tmp_path / "cache-link.md"
+    link.symlink_to(target)
+
+    res = _run(lint_repo, home, cache=link)
+
+    assert res.returncode == 0
+    assert "cached 2020-01-02T03:04Z" in res.stdout, res.stdout
+
+
 # ---------------------------------------------------------------------------
 # graph mode over the node cache (`precis memory index --export-dir`)
 # ---------------------------------------------------------------------------

@@ -258,7 +258,18 @@ if grep -qF "$GRAPH_MARKER" "$INDEX" 2>/dev/null; then
     GRAPH=1
     INDEX="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}"
     if [[ -s "$INDEX" ]]; then
-        rendered=$(date -u -r "$INDEX" +%Y-%m-%dT%H:%MZ)
+        # `date -r FILE` is GNU-only: BSD -r takes epoch seconds, not a path,
+        # so it errored here and `set -e` killed every check (gr804723). Same
+        # portable idiom as the snapshot-provenance stamp below: stat the
+        # mtime, then format the epoch under either date flavour. `stat -L`
+        # dereferences — PRECIS_MEMORY_CACHE may name a symlink, and the old
+        # GNU `date -r FILE` followed it and stamped the render's mtime, not
+        # the link's. An unreadable mtime reports "unknown", not a bogus
+        # 1970 stamp.
+        idx_epoch=$(stat -L -c %Y "$INDEX" 2>/dev/null || stat -L -f %m "$INDEX" 2>/dev/null || echo unknown)
+        rendered=$(date -u -d "@$idx_epoch" +%Y-%m-%dT%H:%MZ 2>/dev/null \
+            || date -u -r "$idx_epoch" +%Y-%m-%dT%H:%MZ 2>/dev/null \
+            || echo unknown)
         echo "memory-lint: graph mode — index from the session-start render cached $rendered; checks 1a/1b skipped (the topic files are the cutover snapshot)"
     else
         echo "memory-lint: graph mode — no cached render yet (scripts/hooks/session-start-memory.sh writes it); size checks skipped"
