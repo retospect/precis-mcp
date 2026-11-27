@@ -53,6 +53,10 @@ _SCRIPT = (
 #: the fuse endpoint ``nope.in`` resolves to nothing, so the traced
 #: ``hexfold.build`` raises ``BuildError`` whose Report carries exactly
 #: one ERROR finding (``port.unknown``, spec line 4 — gr522031).
+#: sheet(12,12) keeps the same story at ~13x less patch churn than
+#: sheet(40,40): the sustained Patch/face-walk cost under xdist is the
+#: recurring "worker crashed" signature on the hosted macOS legs
+#: (gr804722; same remedy as gr778232's COLLARED_PILLAR shrink).
 _HEX_SCRIPT = (
     "from hexfold.build import build\n"
     "\n"
@@ -60,7 +64,7 @@ _HEX_SCRIPT = (
     "def build_net():\n"
     '    build("""hexfold 0.2\n'
     "origin s\n"
-    "s: sheet(40,40) - hex(2)@(20,20,A):0\n"
+    "s: sheet(12,12) - hex(2)@(6,6,A):0\n"
     "s.hole --fuse k=0--> nope.in\n"
     '""", strict=True)\n'
 )
@@ -406,7 +410,7 @@ def test_report_survives_a_wrapping_exception(tmp_path: Path) -> None:
         "def wrap():\n"
         "    try:\n"
         '        build("""hexfold 0.2\norigin s\n'
-        "s: sheet(40,40) - hex(2)@(20,20,A):0\n"
+        "s: sheet(12,12) - hex(2)@(6,6,A):0\n"
         's.hole --fuse k=0--> nope.in\n""", strict=True)\n'
         "    except BuildError as exc:\n"
         '        raise ValueError("generator refused the spec") from exc\n'
