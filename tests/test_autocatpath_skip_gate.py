@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import ast
+import unicodedata
 from pathlib import Path
 
 import pytest
 
 from tests._autocatpath import needs_engine
+from tests._policy_scan import read_text, walk_files
 
 _TESTS = Path(__file__).resolve().parent
 
@@ -31,9 +33,19 @@ def test_needs_engine_note_carries_the_version_gate() -> None:
         needs_engine("autocatpath.definitely_absent_module", note="engine >= 9.99")
 
 
-def _bare_autocatpath_gates(path: Path) -> list[int]:
-    """Line numbers of ``pytest.importorskip("autocatpath…")`` call sites."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+def _bare_autocatpath_gates(source: str) -> list[int]:
+    """Line numbers of ``pytest.importorskip("autocatpath…")`` call sites.
+
+    Prefilter on the attribute name to avoid parsing every test module on
+    the macOS nightly worker (gr804718). Python normalizes identifiers to
+    NFKC, so check that spelling too. The AST resolves the module argument,
+    including adjacent string literals and escapes.
+    """
+    if "importorskip" not in source and (
+        source.isascii() or "importorskip" not in unicodedata.normalize("NFKC", source)
+    ):
+        return []
+    tree = ast.parse(source)
     hits: list[int] = []
     for node in ast.walk(tree):
         if not (
@@ -52,11 +64,23 @@ def _bare_autocatpath_gates(path: Path) -> list[int]:
     return hits
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        'pytest.importorskip("auto" "catpath")',
+        r'pytest.importorskip("\x61utocatpath.submodule")',
+        'pytest.ｉmportorskip("auto" "catpath")',
+    ],
+)
+def test_bare_autocatpath_gate_accepts_equivalent_spellings(source: str) -> None:
+    assert _bare_autocatpath_gates(source) == [1]
+
+
 def test_no_bare_autocatpath_importorskip_call_sites() -> None:
     bad = {
         p.name: hits
-        for p in sorted(_TESTS.rglob("test_*.py"))
-        if (hits := _bare_autocatpath_gates(p))
+        for p in walk_files(_TESTS, "test_*.py")
+        if (hits := _bare_autocatpath_gates(read_text(p)))
     }
     assert not bad, (
         "bare autocatpath importorskip hides why the test skips — use "
