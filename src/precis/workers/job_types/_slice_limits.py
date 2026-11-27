@@ -327,8 +327,9 @@ def _chain(
 
 def nproc_preexec(limit: int | None) -> Callable[[], object] | None:
     """A ``preexec_fn`` setting ``RLIMIT_NPROC`` soft and hard to ``limit``
-    (clamped under an inherited hard limit), so no descendant can raise
-    it. ``None`` without a limit or without POSIX rlimits."""
+    (clamped under the inherited hard limit; darwin may clamp further, to
+    ``kern.maxprocperuid``), so no descendant can raise it. ``None``
+    without a limit or without POSIX rlimits."""
     if limit is None or os.name != "posix":
         return None
     import resource

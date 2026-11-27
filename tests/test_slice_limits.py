@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -380,23 +381,33 @@ def test_stop_scope_is_a_no_op_off_linux(monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX rlimits")
 def test_nproc_preexec_sets_soft_and_hard_in_the_child() -> None:
-    import resource
+    limit = 4000
 
-    _soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
-    want = 4000 if hard == resource.RLIM_INFINITY else min(4000, hard)
-    out = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import resource; print(*resource.getrlimit(resource.RLIMIT_NPROC))",
-        ],
-        preexec_fn=sl.nproc_preexec(4000),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=True,
-    ).stdout.split()
-    assert out == [str(want), str(want)]
+    def run(preexec: Callable[[], object] | None) -> list[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import resource; print(*resource.getrlimit(resource.RLIMIT_NPROC))",
+            ],
+            preexec_fn=preexec,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.split()
+
+    def probe() -> None:
+        import resource
+
+        _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+        requested = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+        resource.setrlimit(resource.RLIMIT_NPROC, (requested, requested))
+
+    # macOS can clamp the hard limit to kern.maxprocperuid at setrlimit
+    # time. Read it back after an independent call in a disposable child.
+    _, want = run(probe)
+    assert run(sl.nproc_preexec(limit)) == [want, want]
 
 
 def _nproc_sentinel(monkeypatch: pytest.MonkeyPatch) -> Any:
