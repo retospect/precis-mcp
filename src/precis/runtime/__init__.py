@@ -69,6 +69,11 @@ their handler's native batch behavior; writes still require one shared kind.
 
 Cross-kind search reserves workers for finding, memory, todo, gripe, quest
 and paper so the slow cache-backed kinds cannot occupy those workers.
+Both tiers share a worker admission limit per database pool. Fan-out uses
+at most half the pool's configured capacity (one slot on a single-connection
+pool), leaving headroom for other requests and handlers with nested checkouts.
+Best-effort kinds leave one admission slot for priority kinds when possible.
+File-backed skill search bypasses database admission.
 Priority jobs have five seconds, and best-effort jobs have two. Both tiers
 run concurrently and report omissions in the result header. Fusion
 normalizes each kind's scores and applies kind priors on wildcard queries.

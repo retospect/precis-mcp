@@ -48,9 +48,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal
+from weakref import WeakKeyDictionary
 
 from psycopg.errors import QueryCanceled
-from psycopg_pool import PoolTimeout
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from precis.errors import (
     BadInput,
@@ -415,8 +416,7 @@ def _cross_kind_job_key(kind: str) -> tuple[float, str]:
 
 
 def _cross_kind_executor() -> ThreadPoolExecutor:
-    """Process-wide fan-out executor: one cap on DB connections held by
-    cross-kind searches, including stragglers that outlive their deadline."""
+    """Process-wide cap on best-effort worker threads, including stragglers."""
     global _cross_kind_pool
     with _cross_kind_pool_lock:
         if _cross_kind_pool is None:
@@ -424,6 +424,31 @@ def _cross_kind_executor() -> ThreadPoolExecutor:
                 max_workers=CROSS_KIND_MAX_WORKERS, thread_name_prefix="cross-kind"
             )
         return _cross_kind_pool
+
+
+_cross_kind_admission_lock = threading.Lock()
+_cross_kind_admission: WeakKeyDictionary[
+    ConnectionPool, tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]
+] = WeakKeyDictionary()
+
+
+def _cross_kind_pool_slots(
+    pool: ConnectionPool,
+) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
+    """Share worker admission across both tiers and all calls using this pool."""
+    with _cross_kind_admission_lock:
+        slots = _cross_kind_admission.get(pool)
+        if slots is None:
+            # Leave headroom for other requests, the ANN route probe and
+            # handlers that need more than one checkout. Keep one slot
+            # available to priority kinds whenever capacity permits.
+            total = max(1, pool.max_size // 2)
+            slots = (
+                threading.BoundedSemaphore(total),
+                threading.BoundedSemaphore(max(1, total - 1)),
+            )
+            _cross_kind_admission[pool] = slots
+        return slots
 
 
 #: gr249198: ``MockEmbedder`` never raises, so the existing
@@ -3680,6 +3705,31 @@ class SearchMixin(RuntimeShape):
             return out
         if deadline_at is None:
             deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
+        store = self.hub.store
+        slots = _cross_kind_pool_slots(store.pool) if store is not None else None
+
+        def admitted_search(
+            handler: Handler, k: str, end: float, cap: float, priority: bool
+        ) -> list[SearchHit] | Exception:
+            # Skill search uses an in-process index. It does not consume
+            # database capacity and can run while the DB slots are busy.
+            if slots is None or k == "skill":
+                return run(handler, k, end, cap)
+            total, best_effort = slots
+            if not priority and not best_effort.acquire(
+                timeout=max(0.0, end - time.monotonic())
+            ):
+                return KindSearchDeadlineMissed("fan-out admission deadline spent")
+            try:
+                if not total.acquire(timeout=max(0.0, end - time.monotonic())):
+                    return KindSearchDeadlineMissed("fan-out admission deadline spent")
+                try:
+                    return run(handler, k, end, cap)
+                finally:
+                    total.release()
+            finally:
+                if not priority:
+                    best_effort.release()
 
         def run(
             handler: Handler, k: str, deadline_at: float, cap: float
@@ -3820,7 +3870,13 @@ class SearchMixin(RuntimeShape):
             end = min(deadline_at, submitted_at + window) if tiered else deadline_at
             executor = _cross_kind_priority_pool if priority else pool
             futures[k] = executor.submit(
-                contextvars.copy_context().run, run, handler, k, end, cap
+                contextvars.copy_context().run,
+                admitted_search,
+                handler,
+                k,
+                end,
+                cap,
+                priority,
             )
             deadlines[k] = end
 

@@ -17,7 +17,7 @@ from psycopg_pool import PoolTimeout
 from precis.embedder import MockEmbedder
 from precis.runtime import search as search_mod
 from precis.runtime.core import PrecisRuntime
-from precis.store.pool import CHECKOUT_BUDGET, POOL_CHECKOUT_DEADLINE
+from precis.store.pool import CHECKOUT_BUDGET, POOL_CHECKOUT_DEADLINE, PrecisPool
 from precis.utils.search_merge import SearchHit
 from tests._timing import budget
 
@@ -108,6 +108,42 @@ def test_fan_out_concurrency_never_exceeds_cap(
     out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
     assert set(out) == set(kinds)
     assert 1 < state["peak"] <= search_mod.CROSS_KIND_MAX_WORKERS
+
+
+def test_fan_out_shares_pool_admission_across_calls(
+    runtime_stateless: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = runtime_stateless
+    pool = PrecisPool(min_size=1, max_size=4, open=False)
+    monkeypatch.setattr(rt.hub, "store", SimpleNamespace(pool=pool))
+    monkeypatch.setattr(rt.hub, "handler_for", lambda kind: SimpleNamespace())
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake(kind: str) -> list[SearchHit]:
+        if kind == "web":
+            started.set()
+            assert release.wait(3)
+        return []
+
+    _patch_invoke(monkeypatch, rt, fake)
+    args = {"q": "cross-kind search"}
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        first = caller.submit(rt._cross_kind_fan_out, ["web"], args, tiered=True)
+        try:
+            assert started.wait(1)
+            second = rt._cross_kind_fan_out(
+                ["taxon", "todo", "skill"],
+                args,
+                deadline_at=time.monotonic() + 0.5,
+                tiered=True,
+            )
+            assert second["todo"] == second["skill"] == []
+            assert isinstance(second["taxon"], search_mod.KindSearchDeadlineMissed)
+        finally:
+            release.set()
+            pool.close()
+    assert first.result() == {"web": []}
 
 
 def test_fan_out_shares_the_dispatch_query_embedding(
