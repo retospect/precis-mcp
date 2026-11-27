@@ -487,6 +487,11 @@ def test_exact_leg_using_the_index_is_an_error() -> None:
 # ------------------------------------------------------- report (real pgvector)
 
 
+# At a few hundred rows the planner prefers a pkey bitmap scan + sort over the
+# HNSW index once stats exist; with all three off only HNSW avoids a sort.
+_FORCE_HNSW = ("enable_seqscan = off", "enable_bitmapscan = off", "enable_sort = off")
+
+
 def _seed(store: Any, n: int) -> None:
     rng = np.random.default_rng(690288)
     for i in range(n):
@@ -504,6 +509,10 @@ def _seed(store: Any, n: int) -> None:
                 "VALUES (%s, %s, %s, 'ok', 1)",
                 (int(row[0]), _EMBEDDER, vec.tolist()),
             )
+    # Fresh stats: a just-seeded table has none until autovacuum wakes, and
+    # the planner's choice under enable_seqscan=off then varies by timing.
+    with store.pool.connection() as conn:
+        conn.execute("ANALYZE chunk_embeddings")
 
 
 def test_report_on_the_test_db(store: Any) -> None:
@@ -523,7 +532,7 @@ def test_report_on_the_test_db(store: Any) -> None:
         k=20,
         ks=(1, 5, 10, 20),
         ef_search=(40,),
-        ann_set_local=("enable_seqscan = off",),
+        ann_set_local=_FORCE_HNSW,
     )
     report = run_report(cfg, runner)
 
@@ -575,7 +584,7 @@ def test_report_through_a_tagged_psql(store: Any, tmp_path: Path) -> None:
         k=10,
         ks=(1, 10),
         ef_search=(40,),
-        ann_set_local=("enable_seqscan = off",),
+        ann_set_local=_FORCE_HNSW,
     )
     report = run_report(cfg, ProdPsqlRunner(script=fake))
 

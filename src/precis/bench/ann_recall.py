@@ -150,9 +150,11 @@ class AnnRecallConfig:
 
     ``ann_set_local`` are extra ``SET LOCAL`` statements applied to the ANN
     legs (and their plan check) only — the exact leg must never be nudged,
-    or it stops being exact. Tests use ``("enable_seqscan = off",)`` to pull
-    the planner onto the index for a table too small for the cost model to
-    pick it; a host benchmarking a small replica may want the same.
+    or it stops being exact. Tests force HNSW on a table too small for the
+    cost model to pick it with all of ``enable_seqscan``,
+    ``enable_bitmapscan`` and ``enable_sort`` off — once stats exist,
+    seqscan-off alone loses to a pkey bitmap scan + sort. A host
+    benchmarking a small replica may want the same trio.
     """
 
     n_queries: int = DEFAULT_N_QUERIES
