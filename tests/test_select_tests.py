@@ -201,6 +201,13 @@ def test_r35_regressions_are_selected(selector: sel.Selector, changed, want) -> 
         )
 
 
+@pytest.mark.nightly(
+    reason="58 s untraced in the dev container (td804796) — under the "
+    "coverage-db job's --cov-context=test tracing it outlived the 300 s "
+    "default timeout and pytest-timeout killed worker gw2 (run 45648659197, "
+    "gr804725): tests >=30 s run on the nightly FULL shape (the gate's soak "
+    "also deselects -m 'not nightly'), off the 5-minute gate"
+)
 def test_changed_test_file_selects_itself(selector: sel.Selector) -> None:
     targets, _ = selector.select(["tests/test_skill_prose.py"])
     assert "tests/test_skill_prose.py" in targets
