@@ -188,7 +188,7 @@ import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -2119,6 +2119,48 @@ class _MarginTable(dict[tuple[str, MarginKey], TermValue]):
         clamps it."""
         s = max(0.0, min(1.0, schedule))
         return sum(w * (ab[0] + s * ab[1]) for w, ab in self._ab.items())
+
+    def risk_sums_snapshot(self) -> dict[float, list[float]]:
+        """A copy of the per-weight ``(Σa, Σb)`` running totals — the risk
+        half of :class:`_TotalsCheckpoint`. A running sum is NOT recovered
+        by re-adding its entries: ``x + a − a ≠ x`` in floats, and over an
+        anneal's hundreds of set/pop pairs the residue grows past the
+        restore assert's 1e-9 (gr804724: 1.6e-9 on a macOS nightly). A
+        best-state checkpoint must therefore carry the sums themselves."""
+        return {w: list(ab) for w, ab in self._ab.items()}
+
+    def restore_risk_sums(self, snap: dict[float, list[float]]) -> None:
+        """Write back a :meth:`risk_sums_snapshot`. Each ``(Σa, Σb)`` list
+        is copied so later ``+=`` updates cannot mutate the checkpoint."""
+        self._ab = {w: list(ab) for w, ab in snap.items()}
+
+
+class _TotalsCheckpoint(NamedTuple):
+    """Every running-sum quantity :meth:`OptimizeEngine.money` /
+    :meth:`OptimizeEngine.risk` reads — the part of engine state
+    ``undo_move`` cannot reproduce bit-exactly. Undo recomputes every
+    PER-ENTRY cache from the restored arrays (a fresh function
+    evaluation, deterministic in the same run), but the running sums
+    standing on top of them accumulate ``x + a − a ≠ x`` noise and do
+    not return to their recorded values — gr804724's nightly flake was
+    exactly that residue measured against a 1e-9 absolute assert. The
+    anneal's best checkpoint therefore carries the sums themselves
+    (:meth:`OptimizeEngine._totals_checkpoint` /
+    :meth:`OptimizeEngine._restore_totals`). The guarantee ends at the
+    rollback read — the ``restored`` total in ``anneal``'s own assert.
+    It does NOT pin ``cost_after``: ``optimize()`` measures that after
+    the post-anneal placement passes (hard-align snap, support-group
+    organisation, outline settle) have moved the running sums again,
+    and recomputes it on a rebuilt engine when it restores the input
+    poses. A NEW running-sum quantity ``total()`` reads must join this
+    checkpoint — the restore assert's residue fires when one escapes
+    it."""
+
+    risk_sums: dict[float, list[float]]
+    money_static: dict[str, float]
+    board_area: float
+    routing_area: float
+    measures: float
 
 
 def _pair_key(a: int, b: int) -> tuple[int, int]:
@@ -4747,6 +4789,29 @@ class OptimizeEngine:
     def total(self) -> float:
         return self.money() + self.config.cost.risk_to_money * self.risk()
 
+    def _totals_checkpoint(self) -> _TotalsCheckpoint:
+        """Snapshot the running sums — see :class:`_TotalsCheckpoint` for
+        why the best-state record carries them rather than re-deriving
+        them through undo."""
+        return _TotalsCheckpoint(
+            self._margin.risk_sums_snapshot(),
+            dict(self._money_static_by_name),
+            self._money_board_area,
+            self._money_routing_area,
+            self._money_measures,
+        )
+
+    def _restore_totals(self, cp: _TotalsCheckpoint) -> None:
+        """The write-back half of :meth:`_totals_checkpoint` — the dict
+        copies keep their recorded insertion order, so the ``sum``\\ s in
+        :meth:`money`/:meth:`_MarginTable.risk_sum` reproduce the
+        recorded totals bit-for-bit."""
+        self._margin.restore_risk_sums(cp.risk_sums)
+        self._money_static_by_name = dict(cp.money_static)
+        self._money_board_area = cp.board_area
+        self._money_routing_area = cp.routing_area
+        self._money_measures = cp.measures
+
     # -- move application ----------------------------------------------
     #: Kind -> does this move kind's payload live in the placement
     #: (instances/old/new) shape? Everything else is segment/net/pin
@@ -4849,14 +4914,18 @@ class OptimizeEngine:
         log: the accepted :class:`Move` objects. Restoring = undoing the
         moves past the best index through the engine's own ``undo_move``,
         which rescans every cache the anneal itself keeps in step, so no
-        array/cache pair can disagree. ``self.moves`` still describes
-        every accepted/rejected proposal; ``restored_best_at`` says where
-        the state was rolled back to."""
+        array/cache pair can disagree — plus writing back the
+        :class:`_TotalsCheckpoint` recorded with the best total, since
+        the running sums are the one thing undo cannot re-derive
+        bit-exactly (see that class's docstring; gr804724). ``self.moves``
+        still describes every accepted/rejected proposal;
+        ``restored_best_at`` says where the state was rolled back to."""
         cfg = self.config
         self.restored_best_at = None
         accepted_log: list[Move] = []
         best_total = self._total_at_report()
         best_k = 0
+        best_totals = self._totals_checkpoint()
         t0 = cfg.t0 if cfg.t0 is not None else max(5.0, self.board_side / 2.0)
         temp = t0
         moves: list[MoveRecord] = []
@@ -4912,6 +4981,7 @@ class OptimizeEngine:
                 if rt < best_total:
                     best_total = rt
                     best_k = len(accepted_log)
+                    best_totals = self._totals_checkpoint()
             else:
                 self.undo_move(move)
                 moves.append(MoveRecord(it, kind.value, refdes, False, delta))
@@ -4921,6 +4991,13 @@ class OptimizeEngine:
             for mv in reversed(accepted_log[best_k:]):
                 self.undo_move(mv)
             self.restored_best_at = best_k
+            # Undo brought every per-entry cache back bit-exact, but the
+            # running sums carry accumulated float noise — write the
+            # recorded checkpoint back so the totals are exactly what the
+            # best state was judged by. The assert then guards the
+            # checkpoint's completeness: a running sum ``total()`` reads
+            # that is not in it shows up here as its residue (gr804724).
+            self._restore_totals(best_totals)
             restored = self._total_at_report()
             assert abs(restored - best_total) <= 1e-9, (
                 f"restored best total {restored!r} != recorded {best_total!r}"

@@ -77,6 +77,15 @@ Map, in pipeline order (design spec ``pcb-guided-place-route`` retired
   ``optimize`` restores the input poses (gr504889). It checks the saved
   poses for courtyard overlap before restoring them because edge snapping
   can clear an input overlap before the anneal (gr689737).
+  The anneal's best-state record carries the running sums themselves
+  (``optimize._TotalsCheckpoint``), not just the undo log: ``undo_move``
+  re-derives every per-entry cache bit-exactly, but a running sum is not
+  recovered by re-adding its entries — ``x + a − a ≠ x`` in floats, and
+  a night's worth of set/pop pairs grows residue past the restore
+  assert's 1e-9 (gr804724). Rollback therefore writes the recorded sums
+  back; the assert then guards the checkpoint's completeness, and the
+  guarantee ends at that read — ``cost_after`` is measured later, after
+  the post-anneal passes.
 * **Copper** — :mod:`~precis.pcb.realize` (pad geometry, the
   stored-copper model, the gerber-model assembly — the router that drew
   new copper is deleted),
