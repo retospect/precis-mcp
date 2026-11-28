@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from precis import secrets
 from precis import settings as psettings
 from precis.plans import release as R
 from precis.plans import templates as T
@@ -935,6 +936,30 @@ def test_mcp_at_the_release_sha_confirms(store: Store) -> None:
     ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
     assert ev.ok and ev.problems == [] and ev.waiting == ()
     assert f"mcp: at {SHA[:12]}" in ev.text
+
+
+def test_mcp_attestation_needs_no_token_from_the_daemon_env(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr733141: the confirm runs on the deploy worker, whose service
+    account carries no ``PRECIS_MCP_TOKEN`` (gr571617) — the MCP half must
+    attest from the store stamp alone, so no env read finds a token and
+    the mounted secret is never consulted."""
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.delenv("PRECIS_SECRETS_FILE_DIR", raising=False)
+    asked: list[str] = []
+
+    def _spy(name: str) -> str | None:
+        asked.append(name)
+        return None
+
+    monkeypatch.setattr(secrets, "mounted_secret", _spy)
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA)
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert ev.ok and f"mcp: at {SHA[:12]}" in ev.text
+    assert asked == []
 
 
 def test_mcp_at_another_sha_parks_before_the_deadline(store: Store) -> None:
