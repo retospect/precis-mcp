@@ -2094,6 +2094,7 @@
    "test_public_y_scene_tethered_test_db_roundtrip": 73.5
   },
   "tests/test_select_tests.py": {
+   "test_changed_test_file_selects_itself": 58.0,
    "test_deleted_module_still_selects_importers": 86.5,
    "test_every_corpus_ref_is_selectable": 177.0,
    "test_new_migration_selects_seed_classifier": 94.2,
@@ -2161,7 +2162,7 @@
   "tests/test_se_tunnel_reservoirs.py": 888.8,
   "tests/test_se_tunnel_steps.py": 1110.3,
   "tests/test_se_y_junction.py": 73.5,
-  "tests/test_select_tests.py": 778.6,
+  "tests/test_select_tests.py": 836.6,
   "tests/test_skill_example_drift.py": 95.2,
   "tests/test_skill_neighbours.py": 120.0,
   "tests/test_skill_search.py": 37.3,
