@@ -864,21 +864,42 @@ def _days_ago(days: int) -> str:
 
 
 def test_graph_mode_stale_reads_the_manifest_date_not_the_export_mtime(
-    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The export rewrites every file each session, so file mtimes are all
     # "now"; the manifest's updated column is the node's real age.
     home, _mem, cache, nodes = graph_setup
+    now = datetime.datetime.now(datetime.UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    # Give BSD date a reference clock one second later than the age scan.
+    # A date-only format would inherit that second and round 40d down to 39d.
+    epoch = int(now.timestamp())
+    date = tmp_path / "date"
+    date.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$*" = +%s ]; then printf "%s\\n" {epoch}; exit; fi\n'
+        f'if [ "$1 $2" = "-u -j" ]; then exec /usr/bin/date -r {epoch + 1} "$@"; fi\n'
+        'exec /usr/bin/date "$@"\n',
+        encoding="utf-8",
+    )
+    date.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
     (nodes / "me2.md").write_text("# Gotcha\n\nold trap\n", encoding="utf-8")
     (nodes / "me3.md").write_text("# Fresh gotcha\n\nnew trap\n", encoding="utf-8")
     (nodes / "_sections.tsv").write_text(
-        f"me2\tgotchas\t{_days_ago(40)}\t8\t8\t1\t0\t0\n"
-        f"me3\tgotchas\t{_days_ago(1)}\t8\t8\t1\t0\t0\n",
+        f"me2\tgotchas\t{now.date() - datetime.timedelta(days=40)}\t8\t8\t1\t0\t0\n"
+        f"me3\tgotchas\t{now.date() - datetime.timedelta(days=1)}\t8\t8\t1\t0\t0\n",
         encoding="utf-8",
     )
 
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
+    assert res.returncode == 0, res.stderr
     assert "retire candidate → me2 (Gotcha): stale >30d (40d)" in res.stdout, res.stdout
     assert "me3" not in res.stdout, res.stdout
 

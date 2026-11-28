@@ -363,7 +363,12 @@ fi  # ! GRAPH (checks 1a, 1b)
 # lists main, instead of one `merge-base --is-ancestor` per sha (18 s on a
 # ~150-note memory). SHAMAP lines: "<lowercase sha>\t<1 in main | 0 not in main |
 # x unresolvable>".
-epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
+# BSD date preserves the current time for fields omitted from its format.
+# Parse date-only stamps at UTC midnight on both BSD and GNU date.
+epoch_of() {
+    date -u -j -f "%Y-%m-%d %H:%M:%S" "$1 00:00:00" +%s 2>/dev/null \
+        || date -u -d "$1 00:00:00" +%s 2>/dev/null
+}
 SHAMAP=$(mktemp "${TMPDIR:-/tmp}/memory-lint-shas.XXXXXX")
 trap 'rm -f "$SHAMAP" "$SHAMAP.main" "$SHAMAP.out"' EXIT
 if [[ -n "$SCAN_DIR" ]]; then
