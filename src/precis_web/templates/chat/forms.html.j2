@@ -12,6 +12,7 @@
       {% if inline %}hx-post="{{ action }}" hx-disabled-elt="find button" hx-sync="#chat-content:drop"{% endif %}>
   <label class="block font-medium" for="chat-text">{{ label }}</label>
   <textarea id="chat-text" name="text" rows="3" required
+            placeholder="Ask about your library…"
             class="w-full rounded border border-line bg-surface p-2">{{ draft }}</textarea>
   <button class="rounded border border-line px-3 py-2" type="submit">Send</button>
 </form>
