@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Gone, NotFound
 from precis.handlers.figure import FigureHandler
 
 _CIRCLE = (
@@ -160,9 +160,11 @@ def test_lint_surfaces_out_of_bounds(figure):
 
 
 def test_delete_retires(figure):
+    """gr797061's tombstone: a deleted slug is ``Gone``, not ``NotFound`` —
+    a stale reference must drop its pointer, not retry the same get."""
     figure.put(id="m")
     figure.delete(id="m")
-    with pytest.raises(NotFound):
+    with pytest.raises(Gone, match="was deleted"):
         figure.get(id="m")
 
 
