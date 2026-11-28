@@ -14,7 +14,7 @@ Usage: scripts/gripe-closed-citations --statuses statuses.jsonl [--root PATH] [-
 Gripe statuses come from ``search(kind='gripe', ...)``/``get`` output; the
 script never touches prod itself. Terminal statuses: done, wontfix.
 ``--memory-nodes`` defaults to $PRECIS_MEMORY_NODES or
-~/.cache/precis/memory-nodes (the SessionStart export). Advisory: exit 0.
+~/.cache/precis/memory-nodes (`memory index --export-dir`). Advisory: exit 0.
 
 Companion of scripts/gripe-dangling-backlog, which checks the reverse
 direction (gripe comments citing backlog files that do not exist).

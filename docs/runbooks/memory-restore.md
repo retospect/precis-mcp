@@ -2,7 +2,7 @@
 
 **When.** A memory node was deleted or overwritten by mistake, or the graph is
 unreachable and you need the text. Three sources, cheapest first: undelete in
-place, the SessionStart node cache, the nightly dump.
+place, the node cache (if someone refreshed it), the nightly dump.
 
 ## 0. Outage (MCP down): outage-memory.md
 
@@ -53,13 +53,13 @@ The precis web app has the same operation: `POST /refs/<kind>/<id>/undelete`
 
 ## 2. Restore from a node-cache export
 
-The SessionStart hook (`scripts/hooks/session-start-memory.sh`) writes every
-topic node to `~/.cache/precis/memory-nodes/<handle>.md` (`# title`, blank
-line, body) plus `_sections.tsv`. Before each replacement it keeps the previous
-set as `memory-nodes.<UTC YYYYMMDDTHHMMSSZ>`, newest 7, at most one per 6 hours
-(`PRECIS_MEMORY_ROTATE_SECS`). A failed or empty export never rotates. Older
-`memory-nodes.old.<pid>` / `.tmp.<pid>` dirs are CLI debris, not rotation; they
-are safe to delete.
+`scripts/prod-precis memory index --export-dir ~/.cache/precis/memory-nodes`
+writes every topic node to `<handle>.md` (`# title`, blank line, body) plus
+`_sections.tsv`. Nothing runs it on a schedule: the SessionStart hook stopped
+exporting on 2026-11-28 (it cost ~37 s a start), so the cache is as old as
+the last manual run, and dated `memory-nodes.<UTC stamp>` dirs are no longer
+made. `memory-nodes.old.<pid>` / `.tmp.<pid>` dirs are CLI debris, safe to
+delete.
 
 **There is no import path from this format.** `precis memory import` reads a
 harness directory (`MEMORY.md` plus topic files) and refuses a graph-pointer

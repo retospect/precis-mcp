@@ -13,7 +13,7 @@ the block — hook output is injected once and carried on every later turn,
 so it prints the ``--for-hook`` one-line counts summary plus the gripe
 digest instead. The block contract below is asserted on the CLI render
 (the same interpreter via the ``PRECIS_MEMORY_CLI`` seam); the hook tests
-pin the summary shape, the node export, the last-good cache and the
+pin the summary shape, no node export, the last-good cache and the
 fail-soft paths.
 
 ``PRECIS_MEMORY_CLI`` is the seam: it points the hook at this interpreter's
@@ -188,75 +188,15 @@ def test_hook_output_is_one_summary_line_plus_gripes(
     assert len(proc.stdout.encode("utf-8")) <= 400
 
 
-def test_hook_exports_the_node_bodies_next_to_the_cache(
-    store: Store, tmp_path: Path
-) -> None:
+def test_hook_does_not_export_node_bodies(store: Store, tmp_path: Path) -> None:
+    """Reto 2026-11-28: the per-node export cost ~37 s of every session start;
+    the node cache is refreshed on demand (`memory index --export-dir`)."""
     import_memory_dir(store, FIXTURE)
     proc = _run_hook(tmp_path, _active_dsn())
     assert proc.returncode == 0, proc.stderr
-    files = sorted(_nodes(tmp_path).glob("me*.md"))
-    assert len(files) == len(_fixture_bullets())  # one per topic node, no sections
-    assert all(f.read_text(encoding="utf-8").startswith("# ") for f in files)
-    # every thread handle in the CLI render has its exported body
-    rendered = _run_cli(_active_dsn())
-    printed = re.findall(r"^- (me\d+) ", rendered.stdout, re.M)
-    assert len(printed) == 3 and {f.stem for f in files} >= set(printed)
-
-    # a dead DB leaves the last good node set (and the index copy) untouched
-    before = {f.name: f.read_text(encoding="utf-8") for f in files}
-    dead = _run_hook(tmp_path, "postgresql://nobody@localhost:1/none?connect_timeout=3")
-    assert dead.returncode == 0, dead.stderr
-    assert {
-        f.name: f.read_text(encoding="utf-8") for f in _nodes(tmp_path).glob("*.md")
-    } == before
-
-
-def test_hook_rotates_node_sets_keeps_newest_seven_and_skips_failures(
-    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import_memory_dir(store, FIXTURE)
-    monkeypatch.setenv("PRECIS_MEMORY_ROTATE_SECS", "0")
-    cache = _nodes(tmp_path).parent
-    rotated = lambda: sorted(cache.glob("memory-nodes.2*"))
-    first = _run_hook(tmp_path, _active_dsn())
-    assert first.returncode == 0, first.stderr
-    assert rotated() == []  # nothing existed to rotate on the first export
-    # Each real hook run costs a CLI start (~10 s), so older sets are seeded
-    # directly instead of looping the hook with per-second sleeps.
-    for n in range(8):
-        old = cache / f"memory-nodes.2020010{n}T000000Z"
-        old.mkdir()
-        (old / "_sections.tsv").write_text("", encoding="utf-8")
-    second = _run_hook(tmp_path, _active_dsn())
-    assert second.returncode == 0, second.stderr
-    kept = rotated()
-    assert len(kept) == 7  # 8 seeded + 1 rotated, pruned to the newest 7
-    assert kept[-1].name > "memory-nodes.2021"  # the fresh rotation survived
-    assert (kept[-1] / "_sections.tsv").is_file()
-    assert not (cache / "memory-nodes.20200100T000000Z").exists()
-    # a failed export never rotates or prunes
-    dead = _run_hook(tmp_path, "postgresql://nobody@localhost:1/none?connect_timeout=3")
-    assert dead.returncode == 0, dead.stderr
-    assert rotated() == kept
-    assert not list(cache.glob("memory-nodes.snap.*"))
-    # the default interval suppresses a second rotation inside the window
-    monkeypatch.delenv("PRECIS_MEMORY_ROTATE_SECS")
-    again = _run_hook(tmp_path, _active_dsn())
-    assert again.returncode == 0, again.stderr
-    assert rotated() == kept
-
-
-def test_hook_unwritable_node_dir_does_not_change_the_index_or_exit_code(
-    store: Store, tmp_path: Path
-) -> None:
-    import_memory_dir(store, FIXTURE)
-    blocker = tmp_path / "blocker"
-    blocker.write_text("a file, so the node dir cannot be created", encoding="utf-8")
-    proc = _run_hook(tmp_path, _active_dsn(), nodes=blocker / "memory-nodes")
-    assert proc.returncode == 0, proc.stderr
     assert SUMMARY_RE.fullmatch(proc.stdout.splitlines()[0])
-    assert "node export" in proc.stderr
-    assert _cache(tmp_path).read_text(encoding="utf-8") == proc.stdout
+    assert not _nodes(tmp_path).exists()
+    assert not list(_nodes(tmp_path).parent.glob("memory-nodes*"))
 
 
 def test_hook_dead_dsn_prints_one_line_and_exits_zero(tmp_path: Path) -> None:

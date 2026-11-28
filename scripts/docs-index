@@ -301,9 +301,9 @@ def shared_memory_dir(root: Path) -> str:
 
 
 def _nodes_cache_dir() -> Path:
-    """The SessionStart node-export dir (``PRECIS_MEMORY_NODES`` override,
-    else ``$XDG_CACHE_HOME/precis/memory-nodes``) — same default as
-    ``scripts/hooks/session-start-memory.sh``."""
+    """The node-export dir (``PRECIS_MEMORY_NODES`` override, else
+    ``$XDG_CACHE_HOME/precis/memory-nodes``) that ``precis memory index
+    --export-dir`` writes on demand."""
     override = os.environ.get("PRECIS_MEMORY_NODES")
     if override:
         return Path(override)
@@ -359,9 +359,9 @@ def start_page_text(root: Path) -> str:
         "- Skill bodies: `src/precis/data/skills/<slug>.md` — what",
         "  `get(kind='skill', id='<slug>')` serves, minus the chrome.",
         f"- Memory nodes: `{nodes}/` — `<handle>.md` is `# title` plus",
-        "  body, `_sections.tsv` the manifest; stale scratch that the",
-        "  next good export overwrites — read it, never edit it as",
-        "  memory (rotations beside it: `memory-nodes.<UTC stamp>`).",
+        "  body, `_sections.tsv` the manifest; stale scratch from the",
+        "  last `memory index --export-dir` run — read it, never edit",
+        "  it as memory.",
         "- Keep a fact: append `## <UTC stamp> <session>` plus the fact",
         f"  to `{memdir}/outage-memory.md`; the SessionStart hook flags",
         "  it for integration once the graph returns. No other memory",

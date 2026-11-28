@@ -23,27 +23,17 @@
 # the copy's age, so a session started during a prod outage still gets the
 # summary. PRECIS_MEMORY_CACHE overrides the path (tests).
 #
-# Node cache: the same CLI call passes `--export-dir "$nodes"`, which writes each
-# topic node's body to $nodes/<handle>.md (`# title`, blank line, body; swapped
-# in whole by the CLI). scripts/memory-lint lints those bodies in graph mode.
-# Default ~/.cache/precis/memory-nodes; PRECIS_MEMORY_NODES overrides (tests).
-# A failed render leaves the previous set as it was; a failed export prints one
-# stderr line and does not change the index output or the exit code.
+# No node export here (Reto 2026-11-28): `--export-dir` read every node body
+# one round trip at a time — ~37 s of a ~38 s hook over the prod tunnel. The
+# node cache scripts/memory-lint, docs-index and gripe-closed-citations read is
+# refreshed on demand:
+#   scripts/prod-precis memory index --export-dir ~/.cache/precis/memory-nodes
 #
 # Gripe line: after a good render the hook appends one `gripes: N open · M
 # older than 3d · oldest grX (D days)` line (`precis gripes --summary`, the
 # same numbers as get(kind='gripe', id='/open')). It is part of the saved
 # copy, which is where scripts/inflight reads it from. A failed gripe call
 # drops the line and nothing else.
-#
-# Rotation: before the CLI swaps the node set, the previous one is copied to
-# $nodes.snap.$$; only when the new export succeeded (rc 0, no export-failure
-# line, a non-empty set) is that copy renamed to $nodes.<UTC YYYYMMDDTHHMMSSZ>
-# and all but the newest 7 such dirs deleted — a failed or empty export never
-# pushes good copies out. At most one rotation per PRECIS_MEMORY_ROTATE_SECS
-# (default 21600) so seven dirs span days, not seven session starts. Only
-# names matching $nodes.2* are pruned; the CLI's .old.<pid>/.tmp.<pid> debris
-# is left alone. Restore: docs/runbooks/memory-restore.md.
 #
 # Outage file: when the graph is reachable and <memory dir>/outage-memory.md
 # (beside MEMORY.md) holds entries (`## <UTC stamp> <session>` headings,
@@ -57,7 +47,6 @@ set -uo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 cache="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}"
-nodes="${PRECIS_MEMORY_NODES:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-nodes}"
 
 # Same memory-dir derivation as scripts/memory-lint (main checkout root, path
 # separators escaped). Same marker string too.
@@ -92,38 +81,7 @@ else
 fi
 
 errf="$(mktemp)" || fail "no temp file"
-snap=""
-trap 'rm -f "$errf"; [ -z "$snap" ] || rm -rf "$snap"' EXIT
-
-# Copy (not move) the current set aside: readers keep a complete $nodes at
-# every instant, and a failed run just drops the copy.
-if [ -d "$nodes" ] && [ -n "$(ls -A "$nodes" 2>/dev/null)" ]; then
-    snap="$nodes.snap.$$"
-    cp -R "$nodes" "$snap" 2>/dev/null || {
-        rm -rf "$snap"
-        snap=""
-    }
-fi
-
-rotate_nodes() {
-    [ -n "$snap" ] || return 0
-    grep -qF 'memory index: node export' "$errf" && return 0
-    [ -s "$nodes/_sections.tsv" ] || return 0
-    local mins=$(((${PRECIS_MEMORY_ROTATE_SECS:-21600} + 59) / 60))
-    if [ "$mins" -gt 0 ] && [ -n "$(find "$(dirname "$nodes")" -maxdepth 1 \
-        -name "$(basename "$nodes").2*" -mmin "-$mins" 2>/dev/null | head -n 1)" ]; then
-        return 0
-    fi
-    local dest="$nodes.$(date -u +%Y%m%dT%H%M%SZ)"
-    [ ! -e "$dest" ] || return 0
-    mv "$snap" "$dest" 2>/dev/null || return 0
-    snap=""
-    # Newest 7 stay (UTC stamps sort lexically); older ones go.
-    local d
-    for d in $(ls -d "$nodes".2* 2>/dev/null | sort -r | tail -n +8); do
-        rm -rf "$d"
-    done
-}
+trap 'rm -f "$errf"' EXIT
 
 cd "$repo" || fail "cannot enter repo root"
 # Both CLI calls below are reads whose stderr is discarded, so prod-precis's
@@ -131,7 +89,7 @@ cd "$repo" || fail "cannot enter repo root"
 # pure latency here — ~5 s a call, and a ref-lock contender across dozens of
 # sessions starting together (gr541365). Skip it; writes keep their guard.
 export PRECIS_ALLOW_STALE_PROD_TREE=1
-out="$("${cli[@]}" memory index --for-hook --export-dir "$nodes" 2>"$errf")"
+out="$("${cli[@]}" memory index --for-hook 2>"$errf")"
 rc=$?
 if [ "$rc" -ne 0 ]; then
     # Last stderr line, connection URLs redacted, capped — one line only.
@@ -141,7 +99,6 @@ fi
 if [ -z "$out" ]; then
     fail "precis memory index printed nothing"
 fi
-rotate_nodes
 gripes="$("${cli[@]}" gripes --summary 2>/dev/null | tail -n 1)" || gripes=""
 case "$gripes" in
 "gripes: "*) out="$out"$'\n'"$gripes" ;;
@@ -154,8 +111,6 @@ if [ -s "$outage_md" ]; then
         echo "outage-memory.md has $n entries — integrate them into the graph (remember skill), then empty the file"
     fi
 fi
-# A successful render can still carry the CLI's one-line export failure.
-grep -F 'memory index: node export' "$errf" | tail -n 1 | cut -c1-300 >&2
 # Save the last-good copy; per-process temp + rename, so sessions starting
 # together never read a half-written file. A failed save is not an error.
 if mkdir -p "$(dirname "$cache")" 2>/dev/null &&

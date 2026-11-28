@@ -50,7 +50,7 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 |---|---|---|---|
 | `session-start-lock.sh` | SessionStart | Acquires the `git worktree lock` (`pid <N>`) that marks this tree held by a live session — the liveness signal `scripts/inflight` reads (plus a live holder of the tree's `.claude/scheduled_tasks.lock`, the launch-dir/CLAUDE_PROJECT_DIR marker, gr644716 — an unverifiable holder reads `launch-lock#?` / needs_judgment, td645150) | — |
 | `heal-primary-branch.sh` | SessionStart | Heals the PRIMARY checkout back onto `main` when it sits on a fully-merged, clean, unheld branch. `PRECIS_NO_HEAL_PRIMARY=1` | — |
-| `session-start-memory.sh` | SessionStart | Prints the one-line memory summary (`precis memory index --for-hook`) once MEMORY.md carries the graph marker; writes the per-node body cache and a last-good copy | — |
+| `session-start-memory.sh` | SessionStart | Prints the one-line memory summary (`precis memory index --for-hook`) once MEMORY.md carries the graph marker, plus the gripe digest; saves a last-good copy. No per-node export (refresh on demand: `memory index --export-dir`) | — |
 | `memory-nudge.sh` | SessionStart | Runs `scripts/memory-lint` in the background (`~/.cache/precis/memory-lint.log`), at most once per `MEMORY_NUDGE_SECS` (600); prints nothing | — |
 | `read-dedup.py --session-start` | SessionStart | Deletes the session's dedup state when `source` is `compact`/`clear`/`resume` | `source`, `session_id` |
 | `subagent-task-state.py start\|stop` | SubagentStart / SubagentStop | Writes/removes the per-task marker `{agent_id, pid, cwd, started_at}` in the shared git dir; stale markers self-prune | `agent_id`, `cwd` |

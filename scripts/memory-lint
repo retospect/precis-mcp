@@ -13,8 +13,9 @@
 # me690866): the index is rendered from
 # SPACE:repo-dev memory nodes and the memory dir's topic files are a frozen
 # snapshot, so checks 2, 3b, 5 and 6 read the NODE bodies instead — the
-# `precis memory index --export-dir` cache that scripts/hooks/session-start-
-# memory.sh refreshes each session (one `<handle>.md` per node; default
+# `precis memory index --export-dir` cache, refreshed on demand with
+# `scripts/prod-precis memory index --export-dir ~/.cache/precis/memory-nodes`
+# (no longer by the SessionStart hook; one `<handle>.md` per node; default
 # ~/.cache/precis/memory-nodes, PRECIS_MEMORY_NODES overrides). Findings name
 # the handle and the graph fix (delete / edit(kind='memory')). Checks 1a/1b
 # have nothing to read and stay skipped; with no node cache yet, 2/3b/5/6 are
@@ -119,7 +120,7 @@
 #      not main; ::Symbol / §section / #anchor suffixes do not name files.
 #      Missing paths and unresolvable forms are separate advisory findings.
 #      No live database reads, resolver guesses, or edits; refresh via the
-#      existing `precis memory index --export-dir` session-start export.
+#      on-demand `precis memory index --export-dir` export.
 #  14. incidents older than 90 UTC calendar days, from the manifest's creation
 #      date (edits do not reset age). Report only: verify cause and fix,
 #      preserve uncertainty, and extract still-true claims before retiring.
