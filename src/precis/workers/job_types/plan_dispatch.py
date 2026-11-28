@@ -71,10 +71,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    marker never strands a review. A LAND is a diff read, never a test
    result. A LAND on a held pre-land land mints the held ``land_slice``
    only when the verdict's judged head (``verified head <sha>``,
-   :func:`_verdict_heads`) is the stamp's pushed tip — a LAND naming
-   another head read a different commit than the hold would ship, so
-   the hold stands and the reviewer re-runs, retry-capped like a
-   malformed verdict (td730820). ``LAND`` closes the node. ``FIX`` mints
+   :func:`_verdict_heads`) reads as the stamp's pushed tip
+   (:func:`_judged_sha`): the tip one hex character short still counts
+   — the hand-copy slip of gr806875, but a 39-hex token is a valid git
+   abbreviation and could name another commit, so the slip is forgiven
+   only when the review job's recorded attempt head
+   (``meta.reviewed_attempt``, td763090) corroborates the tip — while a
+   LAND naming any other head read a different commit than the hold
+   would ship, so the hold
+   stands and the reviewer re-runs, retry-capped like a malformed
+   verdict (td730820). ``LAND`` closes the node. ``FIX`` mints
    one ``run_slice`` task
    ``Fix review findings for td<id>`` (body = the list) under the plan root
    and closes the node — the mint is stamped ``meta.fix_depth``, the
@@ -107,8 +113,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    and the build is held on an ``ask-coordinator`` ask only on the
    failure the ask describes (gr688058): the reviewed head unchanged
    since the last send-back (the builder is not acting), the head the
-   verdict judged other than the pushed tip (the reviewer is reading a
-   stale branch), the newest finding the last one's again (the same
+   verdict judged not reading as the pushed tip (the reviewer is
+   reading a stale branch — the tip one hex character short still
+   counts, gr806875, forgiven only when the review job's recorded
+   attempt head names the tip; and the ask prints both shas in full so
+   a difference past the 12-character abbreviation is never hidden), the
+   newest finding the last one's again (the same
    text, or a shared ``file::function`` on the verdict's ``anchors:``
    line with token-Jaccard text similarity of at least 0.6), or
    :data:`PRELAND_FIX_CAP` rounds in a
@@ -3380,9 +3390,12 @@ def _mint_preland_land(
     (``_record_land`` clears it): it is the marker keeping the done,
     not-yet-landed target out of ``_dead_land_targets`` while the land
     is in flight, and the stamp ``land_slice`` reads to admit a closed
-    todo. The caller gates this on the verdict's judged head: a LAND
-    naming a head other than the stamp's must not mint — it read a
-    different commit than the held land ships (td730820). The land is
+    todo. The caller gates this on the verdict's judged head through
+    :func:`_judged_sha` — the stamp's pushed tip one hex character
+    short still counts when the review job's recorded attempt head
+    corroborates it (gr806875): a LAND naming a head that fails that
+    gate must not mint — it read a different commit than the held land
+    ships (td730820). The land is
     stamped with the build's :func:`_claim_score`, floored so it claims
     ahead of fresh builds. Returns the job id."""
     params = dict(t.meta[_templates.PENDING_LAND_KEY])
@@ -3420,9 +3433,53 @@ def _mint_preland_land(
 
 def _same_sha(a: str, b: str) -> bool:
     """One sha a prefix of the other — a 40-char pushed tip against the
-    abbreviation a verdict writes (gr688058)."""
+    abbreviation a verdict writes (gr688058). Anything further is a
+    different string, not the same commit: the heads this compares are
+    machine-stamped, and a stamp that changed DID change — the
+    one-character slack that joined them let a stale read pass for the
+    verified head (gr806875 review)."""
     a, b = a.lower(), b.lower()
     return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
+def _judged_sha(judged: str, pushed: str, attempt: str = "") -> bool:
+    """Whether the head a verdict names as judged IS the pushed tip
+    (gr806875): :func:`_same_sha`, or ``judged`` is the 40-hex
+    ``pushed`` with one character dropped mid-sha — the slip of a
+    hand-copied ``git rev-parse`` line, which is how the incident's
+    39-hex ``verified head`` read as a stale branch (a suffix drop
+    still prefix-matches; the fire meant the drop sat mid-sha). The
+    slip needs evidence: a 39-hex token is a valid git abbreviation and
+    could name a different commit, so it is forgiven only when
+    ``attempt`` — the head the review job's launch told it to judge
+    (:data:`~precis.plans.templates.REVIEWED_ATTEMPT_KEY`, td763090) —
+    itself reads as ``pushed``. No stamp, or a stamp naming another
+    head, leaves the token a stale read. A same-length difference stays
+    a stale read either way: a full sha one character off can be a real
+    head the reviewer did verify."""
+    if _same_sha(judged, pushed):
+        return True
+    if not _same_sha(attempt, pushed):
+        return False
+    j, p = judged.lower(), pushed.lower()
+    if len(j) != 39 or len(p) != 40:
+        return False
+    i = next((k for k, (x, y) in enumerate(zip(j, p)) if x != y), len(j))
+    return j[i:] == p[i + 1 :]
+
+
+def _attempt_head(job: _Node | None, t: _Node) -> str:
+    """The head ``job``'s launch told the review to judge for target
+    ``t`` — the ``meta.reviewed_attempt.head`` stamp ``run_slice``
+    writes on a pre-land reviewer's job (td763090). It is the evidence
+    :func:`_judged_sha` needs before a judged head one hex character
+    short can read as the pushed tip's transcription slip; ``""`` when
+    the job carries no attempt for ``t``, which leaves every non-prefix
+    difference a stale read."""
+    seen = (job.meta or {}).get(_templates.REVIEWED_ATTEMPT_KEY) if job else None
+    if not isinstance(seen, dict) or seen.get("todo") != t.id:
+        return ""
+    return str(seen.get("head") or "")
 
 
 #: The ``path/file.py::Symbol`` citation a finding carries (gr688058):
@@ -3605,6 +3662,7 @@ def _preland_round(
     raw: str,
     single: bool,
     now: datetime | None = None,
+    attempt: str = "",
 ) -> tuple[int, dict[str, Any], tuple[str, str] | None]:
     """``(count, record, stop)`` of the pre-land FIX/REVERT sent
     back to ``t`` (gr684815, gr688058): ``count`` one more than the
@@ -3627,9 +3685,11 @@ def _preland_round(
     attempt is rebased onto the base at the cut, so this stop needs the
     base not to have moved between the pushes), the head
     the verdict JUDGED is not the pushed tip (the reviewer is reading a
-    stale branch — read only on a single-target review, whose verdict
-    can name just the one tip), or the count reaches
-    :data:`PRELAND_FIX_CAP`. A review a coordinator ``brief:`` bought
+    stale branch — the tip one hex character short still counts, but
+    only when ``attempt``, the head the review job's launch told it to
+    judge, corroborates it: :func:`_judged_sha`; read only on a
+    single-target review, whose verdict can name just the one tip), or
+    the count reaches :data:`PRELAND_FIX_CAP`. A review a coordinator ``brief:`` bought
     on the rejected head (``prev["exempt"] == "brief"``, gr762396) never
     stops on the unchanged head: a new finding there is an ordinary
     send-back, and only the same finding again stops. A record another
@@ -3666,14 +3726,14 @@ def _preland_round(
     # re-reports the old finding, which would otherwise read as "same
     # finding" and blame the builder (td707034).
     heads = _verdict_heads(raw) if single else []
-    if heads and pushed and not any(_same_sha(h, pushed) for h in heads):
+    if heads and pushed and not any(_judged_sha(h, pushed, attempt) for h in heads):
         return (
             count,
             record,
             (
                 "stale read",
-                f"review td{n.id} judged head {heads[0][:12]} but the pushed "
-                f"tip is {pushed[:12]} — the reviewer read a stale branch",
+                f"review td{n.id} judged head {heads[0]} but the pushed "
+                f"tip is {pushed} — the reviewer read a stale branch",
             ),
         )
     prev_anchors = set(prev.get("anchors") or [])
@@ -3944,6 +4004,7 @@ def _review_back_to_builder(
     rest: str,
     now: datetime,
     raw: str = "",
+    job: _Node | None = None,
 ) -> None:
     """A pre-land FIX/REVERT (gr570506, Reto 2026-11-12: "if it says no,
     the work goes back to the builder"). Nothing landed, so no fix or
@@ -3958,7 +4019,9 @@ def _review_back_to_builder(
     rounds are counted (gr684815): the target is held on a coordinator
     ask only on the failure the ask describes (gr688058) — the same
     finding twice running, an unchanged reviewed head, a verdict that
-    names a head other than the pushed tip, or
+    names a head other than the pushed tip (the tip one hex character
+    short still counts when ``job``'s recorded attempt head
+    corroborates it, :func:`_judged_sha`), or
     :data:`PRELAND_FIX_CAP` rounds. The stash carries ``at``, the
     send-back time (gr738860): :func:`_step_verdicts` reads only a
     verdict newer than it, so the verdict this review just judged cannot
@@ -4034,7 +4097,17 @@ def _review_back_to_builder(
                 f"td{t.id}: resolution review {kind} — conflict try {_ck} failed"
             )
             continue
-        count, record, stop = _preland_round(n, t, kind, rest, pushed, raw, single, now)
+        count, record, stop = _preland_round(
+            n,
+            t,
+            kind,
+            rest,
+            pushed,
+            raw,
+            single,
+            now,
+            attempt=_attempt_head(job, t),
+        )
         if stop is not None:
             _park_preland_rounds(
                 plan, w, res, n, t, kind, rest, stop, now, pushed, record
@@ -4370,7 +4443,13 @@ def _step_reviews(
             for t in pending:
                 held = t.meta.get(_templates.PENDING_LAND_KEY)
                 pushed = str(held.get("head") or "") if isinstance(held, dict) else ""
-                if judged and pushed and not any(_same_sha(h, pushed) for h in judged):
+                if (
+                    judged
+                    and pushed
+                    and not any(
+                        _judged_sha(h, pushed, _attempt_head(newest, t)) for h in judged
+                    )
+                ):
                     stale_reads.append((t, judged, pushed))
                 else:
                     _mint_preland_land(store, plan, w, res, n, t)
@@ -4385,8 +4464,7 @@ def _step_reviews(
                     n, _cap_rungs(plan, lane_table, n, job_type_, params_, rules)
                 )
                 detail = "; ".join(
-                    f"td{t.id}: judged {heads[0][:12]} but the pushed tip "
-                    f"is {pushed[:12]}"
+                    f"td{t.id}: judged {heads[0]} but the pushed tip is {pushed}"
                     for t, heads, pushed in stale_reads
                 )
                 w.stamp_meta(n, {"review": {**record, "verdict": None}})
@@ -4431,7 +4509,9 @@ def _step_reviews(
             # has not landed sends the work back to the builder — nothing
             # is on main to fix or revert — and the reviewer stays open
             # for the rebuild it then re-gates.
-            _review_back_to_builder(store, plan, w, res, n, kind, rest, now, raw or "")
+            _review_back_to_builder(
+                store, plan, w, res, n, kind, rest, now, raw or "", newest
+            )
             if all(_closed(t) for t in _review_targets(plan, n)):
                 # gr663909: every held target was ruled closed while the
                 # review ran — nothing is left to re-gate, and an open

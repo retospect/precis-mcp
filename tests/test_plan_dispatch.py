@@ -7615,12 +7615,18 @@ def _reviewed_landed(store: Store, verdict: str) -> T.PlanMint:
 
 
 def _reviewed_pending(
-    store: Store, verdict: str, head: str | None = None
+    store: Store,
+    verdict: str,
+    head: str | None = None,
+    attempt: str | None = None,
 ) -> T.PlanMint:
     """The pre-land shape (gr570506): the build's clean exit pushed its
     branch, stamped ``meta.pending_land`` and closed done; the review
     session ran, posted ``verdict`` and left its claim. ``head`` is the
-    pushed tip ``run_slice`` stamps in the params (gr688058)."""
+    pushed tip ``run_slice`` stamps in the params (gr688058);
+    ``attempt``, when given, is the head the review job's launch told
+    it to judge — stamped as ``meta.reviewed_attempt`` on the job
+    (td763090)."""
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")
@@ -7644,7 +7650,12 @@ def _reviewed_pending(
         },
     )
     _mark_done(store, build)
-    _job(store, review, lane="claude-sub")
+    review_job = _job(store, review, lane="claude-sub")
+    if attempt is not None:
+        store.stamp_ref_meta(
+            review_job,
+            {"reviewed_attempt": {"todo": build, "head": attempt}},
+        )
     store.stamp_ref_meta(review, {"preland_review": True})
     store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
     store.add_tag(
@@ -8115,6 +8126,66 @@ def test_preland_review_land_on_a_stale_head_holds_the_land(
     assert not any("td730820" in n for n in pd.run_pass(store).notes)
 
 
+def test_preland_review_land_a_character_short_still_mints(
+    store: Store,
+) -> None:
+    """gr806875: the LAND gate reads the judged head like the send-back
+    path does — the pushed tip one hex character short is still that
+    tip (the hand-copy slip), so the held land mints. The slip needs
+    the review job's recorded attempt head naming the tip: a 39-hex
+    token is a valid git abbreviation and could name another commit,
+    so no stamp or a stamp on another head keeps the hold, as does a
+    same-length difference — a real sha."""
+    pushed = "033141263aa725453bb08d8bfb08e753c923d61f"
+    judged = pushed[:20] + pushed[21:]  # 39 hex, the char at 20 dropped
+    mint = _reviewed_pending(
+        store,
+        f"review: LAND — verified head {judged}",
+        head=pushed,
+        attempt=pushed,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert any(
+        m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build)
+    )
+
+    # The same judged token without the corroborating stamp — none
+    # minted, or one naming another head — stays a stale read.
+    for attempt in (None, "e" * 40):
+        mint2 = _reviewed_pending(
+            store,
+            f"review: LAND — verified head {judged}",
+            head=pushed,
+            attempt=attempt,
+        )
+        build2, review2 = mint2.ids["build"], mint2.ids["review"]
+        res = pd.run_pass(store)
+        assert not any(
+            m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build2)
+        )
+        assert _status(store, review2) == "open"
+        assert any("td730820" in n for n in res.notes)
+
+    pushed3 = "e" * 40
+    judged3 = pushed3[:30] + "0" + pushed3[31:]  # one char differs — a real sha
+    mint3 = _reviewed_pending(
+        store,
+        f"review: LAND — verified head {judged3}",
+        head=pushed3,
+        attempt=pushed3,
+    )
+    build3, review3 = mint3.ids["build"], mint3.ids["review"]
+    res = pd.run_pass(store)
+    assert not any(
+        m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build3)
+    )
+    assert _status(store, review3) == "open"
+    assert any("td730820" in n for n in res.notes)
+
+
 def test_preland_land_holds_a_phase_root_open(store: Store) -> None:
     """Build done (land held) and reviewer done on LAND, land still
     pending: the phase root must not close on "every child closed"."""
@@ -8425,15 +8496,27 @@ def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:
 
 
 def _rebuild_and_review(
-    store: Store, build: int, review: int, verdict: str, head: str | None = None
+    store: Store,
+    build: int,
+    review: int,
+    verdict: str,
+    head: str | None = None,
+    attempt: str | None = None,
 ) -> pd.PassResult:
     """One more pre-land cycle after a send-back: the reopened build's
     newest ``run_slice`` ends clean and defers its land again (``head``
     the pushed tip it stamps, gr688058), the released reviewer runs and
-    posts ``verdict``; returns the pass that read it."""
+    posts ``verdict``; returns the pass that read it. ``attempt``, when
+    given, is stamped as the review job's ``meta.reviewed_attempt``
+    head (td763090) — the head its launch told it to judge."""
     _rehold(store, build, head)
     pd.run_pass(store)
     _succeed_newest(store, review)
+    if attempt is not None:
+        store.stamp_ref_meta(
+            _jobs_under(store, review)[-1][0],
+            {"reviewed_attempt": {"todo": build, "head": attempt}},
+        )
     _todo_comment(store, review, verdict)
     return pd.run_pass(store)
 
@@ -8678,6 +8761,170 @@ def test_preland_verdict_on_a_stale_head_asks_the_coordinator(
     )
     rounds = _meta(store, build)["preland_fix_rounds"]
     assert rounds["count"] == 0 and rounds["head"] is None
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "want"),
+    [
+        ("a" * 40, "a" * 40, True),
+        ("a" * 40, "a" * 12, True),  # abbreviation
+        ("a" * 12, "a" * 40, True),  # either side abbreviates
+        (
+            "033141263aa725453bb08d8bfb08e753c923d61f",
+            "033141263aa725453bb0d8bfb08e753c923d61f",
+            False,
+        ),  # a character dropped mid-sha is a different string
+        ("b" * 40, "b" * 30 + "0" + "b" * 9, False),  # one char substituted
+        ("abc1234", "abc1235", False),
+    ],
+)
+def test_same_sha_is_commit_identity(a: str, b: str, want: bool) -> None:
+    """gr806875 review: ``_same_sha`` is commit identity — equal or a
+    prefix (git's abbreviation rule) and nothing more. The heads it
+    compares are machine-stamped (the kept record's, the held land's),
+    and a stamp that changed DID change: the one-character slack that
+    joined two spellings let a stale read pass for the verified head."""
+    assert pd._same_sha(a, b) is want
+
+
+@pytest.mark.parametrize(
+    ("judged", "pushed", "attempt", "want"),
+    [
+        ("a" * 40, "a" * 40, "", True),
+        ("a" * 12, "a" * 40, "", True),  # abbreviation — needs no evidence
+        ("a" * 39, "a" * 40, "", True),  # the last char dropped — still a prefix
+        (
+            "033141263aa725453bb0d8bfb08e753c923d61f",
+            "033141263aa725453bb08d8bfb08e753c923d61f",
+            "033141263aa725453bb08d8bfb08e753c923d61f",
+            True,
+        ),  # the incident's signature, corroborated by the attempt stamp
+        (
+            "033141263aa725453bb0d8bfb08e753c923d61f",
+            "033141263aa725453bb08d8bfb08e753c923d61f",
+            "",
+            False,
+        ),  # no stamp: the token could abbreviate another commit
+        (
+            "033141263aa725453bb0d8bfb08e753c923d61f",
+            "033141263aa725453bb08d8bfb08e753c923d61f",
+            "e" * 40,
+            False,
+        ),  # the stamp names another head — the run judged a stale tip
+        ("b" * 30 + "0" + "b" * 9, "b" * 40, "b" * 40, False),  # substituted
+        ("c" * 20 + "0" + "c" * 18, "c" * 40, "c" * 40, False),  # not the tip's
+        ("d" * 20 + "0" + "d" * 17, "d" * 40, "d" * 40, False),  # one slip only
+    ],
+)
+def test_judged_sha_admits_the_one_dropped_character(
+    judged: str, pushed: str, attempt: str, want: bool
+) -> None:
+    """gr806875 and its review: the judged head still reads as the
+    pushed tip when it is the tip one hex character short — the
+    transcription slip — but only when the review job's recorded
+    attempt head (``meta.reviewed_attempt``, td763090) corroborates
+    that the run judged the tip: a 39-hex token is a valid git
+    abbreviation and could name a different commit, so an
+    uncorroborated non-prefix difference stays a stale read, as do a
+    substituted character and a longer gap."""
+    assert pd._judged_sha(judged, pushed, attempt) is want
+
+
+def test_preland_judged_head_a_character_short_is_not_a_stale_read(
+    store: Store,
+) -> None:
+    """gr806875: the reviewer wrote ``verified head`` one hex character
+    short — the pushed tip with a character dropped mid-sha, which a
+    prefix-only compare read as a stale branch and parked a live FIX
+    verdict. (The incident's pushed tip is not in this clone; the
+    judged head was 39 hex sharing the tip's abbreviation, and a stale
+    read DID fire — so the drop sat mid-sha, which is what this
+    replays.) The send-back must run when the review job's recorded
+    attempt head names the pushed tip; but a same-length difference is
+    a real sha's difference, and the slip without the corroborating
+    stamp could abbreviate another commit — both stay a stale read."""
+    pushed = "033141263aa725453bb08d8bfb08e753c923d61f"
+    judged = pushed[:20] + pushed[21:]  # 39 hex, the char at 20 dropped
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {judged}",
+        head=pushed,
+        attempt=pushed,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == []
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 1 and rounds["head"] == pushed
+
+    pushed2 = "d" * 40
+    judged2 = pushed2[:30] + "0" + pushed2[31:]  # one char differs — a real sha
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {judged2}",
+        head=pushed2,
+        attempt=pushed2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "stale branch" in body
+    assert f"judged head {judged2} but the pushed tip is {pushed2}" in body
+
+    # The same 39-hex slip on fresh builds whose review job's attempt
+    # stamp is missing or names another head: the token could
+    # abbreviate a different commit, so the send-back does not run —
+    # the stale-read ask does. The pushed tip repeats no run long
+    # enough for the mid-sha drop to leave a prefix (a same-char tip
+    # would pass :func:`_same_sha` before the stamp is even read —
+    # td807025).
+    pushed3 = "a1b2c3d4e5" * 4
+    judged3 = pushed3[:20] + pushed3[21:]  # 39 hex, a char dropped mid-sha
+    for attempt in (None, "e" * 40):
+        mint3 = _reviewed_pending(
+            store,
+            f"review: FIX — c.py::h misses the guard; verified head {judged3}",
+            head=pushed3,
+            attempt=attempt,
+        )
+        build3 = mint3.ids["build"]
+        res = pd.run_pass(store)
+        assert res.asks == 1
+        (ask3,) = _blocked_by_ids(store, build3)
+        body3 = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask3))
+        assert "stale branch" in body3
+        assert f"judged head {judged3} but the pushed tip is {pushed3}" in body3
+
+
+@pytest.mark.parametrize(
+    ("pushed", "judged"),
+    [
+        ("a" * 12 + "1" * 28, "a" * 12 + "2" * 28),  # colliding abbreviation
+        ("a" * 12 + "1" * 28, "2" * 40),  # difference inside 12 chars
+    ],
+)
+def test_preland_stale_read_ask_prints_full_shas(
+    store: Store, pushed: str, judged: str
+) -> None:
+    """gr806875: the stale-read ask printed both shas at 12 chars —
+    identical when the difference sits past the abbreviation, so a
+    human could not see it. The message carries the full values on
+    every mismatch, colliding abbreviations or not."""
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {judged}",
+        head=pushed,
+    )
+    build = mint.ids["build"]
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "stale branch" in body
+    assert f"judged head {judged} but the pushed tip is {pushed}" in body
 
 
 def test_preland_stale_read_outranks_the_same_finding(store: Store) -> None:

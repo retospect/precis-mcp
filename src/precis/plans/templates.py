@@ -287,7 +287,11 @@ REVIEW_FALLBACK_KEY = "review_fallback"
 #: ``run_slice`` stamps it at each launch; ``plan_dispatch`` credits the
 #: verdict's build signal to ``job``, never to whatever build the held
 #: land names when the verdict is read — a replacement build may hold it
-#: by then.
+#: by then — and reads ``head`` as the evidence a judged head one hex
+#: character short of the pushed tip is the transcription slip of
+#: gr806875, not a stale read: a 39-hex token is a valid git
+#: abbreviation and could name another commit, so only a stamp naming
+#: the tip forgives the drop.
 REVIEWED_ATTEMPT_KEY = "reviewed_attempt"
 #: ``meta.pending_land`` on a build todo whose land waits on a pre-land
 #: reviewer: the params ``run_slice._mint_land`` would have minted

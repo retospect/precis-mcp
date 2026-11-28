@@ -3099,9 +3099,13 @@ def _review_target(
                 )
                 lines.append(
                     "Name the head you judged in the verdict comment "
-                    "(`verified head <sha>`): the tick reads it against "
-                    "the pushed tip — a mismatch is a stale read, not a "
-                    "finding (gr688058)."
+                    "(`verified head <sha>`) — paste the `git rev-parse` "
+                    "output, never retype it: the tick reads it against "
+                    "the pushed tip and a mismatch is a stale read, not "
+                    "a finding — except the tip one hex character short, "
+                    "forgiven only when the head this review was "
+                    "launched to judge names the tip (gr688058, "
+                    "gr806875)."
                 )
                 lines.append(
                     "End a FIX or REVERT comment with one `anchors:` "
