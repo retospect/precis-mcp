@@ -199,7 +199,9 @@ def _seed_kw_chunk(
 ) -> int:
     """Create a keyword-eligible ``memory`` chunk; optionally give it a current
     ``ok`` embedding and/or current keywords. content_sha is copied from the
-    chunk so the ``IS NOT DISTINCT FROM`` gates match regardless of triggers."""
+    chunk so the ``IS NOT DISTINCT FROM`` gates match regardless of triggers.
+    The embedding carries a real (zero) vector: the claim — and so the
+    ``emb_ready`` backlog predicate — requires ``vector IS NOT NULL``."""
     ref = store.insert_ref(kind="memory", slug=None, title="t", meta={})
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -211,10 +213,10 @@ def _seed_kw_chunk(
         cid = int(row[0])
         if with_ok_embedding:
             conn.execute(
-                "INSERT INTO chunk_embeddings (chunk_id, embedder, status, content_sha) "
-                "VALUES (%s, 'bge-m3', 'ok', "
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, status, vector, content_sha) "
+                "VALUES (%s, 'bge-m3', 'ok', %s, "
                 "        (SELECT content_sha FROM chunks WHERE chunk_id = %s))",
-                (cid, cid),
+                (cid, [0.0] * store.embedding_dim(), cid),
             )
         if with_current_keywords:
             conn.execute(
