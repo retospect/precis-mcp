@@ -117,6 +117,9 @@ def test_fan_out_shares_pool_admission_across_calls(
     pool = PrecisPool(min_size=1, max_size=4, open=False)
     monkeypatch.setattr(rt.hub, "store", SimpleNamespace(pool=pool))
     monkeypatch.setattr(rt.hub, "handler_for", lambda kind: SimpleNamespace())
+    # The 0.5 s call deadline sits under the production start floor; lower
+    # it so the pool admission, not the floor, decides who runs.
+    monkeypatch.setattr(search_mod, "CROSS_KIND_MIN_START_MS", 100)
     started = threading.Event()
     release = threading.Event()
 
