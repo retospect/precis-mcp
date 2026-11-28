@@ -182,9 +182,20 @@ class TestSearchClosedWindow:
         # created_at on view='count'…
         resp = gripes.search(view="count", since=_iso(t2), until=_iso(t3))
         assert resp.body.startswith("# 0 gripe entries")
-        # …and is still refused on the listing paths.
+        # …and since gr797062 the same bound is a mint-time filter on a
+        # queryless listing too — all three gripes were minted just now,
+        # so the lower bound keeps them and a past upper bound drops
+        # them. Refusal survives only where a created_at window can't
+        # apply: a ranked q= or link= search.
+        resp = gripes.search(status="done", view="ids", page_size=100, since=_iso(t2))
+        assert set(_gr_lines(resp.body)) == {f"gr{g1}", f"gr{g2}", f"gr{g3}"}
+        assert "created in [" in resp.body
+        resp = gripes.search(status="done", view="ids", page_size=100, until=_iso(t3))
+        assert _gr_lines(resp.body) == []
         with pytest.raises(BadInput, match="since="):
-            gripes.search(status="done", since=_iso(t2))
+            gripes.search(q="ranked probe", since=_iso(t2))
+        with pytest.raises(BadInput, match="since="):
+            gripes.search(link=f"gripe:{g1}", since=_iso(t2))
 
     def test_no_status_uses_terminal_set(
         self, gripes: GripeHandler, store: Store
