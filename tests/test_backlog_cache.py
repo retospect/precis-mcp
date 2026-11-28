@@ -79,9 +79,11 @@ def test_cached_counters_match_the_uncached_queries(store: Store) -> None:
             "rake-lemma",
             RakeLemmaHandler.skip_chunk_kinds,
         )
-        assert _counts_only(counts["chunk_keywords"]) == health_checks._keywords_counts(
-            conn
-        )
+        assert _counts_only(counts["chunk_keywords"]) == {
+            **health_checks._keywords_counts(conn),
+            "fresh_last_ts": None,
+            "rederive_last_ts": None,
+        }
         # ords 0/1/6 pending (6's embedding is for older content), 4 done,
         # 5 failed; references/field are not eligible.
         assert _counts_only(counts["embed"]) == {"pending": 3, "done": 1, "failed": 1}
